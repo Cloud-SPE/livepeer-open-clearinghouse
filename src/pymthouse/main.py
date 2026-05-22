@@ -6,10 +6,12 @@ import hmac
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from pymthouse import __version__
 from pymthouse.dependencies import SettingsDep
@@ -84,6 +86,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_keys_runtime.router)
     app.include_router(admin_runtime.router)
     app.include_router(discovery_runtime.router)
+
+    # Static SPAs — mounted under their URL prefix so hash routing works
+    # and assets resolve cleanly (e.g., /portal/portal.css).
+    web_root = Path(__file__).resolve().parents[2] / "web"
+    portal_dir = web_root / "portal"
+    admin_dir = web_root / "admin"
+    if portal_dir.is_dir():
+        app.mount(
+            "/portal",
+            StaticFiles(directory=portal_dir, html=True),
+            name="portal",
+        )
+    if admin_dir.is_dir():
+        app.mount(
+            "/admin",
+            StaticFiles(directory=admin_dir, html=True),
+            name="admin",
+        )
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse("/portal/")
 
     return app
 

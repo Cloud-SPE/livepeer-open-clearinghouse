@@ -1,0 +1,218 @@
+@layer reset, base, components, utilities;
+
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  input {
+    font: inherit;
+    color: inherit;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+:root {
+  /* Slightly warmer palette to visually distinguish from the portal */
+  --bg: #0d0a08;
+  --fg: #f0ebe6;
+  --muted: #9d958c;
+  --accent: #ffb547;
+  --accent-fg: #1a1310;
+  --surface: #1a1411;
+  --surface-2: #221b17;
+  --border: #3a302a;
+  --danger: #ff5470;
+  --warn: #ffb547;
+  --ok: #4ade80;
+  --radius: 8px;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    min-height: 100%;
+    line-height: 1.5;
+  }
+  body {
+    padding: 24px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 24px;
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 20px;
+    margin-bottom: 12px;
+  }
+  h3 {
+    font-size: 16px;
+    margin-bottom: 8px;
+  }
+  p {
+    margin-bottom: 8px;
+  }
+  a {
+    color: var(--accent);
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+}
+
+@layer components {
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+  .pill.warn {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 480px;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  label {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  input[type="text"],
+  input[type="password"] {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+  }
+  input:focus {
+    outline: 2px solid var(--accent);
+  }
+  button.primary,
+  button.ghost,
+  button.danger {
+    border-radius: var(--radius);
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  button.primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+  }
+  button.primary:hover {
+    filter: brightness(1.08);
+  }
+  button.ghost:hover {
+    border-color: var(--accent);
+  }
+  button.danger {
+    background: var(--danger);
+    color: var(--accent-fg);
+    border-color: var(--danger);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 13px;
+  }
+  tbody tr:hover {
+    background: var(--surface-2);
+  }
+  .msg {
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 14px;
+  }
+  .msg.error {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .msg.ok {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+}
+
+@layer utilities {
+  .muted {
+    color: var(--muted);
+  }
+  .row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .mt-1 {
+    margin-top: 8px;
+  }
+  .mt-2 {
+    margin-top: 16px;
+  }
+}
