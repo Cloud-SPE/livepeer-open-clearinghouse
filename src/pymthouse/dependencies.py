@@ -26,6 +26,10 @@ from pymthouse.providers.auth import session as session_helper
 from pymthouse.providers.clock import Clock, DefaultClock
 from pymthouse.providers.db import session_dependency
 from pymthouse.providers.email import EmailProvider, make_provider as make_email_provider
+from pymthouse.providers.payment_daemon import (
+    MockPaymentDaemonClient,
+    PaymentDaemonClient,
+)
 from pymthouse.providers.registry_daemon import (
     MockRegistryClient,
     RegistryClient,
@@ -52,6 +56,13 @@ def _default_registry() -> RegistryClient:
     return MockRegistryClient()
 
 
+@lru_cache(maxsize=1)
+def _default_payment_daemon() -> PaymentDaemonClient:
+    # Phase 7 ships on the mock. Swap to GrpcPaymentDaemonClient once
+    # `make protoc` generates stubs (see tech-debt-tracker.md).
+    return MockPaymentDaemonClient()
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependency callables
 # ---------------------------------------------------------------------------
@@ -67,6 +78,10 @@ def get_email() -> EmailProvider:
 
 def get_registry() -> RegistryClient:
     return _default_registry()
+
+
+def get_payment_daemon() -> PaymentDaemonClient:
+    return _default_payment_daemon()
 
 
 def get_settings_dep() -> Settings:
@@ -87,6 +102,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
 EmailDep = Annotated[EmailProvider, Depends(get_email)]
 RegistryDep = Annotated[RegistryClient, Depends(get_registry)]
+PaymentDaemonDep = Annotated[PaymentDaemonClient, Depends(get_payment_daemon)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 

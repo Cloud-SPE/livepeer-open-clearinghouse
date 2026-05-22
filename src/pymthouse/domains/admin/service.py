@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pymthouse.domains.accounts.repo import OperatorApproval, User
 from pymthouse.domains.admin.repo import Operator, OperatorAudit
+from pymthouse.domains.billing import service as billing_service
 from pymthouse.providers.clock import Clock
 
 BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@pymthouse.local"
@@ -90,8 +91,13 @@ async def approve_user(
     user_id: uuid.UUID,
     operator: Operator,
     clock: Clock,
+    initial_credit_wei: int = 0,
 ) -> OperatorApproval:
-    """Create an active operator_approval for `user_id`."""
+    """Create an active operator_approval for `user_id` and grant initial credit.
+
+    Same transaction as the caller's session: if the credit grant fails,
+    the approval is rolled back.
+    """
     user = await session.get(User, user_id)
     if user is None:
         raise UserNotFound
@@ -120,4 +126,13 @@ async def approve_user(
         )
     )
     await session.flush()
+
+    if initial_credit_wei > 0:
+        await billing_service.grant_initial_credit(
+            session,
+            user_id=user_id,
+            amount_wei=initial_credit_wei,
+            operator_id=operator.id,
+        )
+
     return approval

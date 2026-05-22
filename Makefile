@@ -1,5 +1,5 @@
 .PHONY: help install sync fmt lint typecheck check test test-unit test-integration test-e2e \
-        run dev down logs ps migrate migrate-create clean image-build dev-keystore
+        run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc
 
 UV ?= uv
 COMPOSE ?= docker compose
@@ -90,6 +90,25 @@ migrate: ## Apply Alembic migrations
 
 migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="add foo")
 	$(UV) run alembic revision --autogenerate -m "$(m)"
+
+# ---------------------------------------------------------------------------
+# protobuf
+# ---------------------------------------------------------------------------
+
+PROTO_DIR := proto
+PROTO_OUT := src/pymthouse/providers/payment_daemon/_gen
+PROTO_FILES := $(shell find $(PROTO_DIR) -name '*.proto' 2>/dev/null)
+
+protoc: ## Regenerate Python gRPC stubs from proto/
+	@mkdir -p $(PROTO_OUT)
+	@touch $(PROTO_OUT)/__init__.py
+	$(UV) run python -m grpc_tools.protoc \
+		--proto_path=$(PROTO_DIR) \
+		--python_out=$(PROTO_OUT) \
+		--grpc_python_out=$(PROTO_OUT) \
+		--pyi_out=$(PROTO_OUT) \
+		$(PROTO_FILES)
+	@echo "Regenerated stubs in $(PROTO_OUT)/"
 
 # ---------------------------------------------------------------------------
 # cleanup

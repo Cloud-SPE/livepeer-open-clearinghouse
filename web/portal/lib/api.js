@@ -56,3 +56,8 @@ export const createApiKey = (label) =>
 
 export const revokeApiKey = (id) =>
   api(`/accounts/me/api-keys/${id}`, { method: "DELETE" });
+
+export const getBalance = () => api("/accounts/me/balance");
+
+export const getLedger = (limit = 20) =>
+  api(`/accounts/me/ledger?limit=${limit}`);

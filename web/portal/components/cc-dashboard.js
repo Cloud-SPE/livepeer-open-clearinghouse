@@ -34,6 +34,8 @@ export class CcDashboard extends LitElement {
         <p class="mt-1">Account status: ${this._approvalPill()}</p>
       </div>
 
+      ${this.user.approved ? html`<cc-balance></cc-balance>` : null}
+
       <div class="card">
         <h3>What you can do</h3>
         <ul style="margin-left: 18px;">
@@ -41,9 +43,12 @@ export class CcDashboard extends LitElement {
             <a href="#/api-keys">Manage your API keys</a> — create one to
             authenticate your app developer calls
           </li>
+          <li>
+            Discover capabilities (<code>GET /v1/capabilities</code>) and
+            mint payments (<code>POST /v1/payments/mint</code>) using your
+            API key
+          </li>
           <li class="muted">Top up your credit balance (operator-only for now)</li>
-          <li class="muted">Discover capabilities and orchestrators (via API)</li>
-          <li class="muted">Mint payment tickets (via API, coming in a later phase)</li>
         </ul>
       </div>
 

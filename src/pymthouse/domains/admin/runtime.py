@@ -10,6 +10,7 @@ from pymthouse.dependencies import (
     ClockDep,
     CurrentOperatorDep,
     SessionDep,
+    SettingsDep,
 )
 from pymthouse.domains.admin import service
 from pymthouse.domains.admin.types import (
@@ -40,10 +41,15 @@ async def approve_user_endpoint(
     operator: CurrentOperatorDep,
     db: SessionDep,
     clock: ClockDep,
+    settings: SettingsDep,
 ) -> ApprovedUserView:
     try:
         approval = await service.approve_user(
-            db, user_id=user_id, operator=operator, clock=clock
+            db,
+            user_id=user_id,
+            operator=operator,
+            clock=clock,
+            initial_credit_wei=settings.default_initial_credit_wei,
         )
     except service.UserNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.code) from exc

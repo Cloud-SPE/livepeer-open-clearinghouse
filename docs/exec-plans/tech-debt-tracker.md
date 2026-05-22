@@ -61,6 +61,20 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
+- **`GrpcPaymentDaemonClient` is a stub.** Phase 7 ships on
+  `MockPaymentDaemonClient`. The path to real: run `make protoc` to
+  generate stubs under `src/pymthouse/providers/payment_daemon/_gen/`,
+  then implement the real gRPC dial + message mapping. Swap in
+  `dependencies.py:_default_payment_daemon()`. *Trigger:* needing to
+  actually pay a real orchestrator.
+- **No usage-reconciliation (`POST /v1/usage/report`) endpoint yet.**
+  Variable-cost jobs over-charge; refunds happen only via operator
+  topup or admin adjustment. *Trigger:* first LLM-style partner
+  integration.
+- **No spend-window enforcement.** `domains/billing.service` writes
+  ledger entries but doesn't check the per-period spend cap before
+  charging. *Trigger:* first time a misbehaving key drains a balance
+  faster than the operator expected.
 
 ### Architecture
 

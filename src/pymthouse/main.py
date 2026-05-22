@@ -19,7 +19,10 @@ from pymthouse.domains.accounts import runtime as accounts_runtime
 from pymthouse.domains.admin import runtime as admin_runtime
 from pymthouse.domains.admin import service as admin_service
 from pymthouse.domains.api_keys import runtime as api_keys_runtime
+from pymthouse.domains.billing import runtime as billing_runtime
 from pymthouse.domains.discovery import runtime as discovery_runtime
+from pymthouse.domains.payments import runtime as payments_runtime
+from pymthouse.errors import register_handlers
 from pymthouse.providers.db import session_scope
 from pymthouse.providers.telemetry import (
     configure_logging,
@@ -64,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = cfg
 
     app.middleware("http")(metrics_middleware)
+    register_handlers(app)
 
     @app.get("/health", tags=["meta"])
     async def health() -> JSONResponse:
@@ -84,8 +88,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(accounts_runtime.router)
     app.include_router(api_keys_runtime.router)
+    app.include_router(billing_runtime.router)
     app.include_router(admin_runtime.router)
     app.include_router(discovery_runtime.router)
+    app.include_router(payments_runtime.router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).
