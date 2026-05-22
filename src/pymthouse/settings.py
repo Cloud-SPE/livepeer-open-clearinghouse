@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     github_oauth_client_secret: SecretStr | None = None
 
     # ---- email (Resend) ----
+    email_provider: Literal["auto", "null", "resend"] = "auto"
     resend_api_key: SecretStr | None = None
     email_from_address: str = "no-reply@pymthouse.local"
     email_from_name: str = "PymtHouse"

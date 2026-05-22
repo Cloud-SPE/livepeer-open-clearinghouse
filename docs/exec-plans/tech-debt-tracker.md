@@ -51,6 +51,18 @@ the exec-plan that addressed it and remove it from this file.
   *Trigger:* operator needs to onboard users without manual topup; or
   a partner wants self-serve funding.
 
+### Email
+
+- **No Resend webhook handling.** Bounces, complaints, and delivery
+  events from Resend are not consumed. PymtHouse considers an email
+  delivered if the synchronous SDK call succeeds. *Trigger:* email
+  deliverability becomes a real concern (legitimate user reports
+  "never got the verification email").
+- **No "operator delivers initial API key by email" flow.** The
+  original product sketch mentioned this; current build emails an
+  approval notification and lets the user create their own key in the
+  portal. *Trigger:* product decision to revisit operator-issued keys.
+
 ### Payments
 
 - **No on-chain redemption observation.** PymtHouse charges EV at

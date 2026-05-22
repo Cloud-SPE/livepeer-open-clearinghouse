@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, status
 from pymthouse.dependencies import (
     ClockDep,
     CurrentOperatorDep,
+    EmailDep,
     SessionDep,
     SettingsDep,
 )
@@ -74,6 +75,7 @@ async def approve_user_endpoint(
     db: SessionDep,
     clock: ClockDep,
     settings: SettingsDep,
+    email: EmailDep,
 ) -> ApprovedUserView:
     try:
         approval = await service.approve_user(
@@ -82,6 +84,8 @@ async def approve_user_endpoint(
             operator=operator,
             clock=clock,
             initial_credit_wei=settings.default_initial_credit_wei,
+            email_provider=email,
+            public_base_url=str(settings.public_base_url),
         )
     except service.UserNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.code) from exc

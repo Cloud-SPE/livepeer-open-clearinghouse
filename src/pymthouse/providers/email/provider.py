@@ -62,7 +62,12 @@ class NullEmailProvider:
 
 
 class ResendEmailProvider:
-    """Sends mail via the Resend HTTP API."""
+    """Sends mail via the Resend HTTP API.
+
+    The Resend SDK is synchronous; we hop to a worker thread per call so
+    the event loop stays responsive. Outcomes are emitted as
+    ``email.resend.sent`` / ``email.resend.failed`` log lines.
+    """
 
     def __init__(self, settings: Settings) -> None:
         # Import lazily so the dependency isn't required when NullEmail is used.
@@ -73,18 +78,36 @@ class ResendEmailProvider:
         resend.api_key = settings.resend_api_key.get_secret_value()
         self._resend = resend
         self._from = f"{settings.email_from_name} <{settings.email_from_address}>"
+        self._log = logger
 
     async def send(self, message: EmailMessage) -> None:
-        # The resend SDK is sync; for MVP we accept the small block.
-        # If/when this becomes a hotspot we'll wrap in asyncio.to_thread.
-        self._resend.Emails.send(
-            {
-                "from": self._from,
-                "to": [message.to],
-                "subject": message.subject,
-                "html": message.html,
-                "text": message.text,
-            }
+        import asyncio  # noqa: PLC0415
+
+        payload = {
+            "from": self._from,
+            "to": [message.to],
+            "subject": message.subject,
+            "html": message.html,
+            "text": message.text,
+        }
+        try:
+            result = await asyncio.to_thread(self._resend.Emails.send, payload)
+        except Exception as exc:  # noqa: BLE001 — provider-level catch
+            self._log.error(
+                "email.resend.failed",
+                to=message.to,
+                subject=message.subject,
+                error=str(exc),
+            )
+            raise
+        provider_id = (
+            result.get("id") if isinstance(result, dict) else None
+        )
+        self._log.info(
+            "email.resend.sent",
+            to=message.to,
+            subject=message.subject,
+            provider_id=provider_id,
         )
 
 
@@ -94,7 +117,18 @@ def make_message(*, to: str, subject: str, html: str, text: str) -> EmailMessage
 
 
 def make_provider(settings: Settings) -> EmailProvider:
-    """Return the configured EmailProvider (Resend if key present, else Null)."""
-    if settings.resend_api_key is not None and settings.app_env != "dev":
+    """Pick an EmailProvider based on ``settings.email_provider``.
+
+    ``auto`` (default) selects Resend when ``RESEND_API_KEY`` is set,
+    Null otherwise. ``null`` and ``resend`` force the choice — useful in
+    tests and for explicit prod configuration.
+    """
+    choice = settings.email_provider
+    if choice == "null":
+        return NullEmailProvider()
+    if choice == "resend":
+        return ResendEmailProvider(settings)
+    # auto
+    if settings.resend_api_key is not None:
         return ResendEmailProvider(settings)
     return NullEmailProvider()

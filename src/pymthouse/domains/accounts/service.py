@@ -26,7 +26,7 @@ from pymthouse.domains.accounts.repo import (
 from pymthouse.providers.auth import password as pwd
 from pymthouse.providers.auth import session as session_helper
 from pymthouse.providers.clock import Clock
-from pymthouse.providers.email import EmailProvider, make_message
+from pymthouse.providers.email import EmailProvider, templates
 
 EMAIL_VERIFICATION_TTL = timedelta(hours=24)
 SESSION_TTL = timedelta(days=14)
@@ -94,15 +94,7 @@ async def signup(
         f"{public_base_url.rstrip('/')}/portal/#/verify-email?token={raw_token}"
     )
     await email_provider.send(
-        make_message(
-            to=email,
-            subject="Verify your PymtHouse account",
-            html=(
-                f"<p>Welcome to PymtHouse.</p>"
-                f'<p><a href="{verify_link}">Click here to verify your email</a>.</p>'
-            ),
-            text=f"Welcome to PymtHouse. Verify your email: {verify_link}",
-        )
+        templates.verification_email(to=email, verify_link=verify_link)
     )
     return user
 

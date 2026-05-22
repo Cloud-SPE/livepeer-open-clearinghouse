@@ -1,5 +1,6 @@
 """Transactional email — EmailProvider Protocol + Resend impl + NullEmail fallback."""
 
+from pymthouse.providers.email import templates
 from pymthouse.providers.email.provider import (
     EmailMessage,
     EmailProvider,
@@ -16,4 +17,5 @@ __all__ = [
     "ResendEmailProvider",
     "make_message",
     "make_provider",
+    "templates",
 ]

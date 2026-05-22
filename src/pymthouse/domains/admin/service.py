@@ -13,6 +13,10 @@ from pymthouse.domains.admin.repo import Operator, OperatorAudit
 from pymthouse.domains.billing import service as billing_service
 from pymthouse.domains.billing.repo import CreditBalance
 from pymthouse.providers.clock import Clock
+from pymthouse.providers.email import EmailProvider, templates
+from pymthouse.providers.telemetry import get_logger
+
+logger = get_logger(__name__)
 
 BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@pymthouse.local"
 BOOTSTRAP_OPERATOR_NAME = "Bootstrap Operator"
@@ -125,11 +129,14 @@ async def approve_user(
     operator: Operator,
     clock: Clock,
     initial_credit_wei: int = 0,
+    email_provider: EmailProvider | None = None,
+    public_base_url: str | None = None,
 ) -> OperatorApproval:
     """Create an active operator_approval for `user_id` and grant initial credit.
 
     Same transaction as the caller's session: if the credit grant fails,
-    the approval is rolled back.
+    the approval is rolled back. The notification email is best-effort —
+    a send failure is logged but does not roll back the approval.
     """
     user = await session.get(User, user_id)
     if user is None:
@@ -167,5 +174,19 @@ async def approve_user(
             amount_wei=initial_credit_wei,
             operator_id=operator.id,
         )
+
+    if email_provider is not None and public_base_url is not None:
+        try:
+            await email_provider.send(
+                templates.approval_notification_email(
+                    to=user.email, public_base_url=public_base_url
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort notification
+            logger.warning(
+                "admin.approve_user.notification_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
 
     return approval

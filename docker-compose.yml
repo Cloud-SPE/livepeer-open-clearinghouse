@@ -83,6 +83,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-CHANGE-FOR-PROD}
       METRICS_TOKEN: ${METRICS_TOKEN:-dev-metrics-token-CHANGE-FOR-PROD}
       ADMIN_BOOTSTRAP_TOKEN: ${ADMIN_BOOTSTRAP_TOKEN:-dev-admin-bootstrap-CHANGE-FOR-PROD}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@pymthouse.local}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-PymtHouse}
