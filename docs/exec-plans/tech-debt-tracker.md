@@ -17,18 +17,17 @@ the exec-plan that addressed it and remove it from this file.
 
 ### Discovery
 
-- **No local caching of `service-registry.Select` results.** Every
-  ticket-mint call makes a fresh `Select` RPC. *Trigger to address:*
-  observable p99 latency on `/v1/payments/mint` regressing because of
-  daemon latency.
 - **No liveness checks on orchestrators returned by discovery.**
   `service-registry-daemon` returns routes without probing them; PymtHouse
   passes them through. *Trigger:* app-dev reports of dead-route payments.
-- **`GrpcRegistryClient.list_capabilities` / `list_orchestrators` are
-  O(N) RPCs.** The daemon doesn't expose a flat "list all capabilities"
-  RPC — those methods walk ListKnown + ResolveByAddress per address.
-  Fine at MVP scale; needs caching once the registry grows. *Trigger:*
-  observable latency on the discovery endpoints.
+- **Registry cache TTL is process-local.** `CachingRegistryClient`
+  stores entries in process memory; multi-instance deployments do not
+  share cache hits. *Trigger:* going multi-instance with a high read
+  rate.
+- **`Select(...) -> None` not cached.** A "no route" result re-hits the
+  daemon every call (deliberate, so a freshly-published orch becomes
+  visible without waiting out the TTL). May want to negative-cache with
+  a shorter TTL if missing-route lookups become a hot path.
 
 ### Auth
 

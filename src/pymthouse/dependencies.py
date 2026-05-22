@@ -33,6 +33,7 @@ from pymthouse.providers.payment_daemon import (
 )
 from pymthouse.providers.ratelimit import RateLimiter
 from pymthouse.providers.registry_daemon import (
+    CachingRegistryClient,
     GrpcRegistryClient,
     MockRegistryClient,
     RegistryClient,
@@ -57,9 +58,14 @@ def _default_email() -> EmailProvider:
 @lru_cache(maxsize=1)
 def _default_registry() -> RegistryClient:
     cfg = get_settings()
+    inner: RegistryClient
     if cfg.registry_daemon_mode == "grpc":
-        return GrpcRegistryClient(cfg.registry_daemon_socket)
-    return MockRegistryClient()
+        inner = GrpcRegistryClient(cfg.registry_daemon_socket)
+    else:
+        inner = MockRegistryClient()
+    if cfg.registry_cache_ttl_seconds > 0:
+        return CachingRegistryClient(inner, ttl_seconds=cfg.registry_cache_ttl_seconds)
+    return inner
 
 
 @lru_cache(maxsize=1)

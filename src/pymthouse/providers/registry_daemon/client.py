@@ -312,6 +312,92 @@ class GrpcRegistryClient:
         return out
 
 
+class CachingRegistryClient:
+    """TTL-cache wrapper around any RegistryClient.
+
+    All four read-only methods are cached for `ttl_seconds`. ``ttl_seconds=0``
+    disables caching (passes everything through). Cache keys are scoped
+    by method+args.
+
+    Single-loop asyncio safe (all access is via ``await``); not thread-safe.
+    """
+
+    def __init__(self, inner: RegistryClient, ttl_seconds: int) -> None:
+        self._inner = inner
+        self._ttl = ttl_seconds
+        # Each entry: (expires_at_monotonic, value)
+        self._cache: dict[tuple, tuple[float, object]] = {}
+
+    def _get(self, key: tuple) -> object | None:
+        if self._ttl <= 0:
+            return None
+        import time  # noqa: PLC0415
+
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            self._cache.pop(key, None)
+            return None
+        return value
+
+    def _set(self, key: tuple, value: object) -> None:
+        if self._ttl <= 0:
+            return
+        import time  # noqa: PLC0415
+
+        self._cache[key] = (time.monotonic() + self._ttl, value)
+
+    async def select(self, capability: str, offering: str) -> SelectedRoute | None:
+        key = ("select", capability, offering)
+        cached = self._get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        # None results are *not* cached — a missing route should retry on
+        # the next call so a freshly-published orch becomes visible without
+        # waiting out the TTL.
+        result = await self._inner.select(capability, offering)
+        if result is not None:
+            self._set(key, result)
+        return result
+
+    async def select_many(
+        self, capability: str, offering: str
+    ) -> list[SelectedRoute]:
+        key = ("select_many", capability, offering)
+        cached = self._get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        result = await self._inner.select_many(capability, offering)
+        self._set(key, result)
+        return result
+
+    async def list_capabilities(self) -> list[CapabilityInfo]:
+        key = ("list_capabilities",)
+        cached = self._get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        result = await self._inner.list_capabilities()
+        self._set(key, result)
+        return result
+
+    async def list_orchestrators(
+        self, *, capability: str | None = None
+    ) -> list[OrchestratorInfo]:
+        key = ("list_orchestrators", capability)
+        cached = self._get(key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        result = await self._inner.list_orchestrators(capability=capability)
+        self._set(key, result)
+        return result
+
+    def invalidate(self) -> None:
+        """Drop all cache entries."""
+        self._cache.clear()
+
+
 class MockRegistryClient:
     """Returns a small fixed set of routes. Useful only until Phase 6/7."""
 

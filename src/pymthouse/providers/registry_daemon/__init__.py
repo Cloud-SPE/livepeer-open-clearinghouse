@@ -8,6 +8,7 @@ Phase 6/7 alongside the docker compose stack.
 """
 
 from pymthouse.providers.registry_daemon.client import (
+    CachingRegistryClient,
     CapabilityInfo,
     GrpcRegistryClient,
     MockRegistryClient,
@@ -18,6 +19,7 @@ from pymthouse.providers.registry_daemon.client import (
 )
 
 __all__ = [
+    "CachingRegistryClient",
     "CapabilityInfo",
     "GrpcRegistryClient",
     "MockRegistryClient",
