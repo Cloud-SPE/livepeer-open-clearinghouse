@@ -47,6 +47,17 @@ class UserEmailVerification(Base, UuidPkMixin, TimestampMixin, TableNameFromClas
     consumed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
+class UserPasswordReset(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
+    """A single-use password-reset token (hash stored, not the raw token)."""
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
 class UserOAuthIdentity(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     """A linked third-party identity (Google or GitHub)."""
 

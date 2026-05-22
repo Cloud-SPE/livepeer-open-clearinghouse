@@ -56,3 +56,16 @@ class LoginResponse(BaseModel):
     """
 
     user: UserResponse
+
+
+class RequestPasswordResetRequest(BaseModel):
+    """Inbound: ``POST /v1/auth/password-reset/request``."""
+
+    email: EmailStr
+
+
+class ConfirmPasswordResetRequest(BaseModel):
+    """Inbound: ``POST /v1/auth/password-reset/confirm``."""
+
+    token: str = Field(min_length=10)
+    new_password: str = Field(min_length=12, max_length=256)

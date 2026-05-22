@@ -19,8 +19,10 @@ from pymthouse.domains.accounts import oauth as oauth_service
 from pymthouse.domains.accounts import service
 from pymthouse.domains.accounts.repo import User, UserSession
 from pymthouse.domains.accounts.types import (
+    ConfirmPasswordResetRequest,
     LoginRequest,
     LoginResponse,
+    RequestPasswordResetRequest,
     SignupRequest,
     SignupResponse,
     UserResponse,
@@ -77,6 +79,49 @@ async def verify_email_endpoint(
 ) -> UserResponse:
     try:
         user = await service.verify_email(db, token=body.token, clock=clock)
+    except service.InvalidToken as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    approved = await service.is_approved(db, user.id)
+    return _user_response(user, approved=approved)
+
+
+@router.post(
+    "/v1/auth/password-reset/request",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_password_reset_endpoint(
+    body: RequestPasswordResetRequest,
+    db: SessionDep,
+    clock: ClockDep,
+    email: EmailDep,
+    settings: SettingsDep,
+) -> Response:
+    """Always returns 202, regardless of whether the email is registered.
+
+    The reset email is sent only when a matching user exists; otherwise
+    the endpoint is a silent no-op. This deliberate symmetry stops the
+    endpoint from being used to enumerate registered addresses.
+    """
+    await service.request_password_reset(
+        db,
+        email=str(body.email),
+        clock=clock,
+        email_provider=email,
+        public_base_url=str(settings.public_base_url),
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.post("/v1/auth/password-reset/confirm", response_model=UserResponse)
+async def confirm_password_reset_endpoint(
+    body: ConfirmPasswordResetRequest,
+    db: SessionDep,
+    clock: ClockDep,
+) -> UserResponse:
+    try:
+        user = await service.reset_password(
+            db, token=body.token, new_password=body.new_password, clock=clock
+        )
     except service.InvalidToken as exc:
         raise HTTPException(status_code=400, detail=exc.code) from exc
     approved = await service.is_approved(db, user.id)

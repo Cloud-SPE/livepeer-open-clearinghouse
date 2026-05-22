@@ -65,3 +65,12 @@ export const getLedger = (limit = 20) =>
 export const listOAuthProviders = () => api("/auth/oauth/providers");
 
 export const oauthLoginUrl = (provider) => `/v1/auth/oauth/${provider}/login`;
+
+export const requestPasswordReset = (email) =>
+  api("/auth/password-reset/request", { method: "POST", body: { email } });
+
+export const confirmPasswordReset = (token, new_password) =>
+  api("/auth/password-reset/confirm", {
+    method: "POST",
+    body: { token, new_password },
+  });

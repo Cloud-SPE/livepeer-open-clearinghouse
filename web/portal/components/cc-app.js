@@ -96,13 +96,17 @@ export class CcApp extends LitElement {
       return html`<p class="muted">Loading session…</p>`;
     }
 
-    // verify-email is always reachable, even when logged in.
+    // These routes are always reachable, even when logged in.
     if (path === "/verify-email") {
       return html`<cc-verify-email .token=${params.get("token") || ""}></cc-verify-email>`;
+    }
+    if (path === "/reset-password") {
+      return html`<cc-reset-password .token=${params.get("token") || ""}></cc-reset-password>`;
     }
 
     if (!this._user) {
       if (path === "/signup") return html`<cc-signup></cc-signup>`;
+      if (path === "/forgot-password") return html`<cc-forgot-password></cc-forgot-password>`;
       return html`<cc-login></cc-login>`;
     }
 

@@ -49,3 +49,27 @@ def test_approval_notification_strips_trailing_slash() -> None:
     # Single slash separation, no doubles.
     assert "https://pymt.example/portal/" in msg.text
     assert "https://pymt.example///portal" not in msg.text
+
+
+@pytest.mark.unit
+def test_password_reset_email_carries_link_and_ttl() -> None:
+    link = "https://pymt/portal/#/reset-password?token=abc123def456"
+    msg = templates.password_reset_email(
+        to="x@example.com", reset_link=link, ttl_minutes=60
+    )
+    assert msg.to == "x@example.com"
+    assert "Reset your" in msg.subject
+    assert link in msg.text
+    assert link in msg.html
+    assert "60 minutes" in msg.text
+    assert "60 minutes" in msg.html
+    # Reassurance for users who didn't request the reset.
+    assert "ignore" in msg.text.lower()
+
+
+@pytest.mark.unit
+def test_password_reset_email_escapes_html_in_link() -> None:
+    link = 'https://pymt/?t="ev<il>"&x=1'
+    msg = templates.password_reset_email(to="x@example.com", reset_link=link)
+    assert link in msg.text
+    assert "<il" not in msg.html  # raw angle brackets escaped in HTML body

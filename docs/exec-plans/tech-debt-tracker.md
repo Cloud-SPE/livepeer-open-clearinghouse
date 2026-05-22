@@ -43,8 +43,6 @@ the exec-plan that addressed it and remove it from this file.
 - **No OIDC issuer (PymtHouse as identity provider for downstream
   apps).** We *consume* Google/GitHub but don't *issue* OIDC tokens.
   *Trigger:* partner integration that needs us as IdP.
-- **No password reset flow.** Users who forget their password are stuck.
-  *Trigger:* first support ticket.
 - **Bootstrap-operator-only admin auth.** No operator UI, no operator
   CRUD, no operator-to-operator role separation. A single env var
   (`ADMIN_BOOTSTRAP_TOKEN`) gates the admin API. *Trigger:* needing

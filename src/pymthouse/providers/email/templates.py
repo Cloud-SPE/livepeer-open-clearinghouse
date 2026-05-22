@@ -52,6 +52,34 @@ def verification_email(*, to: str, verify_link: str) -> EmailMessage:
 
 
 # ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+
+def password_reset_email(
+    *, to: str, reset_link: str, ttl_minutes: int = 60
+) -> EmailMessage:
+    """A password-reset link. Mention the TTL so the user knows it's time-bound."""
+    subject = f"Reset your {BRAND} password"
+    safe_link = _safe(reset_link)
+    text = (
+        f"A password reset was requested for your {BRAND} account.\n\n"
+        f"Use this link to set a new password (expires in "
+        f"{ttl_minutes} minutes):\n{reset_link}\n\n"
+        f"If you didn't ask for this, you can ignore the email — your "
+        f"password will not change.\n"
+    )
+    html = (
+        f"<p>A password reset was requested for your {BRAND} account.</p>"
+        f'<p><a href="{safe_link}">Click here to set a new password</a> '
+        f"(expires in {ttl_minutes} minutes).</p>"
+        f"<p>If you didn't ask for this, you can ignore this email — your "
+        f"password will not change.</p>"
+    )
+    return make_message(to=to, subject=subject, html=html, text=text)
+
+
+# ---------------------------------------------------------------------------
 # Operator approval
 # ---------------------------------------------------------------------------
 

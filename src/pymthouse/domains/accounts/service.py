@@ -21,6 +21,7 @@ from pymthouse.domains.accounts.repo import (
     OperatorApproval,
     User,
     UserEmailVerification,
+    UserPasswordReset,
     UserSession,
 )
 from pymthouse.providers.auth import password as pwd
@@ -29,6 +30,7 @@ from pymthouse.providers.clock import Clock
 from pymthouse.providers.email import EmailProvider, templates
 
 EMAIL_VERIFICATION_TTL = timedelta(hours=24)
+PASSWORD_RESET_TTL = timedelta(hours=1)
 SESSION_TTL = timedelta(days=14)
 
 
@@ -194,3 +196,89 @@ async def is_approved(session: AsyncSession, user_id: uuid.UUID) -> bool:
         )
     )
     return approval is not None
+
+
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+
+async def request_password_reset(
+    session: AsyncSession,
+    *,
+    email: str,
+    clock: Clock,
+    email_provider: EmailProvider,
+    public_base_url: str,
+) -> None:
+    """Initiate a reset for `email`. Silent no-op when no user exists.
+
+    The endpoint always succeeds from the caller's perspective; we don't
+    leak whether the address is registered.
+    """
+    user = await session.scalar(select(User).where(User.email == email))
+    if user is None or user.password_hash is None:
+        # Either the email doesn't belong to a user, or the user is
+        # OAuth-only and has no password to reset.
+        return
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    session.add(
+        UserPasswordReset(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=clock.now() + PASSWORD_RESET_TTL,
+        )
+    )
+    await session.flush()
+
+    reset_link = (
+        f"{public_base_url.rstrip('/')}/portal/#/reset-password?token={raw_token}"
+    )
+    await email_provider.send(
+        templates.password_reset_email(
+            to=user.email,
+            reset_link=reset_link,
+            ttl_minutes=int(PASSWORD_RESET_TTL.total_seconds() // 60),
+        )
+    )
+
+
+async def reset_password(
+    session: AsyncSession,
+    *,
+    token: str,
+    new_password: str,
+    clock: Clock,
+) -> User:
+    """Consume the reset token, set the new password, revoke every active session."""
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    record = await session.scalar(
+        select(UserPasswordReset).where(
+            UserPasswordReset.token_hash == token_hash,
+            UserPasswordReset.consumed_at.is_(None),
+        )
+    )
+    now = clock.now()
+    if record is None or record.expires_at < now:
+        raise InvalidToken
+    record.consumed_at = now
+
+    user = await session.get(User, record.user_id)
+    if user is None:
+        raise InvalidToken
+    user.password_hash = pwd.hash(new_password)
+
+    # Invalidate every still-active session for this user. The reset
+    # implies the previous credentials were compromised (or the user
+    # was locked out); leaving old sessions live would defeat the point.
+    sessions = await session.scalars(
+        select(UserSession).where(
+            UserSession.user_id == user.id, UserSession.revoked_at.is_(None)
+        )
+    )
+    for s in sessions:
+        s.revoked_at = now
+
+    return user
