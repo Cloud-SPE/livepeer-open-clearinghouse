@@ -1,0 +1,94 @@
+.PHONY: help install sync fmt lint typecheck check test test-unit test-integration test-e2e \
+        run dev down logs ps migrate migrate-create clean
+
+UV ?= uv
+COMPOSE ?= docker compose
+
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# ---------------------------------------------------------------------------
+# environment
+# ---------------------------------------------------------------------------
+
+install: sync ## Install dependencies (alias for sync)
+
+sync: ## Sync the local virtualenv with pyproject.toml + uv.lock
+	$(UV) sync
+
+# ---------------------------------------------------------------------------
+# code quality
+# ---------------------------------------------------------------------------
+
+fmt: ## Format code with ruff
+	$(UV) run ruff format src tests
+	$(UV) run ruff check --fix src tests
+
+lint: ## Lint with ruff (no fixes)
+	$(UV) run ruff check src tests
+	$(UV) run ruff format --check src tests
+
+typecheck: ## Run mypy
+	$(UV) run mypy src
+
+check: lint typecheck ## Run lint + typecheck
+
+# ---------------------------------------------------------------------------
+# tests
+# ---------------------------------------------------------------------------
+
+test: ## Run all tests
+	$(UV) run pytest
+
+test-unit: ## Run unit tests
+	$(UV) run pytest -m unit
+
+test-integration: ## Run integration tests (requires services running)
+	$(UV) run pytest -m integration
+
+test-e2e: ## Run end-to-end tests (requires full compose stack)
+	$(UV) run pytest -m e2e
+
+# ---------------------------------------------------------------------------
+# application
+# ---------------------------------------------------------------------------
+
+run: ## Run the gateway locally (bypasses docker)
+	$(UV) run uvicorn pymthouse.main:app --reload --host 0.0.0.0 --port 8000
+
+# ---------------------------------------------------------------------------
+# docker compose
+# ---------------------------------------------------------------------------
+
+dev: ## Bring the full stack up (postgres + daemons + gateway)
+	$(COMPOSE) up -d
+
+down: ## Stop the stack
+	$(COMPOSE) down
+
+logs: ## Tail compose logs
+	$(COMPOSE) logs -f --tail=200
+
+ps: ## Show compose service status
+	$(COMPOSE) ps
+
+# ---------------------------------------------------------------------------
+# database
+# ---------------------------------------------------------------------------
+
+migrate: ## Apply Alembic migrations
+	$(UV) run alembic upgrade head
+
+migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="add foo")
+	$(UV) run alembic revision --autogenerate -m "$(m)"
+
+# ---------------------------------------------------------------------------
+# cleanup
+# ---------------------------------------------------------------------------
+
+clean: ## Remove build, cache, and lock-side artifacts (does NOT remove the venv)
+	rm -rf build dist *.egg-info
+	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+	find . -type d -name .pytest_cache -prune -exec rm -rf {} +
+	find . -type d -name .mypy_cache -prune -exec rm -rf {} +
+	find . -type d -name .ruff_cache -prune -exec rm -rf {} +
