@@ -99,32 +99,56 @@ Single stylesheet per SPA, organized with `@layer`:
 }
 
 :root {
-  --bg: #0b0d10;
-  --fg: #e6e9ee;
-  --muted: #8a92a0;
-  --accent: #4f8cff;
-  --accent-fg: #ffffff;
-  --surface: #14171c;
-  --surface-2: #1c2027;
-  --border: #2a2f38;
-  --danger: #ff5470;
-  --warn: #ffb547;
-  --radius: 8px;
+  /* Cool zinc base + emerald (portal) / sky (admin) accent. Drawn from
+     livepeer-pymthouse's Tailwind zinc-950 / emerald-400 palette but
+     restated as plain CSS variables so we keep zero-build. */
+  --bg: #09090b;            /* zinc-950 */
+  --fg: #fafafa;            /* zinc-50 */
+  --muted: #71717a;         /* zinc-500 */
+  --muted-2: #52525b;       /* zinc-600 */
+  --surface: rgba(24, 24, 27, 0.6);
+  --surface-soft: rgba(24, 24, 27, 0.3);
+  --surface-hover: rgba(39, 39, 42, 0.5);
+  --surface-2: #27272a;     /* zinc-800 solid */
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --accent: #34d399;        /* emerald-400 in portal; sky-400 in admin */
+  --accent-strong: #10b981;
+  --accent-fg: #052e16;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --info: #38bdf8;
+  --role: #c084fc;
+  --radius: 8px;            /* rounded-lg */
+  --radius-lg: 12px;        /* rounded-xl */
+  --radius-xl: 16px;        /* rounded-2xl */
+  --radius-pill: 999px;
 }
 
 @layer base { /* fonts, links, body */ }
-@layer components { /* .card, .button, .form, .table, .modal, .pill, .msg */ }
-@layer utilities { /* .m-1, .p-2, .flex, .gap-2 */ }
+@layer components { /* .card, .button, .form, .table, .modal, .pill, .msg, .metric */ }
+@layer utilities { /* .row, .col, .muted, .mt-1, .mt-2, .mb-2 */ }
 ```
 
 **Reusable component classes:**
 
-- `.card` — bordered, padded surface
-- `.primary`, `.ghost`, `.danger` — button variants
-- `.pill`, `.pill.ok`, `.pill.warn`, `.pill.bad` — status badges
+- `.page` — `max-width` container, used as the outermost wrapper inside `<cc-app>`
+- `.card`, `.card-soft`, `.card-tight` — surface variants (solid / translucent overlay / tight padding)
+- `.primary`, `.ghost`, `.danger` — button variants; all are `inline-flex` so an icon can sit alongside the label
+- `.pill`, `.pill.ok`, `.pill.warn`, `.pill.bad`, `.pill.info`, `.pill.role` — status badges with tinted backgrounds
 - `.msg`, `.msg.error`, `.msg.ok`, `.msg.warn`, `.msg.compact` — inline status text
-- `.modal-backdrop`, `.modal-card` — modals (no library)
-- Form: semantic `<form>` + `<label>`, `FormData` on submit, error `.msg.error` below
+- `.modal-backdrop` + `.modal-card` — modals (no library), backdrop is `backdrop-filter: blur(4px)` on rgba black
+- `.metric-grid` + `.metric` (`.label`, `.value`, `.sub`; `.metric.accent`/`.warn`/`.info`/`.bad` for color) — dashboard hero cards
+- Form: semantic `<form>` + `<label>` (small-caps tracking-wider), inputs styled by default selectors, error `.msg.error` below
+
+## Icons
+
+`lib/icons.js` exports one `icon` object whose values return Lit `svg`
+templates. Heroicons-outline style, 24×24 viewport, `strokeWidth=1.5`,
+`stroke="currentColor"` so a parent `color: var(--accent)` recolors
+everything. Add a new icon by appending an entry — don't reach for an
+external library.
 
 ## API client
 
