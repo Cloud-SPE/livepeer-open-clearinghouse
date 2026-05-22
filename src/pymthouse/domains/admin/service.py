@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pymthouse.domains.accounts.repo import OperatorApproval, User
 from pymthouse.domains.admin.repo import Operator, OperatorAudit
 from pymthouse.domains.billing import service as billing_service
+from pymthouse.domains.billing.repo import CreditBalance
 from pymthouse.providers.clock import Clock
 
 BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@pymthouse.local"
@@ -71,6 +72,38 @@ async def authenticate_operator(
             Operator.token_hash == token_hash, Operator.revoked_at.is_(None)
         )
     )
+
+
+async def list_all_users(
+    session: AsyncSession, *, limit: int = 100, offset: int = 0
+) -> tuple[list[tuple[User, bool, int]], int]:
+    """List every user with their approval status and current balance.
+
+    Returns ``(rows, total_count)``. Each row is
+    ``(User, is_approved, balance_wei)``.
+    """
+    total = await session.scalar(select(func.count()).select_from(User))
+    rows_q = (
+        select(
+            User,
+            OperatorApproval.id.is_not(None).label("approved"),
+            func.coalesce(CreditBalance.amount_wei, 0).label("balance_wei"),
+        )
+        .outerjoin(
+            OperatorApproval,
+            (OperatorApproval.user_id == User.id)
+            & (OperatorApproval.revoked_at.is_(None)),
+        )
+        .outerjoin(CreditBalance, CreditBalance.user_id == User.id)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    raw = await session.execute(rows_q)
+    rows: list[tuple[User, bool, int]] = [
+        (r.User, bool(r.approved), int(r.balance_wei)) for r in raw
+    ]
+    return rows, int(total or 0)
 
 
 async def list_pending_users(session: AsyncSession) -> list[User]:

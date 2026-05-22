@@ -6,6 +6,7 @@ export class CcApp extends LitElement {
     _hasToken: { state: true },
     _checking: { state: true },
     _error: { state: true },
+    _tab: { state: true },
   };
 
   constructor() {
@@ -13,6 +14,7 @@ export class CcApp extends LitElement {
     this._hasToken = !!api.getToken();
     this._checking = false;
     this._error = null;
+    this._tab = "users";
   }
 
   createRenderRoot() {
@@ -82,6 +84,35 @@ export class CcApp extends LitElement {
     `;
   }
 
+  _setTab(tab) {
+    this._tab = tab;
+  }
+
+  _renderTabs() {
+    const tabStyle = (active) =>
+      active
+        ? "border-color: var(--accent); color: var(--accent);"
+        : "color: var(--muted);";
+    return html`
+      <nav class="row" style="gap: 8px; margin-bottom: 16px;">
+        <button
+          class="ghost"
+          style=${tabStyle(this._tab === "users")}
+          @click=${() => this._setTab("users")}
+        >
+          Users
+        </button>
+        <button
+          class="ghost"
+          style=${tabStyle(this._tab === "pending")}
+          @click=${() => this._setTab("pending")}
+        >
+          Pending
+        </button>
+      </nav>
+    `;
+  }
+
   render() {
     return html`
       <header class="header">
@@ -93,9 +124,14 @@ export class CcApp extends LitElement {
         </nav>
       </header>
       <main>
-        ${this._hasToken
-          ? html`<cc-pending-users></cc-pending-users>`
-          : this._renderLogin()}
+        ${!this._hasToken
+          ? this._renderLogin()
+          : html`
+              ${this._renderTabs()}
+              ${this._tab === "users"
+                ? html`<cc-users></cc-users>`
+                : html`<cc-pending-users></cc-pending-users>`}
+            `}
       </main>
     `;
   }

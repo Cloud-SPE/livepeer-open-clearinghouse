@@ -22,8 +22,16 @@ from pymthouse.domains.api_keys import runtime as api_keys_runtime
 from pymthouse.domains.billing import runtime as billing_runtime
 from pymthouse.domains.discovery import runtime as discovery_runtime
 from pymthouse.domains.payments import runtime as payments_runtime
+from pymthouse.domains.payments import service as payments_service
+from pymthouse.domains.usage import runtime as usage_runtime
 from pymthouse.errors import register_handlers
+from pymthouse.providers.clock import DefaultClock
 from pymthouse.providers.db import session_scope
+from pymthouse.providers.scheduler import (
+    register_interval_job,
+    shutdown_scheduler,
+    start_scheduler,
+)
 from pymthouse.providers.telemetry import (
     configure_logging,
     get_logger,
@@ -50,7 +58,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("startup.bootstrap_operator.skipped",
                     reason="ADMIN_BOOTSTRAP_TOKEN unset")
 
+    # Background jobs
+    clock = DefaultClock()
+
+    async def _expire_stale_idempotency_keys() -> None:
+        async with session_scope(cfg) as db:
+            n = await payments_service.expire_stale_idempotency_keys(db, clock=clock)
+            if n:
+                log.info("scheduler.idempotency_keys.expired", count=n)
+
+    register_interval_job(
+        _expire_stale_idempotency_keys,
+        name="expire_stale_idempotency_keys",
+        seconds=300,
+    )
+    start_scheduler()
+
     yield
+    shutdown_scheduler()
     log.info("shutdown")
 
 
@@ -92,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_runtime.router)
     app.include_router(discovery_runtime.router)
     app.include_router(payments_runtime.router)
+    app.include_router(usage_runtime.router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).

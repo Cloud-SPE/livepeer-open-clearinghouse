@@ -55,3 +55,10 @@ async function api(path, { method = "GET", body } = {}) {
 export const listPending = () => api("/users/pending");
 export const approveUser = (id) =>
   api(`/users/${id}/approve`, { method: "POST" });
+export const listUsers = (limit = 100, offset = 0) =>
+  api(`/users?limit=${limit}&offset=${offset}`);
+export const topupUser = (id, amount_wei, kind = "manual") =>
+  api(`/users/${id}/topup`, {
+    method: "POST",
+    body: { amount_wei, kind },
+  });

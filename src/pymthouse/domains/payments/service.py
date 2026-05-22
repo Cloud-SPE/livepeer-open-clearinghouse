@@ -140,6 +140,44 @@ def _eth_address_to_bytes(addr: str) -> bytes:
     return bytes.fromhex(stripped)
 
 
+async def _attempt_auto_replenish(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    increment_wei: int,
+    clock: Clock,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+) -> None:
+    """Top up the user's balance by `increment_wei`, capped by window room.
+
+    Capped at the *remaining room in the current spend window* so a runaway
+    consumer can't pull more credit than the operator allowed per period.
+    A `spend_period_cap_wei` of 0 means "no cap" — full increment is granted.
+    """
+    if increment_wei <= 0:
+        return
+    room = await billing_service.remaining_window_room(
+        session,
+        user_id=user_id,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
+    )
+    grant_wei = (
+        increment_wei if room == Decimal("Infinity") else min(Decimal(increment_wei), room)
+    )
+    if grant_wei <= 0:
+        return
+    await billing_service.topup(
+        session,
+        user_id=user_id,
+        amount_wei=int(grant_wei),
+        kind="auto_replenish",
+        operator_id=None,
+    )
+
+
 async def mint_payment(
     session: AsyncSession,
     *,
@@ -153,6 +191,9 @@ async def mint_payment(
     daemon: PaymentDaemonClient,
     clock: Clock,
     inflight_ttl_seconds: int,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+    auto_replenish_increment_wei: int,
 ) -> MintPaymentResponse:
     """End-to-end ticket-mint orchestration."""
     inflight_ttl = timedelta(seconds=inflight_ttl_seconds)
@@ -183,8 +224,21 @@ async def mint_payment(
 
     funded_value_wei = Decimal(route.price_per_work_unit_wei) * Decimal(work_units)
 
-    # 2. Balance check (read-only, before paying anything external)
+    # 2. Balance check (read-only, before paying anything external). Attempt
+    # an inline auto-replenish if the balance falls short and the operator
+    # has configured a non-zero increment.
     balance = await billing_service.get_balance(session, user_id=user_id)
+    if balance.amount_wei < funded_value_wei and auto_replenish_increment_wei > 0:
+        await _attempt_auto_replenish(
+            session,
+            user_id=user_id,
+            increment_wei=auto_replenish_increment_wei,
+            clock=clock,
+            spend_period_seconds=spend_period_seconds,
+            spend_period_cap_wei=spend_period_cap_wei,
+        )
+        balance = await billing_service.get_balance(session, user_id=user_id)
+
     if balance.amount_wei < funded_value_wei:
         raise InsufficientCredit(
             available_wei=int(balance.amount_wei),
@@ -245,6 +299,9 @@ async def mint_payment(
         user_id=user_id,
         amount_wei=daemon_response.expected_value,
         payment_id=payment.id,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
     )
 
     response = MintPaymentResponse(
@@ -294,3 +351,29 @@ async def get_payment_by_work_id(
     return await session.scalar(
         select(Payment).where(Payment.user_id == user_id, Payment.work_id == work_id)
     )
+
+
+# ---------------------------------------------------------------------------
+# Background maintenance
+# ---------------------------------------------------------------------------
+
+
+async def expire_stale_idempotency_keys(
+    session: AsyncSession, *, clock: Clock
+) -> int:
+    """Mark in-flight idempotency-key rows past their TTL as expired.
+
+    Returns the number of rows mutated. Run periodically by APScheduler.
+    """
+    now = clock.now()
+    rows = await session.scalars(
+        select(PaymentIdempotencyKey).where(
+            PaymentIdempotencyKey.status == "in_flight",
+            PaymentIdempotencyKey.expires_at < now,
+        )
+    )
+    count = 0
+    for row in rows:
+        row.status = "expired"
+        count += 1
+    return count

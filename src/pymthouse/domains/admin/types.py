@@ -29,3 +29,19 @@ class ApprovedUserView(BaseModel):
     user_id: uuid.UUID
     approved_at: datetime
     operator_id: uuid.UUID
+
+
+class AdminUserView(BaseModel):
+    """Admin listing row: identity + approval + balance, no secrets."""
+
+    id: uuid.UUID
+    email: str
+    email_verified_at: datetime | None
+    approved: bool
+    balance_wei: int
+    created_at: datetime
+
+
+class AdminUserList(BaseModel):
+    items: list[AdminUserView]
+    total: int

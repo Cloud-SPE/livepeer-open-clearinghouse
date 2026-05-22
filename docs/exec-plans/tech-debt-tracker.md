@@ -67,14 +67,16 @@ the exec-plan that addressed it and remove it from this file.
   then implement the real gRPC dial + message mapping. Swap in
   `dependencies.py:_default_payment_daemon()`. *Trigger:* needing to
   actually pay a real orchestrator.
-- **No usage-reconciliation (`POST /v1/usage/report`) endpoint yet.**
-  Variable-cost jobs over-charge; refunds happen only via operator
-  topup or admin adjustment. *Trigger:* first LLM-style partner
-  integration.
-- **No spend-window enforcement.** `domains/billing.service` writes
-  ledger entries but doesn't check the per-period spend cap before
-  charging. *Trigger:* first time a misbehaving key drains a balance
-  faster than the operator expected.
+- **Per-user spend-cap overrides.** Currently the spend-window cap
+  comes from the global `DEFAULT_SPEND_PERIOD_CAP_WEI`. Adding per-user
+  overrides means a `user_billing_config` table and admin UI for
+  editing. *Trigger:* an operator needs different caps for different
+  users.
+- **Auto-replenish is reactive only.** Triggers on a failed mint, not
+  on a schedule. If a user mints constantly we always refill, but if
+  they have a long-running balance trickle there's no proactive
+  top-up. *Trigger:* operator wants users' balances kept above a
+  threshold without inline retries.
 
 ### Architecture
 
