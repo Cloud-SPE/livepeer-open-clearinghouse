@@ -21,6 +21,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
+# Side-effect import: pymthouse._gen injects the generated-stubs dir onto
+# sys.path so `from livepeer.payments.v1 import ...` resolves. Loaded
+# eagerly so any function in this file can do the absolute `livepeer.*`
+# import without first calling _ensure_stub().
+from pymthouse import _gen  # noqa: F401
+
 
 class PaymentDaemonError(Exception):
     """Generic payment-daemon failure (wraps non-retryable errors)."""

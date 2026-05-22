@@ -2,11 +2,15 @@
 #
 # - All services reference pre-built images via `image:` (no `build:` here).
 #   Build the gateway locally with `make image-build` first.
-# - Daemons run in their stripped-down dev mode (no chain RPC, no keystore).
-#   To switch a daemon to chain mode, override its `command:` to add
-#   `--chain-rpc=...` and `--keystore-path=...`, then mount the keystore.
+# - Both daemons run in chain mode by default: payment-daemon signs against
+#   an Arbitrum RPC and the V3 keystore at ./.dev/keystore/, service-
+#   registry-daemon resolves orchestrators via the same chain RPC. Mirrors
+#   the wiring in livepeer-modules-openai's docker-compose.yml. To revert
+#   to the daemons' built-in dev keys, drop --chain-rpc and the keystore
+#   mounts from payment-daemon (the daemon will use devkeystore.New()).
 # - Shared `livepeer-run` named volume carries the UDS sockets between
 #   the daemons and the gateway.
+# - .dev/keystore is mounted read-only into payment-daemon at /etc/livepeer.
 
 services:
   db:
@@ -33,16 +37,15 @@ services:
     command:
       - --mode=sender
       - --socket=/var/run/livepeer/payer-daemon.sock
-      # Uncomment + populate for chain mode:
-      # - --chain-rpc=${CHAIN_RPC}
-      # - --keystore-path=/etc/livepeer/keystore.json
-      # - --keystore-password-file=/etc/livepeer/keystore-password
+      - --chain-rpc=${CHAIN_RPC:-https://arb1.arbitrum.io/rpc}
+      - --keystore-path=/etc/livepeer/keystore.json
+      - --keystore-password-file=/etc/livepeer/keystore-password
     user: "65532:65532"
     volumes:
       - livepeer-run:/var/run/livepeer
-      # For chain mode, mount your dev keystore:
-      # - ./.dev/keystore/keystore.json:/etc/livepeer/keystore.json:ro
-      # - ./.dev/keystore/keystore-password:/etc/livepeer/keystore-password:ro
+      # Mount the whole keystore directory read-only at /etc/livepeer.
+      # Provide your own at ./.dev/keystore/ or override LIVEPEER_KEYSTORE_DIR.
+      - ${LIVEPEER_KEYSTORE_DIR:-./.dev/keystore}:/etc/livepeer:ro
     restart: unless-stopped
 
   service-registry-daemon:
@@ -51,9 +54,7 @@ services:
     command:
       - --mode=resolver
       - --socket=/var/run/livepeer/service-registry.sock
-      # Uncomment for chain-backed discovery:
-      # - --chain-rpc=${CHAIN_RPC}
-      # - --discovery=chain
+      - --chain-rpc=${CHAIN_RPC:-https://arb1.arbitrum.io/rpc}
     user: "65532:65532"
     volumes:
       - livepeer-run:/var/run/livepeer

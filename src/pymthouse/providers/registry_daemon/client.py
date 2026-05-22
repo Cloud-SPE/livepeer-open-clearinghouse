@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
+# Side-effect import: pymthouse._gen injects the generated-stubs dir onto
+# sys.path so `from livepeer.registry.v1 import ...` resolves. Loading
+# this at module level (rather than lazily in each gRPC call site) means
+# anywhere in this file can do the absolute `livepeer.*` import safely.
+from pymthouse import _gen  # noqa: F401
+
 
 @dataclass(frozen=True, slots=True)
 class SelectedRoute:
