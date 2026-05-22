@@ -42,8 +42,11 @@ dist
 # Docs not needed at runtime — keep image lean
 docs
 
-# Files we never want in the image
+# Build-context exclusions
 Makefile
-README.md
-LICENSE
 scripts
+
+# LICENSE + README.md are NOT excluded — the builder stage needs them
+# because pyproject.toml references both via `license = { file = "LICENSE" }`
+# and `readme = "README.md"`. The runtime stage doesn't COPY them, so
+# they don't end up in the final image.

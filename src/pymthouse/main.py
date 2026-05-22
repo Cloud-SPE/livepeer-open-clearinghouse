@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("startup.begin", env=cfg.app_env, version=__version__)
 
     if cfg.admin_bootstrap_token is not None:
-        async with session_scope(cfg) as db:
+        async with session_scope() as db:
             await admin_service.ensure_bootstrap_operator(
                 db, bootstrap_token=cfg.admin_bootstrap_token.get_secret_value()
             )
@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     clock = DefaultClock()
 
     async def _expire_stale_idempotency_keys() -> None:
-        async with session_scope(cfg) as db:
+        async with session_scope() as db:
             n = await payments_service.expire_stale_idempotency_keys(db, clock=clock)
             if n:
                 log.info("scheduler.idempotency_keys.expired", count=n)
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         try:
             daemon = _default_payment_daemon()
-            async with session_scope(cfg) as db:
+            async with session_scope() as db:
                 row = await payments_service.snapshot_deposit(
                     db, clock=clock, daemon=daemon
                 )
@@ -154,7 +154,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).
-    web_root = Path(__file__).resolve().parents[2] / "web"
+    #
+    # The web/ tree is sibling-of-CWD in both layouts we care about:
+    #   - dev (`make run` / `uv run uvicorn ...` from the repo root):
+    #     cwd = <repo>, so cwd/web exists.
+    #   - container (WORKDIR = /srv/pymthouse): cwd/web exists because the
+    #     Dockerfile copies the tree there. The installed pymthouse module
+    #     lives inside the venv and has no nearby web/, so we deliberately
+    #     don't compute web_root from __file__.
+    web_root = Path.cwd() / "web"
     portal_dir = web_root / "portal"
     admin_dir = web_root / "admin"
     if portal_dir.is_dir():

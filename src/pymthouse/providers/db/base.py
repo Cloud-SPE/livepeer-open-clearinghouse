@@ -33,10 +33,13 @@ class Base(DeclarativeBase):
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
-    # Map Python Decimal -> NUMERIC(78, 0) so wei amounts get the right type
-    # without each column having to spell it out.
+    # Default type map. Every Mapped[Decimal] becomes NUMERIC(78, 0) so wei
+    # amounts always fit. Every Mapped[datetime] becomes a tz-aware
+    # TIMESTAMPTZ; our migrations declare all datetime columns with
+    # timezone=True so this avoids a mismatch with naive runtime values.
     type_annotation_map = {  # noqa: RUF012
         Decimal: Numeric(78, 0),
+        datetime: DateTime(timezone=True),
     }
 
 

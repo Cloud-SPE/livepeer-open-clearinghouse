@@ -39,15 +39,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev || \
     uv sync --no-install-project --no-dev
 
-# Layer 2: source.
+# Layer 2: source. LICENSE + README.md are referenced from pyproject.toml
+# (`license = { file = "LICENSE" }`, `readme = "README.md"`) so hatchling
+# needs them during the build.
+COPY LICENSE README.md ./
 COPY src/ ./src/
 COPY web/ ./web/
 COPY migrations/ ./migrations/
 COPY alembic.ini ./
 
-# Install the project itself into the venv.
+# Install the project itself into the venv. --no-editable is critical:
+# without it uv installs a .pth pointing at /build/src, which doesn't exist
+# in the runtime stage and Python can't find `pymthouse` at startup.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev || uv sync --no-dev
+    uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
