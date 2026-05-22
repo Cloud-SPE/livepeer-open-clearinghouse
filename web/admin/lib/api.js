@@ -65,3 +65,4 @@ export const topupUser = (id, amount_wei, kind = "manual") =>
 export const getBillingConfig = (id) => api(`/users/${id}/billing-config`);
 export const putBillingConfig = (id, body) =>
   api(`/users/${id}/billing-config`, { method: "PUT", body });
+export const listAudit = (limit = 100) => api(`/audit?limit=${limit}`);

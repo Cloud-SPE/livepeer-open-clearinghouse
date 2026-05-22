@@ -110,6 +110,24 @@ async def list_all_users(
     return rows, int(total or 0)
 
 
+async def list_audit_entries(
+    session: AsyncSession, *, limit: int = 100
+) -> list[tuple[OperatorAudit, str, str | None]]:
+    """Most-recent-first audit rows joined with operator + target-user emails.
+
+    Returns ``(OperatorAudit, operator_email, target_user_email|None)``.
+    """
+    q = (
+        select(OperatorAudit, Operator.email, User.email)
+        .join(Operator, OperatorAudit.operator_id == Operator.id)
+        .outerjoin(User, OperatorAudit.target_user_id == User.id)
+        .order_by(OperatorAudit.created_at.desc())
+        .limit(limit)
+    )
+    raw = await session.execute(q)
+    return [(row[0], row[1], row[2]) for row in raw]
+
+
 async def list_pending_users(session: AsyncSession) -> list[User]:
     """Users that signed up but have no active approval."""
     rows = await session.scalars(

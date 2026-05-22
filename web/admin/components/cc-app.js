@@ -109,8 +109,21 @@ export class CcApp extends LitElement {
         >
           Pending
         </button>
+        <button
+          class="ghost"
+          style=${tabStyle(this._tab === "audit")}
+          @click=${() => this._setTab("audit")}
+        >
+          Audit
+        </button>
       </nav>
     `;
+  }
+
+  _renderActive() {
+    if (this._tab === "audit") return html`<cc-audit-log></cc-audit-log>`;
+    if (this._tab === "pending") return html`<cc-pending-users></cc-pending-users>`;
+    return html`<cc-users></cc-users>`;
   }
 
   render() {
@@ -128,9 +141,7 @@ export class CcApp extends LitElement {
           ? this._renderLogin()
           : html`
               ${this._renderTabs()}
-              ${this._tab === "users"
-                ? html`<cc-users></cc-users>`
-                : html`<cc-pending-users></cc-pending-users>`}
+              ${this._renderActive()}
             `}
       </main>
     `;

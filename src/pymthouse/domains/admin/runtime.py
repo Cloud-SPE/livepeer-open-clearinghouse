@@ -19,6 +19,8 @@ from pymthouse.domains.admin.types import (
     AdminUserList,
     AdminUserView,
     ApprovedUserView,
+    AuditEntryList,
+    AuditEntryView,
     BillingConfigResponse,
     BillingConfigUpdate,
     BillingConfigView,
@@ -216,5 +218,28 @@ async def list_deposit_snapshots_endpoint(
                 withdraw_round=r.withdraw_round,
             )
             for r in rows
+        ]
+    )
+
+
+@router.get("/audit", response_model=AuditEntryList)
+async def list_audit_entries_endpoint(
+    operator: CurrentOperatorDep,  # noqa: ARG001
+    db: SessionDep,
+    limit: int = 100,
+) -> AuditEntryList:
+    rows = await service.list_audit_entries(db, limit=limit)
+    return AuditEntryList(
+        items=[
+            AuditEntryView(
+                id=audit.id,
+                operator_email=op_email,
+                action=audit.action,
+                target_user_email=target_email,
+                target_user_id=audit.target_user_id,
+                params=audit.params,
+                created_at=audit.created_at,
+            )
+            for (audit, op_email, target_email) in rows
         ]
     )

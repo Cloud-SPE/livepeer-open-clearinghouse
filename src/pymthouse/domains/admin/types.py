@@ -98,3 +98,19 @@ class DepositSnapshotView(BaseModel):
 
 class DepositSnapshotList(BaseModel):
     items: list[DepositSnapshotView]
+
+
+class AuditEntryView(BaseModel):
+    """One row of operator_audit, joined with the operator + target emails."""
+
+    id: uuid.UUID
+    operator_email: str
+    action: str
+    target_user_email: str | None
+    target_user_id: uuid.UUID | None
+    params: dict | None
+    created_at: datetime
+
+
+class AuditEntryList(BaseModel):
+    items: list[AuditEntryView]
