@@ -77,13 +77,14 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
-- **Auto-replenish is reactive only.** Triggers on a failed mint, not
-  on a schedule. If a user mints constantly we always refill, but if
-  they have a long-running balance trickle there's no proactive
-  top-up. The per-user `auto_replenish_threshold_wei` is stored but
-  not yet consulted — a future scheduled job will use it. *Trigger:*
-  operator wants users' balances kept above a threshold without inline
-  retries.
+- **No reactive (on-mint) auto-replenish.** The proactive scheduler
+  now consults `auto_replenish_threshold_wei` every 5 minutes (see
+  `billing.service.run_auto_replenish`), but there's still no in-mint
+  path that catches an `InsufficientCredit` and tops the user up
+  inline. The two would coexist (the `auto_replenish_total` Counter
+  is labeled by `trigger` for exactly that reason). *Trigger:*
+  operator wants to avoid 402s mid-stream when the proactive cadence
+  is too slow for a heavy user.
 
 ### Architecture
 

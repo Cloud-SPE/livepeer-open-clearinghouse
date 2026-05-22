@@ -428,3 +428,72 @@ async def upsert_billing_config(
     row.updated_by_operator_id = operator_id
     await session.flush()
     return row
+
+
+# ---------------------------------------------------------------------------
+# Proactive auto-replenish
+# ---------------------------------------------------------------------------
+
+
+async def run_auto_replenish(
+    session: AsyncSession, *, clock: Clock, settings: Settings
+) -> int:
+    """Top up every user whose balance has dropped below their threshold.
+
+    Iterates each user with a CreditBalance row, resolves their effective
+    billing config, and (if both ``auto_replenish_increment_wei`` and
+    ``auto_replenish_threshold_wei`` are > 0 in the resolved config) tops
+    them up by the increment amount when their balance is below the
+    threshold.
+
+    Returns the count of users topped up. Per-user row locking via
+    ``_ensure_balance_row`` keeps this race-safe against concurrent
+    mints — the proactive job and an in-flight charge can't both write
+    the same balance row at once. Uses the same ``topup(kind="auto_replenish")``
+    primitive that a reactive in-mint path would use, so the ledger
+    rows produced are indistinguishable across triggers.
+    """
+    # noqa: ARG001 — clock kept for symmetry with other scheduler funcs even
+    # though _apply_delta doesn't need it. Keep it; the signature should look
+    # like every other scheduler-callable.
+    _ = clock
+
+    user_ids: list[uuid.UUID] = list(
+        await session.scalars(select(CreditBalance.user_id))
+    )
+
+    count = 0
+    for user_id in user_ids:
+        resolved = await resolve_billing_config(
+            session, user_id=user_id, settings=settings
+        )
+        # Both knobs must be positive for the proactive path to fire.
+        # threshold=0 explicitly means "don't replenish proactively even
+        # if increment is configured", reserved for a future reactive path.
+        if resolved.auto_replenish_increment_wei <= 0:
+            continue
+        if resolved.auto_replenish_threshold_wei <= 0:
+            continue
+
+        balance = await _ensure_balance_row(session, user_id=user_id)
+        if balance.amount_wei >= Decimal(resolved.auto_replenish_threshold_wei):
+            continue
+
+        await topup(
+            session,
+            user_id=user_id,
+            amount_wei=resolved.auto_replenish_increment_wei,
+            kind="auto_replenish",
+            operator_id=None,
+        )
+        # Late import — telemetry is a provider; importing at module top
+        # creates a load-order whisker between domains/billing and providers
+        # that the layer-lint already tolerates but the static analyzers
+        # complain about.
+        from pymthouse.providers.telemetry import (  # noqa: PLC0415
+            auto_replenish_total,
+        )
+
+        auto_replenish_total.labels(trigger="proactive").inc()
+        count += 1
+    return count

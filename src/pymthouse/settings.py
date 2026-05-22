@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     default_spend_period_seconds: int = Field(default=86_400, ge=60)
     default_spend_period_cap_wei: int = Field(default=0, ge=0)
     auto_replenish_increment_wei: int = Field(default=0, ge=0)
+    # Proactive auto-replenish: how often the scheduler scans for users
+    # whose balance has dropped below `auto_replenish_threshold_wei`.
+    # Set to 0 to disable the job entirely (replenish becomes operator-
+    # topup-only). Default 300s mirrors the deposit-snapshot cadence.
+    auto_replenish_check_interval_seconds: int = Field(default=300, ge=0)
 
     # ---- ticket-mint reliability ----
     idempotency_inflight_timeout_seconds: int = Field(default=60, ge=5)

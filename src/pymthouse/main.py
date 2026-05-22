@@ -21,6 +21,7 @@ from pymthouse.domains.admin import runtime as admin_runtime
 from pymthouse.domains.admin import service as admin_service
 from pymthouse.domains.api_keys import runtime as api_keys_runtime
 from pymthouse.domains.billing import runtime as billing_runtime
+from pymthouse.domains.billing import service as billing_service
 from pymthouse.domains.discovery import runtime as discovery_runtime
 from pymthouse.domains.payments import runtime as payments_runtime
 from pymthouse.domains.payments import service as payments_service
@@ -85,6 +86,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:  # noqa: BLE001 — never let a job kill the loop
             log.warning("scheduler.deposit_snapshot.failed", error=str(exc))
 
+    async def _auto_replenish() -> None:
+        try:
+            async with session_scope() as db:
+                n = await billing_service.run_auto_replenish(
+                    db, clock=clock, settings=cfg
+                )
+                if n:
+                    log.info("scheduler.auto_replenish.applied", users=n)
+        except Exception as exc:  # noqa: BLE001 — never let a job kill the loop
+            log.warning("scheduler.auto_replenish.failed", error=str(exc))
+
     register_interval_job(
         _expire_stale_idempotency_keys,
         name="expire_stale_idempotency_keys",
@@ -95,6 +107,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         name="snapshot_deposit",
         seconds=300,
     )
+    if cfg.auto_replenish_check_interval_seconds > 0:
+        register_interval_job(
+            _auto_replenish,
+            name="auto_replenish",
+            seconds=cfg.auto_replenish_check_interval_seconds,
+        )
     start_scheduler()
 
     yield

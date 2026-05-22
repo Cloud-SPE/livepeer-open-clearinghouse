@@ -45,6 +45,15 @@ payment_daemon_reserve_wei = Gauge(
     registry=REGISTRY,
 )
 
+# Auto-replenish — one Counter labeled by trigger so the same metric covers
+# the proactive scheduler path and any future reactive (on-mint) path.
+auto_replenish_total = Counter(
+    "pymthouse_auto_replenish_total",
+    "Auto-replenish events. Labeled by trigger.",
+    labelnames=("trigger",),
+    registry=REGISTRY,
+)
+
 
 async def metrics_middleware(
     request: Request,
