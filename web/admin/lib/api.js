@@ -62,3 +62,6 @@ export const topupUser = (id, amount_wei, kind = "manual") =>
     method: "POST",
     body: { amount_wei, kind },
   });
+export const getBillingConfig = (id) => api(`/users/${id}/billing-config`);
+export const putBillingConfig = (id, body) =>
+  api(`/users/${id}/billing-config`, { method: "PUT", body });

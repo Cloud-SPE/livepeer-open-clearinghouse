@@ -13,13 +13,19 @@ from pymthouse.dependencies import (
     SettingsDep,
 )
 from pymthouse.domains.admin import service
+from pymthouse.domains.admin.repo import OperatorAudit
 from pymthouse.domains.admin.types import (
     AdminUserList,
     AdminUserView,
     ApprovedUserView,
+    BillingConfigResponse,
+    BillingConfigUpdate,
+    BillingConfigView,
+    EffectiveBillingConfigView,
     PendingUserList,
     PendingUserView,
 )
+from pymthouse.domains.billing import service as billing_service
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -85,4 +91,102 @@ async def approve_user_endpoint(
         user_id=approval.user_id,
         approved_at=approval.approved_at,
         operator_id=approval.operator_id,
+    )
+
+
+def _config_view(row: object | None, user_id: uuid.UUID) -> BillingConfigView:
+    if row is None:
+        return BillingConfigView(
+            user_id=user_id,
+            spend_period_seconds=None,
+            spend_period_cap_wei=None,
+            auto_replenish_increment_wei=None,
+            auto_replenish_threshold_wei=None,
+        )
+    return BillingConfigView(
+        user_id=row.user_id,  # type: ignore[attr-defined]
+        spend_period_seconds=row.spend_period_seconds,  # type: ignore[attr-defined]
+        spend_period_cap_wei=(
+            int(row.spend_period_cap_wei)  # type: ignore[attr-defined]
+            if row.spend_period_cap_wei is not None  # type: ignore[attr-defined]
+            else None
+        ),
+        auto_replenish_increment_wei=(
+            int(row.auto_replenish_increment_wei)  # type: ignore[attr-defined]
+            if row.auto_replenish_increment_wei is not None  # type: ignore[attr-defined]
+            else None
+        ),
+        auto_replenish_threshold_wei=(
+            int(row.auto_replenish_threshold_wei)  # type: ignore[attr-defined]
+            if row.auto_replenish_threshold_wei is not None  # type: ignore[attr-defined]
+            else None
+        ),
+    )
+
+
+@router.get(
+    "/users/{user_id}/billing-config",
+    response_model=BillingConfigResponse,
+)
+async def get_billing_config_endpoint(
+    user_id: uuid.UUID,
+    operator: CurrentOperatorDep,  # noqa: ARG001
+    db: SessionDep,
+    settings: SettingsDep,
+) -> BillingConfigResponse:
+    row = await billing_service.get_billing_config(db, user_id=user_id)
+    resolved = await billing_service.resolve_billing_config(
+        db, user_id=user_id, settings=settings
+    )
+    return BillingConfigResponse(
+        config=_config_view(row, user_id),
+        effective=EffectiveBillingConfigView(
+            spend_period_seconds=resolved.spend_period_seconds,
+            spend_period_cap_wei=resolved.spend_period_cap_wei,
+            auto_replenish_increment_wei=resolved.auto_replenish_increment_wei,
+            auto_replenish_threshold_wei=resolved.auto_replenish_threshold_wei,
+        ),
+    )
+
+
+@router.put(
+    "/users/{user_id}/billing-config",
+    response_model=BillingConfigResponse,
+)
+async def put_billing_config_endpoint(
+    user_id: uuid.UUID,
+    body: BillingConfigUpdate,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    settings: SettingsDep,
+) -> BillingConfigResponse:
+    await billing_service.upsert_billing_config(
+        db,
+        user_id=user_id,
+        operator_id=operator.id,
+        spend_period_seconds=body.spend_period_seconds,
+        spend_period_cap_wei=body.spend_period_cap_wei,
+        auto_replenish_increment_wei=body.auto_replenish_increment_wei,
+        auto_replenish_threshold_wei=body.auto_replenish_threshold_wei,
+    )
+    db.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="update_billing_config",
+            target_user_id=user_id,
+            params=body.model_dump(mode="json"),
+        )
+    )
+    row = await billing_service.get_billing_config(db, user_id=user_id)
+    resolved = await billing_service.resolve_billing_config(
+        db, user_id=user_id, settings=settings
+    )
+    return BillingConfigResponse(
+        config=_config_view(row, user_id),
+        effective=EffectiveBillingConfigView(
+            spend_period_seconds=resolved.spend_period_seconds,
+            spend_period_cap_wei=resolved.spend_period_cap_wei,
+            auto_replenish_increment_wei=resolved.auto_replenish_increment_wei,
+            auto_replenish_threshold_wei=resolved.auto_replenish_threshold_wei,
+        ),
     )

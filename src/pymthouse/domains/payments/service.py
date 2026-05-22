@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pymthouse.domains.billing import service as billing_service
 from pymthouse.domains.payments.repo import Payment, PaymentIdempotencyKey
 from pymthouse.domains.payments.types import MintPaymentResponse
+from pymthouse.settings import Settings
 from pymthouse.errors import (
     DaemonUnavailable,
     DuplicateRequest,
@@ -144,25 +145,24 @@ async def _attempt_auto_replenish(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
-    increment_wei: int,
+    cfg: billing_service.ResolvedBillingConfig,
     clock: Clock,
-    spend_period_seconds: int,
-    spend_period_cap_wei: int,
 ) -> None:
-    """Top up the user's balance by `increment_wei`, capped by window room.
+    """Top up the user's balance by `cfg.auto_replenish_increment_wei`.
 
     Capped at the *remaining room in the current spend window* so a runaway
     consumer can't pull more credit than the operator allowed per period.
     A `spend_period_cap_wei` of 0 means "no cap" — full increment is granted.
     """
+    increment_wei = cfg.auto_replenish_increment_wei
     if increment_wei <= 0:
         return
     room = await billing_service.remaining_window_room(
         session,
         user_id=user_id,
         clock=clock,
-        period_seconds=spend_period_seconds,
-        cap_wei=spend_period_cap_wei,
+        period_seconds=cfg.spend_period_seconds,
+        cap_wei=cfg.spend_period_cap_wei,
     )
     grant_wei = (
         increment_wei if room == Decimal("Infinity") else min(Decimal(increment_wei), room)
@@ -190,13 +190,18 @@ async def mint_payment(
     registry: RegistryClient,
     daemon: PaymentDaemonClient,
     clock: Clock,
-    inflight_ttl_seconds: int,
-    spend_period_seconds: int,
-    spend_period_cap_wei: int,
-    auto_replenish_increment_wei: int,
+    settings: Settings,
 ) -> MintPaymentResponse:
-    """End-to-end ticket-mint orchestration."""
-    inflight_ttl = timedelta(seconds=inflight_ttl_seconds)
+    """End-to-end ticket-mint orchestration.
+
+    Per-user billing config (cap, replenish increment) is resolved from
+    `user_billing_config` with global Settings as fallback. See
+    `billing.service.resolve_billing_config`.
+    """
+    inflight_ttl = timedelta(seconds=settings.idempotency_inflight_timeout_seconds)
+    cfg = await billing_service.resolve_billing_config(
+        session, user_id=user_id, settings=settings
+    )
 
     cached = await _check_idempotency(
         session,
@@ -226,16 +231,14 @@ async def mint_payment(
 
     # 2. Balance check (read-only, before paying anything external). Attempt
     # an inline auto-replenish if the balance falls short and the operator
-    # has configured a non-zero increment.
+    # has configured a non-zero increment (per-user override or default).
     balance = await billing_service.get_balance(session, user_id=user_id)
-    if balance.amount_wei < funded_value_wei and auto_replenish_increment_wei > 0:
+    if (
+        balance.amount_wei < funded_value_wei
+        and cfg.auto_replenish_increment_wei > 0
+    ):
         await _attempt_auto_replenish(
-            session,
-            user_id=user_id,
-            increment_wei=auto_replenish_increment_wei,
-            clock=clock,
-            spend_period_seconds=spend_period_seconds,
-            spend_period_cap_wei=spend_period_cap_wei,
+            session, user_id=user_id, cfg=cfg, clock=clock
         )
         balance = await billing_service.get_balance(session, user_id=user_id)
 
@@ -300,8 +303,8 @@ async def mint_payment(
         amount_wei=daemon_response.expected_value,
         payment_id=payment.id,
         clock=clock,
-        period_seconds=spend_period_seconds,
-        cap_wei=spend_period_cap_wei,
+        period_seconds=cfg.spend_period_seconds,
+        cap_wei=cfg.spend_period_cap_wei,
     )
 
     response = MintPaymentResponse(

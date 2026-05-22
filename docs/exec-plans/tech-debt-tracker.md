@@ -67,16 +67,13 @@ the exec-plan that addressed it and remove it from this file.
   then implement the real gRPC dial + message mapping. Swap in
   `dependencies.py:_default_payment_daemon()`. *Trigger:* needing to
   actually pay a real orchestrator.
-- **Per-user spend-cap overrides.** Currently the spend-window cap
-  comes from the global `DEFAULT_SPEND_PERIOD_CAP_WEI`. Adding per-user
-  overrides means a `user_billing_config` table and admin UI for
-  editing. *Trigger:* an operator needs different caps for different
-  users.
 - **Auto-replenish is reactive only.** Triggers on a failed mint, not
   on a schedule. If a user mints constantly we always refill, but if
   they have a long-running balance trickle there's no proactive
-  top-up. *Trigger:* operator wants users' balances kept above a
-  threshold without inline retries.
+  top-up. The per-user `auto_replenish_threshold_wei` is stored but
+  not yet consulted — a future scheduled job will use it. *Trigger:*
+  operator wants users' balances kept above a threshold without inline
+  retries.
 
 ### Architecture
 

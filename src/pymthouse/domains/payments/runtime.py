@@ -52,10 +52,7 @@ async def mint_payment_endpoint(
         registry=registry,
         daemon=daemon,
         clock=clock,
-        inflight_ttl_seconds=settings.idempotency_inflight_timeout_seconds,
-        spend_period_seconds=settings.default_spend_period_seconds,
-        spend_period_cap_wei=settings.default_spend_period_cap_wei,
-        auto_replenish_increment_wei=settings.auto_replenish_increment_wei,
+        settings=settings,
     )
 
 

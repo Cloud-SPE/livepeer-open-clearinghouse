@@ -11,6 +11,7 @@ See docs/RELIABILITY.md.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -22,9 +23,11 @@ from pymthouse.domains.billing.repo import (
     CreditLedger,
     CreditTopup,
     SpendWindow,
+    UserBillingConfig,
 )
 from pymthouse.errors import InsufficientCredit, SpendCapExceeded
 from pymthouse.providers.clock import Clock
+from pymthouse.settings import Settings
 
 
 async def _ensure_balance_row(
@@ -331,3 +334,97 @@ async def list_ledger(
         .limit(limit)
     )
     return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-user billing config (overrides global Settings)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedBillingConfig:
+    """The effective billing knobs for one user — per-user override or global."""
+
+    spend_period_seconds: int
+    spend_period_cap_wei: int
+    auto_replenish_increment_wei: int
+    auto_replenish_threshold_wei: int
+
+
+async def get_billing_config(
+    session: AsyncSession, *, user_id: uuid.UUID
+) -> UserBillingConfig | None:
+    """Return the user's UserBillingConfig row if one exists."""
+    return await session.scalar(
+        select(UserBillingConfig).where(UserBillingConfig.user_id == user_id)
+    )
+
+
+async def resolve_billing_config(
+    session: AsyncSession, *, user_id: uuid.UUID, settings: Settings
+) -> ResolvedBillingConfig:
+    """Per-user override with global fallback. Pure read — no writes."""
+    row = await get_billing_config(session, user_id=user_id)
+    if row is None:
+        return ResolvedBillingConfig(
+            spend_period_seconds=settings.default_spend_period_seconds,
+            spend_period_cap_wei=settings.default_spend_period_cap_wei,
+            auto_replenish_increment_wei=settings.auto_replenish_increment_wei,
+            auto_replenish_threshold_wei=0,
+        )
+    return ResolvedBillingConfig(
+        spend_period_seconds=(
+            row.spend_period_seconds
+            if row.spend_period_seconds is not None
+            else settings.default_spend_period_seconds
+        ),
+        spend_period_cap_wei=(
+            int(row.spend_period_cap_wei)
+            if row.spend_period_cap_wei is not None
+            else settings.default_spend_period_cap_wei
+        ),
+        auto_replenish_increment_wei=(
+            int(row.auto_replenish_increment_wei)
+            if row.auto_replenish_increment_wei is not None
+            else settings.auto_replenish_increment_wei
+        ),
+        auto_replenish_threshold_wei=(
+            int(row.auto_replenish_threshold_wei)
+            if row.auto_replenish_threshold_wei is not None
+            else 0
+        ),
+    )
+
+
+async def upsert_billing_config(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
+    spend_period_seconds: int | None,
+    spend_period_cap_wei: int | None,
+    auto_replenish_increment_wei: int | None,
+    auto_replenish_threshold_wei: int | None,
+) -> UserBillingConfig:
+    """Create or update a UserBillingConfig row. NULL values clear an override."""
+    row = await get_billing_config(session, user_id=user_id)
+    if row is None:
+        row = UserBillingConfig(user_id=user_id)
+        session.add(row)
+    row.spend_period_seconds = spend_period_seconds
+    row.spend_period_cap_wei = (
+        Decimal(spend_period_cap_wei) if spend_period_cap_wei is not None else None
+    )
+    row.auto_replenish_increment_wei = (
+        Decimal(auto_replenish_increment_wei)
+        if auto_replenish_increment_wei is not None
+        else None
+    )
+    row.auto_replenish_threshold_wei = (
+        Decimal(auto_replenish_threshold_wei)
+        if auto_replenish_threshold_wei is not None
+        else None
+    )
+    row.updated_by_operator_id = operator_id
+    await session.flush()
+    return row

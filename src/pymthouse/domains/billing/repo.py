@@ -100,3 +100,22 @@ class SpendWindow(Base, TimestampMixin, TableNameFromClassMixin):
     window_end: Mapped[datetime] = mapped_column(nullable=False)
     spent_wei: Mapped[Decimal] = mapped_column(nullable=False)
     cap_wei: Mapped[Decimal] = mapped_column(nullable=False)
+
+
+class UserBillingConfig(Base, TimestampMixin, TableNameFromClassMixin):
+    """Per-user override of billing knobs.
+
+    Any NULL column falls back to the corresponding global Settings value.
+    Created lazily by the admin endpoint; absent rows mean "all defaults."
+    """
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), primary_key=True
+    )
+    spend_period_seconds: Mapped[int | None] = mapped_column(nullable=True)
+    spend_period_cap_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    auto_replenish_increment_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    auto_replenish_threshold_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    updated_by_operator_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("operator.id", ondelete="SET NULL"), nullable=True
+    )

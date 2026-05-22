@@ -45,3 +45,42 @@ class AdminUserView(BaseModel):
 class AdminUserList(BaseModel):
     items: list[AdminUserView]
     total: int
+
+
+class BillingConfigView(BaseModel):
+    """Per-user billing config (null = inherit default)."""
+
+    user_id: uuid.UUID
+    spend_period_seconds: int | None
+    spend_period_cap_wei: int | None
+    auto_replenish_increment_wei: int | None
+    auto_replenish_threshold_wei: int | None
+
+
+class BillingConfigUpdate(BaseModel):
+    """Inbound: ``PUT /v1/admin/users/{id}/billing-config``.
+
+    Send `null` to clear an override and inherit the default; send an
+    integer to set/replace it.
+    """
+
+    spend_period_seconds: int | None = None
+    spend_period_cap_wei: int | None = None
+    auto_replenish_increment_wei: int | None = None
+    auto_replenish_threshold_wei: int | None = None
+
+
+class EffectiveBillingConfigView(BaseModel):
+    """The values that would be applied right now (overrides + defaults)."""
+
+    spend_period_seconds: int
+    spend_period_cap_wei: int
+    auto_replenish_increment_wei: int
+    auto_replenish_threshold_wei: int
+
+
+class BillingConfigResponse(BaseModel):
+    """Outbound: per-user config plus the effective values."""
+
+    config: BillingConfigView
+    effective: EffectiveBillingConfigView
