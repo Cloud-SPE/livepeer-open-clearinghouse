@@ -22,11 +22,14 @@ from pymthouse.domains.admin.types import (
     BillingConfigResponse,
     BillingConfigUpdate,
     BillingConfigView,
+    DepositSnapshotList,
+    DepositSnapshotView,
     EffectiveBillingConfigView,
     PendingUserList,
     PendingUserView,
 )
 from pymthouse.domains.billing import service as billing_service
+from pymthouse.domains.payments import service as payments_service
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -193,4 +196,25 @@ async def put_billing_config_endpoint(
             auto_replenish_increment_wei=resolved.auto_replenish_increment_wei,
             auto_replenish_threshold_wei=resolved.auto_replenish_threshold_wei,
         ),
+    )
+
+
+@router.get("/deposit-snapshots", response_model=DepositSnapshotList)
+async def list_deposit_snapshots_endpoint(
+    operator: CurrentOperatorDep,  # noqa: ARG001
+    db: SessionDep,
+    limit: int = 100,
+) -> DepositSnapshotList:
+    rows = await payments_service.list_deposit_snapshots(db, limit=limit)
+    return DepositSnapshotList(
+        items=[
+            DepositSnapshotView(
+                id=r.id,
+                taken_at=r.taken_at,
+                deposit_wei=int(r.deposit_wei),
+                reserve_wei=int(r.reserve_wei),
+                withdraw_round=r.withdraw_round,
+            )
+            for r in rows
+        ]
     )

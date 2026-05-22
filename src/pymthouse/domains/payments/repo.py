@@ -74,3 +74,21 @@ class PaymentIdempotencyKey(Base, TimestampMixin, TableNameFromClassMixin):
         ForeignKey("payment.id", ondelete="SET NULL"), nullable=True
     )
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class PaymentDaemonDepositSnapshot(
+    Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin
+):
+    """Periodic poll of payment-daemon.GetDepositInfo.
+
+    The deposit/reserve numbers reflect the *pooled* wallet's view on
+    the TicketBroker contract. Drawdown over time approximates the
+    on-chain cost of all redeemed tickets across users. Used to detect
+    operationally material variance from the EV-at-issuance charging
+    model. See docs/RELIABILITY.md.
+    """
+
+    taken_at: Mapped[datetime] = mapped_column(nullable=False, index=True)
+    deposit_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    reserve_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    withdraw_round: Mapped[int] = mapped_column(BigInteger, nullable=False)

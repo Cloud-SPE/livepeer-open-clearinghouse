@@ -68,9 +68,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if n:
                 log.info("scheduler.idempotency_keys.expired", count=n)
 
+    async def _snapshot_deposit() -> None:
+        from pymthouse.dependencies import _default_payment_daemon  # noqa: PLC0415
+
+        try:
+            daemon = _default_payment_daemon()
+            async with session_scope(cfg) as db:
+                row = await payments_service.snapshot_deposit(
+                    db, clock=clock, daemon=daemon
+                )
+                log.info(
+                    "scheduler.deposit_snapshot.taken",
+                    deposit_wei=str(row.deposit_wei),
+                    reserve_wei=str(row.reserve_wei),
+                )
+        except Exception as exc:  # noqa: BLE001 — never let a job kill the loop
+            log.warning("scheduler.deposit_snapshot.failed", error=str(exc))
+
     register_interval_job(
         _expire_stale_idempotency_keys,
         name="expire_stale_idempotency_keys",
+        seconds=300,
+    )
+    register_interval_job(
+        _snapshot_deposit,
+        name="snapshot_deposit",
         seconds=300,
     )
     start_scheduler()

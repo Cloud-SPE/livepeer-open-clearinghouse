@@ -82,6 +82,15 @@ class CreatePaymentRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class DepositInfo:
+    """Snapshot of the daemon's TicketBroker deposit/reserve state."""
+
+    deposit_wei: Decimal
+    reserve_wei: Decimal
+    withdraw_round: int
+
+
+@dataclass(frozen=True, slots=True)
 class CreatePaymentResponse:
     """Mirror of `livepeer.payments.v1.CreatePaymentResponse`."""
 
@@ -104,6 +113,8 @@ class PaymentDaemonClient(Protocol):
     async def create_payment(
         self, request: CreatePaymentRequest
     ) -> CreatePaymentResponse: ...
+
+    async def get_deposit_info(self) -> DepositInfo: ...
 
     async def health(self) -> bool: ...
 
@@ -129,6 +140,14 @@ class MockPaymentDaemonClient:
 
     async def health(self) -> bool:
         return True
+
+    async def get_deposit_info(self) -> DepositInfo:
+        # Pretend the operator funded a 1 ETH float at boot.
+        return DepositInfo(
+            deposit_wei=Decimal(10**18),
+            reserve_wei=Decimal(0),
+            withdraw_round=0,
+        )
 
     async def create_payment(
         self, request: CreatePaymentRequest
@@ -298,6 +317,17 @@ class GrpcPaymentDaemonClient:
         except grpc.aio.AioRpcError:
             return False
         return getattr(resp, "status", "") == "ok"
+
+    async def get_deposit_info(self) -> DepositInfo:
+        from livepeer.payments.v1 import payer_daemon_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        resp = await stub.GetDepositInfo(payer_daemon_pb2.GetDepositInfoRequest())
+        return DepositInfo(
+            deposit_wei=biguint_bytes_to_decimal(bytes(resp.deposit)),
+            reserve_wei=biguint_bytes_to_decimal(bytes(resp.reserve)),
+            withdraw_round=int(resp.withdraw_round),
+        )
 
     async def create_payment(
         self, request: CreatePaymentRequest

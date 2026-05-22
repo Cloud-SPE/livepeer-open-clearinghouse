@@ -84,3 +84,17 @@ class BillingConfigResponse(BaseModel):
 
     config: BillingConfigView
     effective: EffectiveBillingConfigView
+
+
+class DepositSnapshotView(BaseModel):
+    """One row from the periodic payment-daemon deposit poll."""
+
+    id: uuid.UUID
+    taken_at: datetime
+    deposit_wei: int
+    reserve_wei: int
+    withdraw_round: int
+
+
+class DepositSnapshotList(BaseModel):
+    items: list[DepositSnapshotView]

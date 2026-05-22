@@ -22,7 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pymthouse.domains.billing import service as billing_service
-from pymthouse.domains.payments.repo import Payment, PaymentIdempotencyKey
+from pymthouse.domains.payments.repo import (
+    Payment,
+    PaymentDaemonDepositSnapshot,
+    PaymentIdempotencyKey,
+)
 from pymthouse.domains.payments.types import MintPaymentResponse
 from pymthouse.settings import Settings
 from pymthouse.errors import (
@@ -381,3 +385,45 @@ async def expire_stale_idempotency_keys(
         row.status = "expired"
         count += 1
     return count
+
+
+async def snapshot_deposit(
+    session: AsyncSession,
+    *,
+    clock: Clock,
+    daemon: object,  # PaymentDaemonClient — typed object to avoid circular import
+) -> PaymentDaemonDepositSnapshot:
+    """Poll payment-daemon for deposit/reserve and persist a snapshot.
+
+    Updates the matching Prometheus gauges as a side effect. Caller
+    owns the transaction; the row is flushed but not committed here.
+    """
+    from pymthouse.providers.telemetry import (  # noqa: PLC0415
+        payment_daemon_deposit_wei,
+        payment_daemon_reserve_wei,
+    )
+
+    info = await daemon.get_deposit_info()  # type: ignore[attr-defined]
+    row = PaymentDaemonDepositSnapshot(
+        taken_at=clock.now(),
+        deposit_wei=info.deposit_wei,
+        reserve_wei=info.reserve_wei,
+        withdraw_round=info.withdraw_round,
+    )
+    session.add(row)
+    await session.flush()
+
+    payment_daemon_deposit_wei.set(float(info.deposit_wei))
+    payment_daemon_reserve_wei.set(float(info.reserve_wei))
+    return row
+
+
+async def list_deposit_snapshots(
+    session: AsyncSession, *, limit: int = 100
+) -> list[PaymentDaemonDepositSnapshot]:
+    rows = await session.scalars(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(limit)
+    )
+    return list(rows)

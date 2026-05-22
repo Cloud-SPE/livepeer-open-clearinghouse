@@ -91,3 +91,12 @@ async def test_ev_ratio_below_one() -> None:
 async def test_health_returns_true() -> None:
     client = MockPaymentDaemonClient()
     assert await client.health() is True
+
+
+@pytest.mark.unit
+async def test_get_deposit_info_returns_sensible_shape() -> None:
+    client = MockPaymentDaemonClient()
+    info = await client.get_deposit_info()
+    assert info.deposit_wei > 0
+    assert info.reserve_wei >= 0
+    assert info.withdraw_round == 0

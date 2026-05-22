@@ -67,10 +67,13 @@ the exec-plan that addressed it and remove it from this file.
 
 ### Payments
 
-- **No on-chain redemption observation.** PymtHouse charges EV at
-  issuance and never reconciles against actual on-chain payouts.
-  *Trigger:* the variance between charged EV and actual wallet payouts
-  becomes operationally material.
+- **Per-ticket redemption observation still absent.** Phase 18 polls
+  the daemon's TicketBroker deposit/reserve and records snapshots, but
+  PymtHouse does not see *individual* WinningTicketRedeemed events.
+  Variance shows up as a delta between sum(payments.expected_value_wei)
+  charged and the deposit drawdown observed in the snapshot series.
+  *Trigger:* needing to attribute on-chain redemption to a specific
+  payment row.
 - **No ticket-redemption feedback to users.** Users don't see which of
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no

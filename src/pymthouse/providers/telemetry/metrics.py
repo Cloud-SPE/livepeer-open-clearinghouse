@@ -30,6 +30,21 @@ request_duration = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
+# Operator-facing gauges for the pooled wallet's TicketBroker state. Updated
+# every scheduler tick by payments.service.snapshot_deposit.
+from prometheus_client import Gauge  # noqa: E402
+
+payment_daemon_deposit_wei = Gauge(
+    "pymthouse_payment_daemon_deposit_wei",
+    "Current on-chain deposit (wei) of the pooled signing wallet.",
+    registry=REGISTRY,
+)
+payment_daemon_reserve_wei = Gauge(
+    "pymthouse_payment_daemon_reserve_wei",
+    "Current on-chain reserve (wei) of the pooled signing wallet.",
+    registry=REGISTRY,
+)
+
 
 async def metrics_middleware(
     request: Request,
