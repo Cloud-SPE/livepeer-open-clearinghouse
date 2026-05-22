@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from pymthouse.dependencies import (
     ClockDep,
@@ -243,3 +243,32 @@ async def list_audit_entries_endpoint(
             for (audit, op_email, target_email) in rows
         ]
     )
+
+
+@router.post(
+    "/users/{user_id}/resend-verification",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resend_verification_endpoint(
+    user_id: uuid.UUID,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    email: EmailDep,
+    settings: SettingsDep,
+) -> Response:
+    """Re-send the email-verification message to an unverified user."""
+    try:
+        await service.resend_verification(
+            db,
+            user_id=user_id,
+            operator=operator,
+            clock=clock,
+            email_provider=email,
+            public_base_url=str(settings.public_base_url),
+        )
+    except service.UserNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except service.EmailAlreadyVerified as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return Response(status_code=status.HTTP_202_ACCEPTED)

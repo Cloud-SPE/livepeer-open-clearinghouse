@@ -63,6 +63,18 @@ export class CcPendingUsers extends LitElement {
     await this._approve(user.id);
   }
 
+  async _resendVerification(user) {
+    this._busy = true;
+    this._error = null;
+    try {
+      await api.resendVerification(user.id);
+    } catch (err) {
+      this._error = err.message;
+    } finally {
+      this._busy = false;
+    }
+  }
+
   render() {
     return html`
       <div class="card">
@@ -102,23 +114,35 @@ export class CcPendingUsers extends LitElement {
                           </td>
                           <td>${new Date(u.created_at).toLocaleString()}</td>
                           <td>
-                            ${u.email_verified_at
-                              ? html`<button
-                                  class="primary"
-                                  ?disabled=${this._busy}
-                                  @click=${() => this._approve(u.id)}
-                                  title="Approve this user"
-                                >
-                                  Approve
-                                </button>`
-                              : html`<button
-                                  class="warn"
-                                  ?disabled=${this._busy}
-                                  @click=${() => this._approveUnverified(u)}
-                                  title="Approve without waiting for email verification — the user will be able to log in immediately"
-                                >
-                                  Approve unverified
-                                </button>`}
+                            <div class="row">
+                              ${u.email_verified_at
+                                ? html`<button
+                                    class="primary"
+                                    ?disabled=${this._busy}
+                                    @click=${() => this._approve(u.id)}
+                                    title="Approve this user"
+                                  >
+                                    Approve
+                                  </button>`
+                                : html`<button
+                                    class="warn"
+                                    ?disabled=${this._busy}
+                                    @click=${() => this._approveUnverified(u)}
+                                    title="Approve without waiting for email verification — the user will be able to log in immediately"
+                                  >
+                                    Approve unverified
+                                  </button>`}
+                              ${!u.email_verified_at
+                                ? html`<button
+                                    class="ghost"
+                                    ?disabled=${this._busy}
+                                    @click=${() => this._resendVerification(u)}
+                                    title="Send the user a fresh verification email"
+                                  >
+                                    Resend verification
+                                  </button>`
+                                : null}
+                            </div>
                           </td>
                         </tr>
                       `,

@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pymthouse.domains.accounts import service as accounts_service
 from pymthouse.domains.accounts.repo import OperatorApproval, User
 from pymthouse.domains.admin.repo import Operator, OperatorAudit
 from pymthouse.domains.billing import service as billing_service
@@ -32,6 +33,10 @@ class UserAlreadyApproved(AdminServiceError):
 
 class UserNotFound(AdminServiceError):
     code = "user_not_found"
+
+
+class EmailAlreadyVerified(AdminServiceError):
+    code = "email_already_verified"
 
 
 def _hash_bootstrap_token(token: str) -> str:
@@ -208,3 +213,42 @@ async def approve_user(
             )
 
     return approval
+
+
+async def resend_verification(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    operator: Operator,
+    clock: Clock,
+    email_provider: EmailProvider,
+    public_base_url: str,
+) -> User:
+    """Operator-triggered: mint + send a fresh email-verification token.
+
+    Useful when the original email was lost / bounced / the user's
+    self-hosted mail rejected it. Old unconsumed tokens for this user
+    stay valid until their TTL — the user can use whichever link they
+    actually receive.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise UserNotFound
+    if user.email_verified_at is not None:
+        raise EmailAlreadyVerified
+
+    await accounts_service.send_verification_email(
+        session,
+        user=user,
+        clock=clock,
+        email_provider=email_provider,
+        public_base_url=public_base_url,
+    )
+    session.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="resend_verification",
+            target_user_id=user_id,
+        )
+    )
+    return user

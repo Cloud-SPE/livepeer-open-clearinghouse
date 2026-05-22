@@ -81,6 +81,18 @@ export class CcUsers extends LitElement {
     await this._approve(user.id);
   }
 
+  async _resendVerification(user) {
+    this._busy = true;
+    this._error = null;
+    try {
+      await api.resendVerification(user.id);
+    } catch (err) {
+      this._error = err.message;
+    } finally {
+      this._busy = false;
+    }
+  }
+
   _openTopup(user) {
     this._topupTarget = user;
     this._topupAmount = "";
@@ -366,6 +378,16 @@ export class CcUsers extends LitElement {
                                     @click=${() => this._approveUnverified(u)}
                                   >
                                     Approve unverified
+                                  </button>`
+                                : null}
+                              ${!u.email_verified_at
+                                ? html`<button
+                                    class="ghost"
+                                    title="Send the user a fresh verification email"
+                                    ?disabled=${this._busy}
+                                    @click=${() => this._resendVerification(u)}
+                                  >
+                                    Resend verification
                                   </button>`
                                 : null}
                               ${u.approved

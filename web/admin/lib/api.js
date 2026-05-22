@@ -68,3 +68,5 @@ export const putBillingConfig = (id, body) =>
 export const listAudit = (limit = 100) => api(`/audit?limit=${limit}`);
 export const listDepositSnapshots = (limit = 100) =>
   api(`/deposit-snapshots?limit=${limit}`);
+export const resendVerification = (id) =>
+  api(`/users/${id}/resend-verification`, { method: "POST" });

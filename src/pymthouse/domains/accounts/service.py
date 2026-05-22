@@ -61,6 +61,39 @@ class EmailNotVerified(ServiceError):
 # ---------------------------------------------------------------------------
 
 
+async def send_verification_email(
+    session: AsyncSession,
+    *,
+    user: User,
+    clock: Clock,
+    email_provider: EmailProvider,
+    public_base_url: str,
+) -> None:
+    """Mint a fresh verification token for `user` and send the email.
+
+    Previous (unconsumed) tokens for this user remain valid until their
+    own TTL expires — multiple in-flight tokens are fine, the verify
+    endpoint takes whichever one the user actually clicks.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    session.add(
+        UserEmailVerification(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=clock.now() + EMAIL_VERIFICATION_TTL,
+        )
+    )
+    await session.flush()
+
+    verify_link = (
+        f"{public_base_url.rstrip('/')}/portal/#/verify-email?token={raw_token}"
+    )
+    await email_provider.send(
+        templates.verification_email(to=user.email, verify_link=verify_link)
+    )
+
+
 async def signup(
     session: AsyncSession,
     *,
@@ -81,22 +114,12 @@ async def signup(
     )
     session.add(user)
     await session.flush()
-
-    raw_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-    verification = UserEmailVerification(
-        user_id=user.id,
-        token_hash=token_hash,
-        expires_at=clock.now() + EMAIL_VERIFICATION_TTL,
-    )
-    session.add(verification)
-    await session.flush()
-
-    verify_link = (
-        f"{public_base_url.rstrip('/')}/portal/#/verify-email?token={raw_token}"
-    )
-    await email_provider.send(
-        templates.verification_email(to=email, verify_link=verify_link)
+    await send_verification_email(
+        session,
+        user=user,
+        clock=clock,
+        email_provider=email_provider,
+        public_base_url=public_base_url,
     )
     return user
 
