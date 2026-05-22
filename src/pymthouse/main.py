@@ -162,19 +162,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #     Dockerfile copies the tree there. The installed pymthouse module
     #     lives inside the venv and has no nearby web/, so we deliberately
     #     don't compute web_root from __file__.
+    #
+    # In dev we wrap StaticFiles to send `Cache-Control: no-cache` so the
+    # browser revalidates every asset (still gets a fast 304 via ETag) and
+    # iterating on the SPA doesn't require a hard refresh per change. In
+    # prod we serve them with Starlette's default headers.
+    class _NoCacheStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):  # type: ignore[override,no-untyped-def]
+            response = await super().get_response(path, scope)
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+    StaticFilesCls = _NoCacheStaticFiles if cfg.app_env == "dev" else StaticFiles
     web_root = Path.cwd() / "web"
     portal_dir = web_root / "portal"
     admin_dir = web_root / "admin"
     if portal_dir.is_dir():
         app.mount(
             "/portal",
-            StaticFiles(directory=portal_dir, html=True),
+            StaticFilesCls(directory=portal_dir, html=True),
             name="portal",
         )
     if admin_dir.is_dir():
         app.mount(
             "/admin",
-            StaticFiles(directory=admin_dir, html=True),
+            StaticFilesCls(directory=admin_dir, html=True),
             name="admin",
         )
 
