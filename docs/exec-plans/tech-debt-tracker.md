@@ -90,8 +90,6 @@ the exec-plan that addressed it and remove it from this file.
 
 ### Architecture
 
-- **Layered-architecture lint is not implemented.** Layering is enforced
-  by convention only. *Trigger:* a real violation in a PR.
 - **In-process APScheduler limits us to a single instance.** Auto-
   replenish and spend-window jobs run in-process. *Trigger:* needing more
   than one instance for HA or throughput.

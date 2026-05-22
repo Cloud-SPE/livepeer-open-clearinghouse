@@ -1,4 +1,4 @@
-.PHONY: help install sync fmt lint typecheck check test test-unit test-integration test-e2e \
+.PHONY: help install sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e \
         run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc
 
 UV ?= uv
@@ -28,10 +28,13 @@ lint: ## Lint with ruff (no fixes)
 	$(UV) run ruff check src tests
 	$(UV) run ruff format --check src tests
 
+lint-layering: ## Enforce the layered-architecture rules (see ARCHITECTURE.md)
+	$(UV) run python scripts/check_layering.py
+
 typecheck: ## Run mypy
 	$(UV) run mypy src
 
-check: lint typecheck ## Run lint + typecheck
+check: lint lint-layering typecheck ## Run lint + lint-layering + typecheck
 
 # ---------------------------------------------------------------------------
 # tests

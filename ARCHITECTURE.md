@@ -80,8 +80,11 @@ directly), but reversing direction is not.
 (e.g., `EmailProvider`) as an argument. A Provider may not import from any
 domain. This keeps the cross-cutting interfaces clean and reusable.
 
-These rules are intended to be enforced mechanically with a custom lint pass
-once the layout is stable. See `docs/exec-plans/tech-debt-tracker.md`.
+These rules are enforced mechanically by `scripts/check_layering.py`
+(invoked via `make lint-layering` and as a CI step). Adding a new
+service-tier sibling (the way `accounts/oauth.py` is a peer of
+`accounts/service.py`) means adding its name to `SERVICE_TIER_ALIASES`
+in that script.
 
 ## Domain index
 
