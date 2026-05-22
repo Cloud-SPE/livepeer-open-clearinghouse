@@ -27,6 +27,7 @@ from pymthouse.providers.clock import Clock, DefaultClock
 from pymthouse.providers.db import session_dependency
 from pymthouse.providers.email import EmailProvider, make_provider as make_email_provider
 from pymthouse.providers.payment_daemon import (
+    GrpcPaymentDaemonClient,
     MockPaymentDaemonClient,
     PaymentDaemonClient,
 )
@@ -58,8 +59,9 @@ def _default_registry() -> RegistryClient:
 
 @lru_cache(maxsize=1)
 def _default_payment_daemon() -> PaymentDaemonClient:
-    # Phase 7 ships on the mock. Swap to GrpcPaymentDaemonClient once
-    # `make protoc` generates stubs (see tech-debt-tracker.md).
+    cfg = get_settings()
+    if cfg.payment_daemon_mode == "grpc":
+        return GrpcPaymentDaemonClient(cfg.payment_daemon_socket)
     return MockPaymentDaemonClient()
 
 

@@ -45,6 +45,7 @@ class QuoteRef:
     """Mirror of `livepeer.payments.v1.QuoteRef`."""
 
     quote_id: str
+    quote_version: int
     constraint_fingerprint: bytes
     route_fingerprint: bytes
 
@@ -167,31 +168,161 @@ class MockPaymentDaemonClient:
 
 
 # ---------------------------------------------------------------------------
-# Grpc implementation — stub, deferred
+# Grpc implementation — real client over Unix domain socket
 # ---------------------------------------------------------------------------
 
 
+def int_to_biguint_bytes(value: int | Decimal) -> bytes:
+    """Encode an unsigned integer as the big-endian byte string the daemon expects.
+
+    Per ``livepeer.payments.v1.BigUInt``: zero is the empty byte string
+    (canonical form). The shortest big-endian representation is used.
+    """
+    n = int(value)
+    if n < 0:
+        raise ValueError(f"BigUInt is unsigned; got {n}")
+    if n == 0:
+        return b""
+    length = (n.bit_length() + 7) // 8
+    return n.to_bytes(length, "big")
+
+
+def biguint_bytes_to_decimal(raw: bytes) -> Decimal:
+    """Decode a daemon-returned BigUInt back to Decimal."""
+    if not raw:
+        return Decimal(0)
+    return Decimal(int.from_bytes(raw, "big"))
+
+
+def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[no-untyped-def]
+    """Map our CreatePaymentRequest dataclass to the generated proto message."""
+    # Lazy imports so the runtime image only loads the stubs when grpc mode
+    # is actually selected.
+    from pymthouse.providers.payment_daemon import _gen  # noqa: F401, PLC0415
+    from livepeer.payments.v1 import payer_daemon_pb2, types_pb2  # noqa: PLC0415
+
+    return payer_daemon_pb2.CreatePaymentRequest(
+        recipient=request.recipient,
+        ticket_params_base_url=request.ticket_params_base_url,
+        accepted_price=types_pb2.AcceptedPrice(
+            price_per_unit_wei=types_pb2.BigUInt(
+                value=int_to_biguint_bytes(request.accepted_price.price_per_unit_wei)
+            ),
+            units_per_price=request.accepted_price.units_per_price,
+            work_unit_name=request.accepted_price.work_unit_name,
+            capability=request.accepted_price.capability,
+            offering=request.accepted_price.offering,
+            quote_ref=types_pb2.QuoteRef(
+                quote_id=request.accepted_price.quote_ref.quote_id,
+                quote_version=request.accepted_price.quote_ref.quote_version,
+                constraint_fingerprint=request.accepted_price.quote_ref.constraint_fingerprint,
+                route_fingerprint=request.accepted_price.quote_ref.route_fingerprint,
+            ),
+        ),
+        funding=types_pb2.FundingIntent(
+            estimated_units=request.funding.estimated_units,
+            funded_value_wei=types_pb2.BigUInt(
+                value=int_to_biguint_bytes(request.funding.funded_value_wei)
+            ),
+            max_total_units=request.funding.max_total_units,
+            top_up_allowed=False,
+        ),
+    )
+
+
+def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore[no-untyped-def]
+    """Map a generated CreatePaymentResponse back to our dataclass."""
+    return CreatePaymentResponse(
+        payment_bytes=bytes(proto.payment_bytes),
+        tickets_created=int(proto.tickets_created),
+        expected_value=biguint_bytes_to_decimal(bytes(proto.expected_value.value)),
+        funded_value_wei=biguint_bytes_to_decimal(bytes(proto.funded_value_wei.value)),
+        accepted_quote_ref=QuoteRef(
+            quote_id=proto.accepted_quote_ref.quote_id,
+            quote_version=int(proto.accepted_quote_ref.quote_version),
+            constraint_fingerprint=bytes(proto.accepted_quote_ref.constraint_fingerprint),
+            route_fingerprint=bytes(proto.accepted_quote_ref.route_fingerprint),
+        ),
+        work_id=proto.work_id,
+    )
+
+
 class GrpcPaymentDaemonClient:
-    """Real gRPC client over a Unix socket.
+    """Async gRPC client for payment-daemon over a Unix domain socket.
 
-    Not yet implemented. The required steps:
-        1. Run ``make protoc`` to generate stubs into
-           ``providers/payment_daemon/_gen/``.
-        2. Wire ``grpc.aio.insecure_channel("unix:" + socket_path)``.
-        3. Map dataclass requests to the generated protobuf messages and
-           back.
+    Co-located with the daemon via a shared volume; the daemon doesn't auth
+    on the sender RPCs (filesystem-mediated trust), so we connect with
+    ``insecure_channel("unix:" + socket_path)``.
 
-    Until then, swap in ``MockPaymentDaemonClient`` via
-    ``pymthouse/dependencies.py`` for dev / tests.
+    The channel is opened lazily on first call and reused for the life of
+    the process. Call :meth:`close` from a shutdown hook to release it
+    cleanly.
     """
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
+        self._channel = None  # type: ignore[assignment]
+        self._stub = None  # type: ignore[assignment]
+        self._lock = None  # type: ignore[assignment]
+
+    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+        import asyncio  # noqa: PLC0415
+
+        import grpc.aio  # noqa: PLC0415
+
+        from pymthouse.providers.payment_daemon import _gen  # noqa: F401, PLC0415
+        from livepeer.payments.v1 import payer_daemon_pb2_grpc  # noqa: PLC0415
+
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self._stub is None:
+                self._channel = grpc.aio.insecure_channel(f"unix:{self._socket_path}")
+                self._stub = payer_daemon_pb2_grpc.PayerDaemonStub(self._channel)
+        return self._stub
+
+    async def close(self) -> None:
+        if self._channel is not None:
+            await self._channel.close()
+            self._channel = None
+            self._stub = None
 
     async def health(self) -> bool:
-        raise NotImplementedError("GrpcPaymentDaemonClient pending — run `make protoc`")
+        import grpc  # noqa: PLC0415
+
+        from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        try:
+            resp = await stub.Health(types_pb2.HealthRequest())
+        except grpc.aio.AioRpcError:
+            return False
+        return getattr(resp, "status", "") == "ok"
 
     async def create_payment(
         self, request: CreatePaymentRequest
     ) -> CreatePaymentResponse:
-        raise NotImplementedError("GrpcPaymentDaemonClient pending — run `make protoc`")
+        import grpc  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        proto_req = dataclass_request_to_proto(request)
+        try:
+            proto_resp = await stub.CreatePayment(proto_req)
+        except grpc.aio.AioRpcError as exc:
+            details = (exc.details() or "").lower()
+            # The daemon uses Aborted for "session rotated, retry once."
+            if exc.code() == grpc.StatusCode.ABORTED:
+                raise InvalidRecipientRand(exc.details() or "session rotated") from exc
+            if (
+                "deposit" in details
+                or "reserve" in details
+                or "withdrawround" in details
+                or "withdraw_round" in details
+            ):
+                raise DaemonDepositInsufficient(
+                    exc.details() or "deposit insufficient"
+                ) from exc
+            raise PaymentDaemonError(
+                f"{exc.code().name}: {exc.details() or ''}"
+            ) from exc
+        return proto_response_to_dataclass(proto_resp)

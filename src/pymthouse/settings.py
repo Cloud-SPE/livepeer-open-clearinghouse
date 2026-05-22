@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     email_from_name: str = "PymtHouse"
 
     # ---- daemon UDS paths ----
+    payment_daemon_mode: Literal["mock", "grpc"] = "mock"
     payment_daemon_socket: str = "/var/run/livepeer/payer-daemon.sock"
     registry_daemon_socket: str = "/var/run/livepeer/service-registry.sock"
 

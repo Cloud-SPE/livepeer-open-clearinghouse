@@ -27,6 +27,7 @@ def _request(funded_wei: int = 100_000) -> CreatePaymentRequest:
             work_unit_name="token",
             quote_ref=QuoteRef(
                 quote_id="quote-xyz",
+                quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x11" * 32,
             ),

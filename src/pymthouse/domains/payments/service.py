@@ -260,6 +260,7 @@ async def mint_payment(
             work_unit_name=route.work_unit,
             quote_ref=QuoteRef(
                 quote_id=route.quote_id,
+                quote_version=route.quote_version,
                 constraint_fingerprint=route.constraint_fingerprint,
                 route_fingerprint=route.route_fingerprint,
             ),

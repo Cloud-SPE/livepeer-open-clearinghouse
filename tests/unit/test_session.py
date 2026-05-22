@@ -41,7 +41,10 @@ def test_unseal_rejects_other_secret() -> None:
 
 @pytest.mark.unit
 def test_unseal_rejects_expired() -> None:
+    # itsdangerous timestamps are second-granular, so the gap between
+    # `seal` and `unseal` must comfortably exceed max_age for an
+    # unambiguous expiry result.
     ser = session.make_serializer("test-secret")
     sealed = session.seal(ser, "tok")
-    time.sleep(1.1)
+    time.sleep(2.1)
     assert session.unseal(ser, sealed, max_age_seconds=1) is None

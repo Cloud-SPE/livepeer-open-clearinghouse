@@ -87,6 +87,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@pymthouse.local}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-PymtHouse}
+      PAYMENT_DAEMON_MODE: ${PAYMENT_DAEMON_MODE:-mock}
       PAYMENT_DAEMON_SOCKET: /var/run/livepeer/payer-daemon.sock
       REGISTRY_DAEMON_SOCKET: /var/run/livepeer/service-registry.sock
       DEFAULT_INITIAL_CREDIT_WEI: ${DEFAULT_INITIAL_CREDIT_WEI:-0}

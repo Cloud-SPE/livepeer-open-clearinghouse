@@ -73,12 +73,13 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
-- **`GrpcPaymentDaemonClient` is a stub.** Phase 7 ships on
-  `MockPaymentDaemonClient`. The path to real: run `make protoc` to
-  generate stubs under `src/pymthouse/providers/payment_daemon/_gen/`,
-  then implement the real gRPC dial + message mapping. Swap in
-  `dependencies.py:_default_payment_daemon()`. *Trigger:* needing to
-  actually pay a real orchestrator.
+- **`MockRegistryClient` is still the only registry impl.** A real
+  gRPC client against `service-registry-daemon` is the next sibling
+  of the payment-daemon client. The path is the same: vendor protos
+  (already at upstream `livepeer-network-protocol/proto/livepeer/registry/`),
+  add a `make protoc` rule for them, generate stubs, write the
+  dataclass↔proto mapping. *Trigger:* same as for the payment-daemon
+  client — moving past mocked discovery.
 - **Auto-replenish is reactive only.** Triggers on a failed mint, not
   on a schedule. If a user mints constantly we always refill, but if
   they have a long-running balance trickle there's no proactive
