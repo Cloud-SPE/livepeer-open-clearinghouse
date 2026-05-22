@@ -36,8 +36,13 @@ the exec-plan that addressed it and remove it from this file.
   that genuinely needs OIDC for agent/desktop auth.
 - **No per-key credit isolation.** All keys on a user share the user's
   credit pool. *Trigger:* a user wanting per-app billing separation.
-- **No OAuth (Google/GitHub) sign-in in Phase 4.** Email/password only.
-  *Trigger:* user feedback that signup friction is too high.
+- **OAuth flow has no portal "linked identities" UI.** A user can link
+  Google and/or GitHub by signing in with each, but can't see or unlink
+  them from the portal. *Trigger:* user requests for control over
+  linked accounts.
+- **No OIDC issuer (PymtHouse as identity provider for downstream
+  apps).** We *consume* Google/GitHub but don't *issue* OIDC tokens.
+  *Trigger:* partner integration that needs us as IdP.
 - **No password reset flow.** Users who forget their password are stuck.
   *Trigger:* first support ticket.
 - **Bootstrap-operator-only admin auth.** No operator UI, no operator

@@ -61,3 +61,7 @@ export const getBalance = () => api("/accounts/me/balance");
 
 export const getLedger = (limit = 20) =>
   api(`/accounts/me/ledger?limit=${limit}`);
+
+export const listOAuthProviders = () => api("/auth/oauth/providers");
+
+export const oauthLoginUrl = (provider) => `/v1/auth/oauth/${provider}/login`;

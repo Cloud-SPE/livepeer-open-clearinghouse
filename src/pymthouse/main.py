@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 from pymthouse import __version__
 from pymthouse.dependencies import SettingsDep
@@ -91,6 +92,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = cfg
 
+    # SessionMiddleware backs authlib's OAuth-state storage. It uses a
+    # cookie distinct from our own pymthouse_session (which is itsdangerous-
+    # signed at the application layer).
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=cfg.session_secret.get_secret_value(),
+        session_cookie="pymthouse_oauth",
+        same_site="lax",
+        https_only=cfg.app_env != "dev",
+    )
     app.middleware("http")(metrics_middleware)
     register_handlers(app)
 

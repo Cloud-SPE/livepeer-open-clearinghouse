@@ -53,6 +53,7 @@ export class CcSignup extends LitElement {
     return html`
       <div class="card">
         <h2>Create your account</h2>
+        <cc-oauth-buttons></cc-oauth-buttons>
         <form class="form" @submit=${this._submit}>
           <div class="field">
             <label for="email">Email</label>

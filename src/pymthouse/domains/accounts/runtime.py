@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, HTTPException, Response, status
+import httpx
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 
 from pymthouse.dependencies import (
     ClockDep,
@@ -13,8 +15,9 @@ from pymthouse.dependencies import (
     SessionUserDep,
     SettingsDep,
 )
+from pymthouse.domains.accounts import oauth as oauth_service
 from pymthouse.domains.accounts import service
-from pymthouse.domains.accounts.repo import User
+from pymthouse.domains.accounts.repo import User, UserSession
 from pymthouse.domains.accounts.types import (
     LoginRequest,
     LoginResponse,
@@ -24,6 +27,8 @@ from pymthouse.domains.accounts.types import (
     VerifyEmailRequest,
 )
 from pymthouse.providers.auth import session as session_helper
+from pymthouse.providers.oauth import is_enabled as oauth_is_enabled
+from pymthouse.providers.oauth import get_oauth
 
 router = APIRouter(tags=["accounts"])
 
@@ -147,3 +152,146 @@ async def me_endpoint(
 ) -> UserResponse:
     approved = await service.is_approved(db, user.id)
     return _user_response(user, approved=approved)
+
+
+# ---------------------------------------------------------------------------
+# OAuth (Google + GitHub)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v1/auth/oauth/providers", tags=["oauth"])
+async def oauth_providers_endpoint() -> dict[str, list[str]]:
+    """Public — which OAuth providers the portal should render buttons for."""
+    return {
+        "enabled": [p for p in ("google", "github") if oauth_is_enabled(p)]
+    }
+
+
+def _redirect_uri(request: Request, provider: str) -> str:
+    return str(
+        request.url_for("oauth_callback_endpoint", provider=provider)
+    )
+
+
+@router.get("/v1/auth/oauth/{provider}/login", tags=["oauth"])
+async def oauth_login_endpoint(
+    provider: str,
+    request: Request,
+) -> Response:
+    if not oauth_is_enabled(provider):
+        raise HTTPException(status_code=404, detail="oauth_provider_disabled")
+    client = get_oauth().create_client(provider)
+    if client is None:
+        raise HTTPException(status_code=404, detail="oauth_provider_disabled")
+    redirect_uri = _redirect_uri(request, provider)
+    return await client.authorize_redirect(request, redirect_uri)
+
+
+async def _github_userinfo(token: dict) -> tuple[str, str, bool]:
+    """Fetch GitHub's profile + primary verified email.
+
+    GitHub's OAuth profile endpoint returns the public profile; the
+    email scope is needed to read /user/emails and pick the verified
+    primary address.
+    """
+    access_token = token.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="oauth_no_token")
+    headers = {
+        "Authorization": f"token {access_token}",
+        "Accept": "application/vnd.github+json",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        profile_resp = await client.get("https://api.github.com/user", headers=headers)
+        profile_resp.raise_for_status()
+        profile = profile_resp.json()
+        emails_resp = await client.get(
+            "https://api.github.com/user/emails", headers=headers
+        )
+        emails_resp.raise_for_status()
+        emails = emails_resp.json() or []
+    primary_verified = next(
+        (e for e in emails if e.get("primary") and e.get("verified")),
+        None,
+    )
+    if primary_verified is None:
+        # Refuse: we won't create an account from an unverified address.
+        raise HTTPException(status_code=400, detail="oauth_email_unverified")
+    return (
+        str(profile["id"]),
+        primary_verified["email"],
+        True,
+    )
+
+
+@router.get("/v1/auth/oauth/{provider}/callback", name="oauth_callback_endpoint", tags=["oauth"])
+async def oauth_callback_endpoint(
+    provider: str,
+    request: Request,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RedirectResponse:
+    if not oauth_is_enabled(provider):
+        raise HTTPException(status_code=404, detail="oauth_provider_disabled")
+    client = get_oauth().create_client(provider)
+    if client is None:
+        raise HTTPException(status_code=404, detail="oauth_provider_disabled")
+
+    try:
+        token = await client.authorize_access_token(request)
+    except Exception as exc:  # noqa: BLE001 — authlib exceptions are not stable
+        raise HTTPException(status_code=400, detail="oauth_exchange_failed") from exc
+
+    if provider == "google":
+        userinfo = token.get("userinfo") or {}
+        provider_user_id = userinfo.get("sub")
+        email = userinfo.get("email")
+        email_verified = bool(userinfo.get("email_verified", False))
+        if not provider_user_id or not email:
+            raise HTTPException(status_code=400, detail="oauth_no_profile")
+    elif provider == "github":
+        provider_user_id, email, email_verified = await _github_userinfo(token)
+    else:
+        raise HTTPException(status_code=404, detail="oauth_provider_disabled")
+
+    try:
+        user = await oauth_service.find_or_link_user(
+            db,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
+            email=email,
+            email_verified=email_verified,
+            clock=clock,
+        )
+    except oauth_service.UnverifiedProviderEmail as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+    # Issue a session cookie just like the password-login path does.
+    raw_token = session_helper.generate_token()
+    token_hash = session_helper.hash_token(raw_token)
+    db.add(
+        UserSession(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=clock.now() + service.SESSION_TTL,
+        )
+    )
+    await db.flush()
+
+    serializer = session_helper.make_serializer(
+        settings.session_secret.get_secret_value()
+    )
+    sealed = session_helper.seal(serializer, raw_token)
+
+    response = RedirectResponse(url="/portal/#/", status_code=303)
+    response.set_cookie(
+        key=session_helper.SESSION_COOKIE_NAME,
+        value=sealed,
+        max_age=int(service.SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=settings.app_env != "dev",
+        samesite="lax",
+        path="/",
+    )
+    return response
