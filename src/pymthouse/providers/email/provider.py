@@ -95,24 +95,55 @@ class ResendEmailProvider:
             "html": message.html,
             "text": message.text,
         }
+        # Pre-send log: enough to reproduce by curl. The SDK appends
+        # /emails to the base URL; we surface that explicitly so a path-
+        # prefix mismatch with a self-hosted Resend shows up clearly.
+        target_url = f"{self._resend.api_url.rstrip('/')}/emails"
+        html_preview = message.html[:80].replace("\n", " ")
+        text_preview = message.text[:80].replace("\n", " ")
+        self._log.info(
+            "email.resend.sending",
+            target_url=target_url,
+            from_=self._from,
+            to=message.to,
+            subject=message.subject,
+            html_bytes=len(message.html),
+            text_bytes=len(message.text),
+            html_preview=html_preview,
+            text_preview=text_preview,
+        )
         try:
             result = await asyncio.to_thread(self._resend.Emails.send, payload)
         except Exception as exc:  # noqa: BLE001 — provider-level catch
+            # ResendError carries .code / .message / .suggested_action.
+            # Generic exceptions fall through to repr() for shape clarity.
             self._log.error(
                 "email.resend.failed",
+                target_url=target_url,
                 to=message.to,
                 subject=message.subject,
+                error_type=type(exc).__name__,
                 error=str(exc),
+                error_code=getattr(exc, "code", None),
+                error_status=getattr(exc, "status_code", None),
+                error_message=getattr(exc, "message", None),
+                error_repr=repr(exc),
             )
             raise
-        provider_id = (
-            result.get("id") if isinstance(result, dict) else None
-        )
+        # Self-hosted Resend systems sometimes return a different response
+        # shape (e.g., {message_id: ...} or {email_id: ...}). Log the raw
+        # result so the mismatch is visible without having to guess.
+        provider_id = None
+        if isinstance(result, dict):
+            provider_id = result.get("id") or result.get("message_id") or result.get("email_id")
         self._log.info(
             "email.resend.sent",
+            target_url=target_url,
             to=message.to,
             subject=message.subject,
             provider_id=provider_id,
+            raw_result=result if isinstance(result, dict) else repr(result),
+            raw_result_keys=sorted(result.keys()) if isinstance(result, dict) else None,
         )
 
 
