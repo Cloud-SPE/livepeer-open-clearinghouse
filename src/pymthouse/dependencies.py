@@ -31,6 +31,7 @@ from pymthouse.providers.payment_daemon import (
     MockPaymentDaemonClient,
     PaymentDaemonClient,
 )
+from pymthouse.providers.ratelimit import RateLimiter
 from pymthouse.providers.registry_daemon import (
     GrpcRegistryClient,
     MockRegistryClient,
@@ -69,6 +70,11 @@ def _default_payment_daemon() -> PaymentDaemonClient:
     return MockPaymentDaemonClient()
 
 
+@lru_cache(maxsize=1)
+def _default_rate_limiter() -> RateLimiter:
+    return RateLimiter()
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependency callables
 # ---------------------------------------------------------------------------
@@ -90,6 +96,10 @@ def get_payment_daemon() -> PaymentDaemonClient:
     return _default_payment_daemon()
 
 
+def get_rate_limiter() -> RateLimiter:
+    return _default_rate_limiter()
+
+
 def get_settings_dep() -> Settings:
     return get_settings()
 
@@ -97,6 +107,48 @@ def get_settings_dep() -> Settings:
 async def get_session() -> AsyncIterator[AsyncSession]:
     async for s in session_dependency():
         yield s
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit dependency factory
+# ---------------------------------------------------------------------------
+
+
+def rate_limit(*, route: str, capacity_attr: str, refill_attr: str):  # type: ignore[no-untyped-def]
+    """Build a FastAPI dependency that throttles `route` per-IP.
+
+    `capacity_attr` and `refill_attr` are the names of the corresponding
+    fields on Settings (so each route reads its own knobs from env).
+    A capacity of 0 disables the limiter for that route.
+    """
+    from fastapi import HTTPException, Request, status  # noqa: PLC0415
+
+    async def _dep(
+        request: Request,
+        limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+        settings: Annotated[Settings, Depends(get_settings_dep)],
+    ) -> None:
+        capacity = int(getattr(settings, capacity_attr))
+        refill = int(getattr(settings, refill_attr))
+        ip = (
+            request.client.host
+            if request.client is not None
+            else "0.0.0.0"
+        )
+        allowed, retry_after = await limiter.acquire(
+            route=route,
+            key=ip,
+            capacity=capacity,
+            refill_per_minute=refill,
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="rate_limited",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return _dep
 
 
 # ---------------------------------------------------------------------------

@@ -47,9 +47,6 @@ the exec-plan that addressed it and remove it from this file.
   CRUD, no operator-to-operator role separation. A single env var
   (`ADMIN_BOOTSTRAP_TOKEN`) gates the admin API. *Trigger:* needing
   more than one operator or wanting role separation.
-- **No rate-limiting on signup/login.** Captures only on API key
-  validation (per `docs/SECURITY.md`). *Trigger:* first abuse incident.
-
 ### Funding
 
 - **No Stripe / USDC / on-ramp deposit flows.** Operator topup only.
@@ -119,9 +116,10 @@ the exec-plan that addressed it and remove it from this file.
 
 ### Security
 
-- **No rate-limiting on signup or password reset.** API key validation has
-  rate-limiting per `docs/SECURITY.md`; user-flow endpoints don't yet.
-  *Trigger:* first abuse incident.
+- **Rate limiter is in-process only.** Buckets live in process memory;
+  fine for single-instance MVP but does not enforce a global ceiling
+  across replicas. *Trigger:* going multi-instance — swap the in-memory
+  store for Redis without changing the call sites.
 - **No 2FA on operator accounts.** *Trigger:* production deployment.
 - **No keystore rotation runbook.** Documented inline in `docs/SECURITY.md`
   at a high level; no automation. *Trigger:* first time we need to rotate.

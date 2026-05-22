@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from pymthouse.dependencies import (
@@ -14,6 +14,23 @@ from pymthouse.dependencies import (
     SessionDep,
     SessionUserDep,
     SettingsDep,
+    rate_limit,
+)
+
+_rl_signup = rate_limit(
+    route="signup",
+    capacity_attr="rl_signup_capacity",
+    refill_attr="rl_signup_refill_per_minute",
+)
+_rl_login = rate_limit(
+    route="login",
+    capacity_attr="rl_login_capacity",
+    refill_attr="rl_login_refill_per_minute",
+)
+_rl_pwreset = rate_limit(
+    route="password_reset",
+    capacity_attr="rl_password_reset_capacity",
+    refill_attr="rl_password_reset_refill_per_minute",
 )
 from pymthouse.domains.accounts import oauth as oauth_service
 from pymthouse.domains.accounts import service
@@ -49,6 +66,7 @@ def _user_response(user: User, *, approved: bool) -> UserResponse:
     "/v1/accounts/signup",
     response_model=SignupResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_rl_signup)],
 )
 async def signup_endpoint(
     body: SignupRequest,
@@ -88,6 +106,7 @@ async def verify_email_endpoint(
 @router.post(
     "/v1/auth/password-reset/request",
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_rl_pwreset)],
 )
 async def request_password_reset_endpoint(
     body: RequestPasswordResetRequest,
@@ -128,7 +147,11 @@ async def confirm_password_reset_endpoint(
     return _user_response(user, approved=approved)
 
 
-@router.post("/v1/auth/login", response_model=LoginResponse)
+@router.post(
+    "/v1/auth/login",
+    response_model=LoginResponse,
+    dependencies=[Depends(_rl_login)],
+)
 async def login_endpoint(
     body: LoginRequest,
     db: SessionDep,

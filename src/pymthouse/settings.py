@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     # ---- ticket-mint reliability ----
     idempotency_inflight_timeout_seconds: int = Field(default=60, ge=5)
 
+    # ---- per-IP rate limits (in-process token bucket) ----
+    rl_login_capacity: int = Field(default=10, ge=0)
+    rl_login_refill_per_minute: int = Field(default=10, ge=0)
+    rl_signup_capacity: int = Field(default=5, ge=0)
+    rl_signup_refill_per_minute: int = Field(default=5, ge=0)
+    rl_password_reset_capacity: int = Field(default=3, ge=0)
+    rl_password_reset_refill_per_minute: int = Field(default=3, ge=0)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
