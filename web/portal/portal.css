@@ -124,6 +124,104 @@
     padding: 24px;
   }
 
+  /* shell = topbar + sidebar + content area */
+  .shell {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    min-height: 100vh;
+  }
+  .shell-topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-soft);
+  }
+  .shell-sidebar {
+    border-right: 1px solid var(--border);
+    padding: 16px 12px;
+    background: var(--surface-soft);
+  }
+  .shell-content {
+    padding: 20px 24px;
+    overflow-y: auto;
+  }
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 80ms ease, color 80ms ease;
+    margin-bottom: 2px;
+  }
+  .sidebar-item:hover {
+    color: var(--fg);
+    background: var(--surface-hover);
+  }
+  .sidebar-item.active {
+    color: var(--accent);
+    background: var(--accent-tint);
+  }
+  .sidebar-section {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted-2);
+    padding: 12px 12px 6px;
+  }
+
+  /* hamburger only on narrow viewports */
+  .hamburger {
+    display: none;
+    color: var(--fg);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--radius);
+  }
+  .hamburger:hover {
+    background: var(--surface-hover);
+  }
+
+  /* mobile: collapse sidebar into an overlay drawer */
+  @media (max-width: 760px) {
+    .shell {
+      grid-template-columns: 1fr;
+    }
+    .shell-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 260px;
+      background: var(--bg);
+      border-right: 1px solid var(--border-strong);
+      transform: translateX(-100%);
+      transition: transform 160ms ease;
+      z-index: 20;
+      padding-top: 24px;
+    }
+    .shell-sidebar.open {
+      transform: translateX(0);
+    }
+    .shell-sidebar-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 15;
+    }
+    .hamburger {
+      display: inline-flex;
+      align-items: center;
+    }
+  }
+
   .header {
     display: flex;
     justify-content: space-between;

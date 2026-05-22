@@ -1,5 +1,6 @@
 import { LitElement, html } from "lit";
 import * as api from "/portal/lib/api.js";
+import { icon } from "/portal/lib/icons.js";
 
 function readRoute() {
   const raw = location.hash.replace(/^#/, "") || "/";
@@ -71,55 +72,84 @@ export class CcApp extends LitElement {
     window.dispatchEvent(new CustomEvent("cc-logout"));
   }
 
-  _renderHeader() {
-    return html`
-      <header class="header">
-        <div class="brand">PymtHouse</div>
-        <nav class="nav">
-          ${this._user
-            ? html`
-                <span class="muted">${this._user.email}</span>
-                <button class="ghost" @click=${this._doLogout}>Log out</button>
-              `
-            : html`
-                <a href="#/login">Log in</a>
-                <a href="#/signup">Sign up</a>
-              `}
-        </nav>
-      </header>
-    `;
+  _toggleSidebar() {
+    window.dispatchEvent(new CustomEvent("cc-toggle-sidebar"));
   }
 
-  _renderRoute() {
+  _renderAuthRoute() {
     const { path, params } = this._route;
-    if (this._loadingSession) {
-      return html`<p class="muted">Loading session…</p>`;
-    }
-
-    // These routes are always reachable, even when logged in.
     if (path === "/verify-email") {
       return html`<cc-verify-email .token=${params.get("token") || ""}></cc-verify-email>`;
     }
     if (path === "/reset-password") {
       return html`<cc-reset-password .token=${params.get("token") || ""}></cc-reset-password>`;
     }
+    if (path === "/signup") return html`<cc-signup></cc-signup>`;
+    if (path === "/forgot-password") return html`<cc-forgot-password></cc-forgot-password>`;
+    return html`<cc-login></cc-login>`;
+  }
 
-    if (!this._user) {
-      if (path === "/signup") return html`<cc-signup></cc-signup>`;
-      if (path === "/forgot-password") return html`<cc-forgot-password></cc-forgot-password>`;
-      return html`<cc-login></cc-login>`;
+  _renderAppRoute() {
+    const { path, params } = this._route;
+    // Verify-email/reset-password are reachable while logged in too.
+    if (path === "/verify-email") {
+      return html`<cc-verify-email .token=${params.get("token") || ""}></cc-verify-email>`;
     }
-
+    if (path === "/reset-password") {
+      return html`<cc-reset-password .token=${params.get("token") || ""}></cc-reset-password>`;
+    }
     if (path === "/api-keys") return html`<cc-api-keys></cc-api-keys>`;
+    if (path === "/activity") return html`<cc-activity></cc-activity>`;
     return html`<cc-dashboard .user=${this._user}></cc-dashboard>`;
   }
 
-  render() {
+  _renderShell() {
     return html`
-      ${this._renderHeader()}
-      ${this._error ? html`<div class="msg error mb-2">${this._error}</div>` : null}
-      <main>${this._renderRoute()}</main>
+      <div class="shell">
+        <div class="shell-topbar">
+          <div class="row">
+            <button class="hamburger" @click=${this._toggleSidebar} aria-label="Menu">
+              ${icon.menu()}
+            </button>
+            <span class="brand">PymtHouse</span>
+          </div>
+          <div class="row">
+            <span class="muted small">${this._user.email}</span>
+            <button class="ghost" @click=${this._doLogout}>
+              ${icon.logout()} Log out
+            </button>
+          </div>
+        </div>
+        <cc-sidebar .current=${this._route.path}></cc-sidebar>
+        <main class="shell-content">
+          ${this._error ? html`<div class="msg error mb-2">${this._error}</div>` : null}
+          ${this._renderAppRoute()}
+        </main>
+      </div>
     `;
+  }
+
+  _renderAuthShell() {
+    return html`
+      <div class="page">
+        <header class="header">
+          <div class="brand">PymtHouse</div>
+          <nav class="nav">
+            <a href="#/login">Log in</a>
+            <a href="#/signup">Sign up</a>
+          </nav>
+        </header>
+        ${this._error ? html`<div class="msg error mb-2">${this._error}</div>` : null}
+        <main>${this._renderAuthRoute()}</main>
+      </div>
+    `;
+  }
+
+  render() {
+    if (this._loadingSession) {
+      return html`<div class="page"><p class="muted">Loading session…</p></div>`;
+    }
+    return this._user ? this._renderShell() : this._renderAuthShell();
   }
 }
 customElements.define("cc-app", CcApp);
