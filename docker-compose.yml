@@ -1,0 +1,105 @@
+# PymtHouse local + dev compose stack.
+#
+# - All services reference pre-built images via `image:` (no `build:` here).
+#   Build the gateway locally with `make image-build` first.
+# - Daemons run in their stripped-down dev mode (no chain RPC, no keystore).
+#   To switch a daemon to chain mode, override its `command:` to add
+#   `--chain-rpc=...` and `--keystore-path=...`, then mount the keystore.
+# - Shared `livepeer-run` named volume carries the UDS sockets between
+#   the daemons and the gateway.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pymthouse-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pymthouse}
+      POSTGRES_USER: ${POSTGRES_USER:-pymthouse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pymthouse-dev-password}
+    volumes:
+      - pymthouse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pymthouse}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    restart: unless-stopped
+
+  payment-daemon:
+    image: tztcloud/livepeer-payment-daemon:${LIVEPEER_PAYER_DAEMON_TAG:-v1.3.0}
+    container_name: pymthouse-payment-daemon
+    command:
+      - --mode=sender
+      - --socket=/var/run/livepeer/payer-daemon.sock
+      # Uncomment + populate for chain mode:
+      # - --chain-rpc=${CHAIN_RPC}
+      # - --keystore-path=/etc/livepeer/keystore.json
+      # - --keystore-password-file=/etc/livepeer/keystore-password
+    user: "65532:65532"
+    volumes:
+      - livepeer-run:/var/run/livepeer
+      # For chain mode, mount your dev keystore:
+      # - ./.dev/keystore/keystore.json:/etc/livepeer/keystore.json:ro
+      # - ./.dev/keystore/keystore-password:/etc/livepeer/keystore-password:ro
+    restart: unless-stopped
+
+  service-registry-daemon:
+    image: tztcloud/livepeer-service-registry-daemon:${LIVEPEER_REGISTRY_DAEMON_TAG:-v1.3.0}
+    container_name: pymthouse-service-registry-daemon
+    command:
+      - --mode=resolver
+      - --socket=/var/run/livepeer/service-registry.sock
+      # Uncomment for chain-backed discovery:
+      # - --chain-rpc=${CHAIN_RPC}
+      # - --discovery=chain
+    user: "65532:65532"
+    volumes:
+      - livepeer-run:/var/run/livepeer
+      - registry-cache:/var/lib/livepeer
+      # Optional operator overlay:
+      # - ./.dev/registry/nodes.yaml:/etc/livepeer/nodes.yaml:ro
+    restart: unless-stopped
+
+  pymthouse-gateway:
+    image: tztcloud/pymthouse-gateway:${PYMTHOUSE_GATEWAY_TAG:-dev}
+    container_name: pymthouse-gateway
+    depends_on:
+      db:
+        condition: service_healthy
+      payment-daemon:
+        condition: service_started
+      service-registry-daemon:
+        condition: service_started
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8000"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://pymthouse:pymthouse-dev-password@db:5432/pymthouse}
+      API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:-dev-pepper-CHANGE-FOR-PROD}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-CHANGE-FOR-PROD}
+      METRICS_TOKEN: ${METRICS_TOKEN:-dev-metrics-token-CHANGE-FOR-PROD}
+      ADMIN_BOOTSTRAP_TOKEN: ${ADMIN_BOOTSTRAP_TOKEN:-dev-admin-bootstrap-CHANGE-FOR-PROD}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@pymthouse.local}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-PymtHouse}
+      PAYMENT_DAEMON_SOCKET: /var/run/livepeer/payer-daemon.sock
+      REGISTRY_DAEMON_SOCKET: /var/run/livepeer/service-registry.sock
+      DEFAULT_INITIAL_CREDIT_WEI: ${DEFAULT_INITIAL_CREDIT_WEI:-0}
+      DEFAULT_SPEND_PERIOD_SECONDS: ${DEFAULT_SPEND_PERIOD_SECONDS:-86400}
+      DEFAULT_SPEND_PERIOD_CAP_WEI: ${DEFAULT_SPEND_PERIOD_CAP_WEI:-0}
+      AUTO_REPLENISH_INCREMENT_WEI: ${AUTO_REPLENISH_INCREMENT_WEI:-0}
+      IDEMPOTENCY_INFLIGHT_TIMEOUT_SECONDS: ${IDEMPOTENCY_INFLIGHT_TIMEOUT_SECONDS:-60}
+    volumes:
+      - livepeer-run:/var/run/livepeer
+    ports:
+      - "${PYMTHOUSE_HOST_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  pymthouse-pgdata:
+  livepeer-run:
+  registry-cache:

@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1.7
+#
+# pymthouse-gateway image — Python 3.13, FastAPI, uv-managed deps.
+# Multi-stage build: a `builder` stage installs deps into /opt/venv, then
+# `runtime` copies that venv plus source + frontend assets.
+#
+# Runs as uid/gid 65532:65532 to match the daemons' UDS volume ownership.
+
+# -----------------------------------------------------------------------------
+# Stage 1: builder
+# -----------------------------------------------------------------------------
+FROM python:3.13-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+# Build tools + libpq for asyncpg's optional native deps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv from the official image, no installer to keep things deterministic.
+COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /usr/local/bin/
+
+WORKDIR /build
+
+# Layer 1: lockfile only — maximizes cache hits when source changes
+# but deps don't.
+COPY pyproject.toml ./
+COPY uv.lock* ./
+
+# Sync into /opt/venv. --no-install-project so we don't try to install
+# pymthouse itself before the source is present.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev || \
+    uv sync --no-install-project --no-dev
+
+# Layer 2: source.
+COPY src/ ./src/
+COPY web/ ./web/
+COPY migrations/ ./migrations/
+COPY alembic.ini ./
+
+# Install the project itself into the venv.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev || uv sync --no-dev
+
+# -----------------------------------------------------------------------------
+# Stage 2: runtime
+# -----------------------------------------------------------------------------
+FROM python:3.13-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/opt/venv/bin:$PATH \
+    PYMTHOUSE_HOME=/srv/pymthouse
+
+# libpq for asyncpg + tini for a clean PID 1.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 65532 pymthouse \
+    && useradd --system --uid 65532 --gid 65532 \
+        --home-dir $PYMTHOUSE_HOME \
+        --shell /usr/sbin/nologin pymthouse
+
+WORKDIR $PYMTHOUSE_HOME
+
+# venv (full dep tree) from the builder.
+COPY --from=builder /opt/venv /opt/venv
+
+# Application source, frontend assets, and migrations.
+COPY --chown=65532:65532 src/ ./src/
+COPY --chown=65532:65532 web/ ./web/
+COPY --chown=65532:65532 migrations/ ./migrations/
+COPY --chown=65532:65532 alembic.ini ./
+
+USER 65532:65532
+EXPOSE 8000
+
+# tini -> alembic upgrade head -> uvicorn.
+# Migrations are gated on the DB being reachable, which is enforced via
+# compose's `depends_on: { db: service_healthy }`.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn pymthouse.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]

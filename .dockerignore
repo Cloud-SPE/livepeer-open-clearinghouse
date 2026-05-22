@@ -1,0 +1,49 @@
+.git
+.github
+.gitignore
+.dockerignore
+.env
+.env.*
+!.env.example
+.dev
+
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+*.so
+.venv
+.python-version
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+
+# Node
+node_modules
+*.log
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Tests not needed in the runtime image
+tests
+
+# Build artifacts
+build
+dist
+*.egg
+
+# Docs not needed at runtime — keep image lean
+docs
+
+# Files we never want in the image
+Makefile
+README.md
+LICENSE
+scripts

@@ -55,6 +55,7 @@ dev = [
     "types-protobuf>=5.29",
     "grpcio-tools>=1.68",
     "pre-commit>=4.0",
+    "eth-account>=0.13",
 ]
 
 [build-system]

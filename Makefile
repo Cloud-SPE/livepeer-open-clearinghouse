@@ -1,5 +1,5 @@
 .PHONY: help install sync fmt lint typecheck check test test-unit test-integration test-e2e \
-        run dev down logs ps migrate migrate-create clean
+        run dev down logs ps migrate migrate-create clean image-build dev-keystore
 
 UV ?= uv
 COMPOSE ?= docker compose
@@ -57,8 +57,14 @@ run: ## Run the gateway locally (bypasses docker)
 	$(UV) run uvicorn pymthouse.main:app --reload --host 0.0.0.0 --port 8000
 
 # ---------------------------------------------------------------------------
-# docker compose
+# docker
 # ---------------------------------------------------------------------------
+
+IMAGE_NAME ?= tztcloud/pymthouse-gateway
+IMAGE_TAG ?= dev
+
+image-build: ## Build the gateway image and tag it for local compose
+	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 dev: ## Bring the full stack up (postgres + daemons + gateway)
 	$(COMPOSE) up -d
@@ -71,6 +77,9 @@ logs: ## Tail compose logs
 
 ps: ## Show compose service status
 	$(COMPOSE) ps
+
+dev-keystore: ## Generate a V3 keystore for payment-daemon chain mode (optional)
+	$(UV) run python scripts/dev-keystore.py
 
 # ---------------------------------------------------------------------------
 # database
