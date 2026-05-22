@@ -70,6 +70,17 @@ export class CcUsers extends LitElement {
     }
   }
 
+  async _approveUnverified(user) {
+    const ok = confirm(
+      `Approve ${user.email} WITHOUT email verification?\n\n` +
+        "The user will be able to log in immediately, but you can't " +
+        "prove they control this email address. Only do this for users " +
+        "you onboarded out-of-band.",
+    );
+    if (!ok) return;
+    await this._approve(user.id);
+  }
+
   _openTopup(user) {
     this._topupTarget = user;
     this._topupAmount = "";
@@ -345,6 +356,16 @@ export class CcUsers extends LitElement {
                                     @click=${() => this._approve(u.id)}
                                   >
                                     Approve
+                                  </button>`
+                                : null}
+                              ${!u.approved && !u.email_verified_at
+                                ? html`<button
+                                    class="warn"
+                                    title="Approve without waiting for email verification — the user will be able to log in immediately"
+                                    ?disabled=${this._busy}
+                                    @click=${() => this._approveUnverified(u)}
+                                  >
+                                    Approve unverified
                                   </button>`
                                 : null}
                               ${u.approved

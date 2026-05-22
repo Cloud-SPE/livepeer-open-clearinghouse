@@ -297,7 +297,8 @@
   .btn,
   button.primary,
   button.ghost,
-  button.danger {
+  button.danger,
+  button.warn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -337,6 +338,15 @@
   }
   button.danger:hover:not(:disabled) {
     filter: brightness(1.05);
+  }
+  button.warn {
+    background: var(--warn-tint);
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+  button.warn:hover:not(:disabled) {
+    background: var(--warn);
+    color: #1f1408;
   }
   button:disabled {
     opacity: 0.45;

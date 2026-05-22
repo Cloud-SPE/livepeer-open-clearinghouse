@@ -52,6 +52,17 @@ export class CcPendingUsers extends LitElement {
     }
   }
 
+  async _approveUnverified(user) {
+    const ok = confirm(
+      `Approve ${user.email} WITHOUT email verification?\n\n` +
+        "The user will be able to log in immediately, but you can't " +
+        "prove they control this email address. Only do this for users " +
+        "you onboarded out-of-band.",
+    );
+    if (!ok) return;
+    await this._approve(user.id);
+  }
+
   render() {
     return html`
       <div class="card">
@@ -91,16 +102,23 @@ export class CcPendingUsers extends LitElement {
                           </td>
                           <td>${new Date(u.created_at).toLocaleString()}</td>
                           <td>
-                            <button
-                              class="primary"
-                              ?disabled=${this._busy || !u.email_verified_at}
-                              @click=${() => this._approve(u.id)}
-                              title=${u.email_verified_at
-                                ? "Approve this user"
-                                : "User must verify email first"}
-                            >
-                              Approve
-                            </button>
+                            ${u.email_verified_at
+                              ? html`<button
+                                  class="primary"
+                                  ?disabled=${this._busy}
+                                  @click=${() => this._approve(u.id)}
+                                  title="Approve this user"
+                                >
+                                  Approve
+                                </button>`
+                              : html`<button
+                                  class="warn"
+                                  ?disabled=${this._busy}
+                                  @click=${() => this._approveUnverified(u)}
+                                  title="Approve without waiting for email verification — the user will be able to log in immediately"
+                                >
+                                  Approve unverified
+                                </button>`}
                           </td>
                         </tr>
                       `,
