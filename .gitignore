@@ -1,0 +1,57 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+.dev/
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.python-version
+build/
+dist/
+*.egg
+.venv/
+venv/
+env/
+
+# UV
+.uv/
+
+# Node
+node_modules/
+.npm/
+.pnpm-store/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated / build artifacts
+docs/generated/openapi.json
+docs/generated/db-schema.md
+!docs/generated/.gitkeep
+
+# Docker / compose volumes (host-mounted)
+.docker-data/
