@@ -73,9 +73,14 @@ class ResendEmailProvider:
         # Import lazily so the dependency isn't required when NullEmail is used.
         import resend  # noqa: PLC0415
 
-        if settings.resend_api_key is None:
+        if settings.resend_api_key is None or not settings.resend_api_key.get_secret_value():
             raise RuntimeError("ResendEmailProvider requires RESEND_API_KEY")
         resend.api_key = settings.resend_api_key.get_secret_value()
+        # Optional override for the API base URL (regional Resend, on-prem
+        # proxy, mocked endpoint in tests). The SDK exposes this as a
+        # module-global string defaulting to https://api.resend.com.
+        if settings.resend_api_url:
+            resend.api_url = settings.resend_api_url
         self._resend = resend
         self._from = f"{settings.email_from_name} <{settings.email_from_address}>"
         self._log = logger

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # ---- email (Resend) ----
     email_provider: Literal["auto", "null", "resend"] = "auto"
     resend_api_key: SecretStr | None = None
+    resend_api_url: str | None = None  # override https://api.resend.com (regional API, on-prem proxy, etc.)
     email_from_address: str = "no-reply@pymthouse.local"
     email_from_name: str = "PymtHouse"
 
