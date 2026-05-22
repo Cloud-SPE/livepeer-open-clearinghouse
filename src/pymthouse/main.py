@@ -1,33 +1,56 @@
-"""FastAPI application factory and entrypoint.
-
-Wires the FastAPI app, registers domain routers (added in later phases), and
-exposes a single ASGI `app` for uvicorn. Phase 2 only includes `/health` and
-the OpenAPI surface; vertical-slice routes are added in Phase 4+.
-"""
+"""FastAPI application factory and entrypoint."""
 
 from __future__ import annotations
 
+import hmac
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
 from pymthouse import __version__
+from pymthouse.dependencies import SettingsDep
+from pymthouse.domains.accounts import runtime as accounts_runtime
+from pymthouse.domains.admin import runtime as admin_runtime
+from pymthouse.domains.admin import service as admin_service
+from pymthouse.domains.api_keys import runtime as api_keys_runtime
+from pymthouse.domains.discovery import runtime as discovery_runtime
+from pymthouse.providers.db import session_scope
+from pymthouse.providers.telemetry import (
+    configure_logging,
+    get_logger,
+    metrics_middleware,
+    render_metrics,
+)
 from pymthouse.settings import Settings, get_settings
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup/shutdown hook. Providers will register their lifecycles here."""
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    cfg: Settings = app.state.settings
+    configure_logging(cfg)
+    log = get_logger("pymthouse.startup")
+    log.info("startup.begin", env=cfg.app_env, version=__version__)
+
+    if cfg.admin_bootstrap_token is not None:
+        async with session_scope(cfg) as db:
+            await admin_service.ensure_bootstrap_operator(
+                db, bootstrap_token=cfg.admin_bootstrap_token.get_secret_value()
+            )
+        log.info("startup.bootstrap_operator.ready")
+    else:
+        log.warning("startup.bootstrap_operator.skipped",
+                    reason="ADMIN_BOOTSTRAP_TOKEN unset")
+
     yield
+    log.info("shutdown")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build a FastAPI application instance."""
     cfg = settings or get_settings()
-
     app = FastAPI(
         title="PymtHouse",
         version=__version__,
@@ -36,12 +59,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+    app.state.settings = cfg
+
+    app.middleware("http")(metrics_middleware)
 
     @app.get("/health", tags=["meta"])
     async def health() -> JSONResponse:
         return JSONResponse(
             {"status": "ok", "version": __version__, "env": cfg.app_env}
         )
+
+    @app.get("/metrics", tags=["meta"], include_in_schema=False)
+    async def metrics_endpoint(
+        cfg_dep: SettingsDep,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        expected = "Bearer " + cfg_dep.metrics_token.get_secret_value()
+        if authorization is None or not hmac.compare_digest(authorization, expected):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        body, content_type = render_metrics()
+        return Response(content=body, media_type=content_type)
+
+    app.include_router(accounts_runtime.router)
+    app.include_router(api_keys_runtime.router)
+    app.include_router(admin_runtime.router)
+    app.include_router(discovery_runtime.router)
 
     return app
 
@@ -50,8 +92,7 @@ app = create_app()
 
 
 def cli() -> None:
-    """Module entrypoint for `uv run pymthouse` (see [project.scripts])."""
-    import uvicorn
+    import uvicorn  # noqa: PLC0415
 
     cfg = get_settings()
     uvicorn.run(

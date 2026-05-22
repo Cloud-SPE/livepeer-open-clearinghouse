@@ -1,1 +1,56 @@
-"""FastAPI router and APScheduler jobs for discovery (the only layer that touches HTTP)."""
+"""FastAPI routes for the discovery domain (app-dev surface).
+
+All endpoints require a valid API key (or Bearer token) and are billed
+neutrally — discovery does not consume credit in MVP.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, status
+
+from pymthouse.dependencies import CurrentUserFromApiKeyDep, RegistryDep
+from pymthouse.domains.discovery import service
+from pymthouse.domains.discovery.types import (
+    CapabilityList,
+    OrchestratorList,
+    RouteView,
+)
+
+router = APIRouter(prefix="/v1", tags=["discovery"])
+
+
+@router.get("/capabilities", response_model=CapabilityList)
+async def list_capabilities_endpoint(
+    _user: CurrentUserFromApiKeyDep,
+    registry: RegistryDep,
+) -> CapabilityList:
+    items = await service.list_capabilities(registry)
+    return CapabilityList(items=items)
+
+
+@router.get("/orchestrators", response_model=OrchestratorList)
+async def list_orchestrators_endpoint(
+    _user: CurrentUserFromApiKeyDep,
+    registry: RegistryDep,
+    capability: str | None = None,
+) -> OrchestratorList:
+    items = await service.list_orchestrators(registry, capability=capability)
+    return OrchestratorList(items=items)
+
+
+@router.get("/routes", response_model=RouteView)
+async def select_route_endpoint(
+    _user: CurrentUserFromApiKeyDep,
+    registry: RegistryDep,
+    capability: str,
+    offering: str,
+) -> RouteView:
+    """Convenience: returns a single ranked route for (capability, offering)."""
+    route = await service.select_route(
+        registry, capability=capability, offering=offering
+    )
+    if route is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="no_route_available"
+        )
+    return route

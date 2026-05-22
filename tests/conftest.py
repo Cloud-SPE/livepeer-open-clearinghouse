@@ -1,8 +1,4 @@
-"""Shared pytest fixtures.
-
-Domain-specific fixtures live next to their tests; this file holds only
-fixtures that genuinely cross multiple test directories.
-"""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
@@ -17,10 +13,15 @@ from pymthouse.settings import Settings
 
 @pytest.fixture(scope="session")
 def test_settings() -> Settings:
-    """A Settings object that won't touch real services."""
+    """Settings tuned so unit tests don't try to reach real services.
+
+    `admin_bootstrap_token=None` skips the bootstrap-operator seed in the
+    lifespan, which would otherwise require a live Postgres.
+    """
     return Settings(
         app_env="dev",
         database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+        admin_bootstrap_token=None,
     )
 
 

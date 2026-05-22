@@ -24,6 +24,9 @@ the exec-plan that addressed it and remove it from this file.
 - **No liveness checks on orchestrators returned by discovery.**
   `service-registry-daemon` returns routes without probing them; PymtHouse
   passes them through. *Trigger:* app-dev reports of dead-route payments.
+- **`MockRegistryClient` is the only implementation as of Phase 4.** Real
+  gRPC client against `service-registry-daemon` lands in Phase 6/7 with
+  the docker compose stack. *Trigger:* moving past Phase 5.
 
 ### Auth
 
@@ -31,6 +34,16 @@ the exec-plan that addressed it and remove it from this file.
   that genuinely needs OIDC for agent/desktop auth.
 - **No per-key credit isolation.** All keys on a user share the user's
   credit pool. *Trigger:* a user wanting per-app billing separation.
+- **No OAuth (Google/GitHub) sign-in in Phase 4.** Email/password only.
+  *Trigger:* user feedback that signup friction is too high.
+- **No password reset flow.** Users who forget their password are stuck.
+  *Trigger:* first support ticket.
+- **Bootstrap-operator-only admin auth.** No operator UI, no operator
+  CRUD, no operator-to-operator role separation. A single env var
+  (`ADMIN_BOOTSTRAP_TOKEN`) gates the admin API. *Trigger:* needing
+  more than one operator or wanting role separation.
+- **No rate-limiting on signup/login.** Captures only on API key
+  validation (per `docs/SECURITY.md`). *Trigger:* first abuse incident.
 
 ### Funding
 
