@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package livepeer.registry.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "livepeer/registry/v1/types.proto";
+
+option go_package = "github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1";
+
+service Resolver {
+  rpc ResolveByAddress(ResolveByAddressRequest) returns (ResolveResult);
+  rpc Select(SelectRequest) returns (SelectResult);
+  rpc SelectMany(SelectRequest) returns (SelectManyResult);
+  rpc ListKnown(ListKnownRequest) returns (ListKnownResult);
+  rpc Refresh(RefreshRequest) returns (google.protobuf.Empty);
+  rpc GetAuditLog(GetAuditLogRequest) returns (AuditLogResult);
+  rpc Health(google.protobuf.Empty) returns (HealthResult);
+}
+
+message ResolveByAddressRequest {
+  string eth_address           = 1;
+  bool   allow_legacy_fallback = 2;
+  bool   allow_unsigned        = 3;
+  bool   force_refresh         = 4;
+}
+
+message ResolveResult {
+  string                    eth_address      = 1;
+  string                    resolved_uri     = 2;
+  ResolveMode               mode             = 3;
+  repeated Node             nodes            = 4;
+  FreshnessStatus           freshness_status = 5;
+  google.protobuf.Timestamp cached_at        = 6;
+  google.protobuf.Timestamp fetched_at       = 7;
+  string                    schema_version   = 8;
+}
+
+message SelectRequest {
+  string  capability  = 1;
+  string  offering    = 2;
+  string  tier        = 3;
+  int32   min_weight  = 4;
+}
+
+message SelectResult {
+  SelectedRoute route = 1;
+}
+
+message SelectManyResult {
+  repeated SelectedRoute routes = 1;
+}
+
+message SelectedRoute {
+  string worker_url               = 1;
+  string eth_address              = 2;
+  string capability               = 3;
+  string offering                 = 4;
+  string price_per_work_unit_wei  = 5;
+  string work_unit                = 6;
+  bytes  extra_json               = 7;
+  bytes  constraints_json         = 8;
+  string quote_id                 = 9;
+  uint64 quote_version            = 10;
+  bytes  constraint_fingerprint   = 11;
+  bytes  route_fingerprint        = 12;
+  uint64 units_per_price          = 13;
+}
+
+message ListKnownRequest {}
+
+message ListKnownResult {
+  repeated KnownEntry entries = 1;
+}
+
+message KnownEntry {
+  string                    eth_address      = 1;
+  ResolveMode               mode             = 2;
+  FreshnessStatus           freshness_status = 3;
+  google.protobuf.Timestamp cached_at        = 4;
+}
+
+message RefreshRequest {
+  string eth_address = 1;  // "*" means all
+  bool   force       = 2;
+}
+
+message GetAuditLogRequest {
+  string                    eth_address = 1;
+  google.protobuf.Timestamp since       = 2;
+  int32                     limit       = 3;
+}
+
+message AuditLogResult {
+  repeated AuditEvent events = 1;
+}
+
+message AuditEvent {
+  google.protobuf.Timestamp at          = 1;
+  string                    eth_address = 2;
+  string                    kind        = 3;
+  ResolveMode               mode        = 4;
+  string                    detail      = 5;
+}
+
+message HealthResult {
+  string mode               = 1;
+  bool   chain_ok           = 2;
+  bool   manifest_fetcher_ok = 3;
+  int32  cache_size         = 4;
+  google.protobuf.Timestamp last_chain_success = 5;
+}

@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     # ---- daemon UDS paths ----
     payment_daemon_mode: Literal["mock", "grpc"] = "mock"
     payment_daemon_socket: str = "/var/run/livepeer/payer-daemon.sock"
+    registry_daemon_mode: Literal["mock", "grpc"] = "mock"
     registry_daemon_socket: str = "/var/run/livepeer/service-registry.sock"
 
     # ---- billing defaults ----

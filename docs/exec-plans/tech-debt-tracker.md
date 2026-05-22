@@ -24,9 +24,11 @@ the exec-plan that addressed it and remove it from this file.
 - **No liveness checks on orchestrators returned by discovery.**
   `service-registry-daemon` returns routes without probing them; PymtHouse
   passes them through. *Trigger:* app-dev reports of dead-route payments.
-- **`MockRegistryClient` is the only implementation as of Phase 4.** Real
-  gRPC client against `service-registry-daemon` lands in Phase 6/7 with
-  the docker compose stack. *Trigger:* moving past Phase 5.
+- **`GrpcRegistryClient.list_capabilities` / `list_orchestrators` are
+  O(N) RPCs.** The daemon doesn't expose a flat "list all capabilities"
+  RPC — those methods walk ListKnown + ResolveByAddress per address.
+  Fine at MVP scale; needs caching once the registry grows. *Trigger:*
+  observable latency on the discovery endpoints.
 
 ### Auth
 
@@ -73,13 +75,6 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
-- **`MockRegistryClient` is still the only registry impl.** A real
-  gRPC client against `service-registry-daemon` is the next sibling
-  of the payment-daemon client. The path is the same: vendor protos
-  (already at upstream `livepeer-network-protocol/proto/livepeer/registry/`),
-  add a `make protoc` rule for them, generate stubs, write the
-  dataclass↔proto mapping. *Trigger:* same as for the payment-daemon
-  client — moving past mocked discovery.
 - **Auto-replenish is reactive only.** Triggers on a failed mint, not
   on a schedule. If a user mints constantly we always refill, but if
   they have a long-running balance trickle there's no proactive

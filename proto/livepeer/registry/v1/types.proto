@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package livepeer.registry.v1;
+
+option go_package = "github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1";
+
+// ResolveMode mirrors types.ResolveMode in the Go layer. Frozen v1.
+enum ResolveMode {
+  RESOLVE_MODE_UNSPECIFIED = 0;
+  RESOLVE_MODE_WELL_KNOWN  = 1;
+  RESOLVE_MODE_CSV         = 2;
+  RESOLVE_MODE_LEGACY      = 3;
+}
+
+// SignatureStatus mirrors types.SignatureStatus.
+enum SignatureStatus {
+  SIGNATURE_STATUS_UNSPECIFIED = 0;
+  SIGNATURE_STATUS_VERIFIED    = 1;
+  SIGNATURE_STATUS_UNSIGNED    = 2;
+  SIGNATURE_STATUS_LEGACY      = 3;
+}
+
+// FreshnessStatus mirrors types.FreshnessStatus.
+enum FreshnessStatus {
+  FRESHNESS_STATUS_UNSPECIFIED       = 0;
+  FRESHNESS_STATUS_FRESH             = 1;
+  FRESHNESS_STATUS_STALE_RECOVERABLE = 2;
+  FRESHNESS_STATUS_STALE_FAILING     = 3;
+}
+
+// Source mirrors types.Source.
+enum Source {
+  SOURCE_UNSPECIFIED      = 0;
+  SOURCE_MANIFEST         = 1;
+  SOURCE_LEGACY           = 2;
+  SOURCE_STATIC_OVERLAY   = 3;
+  SOURCE_CSV_FALLBACK     = 4;
+}
+
+// Capability is one named operation a node advertises. The name is
+// opaque to the registry; consumers interpret it.
+message Capability {
+  string             name       = 1;
+  string             work_unit  = 2;
+  repeated Offering  offerings  = 3;
+  bytes              extra_json = 4;  // arbitrary JSON, opaque
+}
+
+// Offering is a priced tier under a capability. The id is opaque to the
+// registry — for AI workloads it's typically the model name (e.g.
+// "gpt-oss-20b"); for video transcoding it's a preset id (e.g.
+// "h264-1080p"); for streaming sessions a resolution/fps tier (e.g.
+// "vtuber-1080p30"). Pricing is the per-work-unit wholesale rate the
+// orchestrator advertises; consumers (gateways/bridges) read it as the
+// wholesale-side input to their routing decision.
+message Offering {
+  string                  id                       = 1;
+  string                  price_per_work_unit_wei  = 2;  // decimal big-int as string
+  bytes                   constraints_json         = 3;  // arbitrary JSON object, opaque
+}
+
+// Node is one orchestrator endpoint with resolver-attached metadata.
+message Node {
+  string                id                = 1;
+  string                url               = 2;
+  string                worker_eth_address = 3;
+  bytes                 extra_json        = 4;   // arbitrary JSON object, opaque
+  repeated Capability   capabilities      = 5;
+  Source                source            = 6;
+  SignatureStatus       signature_status  = 7;
+  string                operator_address  = 8;   // 0x-prefixed lower-case
+  bool                  enabled           = 9;
+  repeated string       tier_allowed      = 10;
+  int32                 weight            = 11;
+}

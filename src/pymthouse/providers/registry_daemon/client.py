@@ -114,6 +114,204 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Grpc implementation — real client over Unix domain socket
+# ---------------------------------------------------------------------------
+
+
+def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[no-untyped-def]
+    """Map a proto SelectedRoute to our dataclass.
+
+    The proto stores price as a decimal big-int *string*; we parse to Decimal.
+    """
+    return SelectedRoute(
+        worker_url=proto.worker_url,
+        eth_address=proto.eth_address,
+        capability=proto.capability,
+        offering=proto.offering,
+        price_per_work_unit_wei=Decimal(proto.price_per_work_unit_wei or "0"),
+        work_unit=proto.work_unit,
+        units_per_price=int(proto.units_per_price),
+        quote_id=proto.quote_id,
+        quote_version=int(proto.quote_version),
+        constraint_fingerprint=bytes(proto.constraint_fingerprint),
+        route_fingerprint=bytes(proto.route_fingerprint),
+    )
+
+
+class GrpcRegistryClient:
+    """Async gRPC client for service-registry-daemon over a Unix socket.
+
+    Mirrors :class:`GrpcPaymentDaemonClient`'s shape: lazy stub init under
+    an asyncio.Lock, single channel reused for the process lifetime.
+
+    ``select`` / ``select_many`` map 1:1 onto the daemon's RPCs.
+    ``list_capabilities`` and ``list_orchestrators`` are aggregations on
+    top of ``ListKnown`` + ``ResolveByAddress`` (no flat "list all" RPC
+    exists). For large registries this is O(N) RPCs — fine for MVP scale,
+    flagged in tech-debt for caching.
+    """
+
+    def __init__(self, socket_path: str) -> None:
+        self._socket_path = socket_path
+        self._channel = None  # type: ignore[assignment]
+        self._stub = None  # type: ignore[assignment]
+        self._lock = None  # type: ignore[assignment]
+
+    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+        import asyncio  # noqa: PLC0415
+
+        import grpc.aio  # noqa: PLC0415
+
+        from pymthouse import _gen  # noqa: F401, PLC0415
+        from livepeer.registry.v1 import resolver_pb2_grpc  # noqa: PLC0415
+
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self._stub is None:
+                self._channel = grpc.aio.insecure_channel(f"unix:{self._socket_path}")
+                self._stub = resolver_pb2_grpc.ResolverStub(self._channel)
+        return self._stub
+
+    async def close(self) -> None:
+        if self._channel is not None:
+            await self._channel.close()
+            self._channel = None
+            self._stub = None
+
+    async def select(self, capability: str, offering: str) -> SelectedRoute | None:
+        import grpc  # noqa: PLC0415
+
+        from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        req = resolver_pb2.SelectRequest(capability=capability, offering=offering)
+        try:
+            resp = await stub.Select(req)
+        except grpc.aio.AioRpcError as exc:
+            if exc.code() == grpc.StatusCode.NOT_FOUND:
+                return None
+            raise
+        # A response with no .route set means no candidate (the proto leaves
+        # the field unset). HasField is the safe check.
+        if not resp.HasField("route"):
+            return None
+        return _selected_route_proto_to_dataclass(resp.route)
+
+    async def select_many(
+        self, capability: str, offering: str
+    ) -> list[SelectedRoute]:
+        from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        req = resolver_pb2.SelectRequest(capability=capability, offering=offering)
+        resp = await stub.SelectMany(req)
+        return [_selected_route_proto_to_dataclass(r) for r in resp.routes]
+
+    async def _resolve(self, eth_address: str):  # type: ignore[no-untyped-def]
+        from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        return await stub.ResolveByAddress(
+            resolver_pb2.ResolveByAddressRequest(
+                eth_address=eth_address,
+                allow_legacy_fallback=False,
+                allow_unsigned=False,
+                force_refresh=False,
+            )
+        )
+
+    async def _list_known_addresses(self) -> list[str]:
+        from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        resp = await stub.ListKnown(resolver_pb2.ListKnownRequest())
+        return [e.eth_address for e in resp.entries]
+
+    async def list_capabilities(self) -> list[CapabilityInfo]:
+        # Aggregate across every known address. O(N) RPCs.
+        addresses = await self._list_known_addresses()
+        merged: dict[str, dict[str, OfferingInfo]] = {}
+        work_units: dict[str, str | None] = {}
+        for addr in addresses:
+            try:
+                resolved = await self._resolve(addr)
+            except Exception:  # noqa: BLE001 — keep going on per-orch failures
+                continue
+            for node in resolved.nodes:
+                for cap in node.capabilities:
+                    offerings = merged.setdefault(cap.name, {})
+                    work_units[cap.name] = cap.work_unit or None
+                    for off in cap.offerings:
+                        offerings.setdefault(
+                            off.id,
+                            OfferingInfo(
+                                id=off.id,
+                                price_per_work_unit_wei=(
+                                    Decimal(off.price_per_work_unit_wei)
+                                    if off.price_per_work_unit_wei
+                                    else None
+                                ),
+                                work_unit=cap.work_unit or None,
+                            ),
+                        )
+        return [
+            CapabilityInfo(
+                name=name,
+                work_unit=work_units.get(name),
+                offerings=list(offerings.values()),
+            )
+            for name, offerings in merged.items()
+        ]
+
+    async def list_orchestrators(
+        self, *, capability: str | None = None
+    ) -> list[OrchestratorInfo]:
+        addresses = await self._list_known_addresses()
+        out: list[OrchestratorInfo] = []
+        for addr in addresses:
+            try:
+                resolved = await self._resolve(addr)
+            except Exception:  # noqa: BLE001
+                continue
+            for node in resolved.nodes:
+                cap_views: list[CapabilityInfo] = []
+                for cap in node.capabilities:
+                    if capability is not None and cap.name != capability:
+                        continue
+                    cap_views.append(
+                        CapabilityInfo(
+                            name=cap.name,
+                            work_unit=cap.work_unit or None,
+                            offerings=[
+                                OfferingInfo(
+                                    id=off.id,
+                                    price_per_work_unit_wei=(
+                                        Decimal(off.price_per_work_unit_wei)
+                                        if off.price_per_work_unit_wei
+                                        else None
+                                    ),
+                                    work_unit=cap.work_unit or None,
+                                )
+                                for off in cap.offerings
+                            ],
+                        )
+                    )
+                if not cap_views:
+                    continue
+                out.append(
+                    OrchestratorInfo(
+                        eth_address=node.worker_eth_address or addr,
+                        worker_url=node.url,
+                        capabilities=cap_views,
+                        signature_status="SigVerified",  # daemon already filtered
+                        freshness_status=str(resolved.freshness_status),
+                    )
+                )
+        return out
+
+
 class MockRegistryClient:
     """Returns a small fixed set of routes. Useful only until Phase 6/7."""
 

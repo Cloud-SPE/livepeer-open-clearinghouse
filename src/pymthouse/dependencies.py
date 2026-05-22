@@ -32,6 +32,7 @@ from pymthouse.providers.payment_daemon import (
     PaymentDaemonClient,
 )
 from pymthouse.providers.registry_daemon import (
+    GrpcRegistryClient,
     MockRegistryClient,
     RegistryClient,
 )
@@ -54,6 +55,9 @@ def _default_email() -> EmailProvider:
 
 @lru_cache(maxsize=1)
 def _default_registry() -> RegistryClient:
+    cfg = get_settings()
+    if cfg.registry_daemon_mode == "grpc":
+        return GrpcRegistryClient(cfg.registry_daemon_socket)
     return MockRegistryClient()
 
 

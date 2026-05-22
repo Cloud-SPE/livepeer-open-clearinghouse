@@ -96,7 +96,7 @@ migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="
 # ---------------------------------------------------------------------------
 
 PROTO_DIR := proto
-PROTO_OUT := src/pymthouse/providers/payment_daemon/_gen
+PROTO_OUT := src/pymthouse/_gen
 PROTO_FILES := $(shell find $(PROTO_DIR) -name '*.proto' 2>/dev/null)
 
 protoc: ## Regenerate Python gRPC stubs from proto/
