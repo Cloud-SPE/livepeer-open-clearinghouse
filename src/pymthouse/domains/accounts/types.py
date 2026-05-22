@@ -64,6 +64,12 @@ class RequestPasswordResetRequest(BaseModel):
     email: EmailStr
 
 
+class ResendVerificationRequest(BaseModel):
+    """Inbound: ``POST /v1/auth/resend-verification``."""
+
+    email: EmailStr
+
+
 class ConfirmPasswordResetRequest(BaseModel):
     """Inbound: ``POST /v1/auth/password-reset/confirm``."""
 

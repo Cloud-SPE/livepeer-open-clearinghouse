@@ -40,6 +40,7 @@ from pymthouse.domains.accounts.types import (
     LoginRequest,
     LoginResponse,
     RequestPasswordResetRequest,
+    ResendVerificationRequest,
     SignupRequest,
     SignupResponse,
     UserResponse,
@@ -101,6 +102,36 @@ async def verify_email_endpoint(
         raise HTTPException(status_code=400, detail=exc.code) from exc
     approved = await service.is_approved(db, user.id)
     return _user_response(user, approved=approved)
+
+
+@router.post(
+    "/v1/auth/resend-verification",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_rl_pwreset)],
+)
+async def resend_verification_endpoint(
+    body: ResendVerificationRequest,
+    db: SessionDep,
+    clock: ClockDep,
+    email: EmailDep,
+    settings: SettingsDep,
+) -> Response:
+    """Always returns 202, whether or not the email is registered.
+
+    Silently no-ops when the address doesn't map to an unverified
+    password-backed user. Same enumeration-resistant shape as
+    ``POST /v1/auth/password-reset/request``. Reuses the password-reset
+    rate-limit bucket since the abuse profile is identical (anonymous +
+    triggers an outbound email per request).
+    """
+    await service.request_resend_verification(
+        db,
+        email=str(body.email),
+        clock=clock,
+        email_provider=email,
+        public_base_url=str(settings.public_base_url),
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.post(

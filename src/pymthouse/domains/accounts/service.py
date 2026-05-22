@@ -222,6 +222,42 @@ async def is_approved(session: AsyncSession, user_id: uuid.UUID) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Verification resend (self-service)
+# ---------------------------------------------------------------------------
+
+
+async def request_resend_verification(
+    session: AsyncSession,
+    *,
+    email: str,
+    clock: Clock,
+    email_provider: EmailProvider,
+    public_base_url: str,
+) -> None:
+    """Self-service resend of the email-verification message.
+
+    Always succeeds from the caller's perspective. A fresh token is
+    minted + sent only when the email maps to an unverified, password-
+    backed user; OAuth-only and already-verified accounts are silently
+    skipped. The deliberate symmetry stops the endpoint from being used
+    to enumerate registered addresses.
+    """
+    user = await session.scalar(select(User).where(User.email == email))
+    if user is None or user.email_verified_at is not None:
+        return
+    if user.password_hash is None:
+        # OAuth-only user; nothing to verify via email.
+        return
+    await send_verification_email(
+        session,
+        user=user,
+        clock=clock,
+        email_provider=email_provider,
+        public_base_url=public_base_url,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Password reset
 # ---------------------------------------------------------------------------
 

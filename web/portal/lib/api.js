@@ -74,3 +74,6 @@ export const confirmPasswordReset = (token, new_password) =>
     method: "POST",
     body: { token, new_password },
   });
+
+export const resendVerification = (email) =>
+  api("/auth/resend-verification", { method: "POST", body: { email } });
