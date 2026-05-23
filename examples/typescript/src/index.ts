@@ -1,5 +1,5 @@
-export { PymtHouseClient } from "./client.js";
-export type { Mint, ClientOptions } from "./client.js";
+export { OpenClearinghouseClient } from "./client.js";
+export type { Mint, ClientOptions, JobResult, RouteView } from "./client.js";
 export {
   AccountNotApproved,
   DaemonUnavailable,
@@ -7,7 +7,7 @@ export {
   EmailNotVerified,
   InsufficientCredit,
   NoRouteAvailable,
-  PymtHouseError,
+  OpenClearinghouseError,
   RateLimited,
   SpendCapExceeded,
 } from "./errors.js";

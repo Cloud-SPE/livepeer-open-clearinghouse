@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pymthouse.domains.billing.service import window_bounds_for
+from livepeer_open_clearinghouse.domains.billing.service import window_bounds_for
 
 
 @pytest.mark.unit

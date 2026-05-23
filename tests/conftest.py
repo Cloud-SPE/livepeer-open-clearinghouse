@@ -7,8 +7,8 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from pymthouse.main import create_app
-from pymthouse.settings import Settings
+from livepeer_open_clearinghouse.main import create_app
+from livepeer_open_clearinghouse.settings import Settings
 
 
 @pytest.fixture(scope="session")

@@ -1,6 +1,6 @@
-# pymthouse-sdk-go
+# livepeer-open-clearinghouse-sdk-go
 
-Reference Go SDK for the PymtHouse gateway. Standard-library only —
+Reference Go SDK for the Livepeer Open Clearinghouse gateway. Standard-library only —
 no external dependencies.
 
 ## Setup
@@ -17,16 +17,16 @@ module.)
 ## Run the tests
 
 ```bash
-go test ./pymthouse/...
+go test ./livepeer_open_clearinghouse/...
 ```
 
-Uses `httptest.Server` to stub PymtHouse's HTTP surface; no live
+Uses `httptest.Server` to stub Livepeer Open Clearinghouse's HTTP surface; no live
 gateway needed.
 
 ## Coverage
 
 ```bash
-go test ./pymthouse/... -coverprofile=cover.out -covermode=atomic
+go test ./livepeer_open_clearinghouse/... -coverprofile=cover.out -covermode=atomic
 go tool cover -func=cover.out      # text summary
 go tool cover -html=cover.out      # opens an HTML report
 ```
@@ -49,8 +49,8 @@ Configured in `.golangci.yml`. Install with
 ## Run the example against a live stack
 
 ```bash
-PYMTHOUSE_URL=http://localhost:8000 \
-PYMTHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
+OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+OPEN_CLEARINGHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
 go run ./cmd/example
 ```
 
@@ -63,26 +63,26 @@ import (
     "log"
     "os"
 
-    "github.com/livepeer/pymthouse-sdk-go/pymthouse"
+    openclearinghouse "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
 )
 
 func callLLM(ctx context.Context, prompt string) error {
-    ph, err := pymthouse.NewClient(pymthouse.Options{
-        BaseURL: "https://pymthouse.example.com",
-        APIKey:  os.Getenv("PYMTHOUSE_API_KEY"),
+    ph, err := openclearinghouse.NewClient(openclearinghouse.Options{
+        BaseURL: "https://open-clearinghouse.example.com",
+        APIKey:  os.Getenv("OPEN_CLEARINGHOUSE_API_KEY"),
     })
     if err != nil {
         return err
     }
 
-    mint, err := ph.MintPayment(ctx, pymthouse.MintPaymentInput{
+    mint, err := ph.MintPayment(ctx, openclearinghouse.MintPaymentInput{
         Capability:     "openai:chat-completions",
         Offering:       "vllm-qwen3.6-27b-default",
         WorkUnits:      1000,
         IdempotencyKey: idem,
     })
     if err != nil {
-        var phErr *pymthouse.Error
+        var phErr *openclearinghouse.Error
         if errors.As(err, &phErr) && phErr.IsInsufficientCredit() {
             log.Println("need topup:", phErr.Details)
         }
@@ -92,7 +92,7 @@ func callLLM(ctx context.Context, prompt string) error {
     // ... POST to mint.RecipientEthAddress's orch with header
     //     Livepeer-Payment: mint.PaymentBytes ...
 
-    _, err = ph.ReportUsage(ctx, pymthouse.ReportUsageInput{
+    _, err = ph.ReportUsage(ctx, openclearinghouse.ReportUsageInput{
         PaymentID:       mint.PaymentID,
         ActualWorkUnits: 873,
         IdempotencyKey:  idem,
@@ -110,7 +110,7 @@ Method surface:
 | `MintPayment(ctx, MintPaymentInput)` | the load-bearing call |
 | `ReportUsage(ctx, ReportUsageInput)` | reconcile over-committed budget |
 
-Errors come back as `*pymthouse.Error` with predicate methods:
+Errors come back as `*openclearinghouse.Error` with predicate methods:
 `IsInsufficientCredit`, `IsSpendCapExceeded`, `IsAccountNotApproved`,
 `IsEmailNotVerified`, `IsNoRouteAvailable`, `IsRateLimited` (with
 `RetryAfterSeconds`), `IsDuplicateRequest`, `IsDaemonUnavailable`.

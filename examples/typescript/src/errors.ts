@@ -1,9 +1,9 @@
 /**
- * Typed errors mapped from PymtHouse's response envelope:
+ * Typed errors mapped from Livepeer Open Clearinghouse's response envelope:
  *
  *     { "error": { "code": "...", "message": "...", "details": {...} } }
  *
- * Anything we don't recognize falls through to the base PymtHouseError
+ * Anything we don't recognize falls through to the base OpenClearinghouseError
  * so callers can still log + retry sensibly.
  */
 
@@ -15,56 +15,56 @@ export interface ErrorBody {
   retryAfterSeconds: number | null;
 }
 
-export class PymtHouseError extends Error {
+export class OpenClearinghouseError extends Error {
   readonly code: string | null;
   readonly status: number;
   readonly details: Record<string, unknown>;
 
   constructor(body: ErrorBody) {
     super(body.message);
-    this.name = "PymtHouseError";
+    this.name = "OpenClearinghouseError";
     this.code = body.code;
     this.status = body.status;
     this.details = body.details;
   }
 }
 
-export class InsufficientCredit extends PymtHouseError {
+export class InsufficientCredit extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "InsufficientCredit";
   }
 }
 
-export class SpendCapExceeded extends PymtHouseError {
+export class SpendCapExceeded extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "SpendCapExceeded";
   }
 }
 
-export class AccountNotApproved extends PymtHouseError {
+export class AccountNotApproved extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "AccountNotApproved";
   }
 }
 
-export class EmailNotVerified extends PymtHouseError {
+export class EmailNotVerified extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "EmailNotVerified";
   }
 }
 
-export class NoRouteAvailable extends PymtHouseError {
+export class NoRouteAvailable extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "NoRouteAvailable";
   }
 }
 
-export class RateLimited extends PymtHouseError {
+export class RateLimited extends OpenClearinghouseError {
   readonly retryAfterSeconds: number | null;
   constructor(body: ErrorBody) {
     super(body);
@@ -73,21 +73,21 @@ export class RateLimited extends PymtHouseError {
   }
 }
 
-export class DuplicateRequest extends PymtHouseError {
+export class DuplicateRequest extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "DuplicateRequest";
   }
 }
 
-export class DaemonUnavailable extends PymtHouseError {
+export class DaemonUnavailable extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);
     this.name = "DaemonUnavailable";
   }
 }
 
-const CODE_MAP: Record<string, new (body: ErrorBody) => PymtHouseError> = {
+const CODE_MAP: Record<string, new (body: ErrorBody) => OpenClearinghouseError> = {
   INSUFFICIENT_CREDIT: InsufficientCredit,
   SPEND_CAP_EXCEEDED: SpendCapExceeded,
   ACCOUNT_NOT_APPROVED: AccountNotApproved,
@@ -103,7 +103,7 @@ export function fromResponse(args: {
   status: number;
   body: unknown;
   retryAfter: number | null;
-}): PymtHouseError {
+}): OpenClearinghouseError {
   const dict = isRecord(args.body) ? args.body : { detail: String(args.body) };
   const envelope = isRecord(dict.error) ? dict.error : {};
   const envCode = envelope.code;
@@ -125,7 +125,7 @@ export function fromResponse(args: {
     details,
     retryAfterSeconds: args.retryAfter,
   };
-  const Cls = code ? (CODE_MAP[code] ?? PymtHouseError) : PymtHouseError;
+  const Cls = code ? (CODE_MAP[code] ?? OpenClearinghouseError) : OpenClearinghouseError;
   return new Cls(body);
 }
 

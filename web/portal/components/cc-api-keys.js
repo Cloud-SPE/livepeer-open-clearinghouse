@@ -80,7 +80,7 @@ export class CcApiKeys extends LitElement {
       <div class="card">
         <h2>API keys</h2>
         <p class="muted">
-          API keys authenticate your app developer calls to the PymtHouse
+          API keys authenticate your app developer calls to the Livepeer Open Clearinghouse
           API. You are shown the raw key exactly once at creation time —
           store it securely.
         </p>
@@ -91,7 +91,7 @@ export class CcApiKeys extends LitElement {
             <div class="card">
               <h3>New key created</h3>
               <p>
-                Copy the key now. PymtHouse cannot show it again.
+                Copy the key now. Livepeer Open Clearinghouse cannot show it again.
               </p>
               <div class="secret">${this._newRaw}</div>
               <div class="mt-2">

@@ -1,4 +1,6 @@
-use pymthouse_sdk::{Client, ClientOptions, ErrorKind, MintPaymentInput, PymtHouseError};
+use livepeer_open_clearinghouse_sdk::{
+    Client, ClientOptions, ErrorKind, MintPaymentInput, OpenClearinghouseError,
+};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -65,7 +67,7 @@ async fn insufficient_credit_maps_to_kind() {
         .await
         .expect_err("should error");
     assert_eq!(err.kind(), ErrorKind::InsufficientCredit);
-    if let PymtHouseError::Api {
+    if let OpenClearinghouseError::Api {
         status, details, ..
     } = err
     {
@@ -133,7 +135,7 @@ fn rejects_bad_api_key() {
     let err =
         Client::new(ClientOptions::new("http://x", "not-a-real-key")).expect_err("should error");
     match err {
-        PymtHouseError::Config(msg) => assert!(msg.contains("pymth_"), "{msg}"),
+        OpenClearinghouseError::Config(msg) => assert!(msg.contains("pymth_"), "{msg}"),
         other => panic!("expected Config, got {other:?}"),
     }
 }
@@ -201,7 +203,7 @@ async fn report_usage_returns_refund() {
         .mount(&mock)
         .await;
     let result = client
-        .report_usage(pymthouse_sdk::ReportUsageInput {
+        .report_usage(livepeer_open_clearinghouse_sdk::ReportUsageInput {
             payment_id: "00000000-0000-0000-0000-000000000001",
             actual_work_units: 800,
             idempotency_key: Some("abc-123"),
@@ -229,7 +231,7 @@ async fn non_json_error_body_falls_back_to_text() {
         })
         .await
         .expect_err("should error");
-    if let PymtHouseError::Api { status, .. } = err {
+    if let OpenClearinghouseError::Api { status, .. } = err {
         assert_eq!(status, 503);
     } else {
         panic!("expected Api variant; got {err:?}");

@@ -2,19 +2,24 @@
  * End-to-end example: mint a payment, simulate sending to an orch,
  * reconcile usage.
  *
- *     PYMTHOUSE_URL=http://localhost:8000 \
- *     PYMTHOUSE_API_KEY=pymth_live_... \
+ *     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+ *     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
  *     pnpm example
  */
 
 import { randomUUID } from "node:crypto";
-import { InsufficientCredit, NoRouteAvailable, PymtHouseClient, RateLimited } from "./index.js";
+import {
+  InsufficientCredit,
+  NoRouteAvailable,
+  OpenClearinghouseClient,
+  RateLimited,
+} from "./index.js";
 
 async function main(): Promise<void> {
-  const baseUrl = requireEnv("PYMTHOUSE_URL");
-  const apiKey = requireEnv("PYMTHOUSE_API_KEY");
+  const baseUrl = requireEnv("OPEN_CLEARINGHOUSE_URL");
+  const apiKey = requireEnv("OPEN_CLEARINGHOUSE_API_KEY");
 
-  const ph = new PymtHouseClient({ baseUrl, apiKey });
+  const ph = new OpenClearinghouseClient({ baseUrl, apiKey });
 
   // 1. Pick an offering
   const caps = await ph.listCapabilities();

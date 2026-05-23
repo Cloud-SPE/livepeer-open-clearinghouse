@@ -3,8 +3,8 @@
 Run with:
 
     uv sync --extra dev
-    PYMTHOUSE_URL=http://localhost:8000 \\
-    PYMTHOUSE_API_KEY=pymth_live_... \\
+    OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \\
+    OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \\
     uv run python example.py
 """
 
@@ -14,19 +14,19 @@ import asyncio
 import os
 import uuid
 
-from pymthouse_sdk import (
+from livepeer_open_clearinghouse_sdk import (
     InsufficientCredit,
     NoRouteAvailable,
-    PymtHouseClient,
+    OpenClearinghouseClient,
     RateLimited,
 )
 
 
 async def chat(prompt: str) -> None:
-    base_url = os.environ["PYMTHOUSE_URL"]
-    api_key = os.environ["PYMTHOUSE_API_KEY"]
+    base_url = os.environ["OPEN_CLEARINGHOUSE_URL"]
+    api_key = os.environ["OPEN_CLEARINGHOUSE_API_KEY"]
 
-    async with PymtHouseClient(base_url=base_url, api_key=api_key) as ph:
+    async with OpenClearinghouseClient(base_url=base_url, api_key=api_key) as ph:
         # 1. Pick an offering. Pin to a specific one in prod; here we
         #    just take the first chat-completions route we find.
         caps = await ph.list_capabilities()

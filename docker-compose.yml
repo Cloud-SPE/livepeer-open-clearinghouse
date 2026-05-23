@@ -1,4 +1,4 @@
-# PymtHouse local + dev compose stack.
+# Livepeer Open Clearinghouse local + dev compose stack.
 #
 # - All services reference pre-built images via `image:` (no `build:` here).
 #   Build the gateway locally with `make image-build` first.
@@ -15,15 +15,15 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: pymthouse-db
+    container_name: livepeer-open-clearinghouse-db
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-pymthouse}
-      POSTGRES_USER: ${POSTGRES_USER:-pymthouse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pymthouse-dev-password}
+      POSTGRES_DB: ${POSTGRES_DB:-livepeer_open_clearinghouse}
+      POSTGRES_USER: ${POSTGRES_USER:-livepeer_open_clearinghouse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-livepeer_open_clearinghouse-dev-password}
     volumes:
-      - pymthouse-pgdata:/var/lib/postgresql/data
+      - livepeer-open-clearinghouse-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pymthouse}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-livepeer_open_clearinghouse}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -33,7 +33,7 @@ services:
 
   payment-daemon:
     image: tztcloud/livepeer-payment-daemon:${LIVEPEER_PAYER_DAEMON_TAG:-v1.3.0}
-    container_name: pymthouse-payment-daemon
+    container_name: livepeer-open-clearinghouse-payment-daemon
     command:
       - --mode=sender
       - --socket=/var/run/livepeer/payer-daemon.sock
@@ -50,7 +50,7 @@ services:
 
   service-registry-daemon:
     image: tztcloud/livepeer-service-registry-daemon:${LIVEPEER_REGISTRY_DAEMON_TAG:-v1.3.0}
-    container_name: pymthouse-service-registry-daemon
+    container_name: livepeer-open-clearinghouse-service-registry-daemon
     command:
       - --mode=resolver
       - --socket=/var/run/livepeer/service-registry.sock
@@ -63,9 +63,9 @@ services:
       # - ./.dev/registry/nodes.yaml:/etc/livepeer/nodes.yaml:ro
     restart: unless-stopped
 
-  pymthouse-gateway:
-    image: tztcloud/pymthouse-gateway:${PYMTHOUSE_GATEWAY_TAG:-dev}
-    container_name: pymthouse-gateway
+  livepeer-open-clearinghouse-gateway:
+    image: tztcloud/livepeer-open-clearinghouse-gateway:${OPEN_CLEARINGHOUSE_GATEWAY_TAG:-dev}
+    container_name: livepeer-open-clearinghouse-gateway
     depends_on:
       db:
         condition: service_healthy
@@ -79,7 +79,7 @@ services:
       APP_PORT: "8000"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://pymthouse:pymthouse-dev-password@db:5432/pymthouse}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://livepeer_open_clearinghouse:livepeer_open_clearinghouse-dev-password@db:5432/livepeer_open_clearinghouse}
       API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:-dev-pepper-CHANGE-FOR-PROD}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-CHANGE-FOR-PROD}
       METRICS_TOKEN: ${METRICS_TOKEN:-dev-metrics-token-CHANGE-FOR-PROD}
@@ -87,8 +87,8 @@ services:
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_API_URL: ${RESEND_API_URL:-}
-      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@pymthouse.local}
-      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-PymtHouse}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@livepeer-open-clearinghouse.local}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Livepeer Open Clearinghouse}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
@@ -107,10 +107,10 @@ services:
     volumes:
       - livepeer-run:/var/run/livepeer
     ports:
-      - "${PYMTHOUSE_HOST_PORT:-8000}:8000"
+      - "${OPEN_CLEARINGHOUSE_HOST_PORT:-8000}:8000"
     restart: unless-stopped
 
 volumes:
-  pymthouse-pgdata:
+  livepeer-open-clearinghouse-pgdata:
   livepeer-run:
   registry-cache:

@@ -1,6 +1,6 @@
-# pymthouse-sdk (Rust)
+# livepeer-open-clearinghouse-sdk (Rust)
 
-Reference Rust SDK for the PymtHouse gateway. Built on `reqwest`
+Reference Rust SDK for the Livepeer Open Clearinghouse gateway. Built on `reqwest`
 (rustls), `serde`, `thiserror`, `tokio`. No `unsafe`.
 
 ## Setup
@@ -17,7 +17,7 @@ cargo build
 cargo test
 ```
 
-Uses `wiremock` to stub the gateway's HTTP surface; no live PymtHouse
+Uses `wiremock` to stub the gateway's HTTP surface; no live Livepeer Open Clearinghouse
 needed.
 
 ## Coverage
@@ -43,21 +43,21 @@ at warn, with a small set of explicit allows for SDK-shape reasons.
 ## Run the example against a live stack
 
 ```bash
-PYMTHOUSE_URL=http://localhost:8000 \
-PYMTHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
+OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+OPEN_CLEARINGHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
 cargo run --example example
 ```
 
 ## Use it from your app
 
 ```rust
-use pymthouse_sdk::{Client, ClientOptions, ErrorKind, MintPaymentInput, ReportUsageInput};
+use livepeer_open_clearinghouse_sdk::{Client, ClientOptions, ErrorKind, MintPaymentInput, ReportUsageInput};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ph = Client::new(ClientOptions::new(
-        "https://pymthouse.example.com",
-        std::env::var("PYMTHOUSE_API_KEY")?,
+        "https://open-clearinghouse.example.com",
+        std::env::var("OPEN_CLEARINGHOUSE_API_KEY")?,
     ))?;
 
     let idem = "<your-uuid>";
@@ -100,7 +100,7 @@ Method surface:
 | `mint_payment(MintPaymentInput)` | the load-bearing call |
 | `report_usage(ReportUsageInput)` | reconcile over-committed budget |
 
-`PymtHouseError` is a `thiserror` enum with `Transport`, `Api`, and
+`OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`, and
 `Config` variants. Call `.kind()` for the high-level `ErrorKind`
 (`InsufficientCredit`, `SpendCapExceeded`, `AccountNotApproved`,
 `EmailNotVerified`, `NoRouteAvailable`, `RateLimited`,

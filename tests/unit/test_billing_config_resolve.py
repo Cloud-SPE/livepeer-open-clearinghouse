@@ -13,9 +13,9 @@ from decimal import Decimal
 
 import pytest
 
-from pymthouse.domains.billing import service as billing_service
-from pymthouse.domains.billing.repo import UserBillingConfig
-from pymthouse.settings import Settings
+from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.repo import UserBillingConfig
+from livepeer_open_clearinghouse.settings import Settings
 
 
 def _settings(**overrides: object) -> Settings:
@@ -43,7 +43,9 @@ class _FakeSession:
 async def test_resolve_uses_defaults_when_no_row() -> None:
     s = _FakeSession(None)
     cfg = await billing_service.resolve_billing_config(
-        s, user_id=uuid.uuid4(), settings=_settings()  # type: ignore[arg-type]
+        s,
+        user_id=uuid.uuid4(),
+        settings=_settings(),  # type: ignore[arg-type]
     )
     assert cfg.spend_period_seconds == 86_400
     assert cfg.spend_period_cap_wei == 1_000_000
@@ -61,7 +63,9 @@ async def test_resolve_uses_overrides_when_provided() -> None:
     )
     s = _FakeSession(row)  # type: ignore[arg-type]
     cfg = await billing_service.resolve_billing_config(
-        s, user_id=uuid.uuid4(), settings=_settings()  # type: ignore[arg-type]
+        s,
+        user_id=uuid.uuid4(),
+        settings=_settings(),  # type: ignore[arg-type]
     )
     assert cfg.spend_period_seconds == 3_600
     assert cfg.spend_period_cap_wei == 200_000
@@ -79,7 +83,9 @@ async def test_resolve_mixes_overrides_with_defaults() -> None:
     )
     s = _FakeSession(row)  # type: ignore[arg-type]
     cfg = await billing_service.resolve_billing_config(
-        s, user_id=uuid.uuid4(), settings=_settings()  # type: ignore[arg-type]
+        s,
+        user_id=uuid.uuid4(),
+        settings=_settings(),  # type: ignore[arg-type]
     )
     assert cfg.spend_period_seconds == 86_400
     assert cfg.spend_period_cap_wei == 777

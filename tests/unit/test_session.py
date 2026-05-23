@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from pymthouse.providers.auth import session
+from livepeer_open_clearinghouse.providers.auth import session
 
 
 @pytest.mark.unit

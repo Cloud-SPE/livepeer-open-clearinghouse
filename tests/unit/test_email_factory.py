@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from pymthouse.providers.email import (
+from livepeer_open_clearinghouse.providers.email import (
     NullEmailProvider,
     make_provider,
 )
-from pymthouse.settings import Settings
+from livepeer_open_clearinghouse.settings import Settings
 
 
 def _s(**overrides: object) -> Settings:
@@ -28,9 +28,7 @@ def test_auto_with_no_key_uses_null() -> None:
 
 @pytest.mark.unit
 def test_explicit_null_overrides_key() -> None:
-    p = make_provider(
-        _s(email_provider="null", resend_api_key=SecretStr("rs_secret"))
-    )
+    p = make_provider(_s(email_provider="null", resend_api_key=SecretStr("rs_secret")))
     assert isinstance(p, NullEmailProvider)
 
 
@@ -44,8 +42,6 @@ def test_explicit_resend_without_key_raises() -> None:
 def test_auto_with_key_picks_resend() -> None:
     # If the `resend` import is available, this should construct ok.
     pytest.importorskip("resend")
-    p = make_provider(
-        _s(email_provider="auto", resend_api_key=SecretStr("rs_secret"))
-    )
+    p = make_provider(_s(email_provider="auto", resend_api_key=SecretStr("rs_secret")))
     # ResendEmailProvider has no isinstance check against NullEmailProvider.
     assert not isinstance(p, NullEmailProvider)

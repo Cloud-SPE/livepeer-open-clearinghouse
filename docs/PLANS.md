@@ -1,6 +1,6 @@
 # PLANS.md
 
-How planning works in PymtHouse. Plans are first-class repository artifacts:
+How planning works in Livepeer Open Clearinghouse. Plans are first-class repository artifacts:
 they're versioned, reviewable, and discoverable by future agent runs.
 
 ## When to write a plan vs. when not

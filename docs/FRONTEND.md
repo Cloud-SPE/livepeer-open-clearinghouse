@@ -1,6 +1,6 @@
 # FRONTEND.md
 
-The frontend conventions for PymtHouse's two SPAs (`web/portal/` and
+The frontend conventions for Livepeer Open Clearinghouse's two SPAs (`web/portal/` and
 `web/admin/`). These are pure preferences; deviating breaks consistency,
 not correctness. Stick to them.
 
@@ -22,7 +22,7 @@ extra surface area an agent has to reason about. `esm.sh` + native ES
 modules cover everything we need.
 
 We follow the conventions established in
-`/livepeer-modules-openai/web/{site,portal,admin}/` because we want PymtHouse
+`/livepeer-modules-openai/web/{site,portal,admin}/` because we want Livepeer Open Clearinghouse
 to feel like a sibling product to anyone navigating between the two repos.
 
 ## Directory shape
@@ -100,7 +100,7 @@ Single stylesheet per SPA, organized with `@layer`:
 
 :root {
   /* Cool zinc base + emerald (portal) / sky (admin) accent. Drawn from
-     livepeer-pymthouse's Tailwind zinc-950 / emerald-400 palette but
+     livepeer-open-clearinghouse's Tailwind zinc-950 / emerald-400 palette but
      restated as plain CSS variables so we keep zero-build. */
   --bg: #09090b;            /* zinc-950 */
   --fg: #fafafa;            /* zinc-50 */
@@ -201,7 +201,7 @@ component signaling via custom events on `window` or the app root
 (`cc-login`, `cc-logout`, `cc-balance-changed`, etc.).
 
 When state has to survive a reload, put it in `localStorage` deliberately
-with a namespaced key (e.g., `pymthouse:portal:last-route`).
+with a namespaced key (e.g., `livepeer_open_clearinghouse:portal:last-route`).
 
 ## Dev workflow
 

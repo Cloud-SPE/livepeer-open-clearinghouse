@@ -1,6 +1,6 @@
-# @pymthouse/sdk (TypeScript)
+# @livepeer/open-clearinghouse-sdk (TypeScript)
 
-Reference TypeScript SDK for the PymtHouse gateway. Zero runtime
+Reference TypeScript SDK for the Livepeer Open Clearinghouse gateway. Zero runtime
 dependencies — built on `fetch` (Node 20+ has it native) — plus dev-time
 `tsx` + `vitest` + `typescript`.
 
@@ -16,7 +16,7 @@ pnpm install
 pnpm test
 ```
 
-Stubs `fetch` per test; no live PymtHouse needed.
+Stubs `fetch` per test; no live Livepeer Open Clearinghouse needed.
 
 ## Coverage
 
@@ -51,8 +51,8 @@ reference; embed the `src/` directly or compile in your app.)
 ## Run the example against a live stack
 
 ```bash
-PYMTHOUSE_URL=http://localhost:8000 \
-PYMTHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
+OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+OPEN_CLEARINGHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
 pnpm example
 ```
 
@@ -60,11 +60,11 @@ pnpm example
 
 ```ts
 import { randomUUID } from "node:crypto";
-import { PymtHouseClient, InsufficientCredit } from "@pymthouse/sdk";
+import { OpenClearinghouseClient, InsufficientCredit } from "@livepeer/open-clearinghouse-sdk";
 
-const ph = new PymtHouseClient({
-  baseUrl: "https://pymthouse.example.com",
-  apiKey: process.env.PYMTHOUSE_API_KEY!,
+const ph = new OpenClearinghouseClient({
+  baseUrl: "https://open-clearinghouse.example.com",
+  apiKey: process.env.OPEN_CLEARINGHOUSE_API_KEY!,
 });
 
 const idem = randomUUID();
@@ -93,7 +93,7 @@ try {
 }
 ```
 
-Method surface (camelCase on the client; PymtHouse wire is snake_case):
+Method surface (camelCase on the client; Livepeer Open Clearinghouse wire is snake_case):
 
 |                                                                     |                                 |
 | ------------------------------------------------------------------- | ------------------------------- |
@@ -106,4 +106,4 @@ Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,
 `RateLimited` (with `retryAfterSeconds`), `DuplicateRequest`,
 `DaemonUnavailable`. Anything else falls through to the base
-`PymtHouseError`.
+`OpenClearinghouseError`.

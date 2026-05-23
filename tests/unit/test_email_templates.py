@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from pymthouse.providers.email import templates
+from livepeer_open_clearinghouse.providers.email import templates
 
 
 @pytest.mark.unit
 def test_verification_email_carries_subject_link_text_html() -> None:
-    link = "https://pymthouse.local/portal/#/verify-email?token=abc.def"
+    link = "https://livepeer-open-clearinghouse.local/portal/#/verify-email?token=abc.def"
     msg = templates.verification_email(to="alice@example.com", verify_link=link)
     assert msg.to == "alice@example.com"
-    assert "Verify your PymtHouse account" in msg.subject
+    assert "Verify your Livepeer Open Clearinghouse account" in msg.subject
     assert link in msg.text
     assert link in msg.html
     assert "expires in 24 hours" in msg.text
@@ -54,9 +54,7 @@ def test_approval_notification_strips_trailing_slash() -> None:
 @pytest.mark.unit
 def test_password_reset_email_carries_link_and_ttl() -> None:
     link = "https://pymt/portal/#/reset-password?token=abc123def456"
-    msg = templates.password_reset_email(
-        to="x@example.com", reset_link=link, ttl_minutes=60
-    )
+    msg = templates.password_reset_email(to="x@example.com", reset_link=link, ttl_minutes=60)
     assert msg.to == "x@example.com"
     assert "Reset your" in msg.subject
     assert link in msg.text

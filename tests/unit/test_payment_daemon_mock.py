@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from pymthouse.providers.payment_daemon import (
+from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     FundingIntent,
@@ -53,7 +53,7 @@ async def test_create_payment_returns_expected_value_proportional_to_funding() -
 async def test_payment_bytes_has_recognizable_magic() -> None:
     client = MockPaymentDaemonClient()
     res = await client.create_payment(_request())
-    assert res.payment_bytes.startswith(b"PYMTHOUSE-MOCK-PAYMENT-V1")
+    assert res.payment_bytes.startswith(b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT-V1")
 
 
 @pytest.mark.unit

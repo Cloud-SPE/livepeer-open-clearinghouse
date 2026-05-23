@@ -112,7 +112,7 @@ export class CcApp extends LitElement {
             <button class="hamburger" @click=${this._toggleSidebar} aria-label="Menu">
               ${icon.menu()}
             </button>
-            <span class="brand">PymtHouse</span>
+            <span class="brand">Livepeer Open Clearinghouse</span>
           </div>
           <div class="row">
             <span class="muted small">${this._user.email}</span>
@@ -134,7 +134,7 @@ export class CcApp extends LitElement {
     return html`
       <div class="page">
         <header class="header">
-          <div class="brand">PymtHouse</div>
+          <div class="brand">Livepeer Open Clearinghouse</div>
           <nav class="nav">
             <a href="#/login">Log in</a>
             <a href="#/signup">Sign up</a>

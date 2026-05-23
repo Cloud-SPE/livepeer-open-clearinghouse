@@ -13,7 +13,7 @@ import {
   EmailNotVerified,
   InsufficientCredit,
   NoRouteAvailable,
-  PymtHouseError,
+  OpenClearinghouseError,
   RateLimited,
   SpendCapExceeded,
 } from "../src/index.js";
@@ -46,8 +46,8 @@ describe("fromResponse", () => {
       body: { error: { code: "UNRECOGNIZED", message: "x" } },
       retryAfter: null,
     });
-    expect(err).toBeInstanceOf(PymtHouseError);
-    expect(err.constructor).toBe(PymtHouseError);
+    expect(err).toBeInstanceOf(OpenClearinghouseError);
+    expect(err.constructor).toBe(OpenClearinghouseError);
   });
 
   it("uses `detail` as a fallback for legacy FastAPI errors", () => {

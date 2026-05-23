@@ -1,7 +1,7 @@
 // End-to-end example: mint a payment, simulate sending to an orch, reconcile usage.
 //
-//	PYMTHOUSE_URL=http://localhost:8000 \
-//	PYMTHOUSE_API_KEY=pymth_live_... \
+//	OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+//	OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
 //	go run ./cmd/example
 package main
 
@@ -15,7 +15,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/livepeer/pymthouse-sdk-go/pymthouse"
+	openclearinghouse "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
 )
 
 func main() {
@@ -25,12 +25,12 @@ func main() {
 }
 
 func run() error {
-	baseURL := mustEnv("PYMTHOUSE_URL")
-	apiKey := mustEnv("PYMTHOUSE_API_KEY")
+	baseURL := mustEnv("OPEN_CLEARINGHOUSE_URL")
+	apiKey := mustEnv("OPEN_CLEARINGHOUSE_API_KEY")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ph, err := pymthouse.NewClient(pymthouse.Options{BaseURL: baseURL, APIKey: apiKey})
+	ph, err := openclearinghouse.NewClient(openclearinghouse.Options{BaseURL: baseURL, APIKey: apiKey})
 	if err != nil {
 		return err
 	}
@@ -54,14 +54,14 @@ func run() error {
 
 	// 2. Mint with a 1000-token budget; one Idempotency-Key per logical request
 	idem := newIdempotencyKey()
-	mint, err := ph.MintPayment(ctx, pymthouse.MintPaymentInput{
+	mint, err := ph.MintPayment(ctx, openclearinghouse.MintPaymentInput{
 		Capability:     "openai:chat-completions",
 		Offering:       offering,
 		WorkUnits:      1000,
 		IdempotencyKey: idem,
 	})
 	if err != nil {
-		var phErr *pymthouse.Error
+		var phErr *openclearinghouse.Error
 		if errors.As(err, &phErr) {
 			switch {
 			case phErr.IsInsufficientCredit():
@@ -85,7 +85,7 @@ func run() error {
 	const actualTokens = 873
 
 	// 4. Reconcile
-	result, err := ph.ReportUsage(ctx, pymthouse.ReportUsageInput{
+	result, err := ph.ReportUsage(ctx, openclearinghouse.ReportUsageInput{
 		PaymentID:       mint.PaymentID,
 		ActualWorkUnits: actualTokens,
 		IdempotencyKey:  idem,

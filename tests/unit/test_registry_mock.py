@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pymthouse.providers.registry_daemon import MockRegistryClient
+from livepeer_open_clearinghouse.providers.registry_daemon import MockRegistryClient
 
 
 @pytest.mark.unit

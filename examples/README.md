@@ -1,4 +1,4 @@
-# PymtHouse — SDK examples
+# Livepeer Open Clearinghouse — SDK examples
 
 Reference clients for the gateway, one per major language. Each is a
 self-contained project — independent build, dependencies, and tests —
@@ -35,7 +35,7 @@ shape.
 
 ## Error shape (consistent across all four)
 
-PymtHouse returns errors as:
+Livepeer Open Clearinghouse returns errors as:
 
 ```json
 { "error": { "code": "...", "message": "...", "details": { ... } } }
@@ -52,13 +52,13 @@ Each SDK maps these into typed errors. The kinds you'll see:
 | `NO_ROUTE_AVAILABLE` | No orch advertising this capability+offering |
 | `rate_limited` | Back off; `Retry-After` header tells you how long |
 | `DUPLICATE_REQUEST` | Same `Idempotency-Key` reused with different inputs |
-| `DAEMON_UNAVAILABLE` | PymtHouse can't reach payment-daemon |
+| `DAEMON_UNAVAILABLE` | Livepeer Open Clearinghouse can't reach payment-daemon |
 
 ## The integration shape (for your reference)
 
 ```
                  ┌────────────────┐
-your-app-server  │   PymtHouse    │   orch (real Livepeer
+your-app-server  │   Livepeer Open Clearinghouse    │   orch (real Livepeer
                  │   gateway      │    orchestrator)
 ─────────────────►                │
 1. POST /v1/payments/mint
@@ -91,10 +91,10 @@ the orch consumes as it goes.
 
 ## What you don't have to do
 
-- **Talk to the blockchain.** PymtHouse + payment-daemon handle it.
+- **Talk to the blockchain.** Livepeer Open Clearinghouse + payment-daemon handle it.
 - **Manage a wallet.** The pooled signing wallet is the operator's.
-- **Verify tickets.** The orch does that against PymtHouse's signer key.
-- **Listen for ticket-win events.** PymtHouse charges Expected Value
+- **Verify tickets.** The orch does that against Livepeer Open Clearinghouse's signer key.
+- **Listen for ticket-win events.** Livepeer Open Clearinghouse charges Expected Value
   at issuance (probabilistic micropayment math) and absorbs short-term
   variance against the pool — Option A in the design docs.
 
@@ -104,7 +104,7 @@ the orch consumes as it goes.
 # Tests
 ( cd examples/python && uv sync --extra dev && uv run pytest -q )
 ( cd examples/typescript && pnpm install && pnpm test && pnpm build )
-( cd examples/go && go test ./pymthouse/... )
+( cd examples/go && go test ./livepeer_open_clearinghouse/... )
 ( cd examples/rust && cargo test )
 ```
 
@@ -125,7 +125,7 @@ HTTP layer in tests.
 ```bash
 ( cd examples/python && uv run pytest -q )           # term + html in .coverage_html
 ( cd examples/typescript && pnpm test:coverage )     # term + html in coverage/
-( cd examples/go && go test ./pymthouse/... -coverprofile=cover.out && go tool cover -func=cover.out )
+( cd examples/go && go test ./livepeer_open_clearinghouse/... -coverprofile=cover.out && go tool cover -func=cover.out )
 ( cd examples/rust && cargo llvm-cov --html )        # html in target/llvm-cov/html
 ```
 
@@ -135,5 +135,5 @@ Current coverage (one snapshot):
 |---|---|
 | Python | 96.4% lines, 12 branches missed of 12 evaluated |
 | TypeScript | 100% statements, 96.5% branches |
-| Go (pymthouse package) | 89.7% statements |
+| Go (livepeer_open_clearinghouse package) | 89.7% statements |
 | Rust | 97.9% lines, 95.3% regions |

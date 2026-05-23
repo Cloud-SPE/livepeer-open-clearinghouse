@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pymthouse.providers.clock import DefaultClock, FrozenClock
+from livepeer_open_clearinghouse.providers.clock import DefaultClock, FrozenClock
 
 
 @pytest.mark.unit

@@ -57,13 +57,13 @@ test-e2e: ## Run end-to-end tests (requires full compose stack)
 # ---------------------------------------------------------------------------
 
 run: ## Run the gateway locally (bypasses docker)
-	$(UV) run uvicorn pymthouse.main:app --reload --host 0.0.0.0 --port 8000
+	$(UV) run uvicorn livepeer_open_clearinghouse.main:app --reload --host 0.0.0.0 --port 8000
 
 # ---------------------------------------------------------------------------
 # docker
 # ---------------------------------------------------------------------------
 
-IMAGE_NAME ?= tztcloud/pymthouse-gateway
+IMAGE_NAME ?= tztcloud/livepeer-open-clearinghouse-gateway
 IMAGE_TAG ?= dev
 
 image-build: ## Build the gateway image and tag it for local compose
@@ -99,7 +99,7 @@ migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="
 # ---------------------------------------------------------------------------
 
 PROTO_DIR := proto
-PROTO_OUT := src/pymthouse/_gen
+PROTO_OUT := src/livepeer_open_clearinghouse/_gen
 PROTO_FILES := $(shell find $(PROTO_DIR) -name '*.proto' 2>/dev/null)
 
 protoc: ## Regenerate Python gRPC stubs from proto/

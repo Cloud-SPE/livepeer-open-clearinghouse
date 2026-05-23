@@ -1,6 +1,6 @@
 # Migrations
 
-Alembic database migrations for PymtHouse.
+Alembic database migrations for Livepeer Open Clearinghouse.
 
 ## Usage
 

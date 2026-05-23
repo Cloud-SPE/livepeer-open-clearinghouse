@@ -1424,7 +1424,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pymthouse"
+name = "livepeer-open-clearinghouse"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

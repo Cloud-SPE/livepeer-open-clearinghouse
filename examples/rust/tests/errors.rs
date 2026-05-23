@@ -2,7 +2,7 @@
 //! `retry_after_seconds()` helpers. Walks every variant so we don't
 //! rely on real traffic to exercise them.
 
-use pymthouse_sdk::{ErrorKind, PymtHouseError};
+use livepeer_open_clearinghouse_sdk::{ErrorKind, OpenClearinghouseError};
 
 #[test]
 fn from_code_maps_every_known_code() {
@@ -30,7 +30,7 @@ fn from_code_falls_back_to_other_for_unknown() {
 
 #[test]
 fn kind_on_non_api_returns_other() {
-    let err = PymtHouseError::Config("bad".into());
+    let err = OpenClearinghouseError::Config("bad".into());
     assert_eq!(err.kind(), ErrorKind::Other);
     assert_eq!(err.retry_after_seconds(), None);
 }

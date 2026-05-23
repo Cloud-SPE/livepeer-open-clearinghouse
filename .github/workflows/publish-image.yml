@@ -1,15 +1,15 @@
 name: Publish image
 
-# Build and push tztcloud/pymthouse-gateway when a v* tag is pushed.
+# Build and push tztcloud/livepeer-open-clearinghouse-gateway when a v* tag is pushed.
 #
 # Secrets required (set in the repo's Actions secrets):
 #   DOCKERHUB_USERNAME
 #   DOCKERHUB_TOKEN     (read-write token, not your account password)
 #
 # Tags pushed:
-#   tztcloud/pymthouse-gateway:vX.Y.Z          (the git tag)
-#   tztcloud/pymthouse-gateway:latest          (only on tagged releases)
-#   tztcloud/pymthouse-gateway:sha-<short>     (always)
+#   tztcloud/livepeer-open-clearinghouse-gateway:vX.Y.Z          (the git tag)
+#   tztcloud/livepeer-open-clearinghouse-gateway:latest          (only on tagged releases)
+#   tztcloud/livepeer-open-clearinghouse-gateway:sha-<short>     (always)
 
 on:
   push:
@@ -46,13 +46,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: tztcloud/pymthouse-gateway
+          images: tztcloud/livepeer-open-clearinghouse-gateway
           tags: |
             type=ref,event=tag
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |
-            org.opencontainers.image.title=pymthouse-gateway
+            org.opencontainers.image.title=livepeer-open-clearinghouse-gateway
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build + push

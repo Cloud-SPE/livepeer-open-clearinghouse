@@ -10,7 +10,7 @@ beliefs precede any specific design decision. They are how we decide.
 
 If a fact, decision, convention, or rationale isn't written in `docs/` or
 in code, an agent cannot see it. Slack messages, Google Docs, hallway
-chats, and "the way Bob always did it" are invisible to PymtHouse's
+chats, and "the way Bob always did it" are invisible to Livepeer Open Clearinghouse's
 primary contributor.
 
 So: write things down here. When a discussion produces a decision, the
@@ -19,7 +19,7 @@ it's documented before it's enforced.
 
 ## 2. Parse at boundaries, don't validate
 
-Every byte that enters PymtHouse from the outside world — HTTP body,
+Every byte that enters Livepeer Open Clearinghouse from the outside world — HTTP body,
 headers, environment variable, daemon response — gets parsed into a
 typed structure at the boundary. Past the boundary, code trusts types.
 

@@ -6,7 +6,7 @@
 // surface uses a bearer token.
 
 const BASE = "/v1/admin";
-const TOKEN_KEY = "pymthouse:admin:token";
+const TOKEN_KEY = "livepeer_open_clearinghouse:admin:token";
 
 export function setToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);

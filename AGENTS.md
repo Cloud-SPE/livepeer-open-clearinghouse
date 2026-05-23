@@ -5,10 +5,10 @@
 If something needs to be true forever, put it in a pillar doc and link from
 here, not inline.
 
-## What PymtHouse is
+## What Livepeer Open Clearinghouse is
 
 A non-custodial-by-design payment clearinghouse for Livepeer applications.
-PymtHouse authenticates app developers, manages their wei-denominated credit
+Livepeer Open Clearinghouse authenticates app developers, manages their wei-denominated credit
 balance, and mints signed Livepeer payment tickets on their behalf — fronted
 by a single HTTP API so app devs never touch a signing key.
 
@@ -24,15 +24,15 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
    strict types internally. Never trust a `dict` that crossed a network or
    filesystem boundary without parsing it first.
 3. **Strict layering, mechanically enforced.** Each domain in
-   `src/pymthouse/domains/<name>/` follows `types → config → repo → service →
-   runtime → ui`. Cross-cutting concerns enter through `src/pymthouse/providers/`.
+   `src/livepeer_open_clearinghouse/domains/<name>/` follows `types → config → repo → service →
+   runtime → ui`. Cross-cutting concerns enter through `src/livepeer_open_clearinghouse/providers/`.
    No skipping layers, no upward imports. See
    [`ARCHITECTURE.md`](ARCHITECTURE.md).
 4. **Fail closed on billing.** If credit can't be safely decremented, return
    HTTP 402 / 5xx. Never serve work without recorded payment intent. See
    [`docs/RELIABILITY.md`](docs/RELIABILITY.md).
-5. **PymtHouse is the only auth gate.** The daemons (`payment-daemon`,
-   `service-registry-daemon`) trust their Unix socket. PymtHouse is the only
+5. **Livepeer Open Clearinghouse is the only auth gate.** The daemons (`payment-daemon`,
+   `service-registry-daemon`) trust their Unix socket. Livepeer Open Clearinghouse is the only
    thing between an app dev and a signed ticket. See
    [`docs/SECURITY.md`](docs/SECURITY.md).
 6. **Boring tech, latest versions.** FastAPI, SQLAlchemy 2.0 async, Alembic,
@@ -61,7 +61,7 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 | [`docs/product-specs/`](docs/product-specs/) | Per-domain product specs; start at `index.md` |
 | [`docs/references/`](docs/references/) | External references and daemon API cheatsheets |
 | [`docs/generated/`](docs/generated/) | Files generated from code (db-schema, openapi.json) — don't edit by hand |
-| `src/pymthouse/` | Python application code (see ARCHITECTURE.md for layout) |
+| `src/livepeer_open_clearinghouse/` | Python application code (see ARCHITECTURE.md for layout) |
 | `web/portal/` | User dashboard SPA (Lit, zero-build) |
 | `web/admin/` | Operator console SPA (Lit, zero-build) |
 | `migrations/` | Alembic database migrations |
@@ -82,7 +82,7 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 ## Quick commands
 
 ```bash
-make dev            # docker compose up (postgres + daemons + pymthouse-gateway)
+make dev            # docker compose up (postgres + daemons + livepeer-open-clearinghouse-gateway)
 make down           # docker compose down
 make migrate        # alembic upgrade head
 make fmt            # ruff format

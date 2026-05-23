@@ -12,11 +12,11 @@ A Go sidecar that encapsulates Livepeer probabilistic-micropayment state
 and signing. One binary, two roles selected by `--mode`:
 
 - **sender** — mints/signs `Payment` envelopes (one or more tickets) for a
-  paying party. This is what PymtHouse uses.
+  paying party. This is what Livepeer Open Clearinghouse uses.
 - **receiver** — orchestrator-side; validates incoming payments, redeems
   winners on-chain.
 
-PymtHouse only ever talks to the sender mode.
+Livepeer Open Clearinghouse only ever talks to the sender mode.
 
 ## Transport
 
@@ -28,7 +28,7 @@ PymtHouse only ever talks to the sender mode.
   trusted because it has socket access.
 - Service: `livepeer.payments.v1.PayerDaemon`.
 
-PymtHouse mounts the same `livepeer-run` volume as the daemon and runs as
+Livepeer Open Clearinghouse mounts the same `livepeer-run` volume as the daemon and runs as
 uid/gid `65532:65532`.
 
 ## The load-bearing RPC
@@ -76,7 +76,7 @@ work_id: string                    # an opaque session key from the daemon
 
 - Daemon fetches `TicketParams` from `${ticket_params_base_url}/v1/payment/ticket-params`
   (synchronous outbound HTTP, 5s timeout) before signing.
-- Daemon signs **one ticket per call**. If PymtHouse needs N tickets, it
+- Daemon signs **one ticket per call**. If Livepeer Open Clearinghouse needs N tickets, it
   calls N times.
 - Daemon caches session keyed by
   `(recipient, capability, offering, funded_value_wei, ticket_params_base_url)`
@@ -87,10 +87,10 @@ work_id: string                    # an opaque session key from the daemon
   authoritative — the receiver chooses the final `face_value` × `win_prob`
   pair. EV in the response is the authoritative value.
 - `quote_ref.quote_id`, `constraint_fingerprint`, `route_fingerprint` are
-  validated as non-empty. PymtHouse gets all three from
+  validated as non-empty. Livepeer Open Clearinghouse gets all three from
   `service-registry-daemon.Select()`.
 
-**Errors PymtHouse must handle:**
+**Errors Livepeer Open Clearinghouse must handle:**
 
 - `codes.Aborted` on `ReportPaymentResult` → semantic "session rotated,
   retry once." Metadata carries old `work_id`.
@@ -109,7 +109,7 @@ work_id: string                    # an opaque session key from the daemon
 | `Health` | Returns `"ok"`. |
 
 Receiver-side RPCs (`PayeeDaemon`) exist but are not on the sender socket;
-PymtHouse never calls them.
+Livepeer Open Clearinghouse never calls them.
 
 ## Key custody
 
@@ -121,7 +121,7 @@ PymtHouse never calls them.
   zeroed after decrypt.
 - No KMS/HSM/remote-signer hook in the current implementation.
 
-**For PymtHouse's pooled-wallet model: one PymtHouse instance ↔ one
+**For Livepeer Open Clearinghouse's pooled-wallet model: one Livepeer Open Clearinghouse instance ↔ one
 payment-daemon ↔ one pooled wallet.** This is the explicit constraint.
 
 ## Ticket data model
@@ -168,23 +168,23 @@ Sender mode does not use a DB; sessions are in-memory.
 - Mounts `PAYMENT_DAEMON_SOCKET_DIR` (default `/var/run/livepeer`) as the
   socket volume. Keystore + password mounted read-only.
 
-PymtHouse deploys as a peer container sharing the socket-dir volume.
+Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir volume.
 
 ## Gotchas
 
 - **One ticket per call.** Need N → call N times.
-- **`ticket_params_base_url` is required per call.** PymtHouse must know
+- **`ticket_params_base_url` is required per call.** Livepeer Open Clearinghouse must know
   the orchestrator's broker URL (it comes from
   `service-registry-daemon.Select().worker_url`).
 - **Synchronous outbound HTTP inside `CreatePayment`** (5s timeout).
   Latency includes this round-trip.
 - **`AcceptedPrice.quote_ref` is strictly validated.** Triplet must be
-  non-empty. PymtHouse synthesizes/forwards from `Select()`.
+  non-empty. Livepeer Open Clearinghouse synthesizes/forwards from `Select()`.
 - **Caller-supplied `face_value` is a request, not authoritative.** Trust
   `response.expected_value` for charging.
 - **No multi-wallet support.** One daemon process, one wallet. Per-tenant
   signing would require multiple daemon processes.
-- **UDS only.** No TCP, no TLS. PymtHouse and daemon must be co-located.
+- **UDS only.** No TCP, no TLS. Livepeer Open Clearinghouse and daemon must be co-located.
 - **`examples/` is empty.** No reference client; we're the first.
 
 ## Key source paths

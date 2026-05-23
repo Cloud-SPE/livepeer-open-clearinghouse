@@ -13,12 +13,12 @@ import types
 
 import pytest
 
-from pymthouse.providers.email.provider import (
+from livepeer_open_clearinghouse.providers.email.provider import (
     EmailSendError,
     ResendEmailProvider,
     make_message,
 )
-from pymthouse.settings import Settings
+from livepeer_open_clearinghouse.settings import Settings
 
 
 def _settings() -> Settings:
@@ -55,9 +55,7 @@ def _build_provider(monkeypatch: pytest.MonkeyPatch, send_result: object):
 async def test_success_shape_returns_quietly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _build_provider(
-        monkeypatch, {"id": "abc-123", "from": "x", "to": ["y"]}
-    )
+    provider = _build_provider(monkeypatch, {"id": "abc-123", "from": "x", "to": ["y"]})
     msg = make_message(to="user@example.com", subject="s", html="h", text="t")
     await provider.send(msg)  # no exception
 

@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from pymthouse.providers.registry_daemon import (
+from livepeer_open_clearinghouse.providers.registry_daemon import (
     CachingRegistryClient,
     MockRegistryClient,
 )
@@ -35,9 +35,7 @@ class _Counted(MockRegistryClient):
         return await super().list_capabilities()
 
     async def list_orchestrators(self, *, capability=None):  # type: ignore[override]
-        self.calls["list_orchestrators"] = (
-            self.calls.get("list_orchestrators", 0) + 1
-        )
+        self.calls["list_orchestrators"] = self.calls.get("list_orchestrators", 0) + 1
         return await super().list_orchestrators(capability=capability)
 
 

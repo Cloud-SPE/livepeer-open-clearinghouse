@@ -6,7 +6,7 @@ go read the code.
 
 ## Bird's-eye view
 
-PymtHouse is a single Python (FastAPI) service that:
+Livepeer Open Clearinghouse is a single Python (FastAPI) service that:
 
 1. Authenticates app developers (API key) and operators (session cookie).
 2. Manages a per-user wei-denominated credit balance in Postgres.
@@ -15,7 +15,7 @@ PymtHouse is a single Python (FastAPI) service that:
    using a single pooled wallet that `payment-daemon` owns.
 5. Serves two Lit-based SPAs (user portal, operator admin) as static files.
 
-It runs as one container (`pymthouse-gateway`) alongside Postgres and the two
+It runs as one container (`livepeer-open-clearinghouse-gateway`) alongside Postgres and the two
 Go daemons in a single Docker Compose stack. It is not horizontally scalable
 in MVP — the in-process APScheduler and the single pooled wallet make this a
 single-instance system.
@@ -23,7 +23,7 @@ single-instance system.
 ## Code map
 
 ```
-src/pymthouse/
+src/livepeer_open_clearinghouse/
 ├── main.py            # FastAPI app factory, lifespan, route registration
 ├── settings.py        # Top-level Pydantic Settings — env -> typed config
 ├── providers/         # Cross-cutting concerns (the "Providers" lane)
@@ -106,7 +106,7 @@ The migration files at `migrations/versions/*` are authoritative.
 
 ```
 ┌─────────────────┐     HTTPS      ┌──────────────────────────────────┐
-│  app dev / SDK  │ ───────────→ │  pymthouse-gateway (this service) │
+│  app dev / SDK  │ ───────────→ │  livepeer-open-clearinghouse-gateway (this service) │
 └─────────────────┘                └──────────────────────────────────┘
                                               │
                             ┌─────────────────┼─────────────────┐
@@ -121,13 +121,13 @@ The migration files at `migrations/versions/*` are authoritative.
 ```
 
 - **Daemons trust their Unix socket** — no token auth on the gRPC surface.
-  PymtHouse and the daemons share the `livepeer-run` Docker volume and run
+  Livepeer Open Clearinghouse and the daemons share the `livepeer-run` Docker volume and run
   with matching uid/gid (`65532`).
-- **`payment-daemon` is the only thing that holds the wallet key.** PymtHouse
+- **`payment-daemon` is the only thing that holds the wallet key.** Livepeer Open Clearinghouse
   never sees keystore material. See `docs/SECURITY.md`.
 - **`service-registry-daemon.Select()` returns everything `CreatePayment`
   needs** — `eth_address`, `worker_url`, `price`, and the
-  `(quote_id, constraint_fingerprint, route_fingerprint)` triplet. PymtHouse
+  `(quote_id, constraint_fingerprint, route_fingerprint)` triplet. Livepeer Open Clearinghouse
   passes these through without quoting logic of its own.
 
 ## The ticket-mint flow (the headline path)
@@ -171,7 +171,7 @@ only network calls are in `providers/` and the only DB writes are in `repo.py`.
 ## What this architecture is not
 
 - Not a microservice mesh. There is one Python service.
-- Not multi-tenant in the sense of multi-issuer. PymtHouse is the sole
+- Not multi-tenant in the sense of multi-issuer. Livepeer Open Clearinghouse is the sole
   identity issuer for its users.
 - Not horizontally scalable in MVP. See `docs/RELIABILITY.md` for the
   reasoning and v2 path.

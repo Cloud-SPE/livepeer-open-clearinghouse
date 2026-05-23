@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# pymthouse-gateway image — Python 3.13, FastAPI, uv-managed deps.
+# livepeer-open-clearinghouse-gateway image — Python 3.13, FastAPI, uv-managed deps.
 # Multi-stage build: a `builder` stage installs deps into /opt/venv, then
 # `runtime` copies that venv plus source + frontend assets.
 #
@@ -34,7 +34,7 @@ COPY pyproject.toml ./
 COPY uv.lock* ./
 
 # Sync into /opt/venv. --no-install-project so we don't try to install
-# pymthouse itself before the source is present.
+# livepeer_open_clearinghouse itself before the source is present.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev || \
     uv sync --no-install-project --no-dev
@@ -50,7 +50,7 @@ COPY alembic.ini ./
 
 # Install the project itself into the venv. --no-editable is critical:
 # without it uv installs a .pth pointing at /build/src, which doesn't exist
-# in the runtime stage and Python can't find `pymthouse` at startup.
+# in the runtime stage and Python can't find `livepeer_open_clearinghouse` at startup.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
 
@@ -62,19 +62,19 @@ FROM python:3.13-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:$PATH \
-    PYMTHOUSE_HOME=/srv/pymthouse
+    OPEN_CLEARINGHOUSE_HOME=/srv/livepeer_open_clearinghouse
 
 # libpq for asyncpg + tini for a clean PID 1.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
         tini \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 65532 pymthouse \
+    && groupadd --system --gid 65532 livepeer_open_clearinghouse \
     && useradd --system --uid 65532 --gid 65532 \
-        --home-dir $PYMTHOUSE_HOME \
-        --shell /usr/sbin/nologin pymthouse
+        --home-dir $OPEN_CLEARINGHOUSE_HOME \
+        --shell /usr/sbin/nologin livepeer_open_clearinghouse
 
-WORKDIR $PYMTHOUSE_HOME
+WORKDIR $OPEN_CLEARINGHOUSE_HOME
 
 # venv (full dep tree) from the builder.
 COPY --from=builder /opt/venv /opt/venv
@@ -92,4 +92,4 @@ EXPOSE 8000
 # Migrations are gated on the DB being reachable, which is enforced via
 # compose's `depends_on: { db: service_healthy }`.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn pymthouse.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn livepeer_open_clearinghouse.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]

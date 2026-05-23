@@ -6,8 +6,10 @@ from decimal import Decimal
 
 import pytest
 
-from pymthouse import _gen  # noqa: F401  — pulls _gen onto sys.path
-from pymthouse.providers.registry_daemon.client import _selected_route_proto_to_dataclass
+from livepeer_open_clearinghouse import _gen  # noqa: F401  — pulls _gen onto sys.path
+from livepeer_open_clearinghouse.providers.registry_daemon.client import (
+    _selected_route_proto_to_dataclass,
+)
 
 
 @pytest.mark.unit
@@ -48,10 +50,17 @@ def test_empty_price_string_decodes_to_zero() -> None:
     # The proto field is `string`; an unset value materializes as "" — we
     # should treat that as zero rather than raising InvalidOperation.
     proto = resolver_pb2.SelectedRoute(
-        worker_url="x", eth_address="x", capability="x", offering="x",
-        price_per_work_unit_wei="", work_unit="x", units_per_price=0,
-        quote_id="x", quote_version=0,
-        constraint_fingerprint=b"", route_fingerprint=b"",
+        worker_url="x",
+        eth_address="x",
+        capability="x",
+        offering="x",
+        price_per_work_unit_wei="",
+        work_unit="x",
+        units_per_price=0,
+        quote_id="x",
+        quote_version=0,
+        constraint_fingerprint=b"",
+        route_fingerprint=b"",
     )
     dc = _selected_route_proto_to_dataclass(proto)
     assert dc.price_per_work_unit_wei == Decimal(0)
@@ -64,10 +73,17 @@ def test_large_price_string_decoded_intact() -> None:
     # Proto stores arbitrary-precision wei as a decimal big-int string.
     huge = str(2**200 - 1)
     proto = resolver_pb2.SelectedRoute(
-        worker_url="x", eth_address="x", capability="x", offering="x",
-        price_per_work_unit_wei=huge, work_unit="x", units_per_price=1,
-        quote_id="x", quote_version=1,
-        constraint_fingerprint=b"", route_fingerprint=b"",
+        worker_url="x",
+        eth_address="x",
+        capability="x",
+        offering="x",
+        price_per_work_unit_wei=huge,
+        work_unit="x",
+        units_per_price=1,
+        quote_id="x",
+        quote_version=1,
+        constraint_fingerprint=b"",
+        route_fingerprint=b"",
     )
     dc = _selected_route_proto_to_dataclass(proto)
     assert int(dc.price_per_work_unit_wei) == 2**200 - 1

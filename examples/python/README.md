@@ -1,6 +1,6 @@
-# pymthouse-sdk (Python)
+# livepeer-open-clearinghouse-sdk (Python)
 
-Reference async Python SDK for the PymtHouse gateway. ~150 lines of
+Reference async Python SDK for the Livepeer Open Clearinghouse gateway. ~150 lines of
 real code; pulls in `httpx` and nothing else.
 
 ## Setup
@@ -15,7 +15,7 @@ uv sync --extra dev
 uv run pytest -q
 ```
 
-Stubs every HTTP call via `respx`, so no live PymtHouse needed.
+Stubs every HTTP call via `respx`, so no live Livepeer Open Clearinghouse needed.
 Coverage is auto-collected (HTML in `.coverage_html/`); the suite fails
 at < 90%.
 
@@ -34,8 +34,8 @@ under `[tool.ruff.lint]`.
 ## Run the example against a live stack
 
 ```bash
-PYMTHOUSE_URL=http://localhost:8000 \
-PYMTHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
+OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+OPEN_CLEARINGHOUSE_API_KEY=pymth_live_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx \
 uv run python example.py
 ```
 
@@ -47,11 +47,11 @@ You'll see the mint response and a fake "would-send" line showing the
 ```python
 import asyncio
 import uuid
-from pymthouse_sdk import PymtHouseClient, InsufficientCredit
+from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient, InsufficientCredit
 
 async def call_llm(prompt: str) -> str:
-    async with PymtHouseClient(
-        base_url="https://pymthouse.example.com",
+    async with OpenClearinghouseClient(
+        base_url="https://open-clearinghouse.example.com",
         api_key="pymth_live_...",
     ) as ph:
         idem = str(uuid.uuid4())
@@ -81,7 +81,7 @@ Method surface:
 
 | | |
 |---|---|
-| `list_capabilities()` | discovery via PymtHouse → service-registry-daemon |
+| `list_capabilities()` | discovery via Livepeer Open Clearinghouse → service-registry-daemon |
 | `list_orchestrators(capability=...)` | discovery |
 | `mint_payment(capability, offering, work_units, idempotency_key=...)` | the load-bearing call |
 | `report_usage(payment_id, actual_work_units, idempotency_key=...)` | reconcile over-committed budget |
@@ -91,4 +91,4 @@ Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,
 `RateLimited` (with `retry_after_seconds`), `DuplicateRequest`,
 `DaemonUnavailable`. Anything else falls through to the base
-`PymtHouseError`.
+`OpenClearinghouseError`.

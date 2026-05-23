@@ -1,6 +1,6 @@
 # proto/
 
-Vendored protobuf definitions for the daemons PymtHouse integrates with.
+Vendored protobuf definitions for the daemons Livepeer Open Clearinghouse integrates with.
 
 Source: `/livepeer-cloud-spe/livepeer-network-modules/livepeer-network-protocol`.
 
@@ -19,7 +19,7 @@ make protoc
 ```
 
 This compiles every `proto/**/*.proto` into Python modules under
-`src/pymthouse/providers/payment_daemon/_gen/`. The generated files are
+`src/livepeer_open_clearinghouse/providers/payment_daemon/_gen/`. The generated files are
 committed so the runtime image doesn't need `grpcio-tools` at build time.
 
 ## When to re-vendor

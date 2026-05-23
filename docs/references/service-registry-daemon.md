@@ -16,7 +16,7 @@ fetch and verify the manifest, optionally merge an operator-curated static
 overlay, and resolve to a `SelectedRoute` for a given capability+offering.
 
 Two modes:
-- **resolver** — what PymtHouse uses; reads signed manifests, returns
+- **resolver** — what Livepeer Open Clearinghouse uses; reads signed manifests, returns
   routes.
 - **publisher** — orchestrator-side; builds and signs manifests.
 
@@ -30,17 +30,17 @@ the consumer interprets them.
 - Default socket: `/var/run/livepeer-service-registry.sock`.
 - **No auth on the gRPC surface.** Local caller is trusted; filesystem
   mediates.
-- PymtHouse mounts the same `livepeer-run` volume as the daemon and runs
+- Livepeer Open Clearinghouse mounts the same `livepeer-run` volume as the daemon and runs
   as uid/gid `65532:65532`.
 
-## RPCs PymtHouse calls (resolver mode)
+## RPCs Livepeer Open Clearinghouse calls (resolver mode)
 
 ### `Select(capability, offering, tier?, min_weight?) → SelectedRoute`
 
 The load-bearing call. Returns one explicit route for a capability+offering
 combination, ranked by weight.
 
-**Response shape** (the part PymtHouse uses):
+**Response shape** (the part Livepeer Open Clearinghouse uses):
 
 ```
 SelectedRoute {
@@ -60,7 +60,7 @@ SelectedRoute {
 }
 ```
 
-Everything `payment-daemon.CreatePayment` needs is here — PymtHouse passes
+Everything `payment-daemon.CreatePayment` needs is here — Livepeer Open Clearinghouse passes
 the relevant fields through unchanged.
 
 ### `SelectMany(capability, offering, …) → []SelectedRoute`
@@ -181,7 +181,7 @@ schema_version: string
 
 ## Gotchas
 
-- **`Select()` per call for MVP, no caching in PymtHouse.** The daemon
+- **`Select()` per call for MVP, no caching in Livepeer Open Clearinghouse.** The daemon
   caches manifests; we don't cache routes on top. See
   `tech-debt-tracker.md`.
 - **The `quote_ref` triplet from `Select` flows straight into

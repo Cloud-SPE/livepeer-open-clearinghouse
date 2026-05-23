@@ -1,6 +1,6 @@
 # SECURITY.md
 
-The security model for PymtHouse. This is the contract PymtHouse owes to
+The security model for Livepeer Open Clearinghouse. This is the contract Livepeer Open Clearinghouse owes to
 its users and operator. Don't relax it without an explicit decision logged
 in an exec-plan.
 
@@ -10,7 +10,7 @@ in an exec-plan.
   Internet
      │ HTTPS (TLS terminated at reverse proxy in prod, plain HTTP in dev)
      ▼
-  pymthouse-gateway  ← app dev requests are authenticated here
+  livepeer-open-clearinghouse-gateway  ← app dev requests are authenticated here
      │
      ├── Postgres (TCP, password auth, internal network only)
      │
@@ -23,20 +23,20 @@ in an exec-plan.
 
 There are three explicit trust transitions:
 
-1. **Internet → pymthouse-gateway:** authenticated. Either an API key
+1. **Internet → livepeer-open-clearinghouse-gateway:** authenticated. Either an API key
    (app-dev surface) or a web session cookie (portal/admin UI).
-2. **pymthouse-gateway → Postgres:** TCP with username/password from env.
+2. **livepeer-open-clearinghouse-gateway → Postgres:** TCP with username/password from env.
    The DB is on the same Docker network. Not exposed externally.
-3. **pymthouse-gateway → daemons:** Unix socket. Shared volume
+3. **livepeer-open-clearinghouse-gateway → daemons:** Unix socket. Shared volume
    (`livepeer-run`) with mode `0o660`. Trust is filesystem-mediated:
    only processes with matching uid/gid (`65532`) can connect.
 
-The keystore is read by `payment-daemon` only, at boot. PymtHouse and the
+The keystore is read by `payment-daemon` only, at boot. Livepeer Open Clearinghouse and the
 keystore are not on the same trust path.
 
 ## Key custody
 
-**PymtHouse never touches the Ethereum signing key.** The key is owned by
+**Livepeer Open Clearinghouse never touches the Ethereum signing key.** The key is owned by
 `payment-daemon`:
 
 - Loaded from a go-ethereum V3 JSON keystore at boot via `--keystore-path`.
@@ -46,14 +46,14 @@ keystore are not on the same trust path.
   zeroed after decrypt.
 - One process, one wallet, no multi-tenancy at the key layer.
 
-PymtHouse's role is restricted to calling the daemon's `CreatePayment` RPC.
-The key cannot be exfiltrated through PymtHouse; the daemon does not expose
+Livepeer Open Clearinghouse's role is restricted to calling the daemon's `CreatePayment` RPC.
+The key cannot be exfiltrated through Livepeer Open Clearinghouse; the daemon does not expose
 a "sign arbitrary data" endpoint to the sender RPC surface.
 
 **Operational requirements:**
 
 - The keystore file and password file are mounted into `payment-daemon`
-  with `:ro` and are not on a `pymthouse-gateway`-accessible mount.
+  with `:ro` and are not on a `livepeer-open-clearinghouse-gateway`-accessible mount.
 - The password is never committed. In prod, it comes from a secret manager
   or orchestration platform; in dev, `.dev/keystore/keystore-password` is
   in `.gitignore`.
@@ -149,16 +149,16 @@ defaults and clear "MUST CHANGE FOR PROD" comments where applicable.
 
 ## What we don't protect against (MVP)
 
-- A malicious operator. PymtHouse trusts its operator implicitly. An
+- A malicious operator. Livepeer Open Clearinghouse trusts its operator implicitly. An
   operator who wants to over-charge users can do so via the admin UI.
-- A compromised host. If `pymthouse-gateway` is rooted, the attacker can
+- A compromised host. If `livepeer-open-clearinghouse-gateway` is rooted, the attacker can
   read the DB and forge API responses. Defense-in-depth at the host level
   is the operator's responsibility.
-- A subpoenaed signing wallet. PymtHouse does not implement geographic
+- A subpoenaed signing wallet. Livepeer Open Clearinghouse does not implement geographic
   fencing or compliance-driven blocking. The operator is responsible for
   policy.
 - Side-channel timing attacks on the daemon's signing routine. The daemon
   is responsible; we treat it as a black box.
 
-When in doubt about whether something is in PymtHouse's threat model, ask.
+When in doubt about whether something is in Livepeer Open Clearinghouse's threat model, ask.
 Log the answer in this file.

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use thiserror::Error;
 
-/// Categorised error class. Matches `PymtHouse`'s `error.code` envelope.
+/// Categorised error class. Matches `Livepeer Open Clearinghouse`'s `error.code` envelope.
 /// Use `ErrorKind::from_code` to map a code string in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -37,13 +37,13 @@ impl ErrorKind {
 /// transport-level (`Transport`) failures so callers can match on
 /// `kind()` for common cases without losing the full context.
 #[derive(Debug, Error)]
-pub enum PymtHouseError {
+pub enum OpenClearinghouseError {
     /// Transport / I/O / decode failure.
-    #[error("pymthouse: transport: {0}")]
+    #[error("livepeer_open_clearinghouse: transport: {0}")]
     Transport(#[from] reqwest::Error),
 
-    /// `PymtHouse` returned an error envelope.
-    #[error("pymthouse: {message} ({code:?}) [http {status}]")]
+    /// `Livepeer Open Clearinghouse` returned an error envelope.
+    #[error("livepeer_open_clearinghouse: {message} ({code:?}) [http {status}]")]
     Api {
         status: u16,
         code: Option<String>,
@@ -54,11 +54,11 @@ pub enum PymtHouseError {
     },
 
     /// Configuration mistake at construction time.
-    #[error("pymthouse: configuration: {0}")]
+    #[error("livepeer_open_clearinghouse: configuration: {0}")]
     Config(String),
 }
 
-impl PymtHouseError {
+impl OpenClearinghouseError {
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
         match self {
@@ -79,7 +79,11 @@ impl PymtHouseError {
     }
 }
 
-pub fn from_response(status: u16, retry_after: Option<u64>, body: Option<Value>) -> PymtHouseError {
+pub fn from_response(
+    status: u16,
+    retry_after: Option<u64>,
+    body: Option<Value>,
+) -> OpenClearinghouseError {
     let body = body.unwrap_or(Value::Null);
     let envelope = body.get("error");
 
@@ -109,7 +113,7 @@ pub fn from_response(status: u16, retry_after: Option<u64>, body: Option<Value>)
         .cloned()
         .unwrap_or(Value::Null);
 
-    PymtHouseError::Api {
+    OpenClearinghouseError::Api {
         status,
         kind: ErrorKind::from_code(code.as_deref()),
         code,

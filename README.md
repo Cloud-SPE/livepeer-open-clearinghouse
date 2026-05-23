@@ -1,8 +1,8 @@
-# PymtHouse
+# Livepeer Open Clearinghouse
 
 A non-custodial-by-design payment clearinghouse for Livepeer applications.
 
-PymtHouse authenticates app developers, manages their wei-denominated credit
+Livepeer Open Clearinghouse authenticates app developers, manages their wei-denominated credit
 balance, and mints signed Livepeer payment tickets on their behalf. App
 developers integrate with one HTTP API and never touch a signing key.
 
@@ -12,9 +12,9 @@ Pre-alpha. Scaffolding in progress.
 
 ## How to run it locally
 
-PymtHouse runs as a Docker Compose stack with four services:
+Livepeer Open Clearinghouse runs as a Docker Compose stack with four services:
 
-- `pymthouse-gateway` — this repo (Python / FastAPI)
+- `livepeer-open-clearinghouse-gateway` — this repo (Python / FastAPI)
 - `db` — Postgres 16
 - `payment-daemon` — pre-built image from `livepeer-network-modules`
 - `service-registry-daemon` — pre-built image from `livepeer-network-modules`
@@ -38,7 +38,7 @@ The portal is at <http://localhost:8000/portal/>, the admin console at
 ## How it fits together
 
 ```
-app dev → pymthouse-gateway → service-registry-daemon (discovery)
+app dev → livepeer-open-clearinghouse-gateway → service-registry-daemon (discovery)
                             → payment-daemon (mint tickets)
                             → postgres (users, credit, usage)
 ```

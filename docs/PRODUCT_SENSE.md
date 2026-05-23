@@ -1,6 +1,6 @@
 # PRODUCT_SENSE.md
 
-What PymtHouse is for, who it's for, and the scope guardrails.
+What Livepeer Open Clearinghouse is for, who it's for, and the scope guardrails.
 
 ## The pitch in one paragraph
 
@@ -8,12 +8,12 @@ If you are building an application that uses the Livepeer network — for
 transcoding, AI inference, or any other capability orchestrators publish —
 you should not have to manage an Ethereum wallet, fund a hot signer, mint
 probabilistic micropayment tickets, or implement payment headers. You
-should send your job, get your result, and get billed at the end. PymtHouse
+should send your job, get your result, and get billed at the end. Livepeer Open Clearinghouse
 is the service that makes that possible.
 
 ## Users
 
-PymtHouse has two user populations.
+Livepeer Open Clearinghouse has two user populations.
 
 ### App developers
 
@@ -24,7 +24,7 @@ capabilities. They:
 - Have their account approved by an operator.
 - Receive an initial credit grant.
 - Create one or more API keys, one per application.
-- Call PymtHouse's HTTP API from their backend:
+- Call Livepeer Open Clearinghouse's HTTP API from their backend:
   - `GET /v1/capabilities` to discover what the network offers.
   - `GET /v1/orchestrators?capability=…` to find providers.
   - `POST /v1/payments/mint` to get a signed payment header for a job.
@@ -36,12 +36,12 @@ a ticket data structure. They see HTTP, JSON, and a balance in wei.
 
 ### Operators
 
-The party running PymtHouse. They:
+The party running Livepeer Open Clearinghouse. They:
 
 - Approve sign-ups.
 - Set initial credit grants and per-user spend-per-period caps.
 - Top up users manually (until automated funding rails ship).
-- Fund the pooled signing wallet from outside PymtHouse.
+- Fund the pooled signing wallet from outside Livepeer Open Clearinghouse.
 - Monitor system health via the admin console and Prometheus metrics.
 
 Operators are not the primary user. The admin console is a utility, not a
@@ -91,7 +91,7 @@ of these items.
   enough).
 
 These all have legitimate reasons to exist eventually. None of them are the
-critical path to "an app dev can integrate PymtHouse and pay an orchestrator
+critical path to "an app dev can integrate Livepeer Open Clearinghouse and pay an orchestrator
 for work today."
 
 ## Scope guardrails

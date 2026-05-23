@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Layered-architecture lint for the pymthouse package.
+"""Layered-architecture lint for the livepeer_open_clearinghouse package.
 
-Walks every ``.py`` file under ``src/pymthouse/`` (excluding the
+Walks every ``.py`` file under ``src/livepeer_open_clearinghouse/`` (excluding the
 ``_gen/`` directory of generated stubs), parses its imports, and
 applies the rules from ARCHITECTURE.md:
 
@@ -27,8 +27,8 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "pymthouse"
-PACKAGE_PREFIX = "pymthouse."
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "livepeer_open_clearinghouse"
+PACKAGE_PREFIX = "livepeer_open_clearinghouse."
 
 LAYERS: list[str] = ["types", "config", "repo", "service", "runtime", "ui"]
 SERVICE_TIER_ALIASES: set[str] = {"oauth"}  # service-level siblings of service.py
@@ -52,7 +52,7 @@ def layer_index(module_name: str) -> int | None:
 
 
 def classify(rel_parts: tuple[str, ...]) -> tuple[str, ...]:
-    """Map a relative path (under pymthouse/) to a category tuple.
+    """Map a relative path (under livepeer_open_clearinghouse/) to a category tuple.
 
     Returns one of:
         ("composition",)
@@ -100,7 +100,7 @@ def check_file(path: Path) -> list[str]:
 
     violations: list[str] = []
     for module, lineno in iter_imports(tree):
-        if not module.startswith(PACKAGE_PREFIX) and module != "pymthouse":
+        if not module.startswith(PACKAGE_PREFIX) and module != "livepeer_open_clearinghouse":
             continue
         target_path = module.removeprefix(PACKAGE_PREFIX).split(".")
         target_category = classify(tuple(target_path))

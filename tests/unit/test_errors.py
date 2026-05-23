@@ -1,16 +1,16 @@
-"""Unit tests for structured PymtHouse errors."""
+"""Unit tests for structured Livepeer Open Clearinghouse errors."""
 
 from __future__ import annotations
 
 import pytest
 
-from pymthouse.errors import (
+from livepeer_open_clearinghouse.errors import (
     AccountNotApproved,
     DaemonUnavailable,
     DuplicateRequest,
     InsufficientCredit,
     NoRouteAvailable,
-    PymtHouseError,
+    OpenClearinghouseError,
     SpendCapExceeded,
 )
 
@@ -18,7 +18,7 @@ from pymthouse.errors import (
 @pytest.mark.unit
 def test_insufficient_credit_carries_amounts_in_details() -> None:
     e = InsufficientCredit(available_wei=12_000, required_wei=50_000)
-    assert isinstance(e, PymtHouseError)
+    assert isinstance(e, OpenClearinghouseError)
     assert e.status_code == 402
     assert e.code == "INSUFFICIENT_CREDIT"
     assert e.details["available_wei"] == "12000"

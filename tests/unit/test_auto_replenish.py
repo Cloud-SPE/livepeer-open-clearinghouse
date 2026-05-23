@@ -14,8 +14,8 @@ from decimal import Decimal
 
 import pytest
 
-from pymthouse.domains.billing import service as billing_service
-from pymthouse.settings import Settings
+from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.settings import Settings
 
 
 def _settings(**overrides: object) -> Settings:
@@ -177,7 +177,7 @@ async def test_multiple_users_independent(
         config_by_user={
             a: _resolved(increment=500, threshold=1000),  # fires (low balance)
             b: _resolved(increment=500, threshold=1000),  # skips (above)
-            c: _resolved(increment=0, threshold=1000),    # skips (disabled)
+            c: _resolved(increment=0, threshold=1000),  # skips (disabled)
         },
         balance_by_user={a: 200, b: 5000, c: 0},
     )

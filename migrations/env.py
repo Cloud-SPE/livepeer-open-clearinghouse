@@ -1,6 +1,6 @@
 """Alembic environment script.
 
-Loads the database URL from `pymthouse.settings.get_settings()` so we only
+Loads the database URL from `livepeer_open_clearinghouse.settings.get_settings()` so we only
 configure the connection in one place. Imports every domain's `repo` module
 so that all ORM models attach to `Base.metadata` before autogenerate inspects
 it.
@@ -18,14 +18,14 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import every domain's repo module so its ORM classes register with
 # Base.metadata. Adding a new domain means adding an import here.
-from pymthouse.domains.accounts import repo as _accounts_repo  # noqa: F401
-from pymthouse.domains.admin import repo as _admin_repo  # noqa: F401
-from pymthouse.domains.api_keys import repo as _api_keys_repo  # noqa: F401
-from pymthouse.domains.billing import repo as _billing_repo  # noqa: F401
-from pymthouse.domains.payments import repo as _payments_repo  # noqa: F401
-from pymthouse.domains.usage import repo as _usage_repo  # noqa: F401
-from pymthouse.providers.db import Base
-from pymthouse.settings import get_settings
+from livepeer_open_clearinghouse.domains.accounts import repo as _accounts_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.admin import repo as _admin_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.billing import repo as _billing_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.payments import repo as _payments_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.usage import repo as _usage_repo  # noqa: F401
+from livepeer_open_clearinghouse.providers.db import Base
+from livepeer_open_clearinghouse.settings import get_settings
 
 # Alembic config object — exposes values from alembic.ini
 config = context.config

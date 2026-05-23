@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from pymthouse.domains.accounts.oauth import (
+from livepeer_open_clearinghouse.domains.accounts.oauth import (
     UnverifiedProviderEmail,
     find_or_link_user,
 )
-from pymthouse.providers.clock import FrozenClock
-from pymthouse.providers.oauth import PROVIDERS, is_enabled
+from livepeer_open_clearinghouse.providers.clock import FrozenClock
+from livepeer_open_clearinghouse.providers.oauth import PROVIDERS, is_enabled
 
 
 @pytest.mark.unit

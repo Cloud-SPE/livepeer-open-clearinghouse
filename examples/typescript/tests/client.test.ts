@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   InsufficientCredit,
   NoRouteAvailable,
-  PymtHouseClient,
+  OpenClearinghouseClient,
   RateLimited,
 } from "../src/index.js";
 
@@ -18,9 +18,9 @@ function mockFetch(impl: (req: Request) => Promise<Response> | Response): typeof
   }) as unknown as typeof fetch;
 }
 
-describe("PymtHouseClient", () => {
+describe("OpenClearinghouseClient", () => {
   it("mints on the happy path", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -48,7 +48,7 @@ describe("PymtHouseClient", () => {
   });
 
   it("maps INSUFFICIENT_CREDIT to a typed error", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -71,7 +71,7 @@ describe("PymtHouseClient", () => {
   });
 
   it("maps NO_ROUTE_AVAILABLE", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -90,7 +90,7 @@ describe("PymtHouseClient", () => {
   });
 
   it("carries Retry-After on rate-limited responses", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -111,7 +111,7 @@ describe("PymtHouseClient", () => {
 
   it("threads Idempotency-Key header through", async () => {
     let seenIdempotencyKey: string | null = null;
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch((req) => {
@@ -139,13 +139,13 @@ describe("PymtHouseClient", () => {
   });
 
   it("rejects obviously-wrong API keys at construction", () => {
-    expect(() => new PymtHouseClient({ baseUrl: BASE, apiKey: "not-a-real-key" })).toThrow(
+    expect(() => new OpenClearinghouseClient({ baseUrl: BASE, apiKey: "not-a-real-key" })).toThrow(
       /pymth_/,
     );
   });
 
   it("listCapabilities unwraps items", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -165,7 +165,7 @@ describe("PymtHouseClient", () => {
 
   it("listOrchestrators passes capability filter", async () => {
     let seenUrl: string | undefined;
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch((req) => {
@@ -181,7 +181,7 @@ describe("PymtHouseClient", () => {
   });
 
   it("reportUsage returns reconciliation result", async () => {
-    const ph = new PymtHouseClient({
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(
@@ -206,8 +206,8 @@ describe("PymtHouseClient", () => {
     expect(result.new_balance_wei).toBe("999999");
   });
 
-  it("falls back to PymtHouseError on non-JSON error body", async () => {
-    const ph = new PymtHouseClient({
+  it("falls back to OpenClearinghouseError on non-JSON error body", async () => {
+    const ph = new OpenClearinghouseClient({
       baseUrl: BASE,
       apiKey: KEY,
       fetch: mockFetch(

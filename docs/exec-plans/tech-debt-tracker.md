@@ -18,7 +18,7 @@ the exec-plan that addressed it and remove it from this file.
 ### Discovery
 
 - **No liveness checks on orchestrators returned by discovery.**
-  `service-registry-daemon` returns routes without probing them; PymtHouse
+  `service-registry-daemon` returns routes without probing them; Livepeer Open Clearinghouse
   passes them through. *Trigger:* app-dev reports of dead-route payments.
 - **Registry cache TTL is process-local.** `CachingRegistryClient`
   stores entries in process memory; multi-instance deployments do not
@@ -39,7 +39,7 @@ the exec-plan that addressed it and remove it from this file.
   Google and/or GitHub by signing in with each, but can't see or unlink
   them from the portal. *Trigger:* user requests for control over
   linked accounts.
-- **No OIDC issuer (PymtHouse as identity provider for downstream
+- **No OIDC issuer (Livepeer Open Clearinghouse as identity provider for downstream
   apps).** We *consume* Google/GitHub but don't *issue* OIDC tokens.
   *Trigger:* partner integration that needs us as IdP.
 - **Bootstrap-operator-only admin auth.** No operator UI, no operator
@@ -55,7 +55,7 @@ the exec-plan that addressed it and remove it from this file.
 ### Email
 
 - **No Resend webhook handling.** Bounces, complaints, and delivery
-  events from Resend are not consumed. PymtHouse considers an email
+  events from Resend are not consumed. Livepeer Open Clearinghouse considers an email
   delivered if the synchronous SDK call succeeds. *Trigger:* email
   deliverability becomes a real concern (legitimate user reports
   "never got the verification email").
@@ -74,7 +74,7 @@ the exec-plan that addressed it and remove it from this file.
 
 - **Per-ticket redemption observation still absent.** Phase 18 polls
   the daemon's TicketBroker deposit/reserve and records snapshots, but
-  PymtHouse does not see *individual* WinningTicketRedeemed events.
+  Livepeer Open Clearinghouse does not see *individual* WinningTicketRedeemed events.
   Variance shows up as a delta between sum(payments.expected_value_wei)
   charged and the deposit drawdown observed in the snapshot series.
   *Trigger:* needing to attribute on-chain redemption to a specific

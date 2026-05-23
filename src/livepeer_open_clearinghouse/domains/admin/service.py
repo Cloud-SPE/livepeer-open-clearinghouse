@@ -1,0 +1,249 @@
+"""Business logic for admin."""
+
+from __future__ import annotations
+
+import hashlib
+import uuid
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from livepeer_open_clearinghouse.domains.accounts import service as accounts_service
+from livepeer_open_clearinghouse.domains.accounts.repo import OperatorApproval, User
+from livepeer_open_clearinghouse.domains.admin.repo import Operator, OperatorAudit
+from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
+from livepeer_open_clearinghouse.providers.clock import Clock
+from livepeer_open_clearinghouse.providers.email import EmailProvider, templates
+from livepeer_open_clearinghouse.providers.telemetry import get_logger
+
+logger = get_logger(__name__)
+
+BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@livepeer-open-clearinghouse.local"
+BOOTSTRAP_OPERATOR_NAME = "Bootstrap Operator"
+
+
+class AdminServiceError(Exception):
+    code = "admin_error"
+
+
+class UserAlreadyApproved(AdminServiceError):
+    code = "user_already_approved"
+
+
+class UserNotFound(AdminServiceError):
+    code = "user_not_found"
+
+
+class EmailAlreadyVerified(AdminServiceError):
+    code = "email_already_verified"
+
+
+def _hash_bootstrap_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def ensure_bootstrap_operator(session: AsyncSession, *, bootstrap_token: str) -> Operator:
+    """Ensure the bootstrap operator row exists for the supplied token.
+
+    Called at app startup. If a matching operator exists, returned unchanged;
+    otherwise created. The token is stored hashed; the env var is the only
+    place the raw token lives.
+    """
+    token_hash = _hash_bootstrap_token(bootstrap_token)
+    existing = await session.scalar(
+        select(Operator).where(Operator.email == BOOTSTRAP_OPERATOR_EMAIL)
+    )
+    if existing is not None:
+        # Rotate the token in place if the env value changed.
+        if existing.token_hash != token_hash:
+            existing.token_hash = token_hash
+        return existing
+    op = Operator(
+        email=BOOTSTRAP_OPERATOR_EMAIL,
+        name=BOOTSTRAP_OPERATOR_NAME,
+        token_hash=token_hash,
+    )
+    session.add(op)
+    await session.flush()
+    return op
+
+
+async def authenticate_operator(session: AsyncSession, *, bearer_token: str) -> Operator | None:
+    """Return the operator matching a bearer token, or None."""
+    token_hash = _hash_bootstrap_token(bearer_token)
+    return await session.scalar(
+        select(Operator).where(Operator.token_hash == token_hash, Operator.revoked_at.is_(None))
+    )
+
+
+async def list_all_users(
+    session: AsyncSession, *, limit: int = 100, offset: int = 0
+) -> tuple[list[tuple[User, bool, int]], int]:
+    """List every user with their approval status and current balance.
+
+    Returns ``(rows, total_count)``. Each row is
+    ``(User, is_approved, balance_wei)``.
+    """
+    total = await session.scalar(select(func.count()).select_from(User))
+    rows_q = (
+        select(
+            User,
+            OperatorApproval.id.is_not(None).label("approved"),
+            func.coalesce(CreditBalance.amount_wei, 0).label("balance_wei"),
+        )
+        .outerjoin(
+            OperatorApproval,
+            (OperatorApproval.user_id == User.id) & (OperatorApproval.revoked_at.is_(None)),
+        )
+        .outerjoin(CreditBalance, CreditBalance.user_id == User.id)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    raw = await session.execute(rows_q)
+    rows: list[tuple[User, bool, int]] = [
+        (r.User, bool(r.approved), int(r.balance_wei)) for r in raw
+    ]
+    return rows, int(total or 0)
+
+
+async def list_audit_entries(
+    session: AsyncSession, *, limit: int = 100
+) -> list[tuple[OperatorAudit, str, str | None]]:
+    """Most-recent-first audit rows joined with operator + target-user emails.
+
+    Returns ``(OperatorAudit, operator_email, target_user_email|None)``.
+    """
+    q = (
+        select(OperatorAudit, Operator.email, User.email)
+        .join(Operator, OperatorAudit.operator_id == Operator.id)
+        .outerjoin(User, OperatorAudit.target_user_id == User.id)
+        .order_by(OperatorAudit.created_at.desc())
+        .limit(limit)
+    )
+    raw = await session.execute(q)
+    return [(row[0], row[1], row[2]) for row in raw]
+
+
+async def list_pending_users(session: AsyncSession) -> list[User]:
+    """Users that signed up but have no active approval."""
+    rows = await session.scalars(
+        select(User)
+        .outerjoin(
+            OperatorApproval,
+            (OperatorApproval.user_id == User.id) & (OperatorApproval.revoked_at.is_(None)),
+        )
+        .where(OperatorApproval.id.is_(None))
+        .order_by(User.created_at.asc())
+    )
+    return list(rows)
+
+
+async def approve_user(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    operator: Operator,
+    clock: Clock,
+    initial_credit_wei: int = 0,
+    email_provider: EmailProvider | None = None,
+    public_base_url: str | None = None,
+) -> OperatorApproval:
+    """Create an active operator_approval for `user_id` and grant initial credit.
+
+    Same transaction as the caller's session: if the credit grant fails,
+    the approval is rolled back. The notification email is best-effort —
+    a send failure is logged but does not roll back the approval.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise UserNotFound
+
+    existing = await session.scalar(
+        select(OperatorApproval).where(
+            OperatorApproval.user_id == user_id,
+            OperatorApproval.revoked_at.is_(None),
+        )
+    )
+    if existing is not None:
+        raise UserAlreadyApproved
+
+    now = clock.now()
+    approval = OperatorApproval(
+        user_id=user_id,
+        operator_id=operator.id,
+        approved_at=now,
+    )
+    session.add(approval)
+    session.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="approve_user",
+            target_user_id=user_id,
+        )
+    )
+    await session.flush()
+
+    if initial_credit_wei > 0:
+        await billing_service.grant_initial_credit(
+            session,
+            user_id=user_id,
+            amount_wei=initial_credit_wei,
+            operator_id=operator.id,
+        )
+
+    if email_provider is not None and public_base_url is not None:
+        try:
+            await email_provider.send(
+                templates.approval_notification_email(
+                    to=user.email, public_base_url=public_base_url
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort notification
+            logger.warning(
+                "admin.approve_user.notification_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
+
+    return approval
+
+
+async def resend_verification(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    operator: Operator,
+    clock: Clock,
+    email_provider: EmailProvider,
+    public_base_url: str,
+) -> User:
+    """Operator-triggered: mint + send a fresh email-verification token.
+
+    Useful when the original email was lost / bounced / the user's
+    self-hosted mail rejected it. Old unconsumed tokens for this user
+    stay valid until their TTL — the user can use whichever link they
+    actually receive.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise UserNotFound
+    if user.email_verified_at is not None:
+        raise EmailAlreadyVerified
+
+    await accounts_service.send_verification_email(
+        session,
+        user=user,
+        clock=clock,
+        email_provider=email_provider,
+        public_base_url=public_base_url,
+    )
+    session.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="resend_verification",
+            target_user_id=user_id,
+        )
+    )
+    return user

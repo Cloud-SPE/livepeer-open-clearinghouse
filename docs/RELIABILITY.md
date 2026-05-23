@@ -1,6 +1,6 @@
 # RELIABILITY.md
 
-The reliability principles for PymtHouse. Read this before changing
+The reliability principles for Livepeer Open Clearinghouse. Read this before changing
 anything in `domains/billing`, `domains/payments`, or `domains/usage`.
 
 ## The principle
@@ -44,7 +44,7 @@ Other error codes: `SPEND_CAP_EXCEEDED`, `ACCOUNT_NOT_APPROVED`,
 
 ### Ticket-mint requests
 
-`POST /v1/payments/mint` accepts an `Idempotency-Key` header. PymtHouse:
+`POST /v1/payments/mint` accepts an `Idempotency-Key` header. Livepeer Open Clearinghouse:
 
 1. Looks up `(api_key_id, idempotency_key)` in a short-lived index.
 2. If present and the prior request completed: returns the prior response,
@@ -121,12 +121,12 @@ configurable).
 
 Charging at issuance (`expected_value` from `CreatePayment`) means:
 
-- For any single payment, PymtHouse charges the user the exact EV.
+- For any single payment, Livepeer Open Clearinghouse charges the user the exact EV.
 - For the pooled wallet, actual on-chain redemption is a random variable
   with mean `EV × N`.
 - Over the long run, charged ≈ paid. Over a small window, they diverge.
 
-PymtHouse does not observe on-chain redemption (MVP). The variance is
+Livepeer Open Clearinghouse does not observe on-chain redemption (MVP). The variance is
 **absorbed by the operator's pooled wallet float**. There is no user-facing
 exposure to this variance — the user is billed deterministically.
 
@@ -142,7 +142,7 @@ in the wallet.
   `credit_ledger` insert and the `payments` upsert.
 - Idempotency-key writes use `INSERT ... ON CONFLICT` to atomically claim
   a key.
-- The single-instance assumption (one `pymthouse-gateway` process) means
+- The single-instance assumption (one `livepeer-open-clearinghouse-gateway` process) means
   we don't need distributed locking. APScheduler runs in-process; no
   separate worker.
 
@@ -169,7 +169,7 @@ the withdrawal lock needs handling.
 
 ### Postgres unavailable
 
-Return `503`. PymtHouse does not have an in-memory fallback. Postgres is a
+Return `503`. Livepeer Open Clearinghouse does not have an in-memory fallback. Postgres is a
 hard dependency.
 
 ## Observability
@@ -180,12 +180,12 @@ For each ticket-mint call, emit a structured log line with:
 `daemon_latency_ms`, `total_latency_ms`.
 
 Prometheus metrics:
-- `pymthouse_payments_total{result, capability}` counter
-- `pymthouse_payment_latency_seconds{stage}` histogram (stages: `select`,
+- `livepeer_open_clearinghouse_payments_total{result, capability}` counter
+- `livepeer_open_clearinghouse_payment_latency_seconds{stage}` histogram (stages: `select`,
   `balance_check`, `create_payment`, `commit`)
-- `pymthouse_balance_charged_wei_total{capability}` counter
-- `pymthouse_credit_balance_wei{user_id}` gauge (cardinality concern;
+- `livepeer_open_clearinghouse_balance_charged_wei_total{capability}` counter
+- `livepeer_open_clearinghouse_credit_balance_wei{user_id}` gauge (cardinality concern;
   consider sampling/aggregating)
-- `pymthouse_daemon_errors_total{daemon, kind}` counter
+- `livepeer_open_clearinghouse_daemon_errors_total{daemon, kind}` counter
 
 These are MVP-minimum. Full Victoria-stack integration is v2.

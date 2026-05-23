@@ -11,13 +11,13 @@ from decimal import Decimal
 
 import pytest
 
-from pymthouse.providers.payment_daemon import (
+from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     FundingIntent,
     QuoteRef,
 )
-from pymthouse.providers.payment_daemon.client import (
+from livepeer_open_clearinghouse.providers.payment_daemon.client import (
     biguint_bytes_to_decimal,
     dataclass_request_to_proto,
     int_to_biguint_bytes,
@@ -116,7 +116,7 @@ def test_proto_response_to_dataclass() -> None:
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
 
     proto = payer_daemon_pb2.CreatePaymentResponse(
-        payment_bytes=b"PYMTHOUSE-MOCK-PAYMENT-V1-test",
+        payment_bytes=b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT-V1-test",
         tickets_created=1,
         expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(12_345)),
         funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
@@ -130,7 +130,7 @@ def test_proto_response_to_dataclass() -> None:
     )
 
     dc = proto_response_to_dataclass(proto)
-    assert dc.payment_bytes == b"PYMTHOUSE-MOCK-PAYMENT-V1-test"
+    assert dc.payment_bytes == b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT-V1-test"
     assert dc.tickets_created == 1
     assert dc.expected_value == Decimal(12_345)
     assert dc.funded_value_wei == Decimal(50_000)

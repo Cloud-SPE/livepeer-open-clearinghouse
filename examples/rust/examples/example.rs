@@ -1,21 +1,22 @@
 //! End-to-end example: mint a payment, simulate sending to an orch, reconcile usage.
 //!
 //! ```bash
-//! PYMTHOUSE_URL=http://localhost:8000 \
-//! PYMTHOUSE_API_KEY=pymth_live_... \
+//! OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
+//! OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
 //! cargo run --example example
 //! ```
 
 use std::env;
 
-use pymthouse_sdk::{
-    Client, ClientOptions, ErrorKind, MintPaymentInput, PymtHouseError, ReportUsageInput,
+use livepeer_open_clearinghouse_sdk::{
+    Client, ClientOptions, ErrorKind, MintPaymentInput, OpenClearinghouseError, ReportUsageInput,
 };
 
 #[tokio::main]
-async fn main() -> Result<(), PymtHouseError> {
-    let base_url = env::var("PYMTHOUSE_URL").expect("missing PYMTHOUSE_URL");
-    let api_key = env::var("PYMTHOUSE_API_KEY").expect("missing PYMTHOUSE_API_KEY");
+async fn main() -> Result<(), OpenClearinghouseError> {
+    let base_url = env::var("OPEN_CLEARINGHOUSE_URL").expect("missing OPEN_CLEARINGHOUSE_URL");
+    let api_key =
+        env::var("OPEN_CLEARINGHOUSE_API_KEY").expect("missing OPEN_CLEARINGHOUSE_API_KEY");
 
     let ph = Client::new(ClientOptions::new(base_url, api_key))?;
 
@@ -24,11 +25,11 @@ async fn main() -> Result<(), PymtHouseError> {
     let chat_cap = caps
         .iter()
         .find(|c| c.name == "openai:chat-completions")
-        .ok_or_else(|| PymtHouseError::Config("no chat-completions capability".into()))?;
+        .ok_or_else(|| OpenClearinghouseError::Config("no chat-completions capability".into()))?;
     let offering = chat_cap
         .offerings
         .first()
-        .ok_or_else(|| PymtHouseError::Config("no offerings".into()))?;
+        .ok_or_else(|| OpenClearinghouseError::Config("no offerings".into()))?;
     println!("using offering: {}", offering.id);
 
     // 2. Mint with a 1000-token budget; one Idempotency-Key per logical request

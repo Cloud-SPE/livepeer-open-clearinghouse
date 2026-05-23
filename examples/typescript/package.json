@@ -1,7 +1,7 @@
 {
-  "name": "@pymthouse/sdk",
+  "name": "@livepeer/open-clearinghouse-sdk",
   "version": "0.1.0",
-  "description": "Reference TypeScript SDK for the PymtHouse payment clearinghouse.",
+  "description": "Reference TypeScript SDK for the Livepeer Open Clearinghouse payment clearinghouse.",
   "type": "module",
   "license": "MIT",
   "main": "src/index.ts",

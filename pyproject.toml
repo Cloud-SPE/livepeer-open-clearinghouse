@@ -1,11 +1,11 @@
 [project]
-name = "pymthouse"
+name = "livepeer-open-clearinghouse"
 version = "0.1.0"
 description = "Non-custodial-by-design payment clearinghouse for Livepeer applications"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.13"
-authors = [{ name = "PymtHouse contributors" }]
+authors = [{ name = "Livepeer Open Clearinghouse contributors" }]
 keywords = ["livepeer", "payments", "clearinghouse"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
@@ -40,10 +40,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/livepeer/pymthouse"
+Homepage = "https://github.com/livepeer/livepeer-open-clearinghouse"
 
 [project.scripts]
-pymthouse = "pymthouse.main:cli"
+livepeer_open_clearinghouse = "livepeer_open_clearinghouse.main:cli"
 
 [dependency-groups]
 dev = [
@@ -63,7 +63,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pymthouse"]
+packages = ["src/livepeer_open_clearinghouse"]
 
 [tool.uv]
 required-version = ">=0.5"
@@ -157,7 +157,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/pymthouse"]
+source = ["src/livepeer_open_clearinghouse"]
 branch = true
 
 [tool.coverage.report]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pymthouse.providers.auth import api_key
+from livepeer_open_clearinghouse.providers.auth import api_key
 
 
 @pytest.mark.unit

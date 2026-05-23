@@ -31,9 +31,9 @@ know honestly where the rough edges are — not to give every domain an A.
 |---|---|---|
 | Layered-architecture lint | A | `scripts/check_layering.py` enforces types→config→repo→service→runtime→ui per domain + providers/ rules; runs clean. |
 | Integration tests against real daemons | C | Phase-13 GrpcPaymentDaemonClient tested against the real `tztcloud/livepeer-payment-daemon:v1.3.0` image and confirmed end-to-end (alice signed up, got approved, minted a 784-byte ticket signed by the keystore wallet to a live orch with EV charged). No automated harness. |
-| Observability (logs + `/metrics`) | C | structlog JSON logs throughout; Prometheus `/metrics` gated by `METRICS_TOKEN`; per-route + per-status counters; deposit gauges; `pymthouse_auto_replenish_total` counter labeled by trigger. Missing: alerting rules, distributed tracing, Victoria-stack (all tracked). |
+| Observability (logs + `/metrics`) | C | structlog JSON logs throughout; Prometheus `/metrics` gated by `METRICS_TOKEN`; per-route + per-status counters; deposit gauges; `livepeer_open_clearinghouse_auto_replenish_total` counter labeled by trigger. Missing: alerting rules, distributed tracing, Victoria-stack (all tracked). |
 | Security review checklist | C | `docs/SECURITY.md` covers key custody, secret handling, fail-closed billing; rate-limiting + idempotency live; no formal audit performed. |
-| Frontend portal | B | Sidebar shell, hero-metric dashboard, API keys, Catalog, Activity, login + signup + forgot-password + verify-email + resend-verification. zinc+emerald design system mirroring `livepeer-pymthouse`. No e2e tests (tracked). |
+| Frontend portal | B | Sidebar shell, hero-metric dashboard, API keys, Catalog, Activity, login + signup + forgot-password + verify-email + resend-verification. zinc+emerald design system mirroring `livepeer-open-clearinghouse`. No e2e tests (tracked). |
 | Frontend admin | B | Sidebar shell, Overview, Users, Pending, Catalog, Audit log, Deposits. zinc+sky design system. No e2e tests (tracked). |
 | Reference SDKs | A- | Python, TypeScript, Go, Rust — all four with lint configs (ruff / ESLint+Prettier / golangci-lint / clippy-pedantic) and coverage gates (96%, 100% lines, 90%, 98%). HTTP layer stubbed in tests. Missing: live-shape verification (tracked — the recent orch-count bug + SDK type drift came from this gap). |
 
