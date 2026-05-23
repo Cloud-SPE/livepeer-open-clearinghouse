@@ -1,9 +1,31 @@
-// Package openclearinghouse is a reference Go SDK for the Livepeer Open Clearinghouse payment
-// clearinghouse. It wraps the few HTTP endpoints app developers need:
-// discovery, payment mint, and usage reconciliation.
+// Package openclearinghouse is a reference Go SDK for the Livepeer
+// Open Clearinghouse payment clearinghouse. It wraps the few HTTP
+// endpoints app developers need: discovery, payment mint + SubmitJob,
+// and usage reconciliation.
 //
 // Construct one Client per process and reuse it. The zero value is not
 // useful — always go through NewClient.
+//
+// # Wire-shape source of truth
+//
+// The response types defined below (Mint, Capability, Orchestrator, …)
+// are mirrored by the oapi-codegen output in _generated.go, which is
+// regenerated from the gateway's /openapi.json. The hand-typed
+// versions exist for ergonomics (no openapi_types.UUID leakage in
+// public signatures, idiomatic Go field names); _generated.go lives
+// alongside as a drift-detection target — diff the two when the
+// gateway evolves the schema.
+//
+// Regen recipe (from repo root):
+//
+//	make refresh-openapi
+//
+// then from this directory:
+//
+//	oapi-codegen -config /tmp/oapi-codegen.yaml /tmp/openapi-3.0.json
+//
+// where /tmp/openapi-3.0.json is the 3.1→3.0 down-converted spec (the
+// Makefile target prints the exact shell snippet).
 package openclearinghouse
 
 import (

@@ -1,46 +1,25 @@
 import { fromResponse } from "./errors.js";
+import type { components } from "./_generated/openapi.js";
 
-export interface Mint {
-  payment_id: string;
-  work_id: string;
-  payment_bytes: string;
-  expected_value_wei: string;
-  funded_value_wei: string;
-  recipient_eth_address: string;
-}
+// ---- Generated-from-OpenAPI types ----------------------------------------
+//
+// The gateway's OpenAPI document at /openapi.json is the source of truth
+// for response shapes. We re-export the relevant schemas under the same
+// names the SDK has always exposed, so consumers don't see the import
+// path leaking out. Regenerate with `make refresh-openapi` (from the repo
+// root) followed by `pnpm gen:openapi` (from this directory).
+//
+// Why aliases instead of `interface X extends ...`: the generated types
+// are interface-style already; aliasing keeps the diff small if the
+// gateway evolves the schema, and avoids subtle structural-typing
+// surprises that come with `extends`.
 
-export interface Capability {
-  name: string;
-  work_unit: string | null;
-  offerings: {
-    id: string;
-    price_per_work_unit_wei: string;
-    work_unit: string;
-  }[];
-}
-
-export interface Orchestrator {
-  eth_address: string;
-  worker_url: string;
-  capabilities: Capability[];
-  signature_status: string;
-  freshness_status: string;
-}
-
-export interface UsageReportResult {
-  refunded_wei: string;
-  payment_status: string;
-  new_balance_wei: string;
-  usage: { id: string; actual_work_units: number; final_charge_wei: string };
-}
-
-export interface RouteView {
-  eth_address: string;
-  worker_url: string;
-  capability: string;
-  offering: string;
-  price_per_work_unit_wei: string;
-}
+export type Mint = components["schemas"]["MintPaymentResponse"];
+export type Capability = components["schemas"]["CapabilityView"];
+export type Offering = components["schemas"]["OfferingView"];
+export type Orchestrator = components["schemas"]["OrchestratorView"];
+export type UsageReportResult = components["schemas"]["UsageReportResponse"];
+export type RouteView = components["schemas"]["RouteView"];
 
 export interface JobResult {
   body: unknown;

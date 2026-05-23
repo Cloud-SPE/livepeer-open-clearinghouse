@@ -148,14 +148,16 @@ the exec-plan that addressed it and remove it from this file.
   and admin. *Trigger:* a third surface (mobile? embeddable?) appears.
 - **No e2e test framework for the SPAs.** *Trigger:* a regression caught
   in QA that an e2e test would have caught.
-- **SDK types are hand-written, not generated.** The four reference
-  SDKs declare response shapes by hand; mistakes go undetected because
-  every SDK test stubs the HTTP layer with arbitrary JSON. This bit
-  us once already — admin Catalog showed `Orchs=0` for every row
-  because the JS handler treated `o.capabilities` as a list of
-  strings when the gateway returns a list of objects. *Trigger:*
-  fixing once via OpenAPI-driven codegen would eliminate the failure
-  mode entirely (FastAPI exposes `/openapi.json` already).
+- **Rust SDK still hand-types response shapes.** TypeScript, Python,
+  and Go SDKs now generate their wire-shape types from the gateway's
+  `/openapi.json` snapshot at `examples/openapi.json` (regen with
+  `make refresh-openapi`). Rust was skipped: the standard generators
+  (`openapi-generator-cli` is a Java tool; `progenitor` from Oxide
+  emits a full client, not just types) are heavier than the
+  hand-typed Rust SDK warrants. Rust's compile-time guarantees catch
+  most drift bugs the other languages couldn't. *Trigger:* a Rust-
+  side drift bug, or a third-party reqwest-friendly type-only
+  generator becoming available.
 
 ### Security
 

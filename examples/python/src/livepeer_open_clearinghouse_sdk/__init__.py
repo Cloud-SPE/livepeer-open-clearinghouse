@@ -12,9 +12,14 @@ See `example.py` for the full mint → orchestrator → reconcile flow.
 """
 
 from livepeer_open_clearinghouse_sdk.client import (
+    Capability,
     JobResult,
     Mint,
+    Offering,
     OpenClearinghouseClient,
+    Orchestrator,
+    RouteView,
+    UsageReportResult,
 )
 from livepeer_open_clearinghouse_sdk.errors import (
     AccountNotApproved,
@@ -28,13 +33,18 @@ from livepeer_open_clearinghouse_sdk.errors import (
 
 __all__ = [
     "AccountNotApproved",
+    "Capability",
     "DaemonUnavailable",
     "DuplicateRequest",
     "InsufficientCredit",
     "JobResult",
     "Mint",
     "NoRouteAvailable",
+    "Offering",
     "OpenClearinghouseClient",
     "OpenClearinghouseError",
+    "Orchestrator",
     "RateLimited",
+    "RouteView",
+    "UsageReportResult",
 ]

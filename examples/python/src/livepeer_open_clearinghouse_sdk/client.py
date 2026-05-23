@@ -5,11 +5,34 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
+from livepeer_open_clearinghouse_sdk._generated import (
+    CapabilityView as Capability,
+)
+from livepeer_open_clearinghouse_sdk._generated import (
+    OfferingView as Offering,  # noqa: F401 — re-exported in __init__.py
+)
+from livepeer_open_clearinghouse_sdk._generated import (
+    OrchestratorView as Orchestrator,
+)
+from livepeer_open_clearinghouse_sdk._generated import (
+    RouteView,  # noqa: F401 — re-exported in __init__.py
+)
+from livepeer_open_clearinghouse_sdk._generated import (
+    UsageReportResponse as UsageReportResult,
+)
 from livepeer_open_clearinghouse_sdk.errors import OpenClearinghouseError, from_response
+
+# Re-export the generated TypedDicts under the SDK's public names so
+# consumers see a single, openapi-sourced response shape and we get
+# free type checking + auto-refresh via `make refresh-openapi`. The
+# generated file `_generated.py` is the source of truth for everything
+# below — including Mint's wire shape, which is wrapped below for
+# ergonomic UUID/Decimal types.
+__all_generated__ = ("Capability", "Offering", "Orchestrator", "RouteView", "UsageReportResult")
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
 
@@ -100,14 +123,16 @@ class OpenClearinghouseClient:
 
     # ---- discovery ----
 
-    async def list_capabilities(self) -> list[dict[str, Any]]:
+    async def list_capabilities(self) -> list[Capability]:
         r = await self._http.get("/v1/capabilities")
-        return self._unwrap(r)["items"]
+        return cast("list[Capability]", self._unwrap(r)["items"])
 
-    async def list_orchestrators(self, *, capability: str | None = None) -> list[dict[str, Any]]:
+    async def list_orchestrators(
+        self, *, capability: str | None = None
+    ) -> list[Orchestrator]:
         params = {"capability": capability} if capability else None
         r = await self._http.get("/v1/orchestrators", params=params)
-        return self._unwrap(r)["items"]
+        return cast("list[Orchestrator]", self._unwrap(r)["items"])
 
     # ---- payments ----
 
@@ -247,7 +272,7 @@ class OpenClearinghouseClient:
         payment_id: uuid.UUID | str,
         actual_work_units: int,
         idempotency_key: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> UsageReportResult:
         headers: dict[str, str] = {}
         if idempotency_key is not None:
             headers["Idempotency-Key"] = idempotency_key
@@ -259,7 +284,7 @@ class OpenClearinghouseClient:
             },
             headers=headers,
         )
-        return self._unwrap(r)
+        return cast("UsageReportResult", self._unwrap(r))
 
     # ---- internals ----
 

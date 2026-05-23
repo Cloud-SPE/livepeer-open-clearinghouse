@@ -10,7 +10,14 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["node_modules/**", "dist/**", "coverage/**", "*.config.ts", "*.config.js"],
+    ignores: [
+      "node_modules/**",
+      "dist/**",
+      "coverage/**",
+      "*.config.ts",
+      "*.config.js",
+      "src/_generated/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
