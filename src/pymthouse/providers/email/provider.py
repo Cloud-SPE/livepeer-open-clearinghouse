@@ -30,6 +30,16 @@ class EmailMessage(Protocol):
     def text(self) -> str: ...
 
 
+class EmailSendError(RuntimeError):
+    """Raised when a provider's send call reported a failure.
+
+    Distinct from the SDK's own exception types because some providers
+    (notably Resend's Python SDK against certain self-hosted backends)
+    return an ``{error: "..."}`` body on a 2xx status instead of raising.
+    Domain code catches this same exception regardless of provider.
+    """
+
+
 class _Message:
     """Concrete EmailMessage used by senders."""
 
@@ -130,20 +140,43 @@ class ResendEmailProvider:
                 error_repr=repr(exc),
             )
             raise
-        # Self-hosted Resend systems sometimes return a different response
-        # shape (e.g., {message_id: ...} or {email_id: ...}). Log the raw
-        # result so the mismatch is visible without having to guess.
+        # Some Resend-compatible backends (notably self-hosted distributions)
+        # return a 2xx status with an `{error: "..."}` body when the send
+        # was actually rejected — the SDK doesn't raise on that shape, so
+        # without this check we'd silently log "sent" for a dead letter.
+        # The success shape always carries an `id` (or `message_id` /
+        # `email_id` on some forks); the absence-of-id + presence-of-error
+        # pattern is the failure signal.
+        is_dict_result = isinstance(result, dict)
         provider_id = None
-        if isinstance(result, dict):
-            provider_id = result.get("id") or result.get("message_id") or result.get("email_id")
+        if is_dict_result:
+            provider_id = (
+                result.get("id")
+                or result.get("message_id")
+                or result.get("email_id")
+            )
+        if is_dict_result and provider_id is None and result.get("error"):
+            self._log.error(
+                "email.resend.failed",
+                target_url=target_url,
+                to=message.to,
+                subject=message.subject,
+                error_type="ProviderRejected",
+                error=str(result.get("error")),
+                raw_result=result,
+                raw_result_keys=sorted(result.keys()),
+            )
+            raise EmailSendError(
+                f"Resend rejected the send: {result.get('error')!r}"
+            )
         self._log.info(
             "email.resend.sent",
             target_url=target_url,
             to=message.to,
             subject=message.subject,
             provider_id=provider_id,
-            raw_result=result if isinstance(result, dict) else repr(result),
-            raw_result_keys=sorted(result.keys()) if isinstance(result, dict) else None,
+            raw_result=result if is_dict_result else repr(result),
+            raw_result_keys=sorted(result.keys()) if is_dict_result else None,
         )
 
 
