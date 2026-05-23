@@ -63,6 +63,12 @@ the exec-plan that addressed it and remove it from this file.
   original product sketch mentioned this; current build emails an
   approval notification and lets the user create their own key in the
   portal. *Trigger:* product decision to revisit operator-issued keys.
+- **Resend 2xx-with-error detection covers one shape only.** The
+  silent-failure guard in `providers/email/provider.py` looks for
+  `{error: "..."}` (string) when the SDK returns 2xx. Other
+  Resend-compatible backends may use `{errors: [...]}` (array) or
+  `{status: "failed"}`. *Trigger:* second self-hosted backend with a
+  different error envelope.
 
 ### Payments
 
@@ -77,14 +83,24 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
-- **No reactive (on-mint) auto-replenish.** The proactive scheduler
-  now consults `auto_replenish_threshold_wei` every 5 minutes (see
-  `billing.service.run_auto_replenish`), but there's still no in-mint
-  path that catches an `InsufficientCredit` and tops the user up
-  inline. The two would coexist (the `auto_replenish_total` Counter
-  is labeled by `trigger` for exactly that reason). *Trigger:*
-  operator wants to avoid 402s mid-stream when the proactive cadence
-  is too slow for a heavy user.
+- **Auto-replenish has no per-period maximum grant.** Both the
+  proactive scheduler (`billing.service.run_auto_replenish`) and the
+  reactive in-mint path (`payments.service._attempt_auto_replenish`)
+  grant `auto_replenish_increment_wei` every time the threshold check
+  passes. A misconfigured operator (low threshold + high increment +
+  5-min cadence) could grant unbounded credit per period. *Trigger:*
+  runaway-topup incident; or before exposing per-user config to
+  end-users (so they can't self-configure into bankruptcy).
+- **Auto-replenish ledger entries write `operator_id=None`.** The
+  resulting `credit_ledger` rows are tagged `reason="auto_replenish"`
+  but the operator audit-log UI (which queries `operator_audit`, not
+  `credit_ledger`) can't surface them. *Trigger:* audit compliance
+  reviewer asks "who funded this user?" and the trail dead-ends.
+- **"Approve unverified" leaves no distinguishable audit trail.** The
+  `operator_audit` row written by `admin.service.approve_user` records
+  `action="approve_user"` whether the target was verified or not at
+  approval time. *Trigger:* compliance review needs to know which
+  approvals bypassed verification.
 
 ### Architecture
 
@@ -93,6 +109,10 @@ the exec-plan that addressed it and remove it from this file.
   than one instance for HA or throughput.
 - **No distributed locking on balance updates.** Postgres row-locking is
   sufficient because we run one instance. *Trigger:* multi-instance plan.
+- **No schema-version / code-version startup check.** Nothing prevents
+  the gateway from booting against a DB that's behind on migrations
+  (or ahead, for a roll-back). *Trigger:* the first deploy where
+  migrations don't run automatically.
 
 ### Observability
 
@@ -116,6 +136,14 @@ the exec-plan that addressed it and remove it from this file.
   and admin. *Trigger:* a third surface (mobile? embeddable?) appears.
 - **No e2e test framework for the SPAs.** *Trigger:* a regression caught
   in QA that an e2e test would have caught.
+- **SDK types are hand-written, not generated.** The four reference
+  SDKs declare response shapes by hand; mistakes go undetected because
+  every SDK test stubs the HTTP layer with arbitrary JSON. This bit
+  us once already — admin Catalog showed `Orchs=0` for every row
+  because the JS handler treated `o.capabilities` as a list of
+  strings when the gateway returns a list of objects. *Trigger:*
+  fixing once via OpenAPI-driven codegen would eliminate the failure
+  mode entirely (FastAPI exposes `/openapi.json` already).
 
 ### Security
 

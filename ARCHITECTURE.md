@@ -88,15 +88,19 @@ in that script.
 
 ## Domain index
 
+Table names follow SQLAlchemy's default `TableNameFromClassMixin` —
+class `User` → table `user`, `ApiKey` → `api_key`, etc. (singular).
+The migration files at `migrations/versions/*` are authoritative.
+
 | Domain | Owns |
 |---|---|
-| `accounts` | `users`, `user_email_verifications`, `user_oauth_identities`, `operator_approvals` |
-| `api_keys` | `api_keys` (hashed at rest, `prefix` for display) |
-| `billing` | `credit_balances`, `credit_topups`, `spend_window` ledger, replenishment policy |
-| `discovery` | (no tables — pure proxy) cached `ResolveResult` snapshots in v2 |
-| `payments` | `payments` (a row per `CreatePayment` call: work_id, recipient, EV, status) |
-| `usage` | `usage_records` (idempotent on `(api_key_id, request_id)`), reconciliation deltas |
-| `admin` | Aggregates over the above; operator config (default credit grant, period caps) |
+| `accounts` | `user`, `user_email_verification`, `user_oauth_identity`, `operator_approval`, `password_reset_token`, `user_session` |
+| `api_keys` | `api_key` (hashed at rest, `prefix` for display) |
+| `billing` | `credit_balance`, `credit_topup`, `credit_ledger`, `spend_window`, `user_billing_config` |
+| `discovery` | (no tables — pure proxy via service-registry-daemon; in-process TTL cache around the gRPC client) |
+| `payments` | `payment` (a row per `CreatePayment` call), `payment_idempotency_key`, `payment_daemon_deposit_snapshot` (periodic poller) |
+| `usage` | `usage_record` (idempotent on `(api_key_id, request_id)`), reconciliation deltas |
+| `admin` | `operator`, `operator_audit`; aggregates over the above; operator config (default credit grant, period caps) |
 
 ## External integration shape
 
