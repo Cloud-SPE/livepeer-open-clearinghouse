@@ -43,13 +43,14 @@ export class CcApiKeys extends LitElement {
 
   async _create(ev) {
     ev.preventDefault();
+    const form = ev.currentTarget;
     this._busy = true;
     this._error = null;
-    const data = new FormData(ev.currentTarget);
+    const data = new FormData(form);
     try {
       const res = await api.createApiKey(data.get("label"));
       this._newRaw = res.raw_key;
-      ev.currentTarget.reset();
+      form.reset();
       await this._refresh();
     } catch (err) {
       this._error = err.message;
