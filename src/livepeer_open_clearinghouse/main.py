@@ -23,6 +23,7 @@ from livepeer_open_clearinghouse.domains.api_keys import runtime as api_keys_run
 from livepeer_open_clearinghouse.domains.billing import runtime as billing_runtime
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import runtime as discovery_runtime
+from livepeer_open_clearinghouse.domains.notifications import runtime as notifications_runtime
 from livepeer_open_clearinghouse.domains.payments import runtime as payments_runtime
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.usage import runtime as usage_runtime
@@ -161,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(billing_runtime.router)
     app.include_router(admin_runtime.router)
     app.include_router(discovery_runtime.router)
+    app.include_router(notifications_runtime.router)
     app.include_router(payments_runtime.router)
     app.include_router(usage_runtime.router)
 

@@ -22,6 +22,7 @@ from livepeer_open_clearinghouse.domains.accounts import repo as _accounts_repo 
 from livepeer_open_clearinghouse.domains.admin import repo as _admin_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.billing import repo as _billing_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.notifications import repo as _notifications_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.usage import repo as _usage_repo  # noqa: F401
 from livepeer_open_clearinghouse.providers.db import Base

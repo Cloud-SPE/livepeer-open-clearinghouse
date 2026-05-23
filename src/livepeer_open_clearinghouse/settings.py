@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     resend_api_url: str | None = (
         None  # override https://api.resend.com (regional API, on-prem proxy, etc.)
     )
+    # Standard Webhooks signing secret for inbound POST /v1/webhooks/resend.
+    # Configured in Resend's dashboard per-webhook; expected form is
+    # `whsec_<base64>`. When unset, the webhook endpoint returns 503.
+    resend_webhook_secret: SecretStr | None = None
     email_from_address: str = "no-reply@livepeer-open-clearinghouse.local"
     email_from_name: str = "Livepeer Open Clearinghouse"
 
