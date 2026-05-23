@@ -222,4 +222,120 @@ describe("OpenClearinghouseClient", () => {
       ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
     ).rejects.toMatchObject({ status: 503 });
   });
+
+  it("submitJob retries on 401 INVALID_RECIPIENT_RAND with a fresh payment", async () => {
+    let mintCalls = 0;
+    let orchCalls = 0;
+    const seenPayments: string[] = [];
+    const fetch = mockFetch((req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/v1/routes") {
+        return new Response(
+          JSON.stringify({
+            eth_address: "0xd003",
+            worker_url: "https://orch.example",
+            capability: "x",
+            offering: "y",
+            price_per_work_unit_wei: "1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/v1/payments/mint") {
+        mintCalls += 1;
+        const bytes = mintCalls === 1 ? "FIRST" : "SECOND";
+        return new Response(
+          JSON.stringify({
+            payment_id: `00000000-0000-0000-0000-00000000000${String(mintCalls)}`,
+            work_id: "abc",
+            payment_bytes: bytes,
+            expected_value_wei: "1",
+            funded_value_wei: "1",
+            recipient_eth_address: "0xd003",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.host === "orch.example" && url.pathname === "/v1/cap") {
+        orchCalls += 1;
+        seenPayments.push(req.headers.get("Livepeer-Payment") ?? "");
+        if (orchCalls === 1) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: "payment_invalid",
+                message: "INVALID_RECIPIENT_RAND: session rotated",
+              },
+            }),
+            { status: 401, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ model: "Qwen", choices: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected ${url.toString()}`);
+    });
+
+    const ph = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const r = await ph.submitJob({
+      capability: "x",
+      offering: "y",
+      workUnits: 1,
+      body: { messages: [] },
+    });
+
+    expect(mintCalls).toBe(2);
+    expect(orchCalls).toBe(2);
+    expect(seenPayments).toEqual(["FIRST", "SECOND"]);
+    expect(r.status).toBe(200);
+  });
+
+  it("submitJob does not retry on an unrelated 401", async () => {
+    let mintCalls = 0;
+    const fetch = mockFetch((req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/v1/routes") {
+        return new Response(
+          JSON.stringify({
+            eth_address: "0xd003",
+            worker_url: "https://orch.example",
+            capability: "x",
+            offering: "y",
+            price_per_work_unit_wei: "1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/v1/payments/mint") {
+        mintCalls += 1;
+        return new Response(
+          JSON.stringify({
+            payment_id: "00000000-0000-0000-0000-000000000001",
+            work_id: "abc",
+            payment_bytes: "AAAA",
+            expected_value_wei: "1",
+            funded_value_wei: "1",
+            recipient_eth_address: "0xd003",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ error: { code: "bad_token", message: "expired" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const ph = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const r = await ph.submitJob({
+      capability: "x",
+      offering: "y",
+      workUnits: 1,
+      body: { messages: [] },
+    });
+    expect(mintCalls).toBe(1);
+    expect(r.status).toBe(401);
+  });
 });

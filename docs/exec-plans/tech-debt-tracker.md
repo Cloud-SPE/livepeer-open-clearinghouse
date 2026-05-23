@@ -83,6 +83,18 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
+- **SDK retry-on-INVALID_RECIPIENT_RAND doesn't notify payment-daemon.**
+  All four SDKs now mint-fresh-and-retry once when the orch returns
+  401 + INVALID_RECIPIENT_RAND, mirroring `livepeer-modules-openai`'s
+  `sendWithFreshPayment` loop. The reference impl also calls
+  `PayerDaemon.reportPaymentResult()` over gRPC with
+  `rejectionReason=PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND`
+  so the daemon can drop the stale session immediately; ours skips
+  that step (it would require a new gateway endpoint proxying the
+  daemon RPC). The retry still works because the daemon detects the
+  invalidation on the next mint via its own session management, just
+  more slowly. *Trigger:* observable churn where retries succeed but
+  the next mint without retry still picks up the invalidated session.
 - **Auto-replenish has no per-period maximum grant.** Both the
   proactive scheduler (`billing.service.run_auto_replenish`) and the
   reactive in-mint path (`payments.service._attempt_auto_replenish`)

@@ -259,6 +259,131 @@ async def test_submit_job_does_route_mint_post() -> None:
 
 
 @respx.mock
+async def test_submit_job_retries_on_invalid_recipient_rand() -> None:
+    """On 401 with INVALID_RECIPIENT_RAND, mint a fresh ticket and retry once."""
+    respx.get(f"{BASE}/v1/routes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "eth_address": "0xd003",
+                "worker_url": "https://orch.example",
+                "capability": "x",
+                "offering": "y",
+                "price_per_work_unit_wei": "1",
+            },
+        )
+    )
+    # /v1/payments/mint will be called twice — first attempt, then retry.
+    # Distinguishable payment_bytes so we can assert the retry used a
+    # fresh ticket.
+    mint_call_count = {"n": 0}
+
+    def mint_side_effect(_request: httpx.Request) -> httpx.Response:
+        mint_call_count["n"] += 1
+        return httpx.Response(
+            201,
+            json={
+                "payment_id": f"00000000-0000-0000-0000-00000000000{mint_call_count['n']}",
+                "work_id": "abc",
+                "payment_bytes": "FIRST" if mint_call_count["n"] == 1 else "SECOND",
+                "expected_value_wei": "1",
+                "funded_value_wei": "1",
+                "recipient_eth_address": "0xd003",
+            },
+        )
+
+    respx.post(f"{BASE}/v1/payments/mint").mock(side_effect=mint_side_effect)
+
+    # First orch call: 401 with INVALID_RECIPIENT_RAND. Second: 200.
+    orch_call_count = {"n": 0}
+    seen_payments: list[str] = []
+
+    def orch_side_effect(request: httpx.Request) -> httpx.Response:
+        orch_call_count["n"] += 1
+        seen_payments.append(request.headers.get("Livepeer-Payment", ""))
+        if orch_call_count["n"] == 1:
+            return httpx.Response(
+                401,
+                json={
+                    "error": {
+                        "code": "payment_invalid",
+                        "message": "INVALID_RECIPIENT_RAND",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"id": "ok", "model": "Qwen", "choices": []},
+        )
+
+    respx.post("https://orch.example/v1/cap").mock(side_effect=orch_side_effect)
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as ph:
+        result = await ph.submit_job(
+            capability="x",
+            offering="y",
+            work_units=1,
+            body={"messages": []},
+        )
+
+    # The SDK should have:
+    #   - minted twice (one for attempt #1, one for attempt #2)
+    #   - posted to the orch twice
+    #   - used DIFFERENT payment_bytes on the retry
+    #   - surfaced the 200 to the caller (transparent retry)
+    assert mint_call_count["n"] == 2
+    assert orch_call_count["n"] == 2
+    assert seen_payments == ["FIRST", "SECOND"]
+    assert result.status == 200
+
+
+@respx.mock
+async def test_submit_job_does_not_retry_on_unrelated_401() -> None:
+    """401s that aren't INVALID_RECIPIENT_RAND must NOT trigger a retry."""
+    respx.get(f"{BASE}/v1/routes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "eth_address": "0xd003",
+                "worker_url": "https://orch.example",
+                "capability": "x",
+                "offering": "y",
+                "price_per_work_unit_wei": "1",
+            },
+        )
+    )
+    mint_calls = {"n": 0}
+
+    def _mint(_r: httpx.Request) -> httpx.Response:
+        mint_calls["n"] += 1
+        return httpx.Response(
+            201,
+            json={
+                "payment_id": "00000000-0000-0000-0000-000000000001",
+                "work_id": "abc",
+                "payment_bytes": "AAAA",
+                "expected_value_wei": "1",
+                "funded_value_wei": "1",
+                "recipient_eth_address": "0xd003",
+            },
+        )
+
+    respx.post(f"{BASE}/v1/payments/mint").mock(side_effect=_mint)
+    respx.post("https://orch.example/v1/cap").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"code": "bad_token", "message": "expired key"}},
+        )
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as ph:
+        result = await ph.submit_job(
+            capability="x", offering="y", work_units=1, body={"messages": []}
+        )
+    assert mint_calls["n"] == 1
+    assert result.status == 401
+
+
+@respx.mock
 async def test_submit_job_propagates_non_json_orch_response() -> None:
     respx.get(f"{BASE}/v1/routes").mock(
         return_value=httpx.Response(

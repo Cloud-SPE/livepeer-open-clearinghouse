@@ -144,6 +144,10 @@ struct Wrapped<T> {
     items: Vec<T>,
 }
 
+/// Internal: the outcome of one `attempt_once` inside `submit_job`.
+/// Factored out so clippy's `type_complexity` lint stays happy.
+type AttemptOutcome = (MintResponse, u16, Vec<(String, String)>, Vec<u8>);
+
 impl Client {
     pub fn new(opts: ClientOptions) -> Result<Self, OpenClearinghouseError> {
         if !opts.api_key.starts_with("pymth_") {
@@ -234,57 +238,78 @@ impl Client {
         );
         let route: RouteView = self.send(Method::GET, &path, None, None).await?;
 
-        // 2. Mint.
-        let mint = self
-            .mint_payment(MintPaymentInput {
-                capability: input.capability,
-                offering: input.offering,
-                work_units: input.work_units,
-                idempotency_key: input.idempotency_key,
-            })
-            .await?;
-
-        // 3. POST to the orch.
         let request_id = input
             .request_id
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
         let mode = input.mode.unwrap_or("http-reqresp@v0");
         let spec_version = input.spec_version.unwrap_or("0.1");
         let endpoint = format!("{}/v1/cap", route.worker_url.trim_end_matches('/'));
+        let timeout = input.timeout.unwrap_or(Duration::from_secs(60));
 
-        let mut req = self
-            .http
-            .post(&endpoint)
-            .timeout(input.timeout.unwrap_or(Duration::from_secs(60)))
-            .header("Livepeer-Capability", input.capability)
-            .header("Livepeer-Offering", input.offering)
-            .header("Livepeer-Payment", &mint.payment_bytes)
-            .header("Livepeer-Mode", mode)
-            .header("Livepeer-Spec-Version", spec_version)
-            .header("Livepeer-Request-Id", &request_id);
-        match input.body {
-            JobBody::Json(v) => {
-                req = req.json(&v);
+        // attempt_once mints fresh + POSTs to the orch. The retry on
+        // INVALID_RECIPIENT_RAND MUST mint a new ticket; replaying the
+        // rejected one would just be rejected again. The retry also burns
+        // a fresh Idempotency-Key so the gateway's mint-idempotency ledger
+        // doesn't replay the rejected attempt.
+        let body_clone = input.body.clone();
+        let attempt_once = async |retry: bool,
+                                  body_kind: &JobBody<'_>|
+               -> Result<AttemptOutcome, OpenClearinghouseError> {
+            let idempotency_key = if retry { None } else { input.idempotency_key };
+            let mint = self
+                .mint_payment(MintPaymentInput {
+                    capability: input.capability,
+                    offering: input.offering,
+                    work_units: input.work_units,
+                    idempotency_key,
+                })
+                .await?;
+
+            let mut req = self
+                .http
+                .post(&endpoint)
+                .timeout(timeout)
+                .header("Livepeer-Capability", input.capability)
+                .header("Livepeer-Offering", input.offering)
+                .header("Livepeer-Payment", &mint.payment_bytes)
+                .header("Livepeer-Mode", mode)
+                .header("Livepeer-Spec-Version", spec_version)
+                .header("Livepeer-Request-Id", &request_id);
+            match body_kind {
+                JobBody::Json(v) => {
+                    req = req.json(v);
+                }
+                JobBody::Bytes(b) => {
+                    let ct = input.content_type.unwrap_or("application/octet-stream");
+                    req = req.header(header::CONTENT_TYPE, ct).body(b.to_vec());
+                }
             }
-            JobBody::Bytes(b) => {
-                let ct = input.content_type.unwrap_or("application/octet-stream");
-                req = req.header(header::CONTENT_TYPE, ct).body(b.to_vec());
-            }
+            let res = req.send().await?;
+            let status = res.status().as_u16();
+            let headers: Vec<(String, String)> = res
+                .headers()
+                .iter()
+                .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
+                .collect();
+            let body_bytes = res.bytes().await?.to_vec();
+            Ok((mint, status, headers, body_bytes))
+        };
+
+        let (mut mint, mut status, mut headers, mut body_bytes) =
+            attempt_once(false, &body_clone).await?;
+
+        // Orch session rotation: 401 + INVALID_RECIPIENT_RAND → mint fresh,
+        // retry once.
+        if status == 401
+            && std::str::from_utf8(&body_bytes).is_ok_and(|s| s.contains("INVALID_RECIPIENT_RAND"))
+        {
+            (mint, status, headers, body_bytes) = attempt_once(true, &body_clone).await?;
         }
-        let res = req.send().await?;
-        let status = res.status().as_u16();
-        let headers = res
-            .headers()
+
+        let ctype = headers
             .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
-            .collect();
-        let ctype = res
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body_bytes = res.bytes().await?;
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map_or("", |(_, v)| v.as_str());
         let body = if ctype.contains("json") && !body_bytes.is_empty() {
             serde_json::from_slice::<Value>(&body_bytes).unwrap_or(Value::Null)
         } else {

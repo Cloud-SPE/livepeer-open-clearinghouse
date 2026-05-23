@@ -237,3 +237,143 @@ async fn non_json_error_body_falls_back_to_text() {
         panic!("expected Api variant; got {err:?}");
     }
 }
+
+#[tokio::test]
+async fn submit_job_retries_on_invalid_recipient_rand() {
+    use livepeer_open_clearinghouse_sdk::{JobBody, SubmitJobInput};
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::ResponseTemplate;
+
+    let orch = MockServer::start().await;
+    let (gateway, client) = server_client().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/routes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "eth_address": "0xd003",
+            "worker_url": orch.uri(),
+            "capability": "x",
+            "offering": "y",
+            "price_per_work_unit_wei": "1",
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payments/mint"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "payment_id": "00000000-0000-0000-0000-000000000001",
+            "work_id": "abc",
+            "payment_bytes": "FIRST",
+            "expected_value_wei": "1",
+            "funded_value_wei": "1",
+            "recipient_eth_address": "0xd003",
+        })))
+        .up_to_n_times(1)
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payments/mint"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "payment_id": "00000000-0000-0000-0000-000000000002",
+            "work_id": "abc",
+            "payment_bytes": "SECOND",
+            "expected_value_wei": "1",
+            "funded_value_wei": "1",
+            "recipient_eth_address": "0xd003",
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/cap"))
+        .and(wiremock::matchers::header("Livepeer-Payment", "FIRST"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"code": "payment_invalid", "message": "INVALID_RECIPIENT_RAND: rotated"}
+        })))
+        .mount(&orch)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/cap"))
+        .and(wiremock::matchers::header("Livepeer-Payment", "SECOND"))
+        .and(body_string_contains("messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "model": "Qwen", "choices": []
+        })))
+        .mount(&orch)
+        .await;
+
+    let r = client
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "y",
+            work_units: 1,
+            body: JobBody::Json(serde_json::json!({"messages": []})),
+            content_type: None,
+            idempotency_key: None,
+            request_id: None,
+            mode: None,
+            spec_version: None,
+            timeout: None,
+        })
+        .await
+        .expect("submit_job");
+    assert_eq!(r.status, 200);
+}
+
+#[tokio::test]
+async fn submit_job_does_not_retry_on_unrelated_401() {
+    use livepeer_open_clearinghouse_sdk::{JobBody, SubmitJobInput};
+    use wiremock::matchers::{method, path};
+    use wiremock::ResponseTemplate;
+
+    let orch = MockServer::start().await;
+    let (gateway, client) = server_client().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/routes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "eth_address": "0xd003",
+            "worker_url": orch.uri(),
+            "capability": "x",
+            "offering": "y",
+            "price_per_work_unit_wei": "1",
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payments/mint"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "payment_id": "00000000-0000-0000-0000-000000000001",
+            "work_id": "abc",
+            "payment_bytes": "AAAA",
+            "expected_value_wei": "1",
+            "funded_value_wei": "1",
+            "recipient_eth_address": "0xd003",
+        })))
+        .expect(1)
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/cap"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"code": "bad_token", "message": "expired"}
+        })))
+        .mount(&orch)
+        .await;
+
+    let r = client
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "y",
+            work_units: 1,
+            body: JobBody::Json(serde_json::json!({"messages": []})),
+            content_type: None,
+            idempotency_key: None,
+            request_id: None,
+            mode: None,
+            spec_version: None,
+            timeout: None,
+        })
+        .await
+        .expect("submit_job");
+    assert_eq!(r.status, 401);
+}

@@ -220,18 +220,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		return nil, err
 	}
 
-	// 2. Mint.
-	mint, err := c.MintPayment(ctx, MintPaymentInput{
-		Capability:     in.Capability,
-		Offering:       in.Offering,
-		WorkUnits:      in.WorkUnits,
-		IdempotencyKey: in.IdempotencyKey,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. POST to the orch.
+	// Defaults for the orch call. Resolved once; reused for both attempts.
 	requestID := in.RequestID
 	if requestID == "" {
 		requestID = newUUIDv4()
@@ -256,42 +245,78 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if timeout == 0 {
 		timeout = 60 * time.Second
 	}
-
-	orchCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	endpoint := strings.TrimRight(route.WorkerURL, "/") + "/v1/cap"
-	req, err := http.NewRequestWithContext(orchCtx, http.MethodPost, endpoint, bytes.NewReader(in.Body))
-	if err != nil {
-		return nil, fmt.Errorf("livepeer_open_clearinghouse: build orch request: %w", err)
-	}
-	req.Header.Set("Livepeer-Capability", in.Capability)
-	req.Header.Set("Livepeer-Offering", in.Offering)
-	req.Header.Set("Livepeer-Payment", mint.PaymentBytes)
-	req.Header.Set("Livepeer-Mode", mode)
-	req.Header.Set("Livepeer-Spec-Version", specVersion)
-	req.Header.Set("Livepeer-Request-Id", requestID)
-	req.Header.Set("Content-Type", contentType)
 
-	// Re-use the client's *http.Client (timeouts already applied via ctx).
-	res, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("livepeer_open_clearinghouse: orch call: %w", err)
-	}
-	defer func() { _ = res.Body.Close() }()
+	// attemptOnce mints fresh + POSTs to the orch. Returns status,
+	// headers, body, mint — `*http.Response` stays inside the closure so
+	// the body is closed deterministically (bodyclose-friendly). The
+	// retry on INVALID_RECIPIENT_RAND MUST mint a new ticket; replaying
+	// the rejected one would just be rejected again. The retry also burns
+	// a fresh Idempotency-Key so the gateway's mint-idempotency ledger
+	// doesn't replay the rejected attempt.
+	attemptOnce := func(retry bool) (*Mint, int, http.Header, []byte, error) {
+		idemp := in.IdempotencyKey
+		if retry {
+			idemp = ""
+		}
+		mint, err := c.MintPayment(ctx, MintPaymentInput{
+			Capability:     in.Capability,
+			Offering:       in.Offering,
+			WorkUnits:      in.WorkUnits,
+			IdempotencyKey: idemp,
+		})
+		if err != nil {
+			return nil, 0, nil, nil, err
+		}
+		orchCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(orchCtx, http.MethodPost, endpoint, bytes.NewReader(in.Body))
+		if err != nil {
+			return nil, 0, nil, nil, fmt.Errorf("livepeer_open_clearinghouse: build orch request: %w", err)
+		}
+		req.Header.Set("Livepeer-Capability", in.Capability)
+		req.Header.Set("Livepeer-Offering", in.Offering)
+		req.Header.Set("Livepeer-Payment", mint.PaymentBytes)
+		req.Header.Set("Livepeer-Mode", mode)
+		req.Header.Set("Livepeer-Spec-Version", specVersion)
+		req.Header.Set("Livepeer-Request-Id", requestID)
+		req.Header.Set("Content-Type", contentType)
 
-	payload, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("livepeer_open_clearinghouse: read orch body: %w", err)
+		res, err := c.http.Do(req)
+		if err != nil {
+			return nil, 0, nil, nil, fmt.Errorf("livepeer_open_clearinghouse: orch call: %w", err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		payload, err := io.ReadAll(res.Body)
+		if err != nil {
+			return nil, 0, nil, nil, fmt.Errorf("livepeer_open_clearinghouse: read orch body: %w", err)
+		}
+		return mint, res.StatusCode, res.Header, payload, nil
 	}
+
+	mint, status, header, payload, err := attemptOnce(false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Orch session rotation: 401 + INVALID_RECIPIENT_RAND → mint fresh,
+	// retry once.
+	if status == http.StatusUnauthorized && bytes.Contains(payload, []byte("INVALID_RECIPIENT_RAND")) {
+		mint, status, header, payload, err = attemptOnce(true)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	out := &JobResult{
-		Status:              res.StatusCode,
+		Status:              status,
 		PaymentID:           mint.PaymentID,
 		RecipientEthAddress: mint.RecipientEthAddress,
 		RequestID:           requestID,
-		RawHeaders:          res.Header,
+		RawHeaders:          header,
 		BodyText:            string(payload),
 	}
-	if strings.Contains(res.Header.Get("Content-Type"), "json") && len(payload) > 0 {
+	if strings.Contains(header.Get("Content-Type"), "json") && len(payload) > 0 {
 		out.Body = json.RawMessage(payload)
 	}
 	return out, nil

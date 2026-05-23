@@ -154,55 +154,71 @@ export class OpenClearinghouseClient {
     });
     const route = await this.request<RouteView>("GET", `/v1/routes?${qs.toString()}`);
 
-    // 2. Mint.
-    const mint = await this.mintPayment({
-      capability: args.capability,
-      offering: args.offering,
-      workUnits: args.workUnits,
-      ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-    });
-
-    // 3. POST to the orch.
     const requestId = args.requestId ?? crypto.randomUUID();
-    const headers: Record<string, string> = {
+    let payload: string | Uint8Array;
+    const baseHeaders: Record<string, string> = {
       "Livepeer-Capability": args.capability,
       "Livepeer-Offering": args.offering,
-      "Livepeer-Payment": mint.payment_bytes,
       "Livepeer-Mode": args.mode ?? "http-reqresp@v0",
       "Livepeer-Spec-Version": args.specVersion ?? "0.1",
       "Livepeer-Request-Id": requestId,
     };
-    let payload: string | Uint8Array;
     if (args.body instanceof Uint8Array) {
       payload = args.body;
-      headers["Content-Type"] ??= "application/octet-stream";
+      baseHeaders["Content-Type"] = "application/octet-stream";
     } else if (typeof args.body === "string") {
       payload = args.body;
-      headers["Content-Type"] ??= "application/octet-stream";
+      baseHeaders["Content-Type"] = "application/octet-stream";
     } else {
       payload = JSON.stringify(args.body);
-      headers["Content-Type"] = "application/json";
+      baseHeaders["Content-Type"] = "application/json";
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), args.timeoutMs ?? 60_000);
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${route.worker_url.replace(/\/+$/, "")}/v1/cap`, {
-        method: "POST",
-        headers,
-        body: payload,
-        signal: controller.signal,
+    // Each attempt: fresh mint + fresh POST. The orch's payment session
+    // can rotate; retrying with the rejected ticket would just be rejected
+    // again. On the retry we also burn a fresh Idempotency-Key so the
+    // gateway's mint-idempotency ledger doesn't replay the rejected one.
+    const attemptOnce = async (
+      retry: boolean,
+    ): Promise<{ mint: Mint; res: Response; bodyText: string }> => {
+      const mint = await this.mintPayment({
+        capability: args.capability,
+        offering: args.offering,
+        workUnits: args.workUnits,
+        ...(retry || args.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: args.idempotencyKey }),
       });
-    } finally {
-      clearTimeout(timeout);
-    }
-    const text = await res.text();
-    const ctype = res.headers.get("content-type") ?? "";
-    let body: unknown = text;
-    if (ctype.includes("json") && text) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), args.timeoutMs ?? 60_000);
+      let res: Response;
       try {
-        body = JSON.parse(text) as unknown;
+        res = await this.fetchImpl(`${route.worker_url.replace(/\/+$/, "")}/v1/cap`, {
+          method: "POST",
+          headers: { ...baseHeaders, "Livepeer-Payment": mint.payment_bytes },
+          body: payload,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      const bodyText = await res.text();
+      return { mint, res, bodyText };
+    };
+
+    let { mint, res, bodyText } = await attemptOnce(false);
+
+    // Orch session rotation: 401 + INVALID_RECIPIENT_RAND → mint fresh,
+    // retry once.
+    if (res.status === 401 && bodyText.includes("INVALID_RECIPIENT_RAND")) {
+      ({ mint, res, bodyText } = await attemptOnce(true));
+    }
+
+    const ctype = res.headers.get("content-type") ?? "";
+    let body: unknown = bodyText;
+    if (ctype.includes("json") && bodyText) {
+      try {
+        body = JSON.parse(bodyText) as unknown;
       } catch {
         // leave as text
       }

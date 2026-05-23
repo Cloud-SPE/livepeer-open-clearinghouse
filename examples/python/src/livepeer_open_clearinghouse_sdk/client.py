@@ -175,45 +175,56 @@ class OpenClearinghouseClient:
         route_view = self._unwrap(route)
         broker_url: str = route_view["worker_url"]
 
-        # 2. Mint a payment for this orch.
-        mint = await self.mint_payment(
-            capability=capability,
-            offering=offering,
-            work_units=work_units,
-            idempotency_key=idempotency_key,
-        )
-
-        # 3. Build the request to the orch.
         req_id = request_id or str(uuid.uuid4())
-        headers: dict[str, str] = {
-            "Livepeer-Capability": capability,
-            "Livepeer-Offering": offering,
-            "Livepeer-Payment": mint.payment_bytes,
-            "Livepeer-Mode": mode,
-            "Livepeer-Spec-Version": spec_version,
-            "Livepeer-Request-Id": req_id,
-        }
-        # Detached HTTP client — the orch is a third-party URL, not our
-        # base_url. We open a one-shot AsyncClient so the timeout +
-        # connection state are scoped to this call.
         timeout = timeout if timeout is not None else httpx.Timeout(60.0)
-        async with httpx.AsyncClient(timeout=timeout) as orch:
-            if isinstance(body, dict):
-                headers.setdefault("Content-Type", "application/json")
-                resp = await orch.post(
-                    f"{broker_url.rstrip('/')}/v1/cap",
-                    headers=headers,
-                    json=body,
-                )
-            else:
-                headers.setdefault(
-                    "Content-Type", "application/octet-stream"
-                )
-                resp = await orch.post(
-                    f"{broker_url.rstrip('/')}/v1/cap",
-                    headers=headers,
-                    content=body,
-                )
+
+        async def _mint_and_post(retry: bool) -> tuple[Mint, httpx.Response]:
+            # Each attempt mints fresh — a retry on INVALID_RECIPIENT_RAND
+            # MUST mint a new ticket; replaying the rejected one would just
+            # be rejected again. We also burn a fresh Idempotency-Key on the
+            # retry so it doesn't replay through the gateway's
+            # `(api_key_id, idempotency_key)` ledger.
+            this_idem = idempotency_key if not retry else None
+            mint = await self.mint_payment(
+                capability=capability,
+                offering=offering,
+                work_units=work_units,
+                idempotency_key=this_idem,
+            )
+            headers: dict[str, str] = {
+                "Livepeer-Capability": capability,
+                "Livepeer-Offering": offering,
+                "Livepeer-Payment": mint.payment_bytes,
+                "Livepeer-Mode": mode,
+                "Livepeer-Spec-Version": spec_version,
+                "Livepeer-Request-Id": req_id,
+            }
+            async with httpx.AsyncClient(timeout=timeout) as orch:
+                if isinstance(body, dict):
+                    headers.setdefault("Content-Type", "application/json")
+                    resp = await orch.post(
+                        f"{broker_url.rstrip('/')}/v1/cap",
+                        headers=headers,
+                        json=body,
+                    )
+                else:
+                    headers.setdefault(
+                        "Content-Type", "application/octet-stream"
+                    )
+                    resp = await orch.post(
+                        f"{broker_url.rstrip('/')}/v1/cap",
+                        headers=headers,
+                        content=body,
+                    )
+            return mint, resp
+
+        mint, resp = await _mint_and_post(retry=False)
+
+        # Orch's payment session can rotate underneath us; the canonical
+        # marker is a 401 with INVALID_RECIPIENT_RAND in the body. Mint
+        # fresh and retry once before surfacing the error.
+        if resp.status_code == 401 and "INVALID_RECIPIENT_RAND" in resp.text:
+            mint, resp = await _mint_and_post(retry=True)
 
         # 4. Parse + wrap. JSON when possible; raw text otherwise.
         ctype = resp.headers.get("content-type", "")

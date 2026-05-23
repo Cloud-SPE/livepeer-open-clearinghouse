@@ -2,6 +2,7 @@ package openclearinghouse_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,5 +197,108 @@ func TestNonJSONErrorBodyFallsBackToText(t *testing.T) {
 	}
 	if phErr.Status != 503 {
 		t.Errorf("expected 503; got %d", phErr.Status)
+	}
+}
+
+// TestSubmitJobRetriesOnInvalidRecipientRand drives one route, two mints, and
+// two orch POSTs through a single test server. The first orch POST returns
+// 401 with INVALID_RECIPIENT_RAND in the body; the SDK should re-mint with
+// a fresh idempotency key, retry once, and surface the resulting 200.
+func TestSubmitJobRetriesOnInvalidRecipientRand(t *testing.T) {
+	var mintCount, orchCount int
+	var seenPayments []string
+
+	// Orch server (separate from the gateway server).
+	orch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orchCount++
+		seenPayments = append(seenPayments, r.Header.Get("Livepeer-Payment"))
+		if orchCount == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":"payment_invalid","message":"INVALID_RECIPIENT_RAND: rotated"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"Qwen","choices":[]}`))
+	}))
+	t.Cleanup(orch.Close)
+
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/routes":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"eth_address":"0xd003","worker_url":"` + orch.URL + `","capability":"x","offering":"y","price_per_work_unit_wei":"1"}`))
+		case "/v1/payments/mint":
+			mintCount++
+			bytesField := "FIRST"
+			if mintCount > 1 {
+				bytesField = "SECOND"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"payment_id":"00000000-0000-0000-0000-00000000000%d","work_id":"abc","payment_bytes":"%s","expected_value_wei":"1","funded_value_wei":"1","recipient_eth_address":"0xd003"}`, mintCount, bytesField)
+		default:
+			t.Fatalf("unexpected gateway path: %s", r.URL.Path)
+		}
+	}))
+
+	result, err := c.SubmitJob(context.Background(), openclearinghouse.SubmitJobInput{
+		Capability:  "x",
+		Offering:    "y",
+		WorkUnits:   1,
+		Body:        []byte(`{"messages":[]}`),
+		ContentType: "application/json",
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	if mintCount != 2 {
+		t.Errorf("expected 2 mints; got %d", mintCount)
+	}
+	if orchCount != 2 {
+		t.Errorf("expected 2 orch posts; got %d", orchCount)
+	}
+	if len(seenPayments) != 2 || seenPayments[0] == seenPayments[1] {
+		t.Errorf("expected distinct payment_bytes per attempt; got %v", seenPayments)
+	}
+	if result.Status != 200 {
+		t.Errorf("expected final status 200; got %d", result.Status)
+	}
+}
+
+// TestSubmitJobDoesNotRetryOnUnrelated401 confirms the retry trigger is
+// narrow — a 401 without INVALID_RECIPIENT_RAND must surface as-is.
+func TestSubmitJobDoesNotRetryOnUnrelated401(t *testing.T) {
+	var mintCount int
+	orch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"bad_token","message":"expired"}}`))
+	}))
+	t.Cleanup(orch.Close)
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/routes":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"eth_address":"0xd003","worker_url":"` + orch.URL + `","capability":"x","offering":"y","price_per_work_unit_wei":"1"}`))
+		case "/v1/payments/mint":
+			mintCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"payment_id":"00000000-0000-0000-0000-000000000001","work_id":"abc","payment_bytes":"AAAA","expected_value_wei":"1","funded_value_wei":"1","recipient_eth_address":"0xd003"}`))
+		}
+	}))
+	result, err := c.SubmitJob(context.Background(), openclearinghouse.SubmitJobInput{
+		Capability: "x", Offering: "y", WorkUnits: 1,
+		Body: []byte(`{"messages":[]}`), ContentType: "application/json",
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	if mintCount != 1 {
+		t.Errorf("expected 1 mint; got %d", mintCount)
+	}
+	if result.Status != 401 {
+		t.Errorf("expected status 401; got %d", result.Status)
 	}
 }
