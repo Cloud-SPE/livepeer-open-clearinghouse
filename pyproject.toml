@@ -47,6 +47,7 @@ livepeer_open_clearinghouse = "livepeer_open_clearinghouse.main:cli"
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.20",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",

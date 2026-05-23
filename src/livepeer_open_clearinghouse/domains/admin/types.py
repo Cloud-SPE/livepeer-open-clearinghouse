@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class PendingUserView(BaseModel):
@@ -114,3 +114,49 @@ class AuditEntryView(BaseModel):
 
 class AuditEntryList(BaseModel):
     items: list[AuditEntryView]
+
+
+# ---- Operator management ---------------------------------------------------
+
+
+class OperatorView(BaseModel):
+    """Public-facing operator shape (no token material)."""
+
+    id: uuid.UUID
+    email: str
+    name: str
+    role: str
+    last_login_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+class OperatorList(BaseModel):
+    items: list[OperatorView]
+
+
+class CreateOperatorRequest(BaseModel):
+    """Inbound: ``POST /v1/admin/operators``."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=120)
+    role: str = Field(default="member")
+
+
+class UpdateOperatorRequest(BaseModel):
+    """Inbound: ``PATCH /v1/admin/operators/{id}`` — at least one field."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    role: str | None = None
+
+
+class OperatorWithToken(BaseModel):
+    """Outbound from create + rotate-token. The ``raw_token`` field is
+    shown exactly once; the gateway only stores its hash."""
+
+    operator: OperatorView
+    raw_token: str

@@ -23,11 +23,21 @@ from livepeer_open_clearinghouse.providers.db import (
 
 
 class Operator(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
-    """A Livepeer Open Clearinghouse operator. There is no user-to-operator promotion path in MVP."""
+    """A Livepeer Open Clearinghouse operator. There is no user-to-operator promotion path in MVP.
+
+    `role` is a two-tier RBAC:
+      - ``owner`` can do everything, including managing other operators
+      - ``member`` can do everything except operator management
+
+    Free-form VARCHAR (not a DB enum) so adding a third role (e.g.
+    ``viewer``) doesn't need a migration. Validated at the app layer
+    in ``service.create_operator`` / ``service.update_operator``.
+    """
 
     email: Mapped[str] = mapped_column(unique=True, nullable=False)
     name: Mapped[str] = mapped_column(nullable=False)
     token_hash: Mapped[str] = mapped_column(nullable=False)
+    role: Mapped[str] = mapped_column(nullable=False, default="member")
     last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
 

@@ -10,12 +10,13 @@ from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
     CurrentOperatorDep,
     EmailDep,
+    OwnerOperatorDep,
     RegistryDep,
     SessionDep,
     SettingsDep,
 )
 from livepeer_open_clearinghouse.domains.admin import service
-from livepeer_open_clearinghouse.domains.admin.repo import OperatorAudit
+from livepeer_open_clearinghouse.domains.admin.repo import Operator, OperatorAudit
 from livepeer_open_clearinghouse.domains.admin.types import (
     AdminUserList,
     AdminUserView,
@@ -25,11 +26,16 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     BillingConfigResponse,
     BillingConfigUpdate,
     BillingConfigView,
+    CreateOperatorRequest,
     DepositSnapshotList,
     DepositSnapshotView,
     EffectiveBillingConfigView,
+    OperatorList,
+    OperatorView,
+    OperatorWithToken,
     PendingUserList,
     PendingUserView,
+    UpdateOperatorRequest,
 )
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import service as discovery_service
@@ -295,3 +301,133 @@ async def admin_list_orchestrators_endpoint(
 ) -> dict:
     items = await discovery_service.list_orchestrators(registry, capability=capability)
     return {"items": [o.model_dump() for o in items]}
+
+
+# ---------------------------------------------------------------------------
+# Operator management — owner-only mutations, any-operator read
+# ---------------------------------------------------------------------------
+
+
+def _operator_view(op: Operator) -> OperatorView:
+    return OperatorView(
+        id=op.id,
+        email=op.email,
+        name=op.name,
+        role=op.role,
+        last_login_at=op.last_login_at,
+        revoked_at=op.revoked_at,
+        created_at=op.created_at,
+    )
+
+
+@router.get("/operators", response_model=OperatorList)
+async def list_operators_endpoint(
+    operator: CurrentOperatorDep,  # noqa: ARG001 — auth only
+    db: SessionDep,
+) -> OperatorList:
+    """Any operator can list. Mutations are owner-only."""
+    rows = await service.list_operators(db)
+    return OperatorList(items=[_operator_view(o) for o in rows])
+
+
+@router.post(
+    "/operators",
+    response_model=OperatorWithToken,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_operator_endpoint(
+    owner: OwnerOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    body: CreateOperatorRequest,
+) -> OperatorWithToken:
+    try:
+        op, raw_token = await service.create_operator(
+            db,
+            acting_operator=owner,
+            email=str(body.email),
+            name=body.name,
+            role=body.role,
+            clock=clock,
+        )
+    except service.InvalidOperatorRole as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    except service.OperatorEmailTaken as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return OperatorWithToken(operator=_operator_view(op), raw_token=raw_token)
+
+
+@router.patch("/operators/{operator_id}", response_model=OperatorView)
+async def update_operator_endpoint(
+    owner: OwnerOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    operator_id: uuid.UUID,
+    body: UpdateOperatorRequest,
+) -> OperatorView:
+    try:
+        op = await service.update_operator(
+            db,
+            acting_operator=owner,
+            operator_id=operator_id,
+            name=body.name,
+            role=body.role,
+            clock=clock,
+        )
+    except service.OperatorNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except service.InvalidOperatorRole as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    except service.CannotDemoteLastOwner as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return _operator_view(op)
+
+
+@router.post("/operators/{operator_id}/revoke", response_model=OperatorView)
+async def revoke_operator_endpoint(
+    owner: OwnerOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    operator_id: uuid.UUID,
+) -> OperatorView:
+    try:
+        op = await service.revoke_operator(
+            db,
+            acting_operator=owner,
+            operator_id=operator_id,
+            clock=clock,
+        )
+    except service.OperatorNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except service.CannotRevokeSelf as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except service.CannotDemoteLastOwner as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return _operator_view(op)
+
+
+@router.post(
+    "/operators/{operator_id}/rotate-token",
+    response_model=OperatorWithToken,
+)
+async def rotate_operator_token_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    operator_id: uuid.UUID,
+) -> OperatorWithToken:
+    """Owners can rotate any operator's token. Members can only rotate their own."""
+    if operator.role != "owner" and operator.id != operator_id:
+        raise HTTPException(
+            status_code=403, detail="operator_role_required:owner_or_self"
+        )
+    try:
+        op, raw_token = await service.rotate_operator_token(
+            db,
+            acting_operator=operator,
+            operator_id=operator_id,
+            clock=clock,
+        )
+    except service.OperatorNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    return OperatorWithToken(operator=_operator_view(op), raw_token=raw_token)

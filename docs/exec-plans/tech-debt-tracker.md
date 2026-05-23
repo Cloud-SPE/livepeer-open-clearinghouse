@@ -42,10 +42,21 @@ the exec-plan that addressed it and remove it from this file.
 - **No OIDC issuer (Livepeer Open Clearinghouse as identity provider for downstream
   apps).** We *consume* Google/GitHub but don't *issue* OIDC tokens.
   *Trigger:* partner integration that needs us as IdP.
-- **Bootstrap-operator-only admin auth.** No operator UI, no operator
-  CRUD, no operator-to-operator role separation. A single env var
-  (`ADMIN_BOOTSTRAP_TOKEN`) gates the admin API. *Trigger:* needing
-  more than one operator or wanting role separation.
+- **Only owner/member roles; no viewer or per-resource scopes.** RBAC
+  is two-tier: `owner` can manage operators, `member` can do everything
+  else (approvals, topups, billing-config edits). No read-only role
+  yet. *Trigger:* needing a support persona that can read audit/users
+  without mutating anything.
+- **No operator session UI, no SSO.** Operators sign in by pasting a
+  bearer token into the admin SPA, which stashes it in localStorage.
+  No password, no OIDC, no expiry, no idle timeout. *Trigger:* an
+  operator pool large enough that bearer tokens become a security or
+  ergonomics burden.
+- **Operator email is plain `str` on output but `EmailStr`-validated on
+  input.** The bootstrap row uses a `.local` TLD which pydantic's
+  email-validator rejects, so output schemas had to relax. *Trigger:*
+  if we tighten input validation further we should reconcile by
+  switching bootstrap to a routable domain.
 ### Funding
 
 - **No Stripe / USDC / on-ramp deposit flows.** Operator topup only.
@@ -182,4 +193,6 @@ the exec-plan that addressed it and remove it from this file.
 
 ## Closed items
 
-(empty)
+- **Bootstrap-operator-only admin auth** — replaced by full operator
+  CRUD with `owner`/`member` role separation, hashed bearer tokens,
+  rotation, revocation, and last-owner protection (2026-05-23).

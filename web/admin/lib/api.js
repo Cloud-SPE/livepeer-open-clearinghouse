@@ -75,3 +75,13 @@ export const listOrchestrators = (capability) => {
   const qs = capability ? `?capability=${encodeURIComponent(capability)}` : "";
   return api(`/discovery/orchestrators${qs}`);
 };
+
+export const listOperators = () => api("/operators");
+export const createOperator = ({ email, name, role }) =>
+  api("/operators", { method: "POST", body: { email, name, role } });
+export const updateOperator = (id, body) =>
+  api(`/operators/${id}`, { method: "PATCH", body });
+export const revokeOperator = (id) =>
+  api(`/operators/${id}/revoke`, { method: "POST" });
+export const rotateOperatorToken = (id) =>
+  api(`/operators/${id}/rotate-token`, { method: "POST" });

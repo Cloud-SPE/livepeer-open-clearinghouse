@@ -294,3 +294,24 @@ async def get_authed_user(
 AuthedUserDep = Annotated[User, Depends(get_authed_user)]
 SessionUserDep = Annotated[User, Depends(get_session_user)]
 CurrentOperatorDep = Annotated[Operator, Depends(get_current_operator)]
+
+
+async def get_owner_operator(
+    operator: Annotated[Operator, Depends(get_current_operator)],
+) -> Operator:
+    """Like ``get_current_operator``, but 403 unless role == ``owner``.
+
+    Used by the operator-management endpoints under
+    ``/v1/admin/operators``. ``member`` operators get a clean
+    permission-denied instead of having to discover the rule by trial
+    and error.
+    """
+    if operator.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="operator_role_required:owner",
+        )
+    return operator
+
+
+OwnerOperatorDep = Annotated[Operator, Depends(get_owner_operator)]

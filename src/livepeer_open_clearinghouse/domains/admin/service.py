@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import uuid
 
 from sqlalchemy import func, select
@@ -63,6 +64,10 @@ async def ensure_bootstrap_operator(session: AsyncSession, *, bootstrap_token: s
         email=BOOTSTRAP_OPERATOR_EMAIL,
         name=BOOTSTRAP_OPERATOR_NAME,
         token_hash=token_hash,
+        # The bootstrap operator owns the org until they create more.
+        # Python-level default on the Operator model is "member" so we
+        # have to override here explicitly.
+        role="owner",
     )
     session.add(op)
     await session.flush()
@@ -247,3 +252,202 @@ async def resend_verification(
         )
     )
     return user
+
+
+# ---------------------------------------------------------------------------
+# Operator management — owner-only mutations
+# ---------------------------------------------------------------------------
+
+OPERATOR_ROLES: tuple[str, ...] = ("owner", "member")
+OPERATOR_TOKEN_PREFIX = "loc_op_"  # noqa: S105 — token prefix, not a credential
+
+
+class InvalidOperatorRole(AdminServiceError):
+    code = "invalid_operator_role"
+
+
+class OperatorNotFound(AdminServiceError):
+    code = "operator_not_found"
+
+
+class OperatorEmailTaken(AdminServiceError):
+    code = "operator_email_taken"
+
+
+class CannotRevokeSelf(AdminServiceError):
+    code = "cannot_revoke_self"
+
+
+class CannotDemoteLastOwner(AdminServiceError):
+    code = "cannot_demote_last_owner"
+
+
+def _generate_operator_token() -> tuple[str, str]:
+    """Return (raw_token, sha256_hash) for a new operator.
+
+    The raw token is shown to the caller exactly once at creation /
+    rotation; the hash is what we store. Same hashing primitive as the
+    bootstrap token so the auth path doesn't need to branch on which
+    flavour of token came in.
+    """
+    raw = OPERATOR_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    return raw, _hash_bootstrap_token(raw)
+
+
+async def _count_active_owners(session: AsyncSession) -> int:
+    n = await session.scalar(
+        select(func.count()).select_from(Operator).where(
+            Operator.role == "owner", Operator.revoked_at.is_(None)
+        )
+    )
+    return int(n or 0)
+
+
+async def list_operators(session: AsyncSession) -> list[Operator]:
+    """Most-recent-first list of every operator (including revoked)."""
+    rows = await session.scalars(
+        select(Operator).order_by(Operator.created_at.desc())
+    )
+    return list(rows)
+
+
+async def create_operator(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    email: str,
+    name: str,
+    role: str = "member",
+    clock: Clock,
+) -> tuple[Operator, str]:
+    """Create a new operator. Returns (row, raw_token)."""
+    if role not in OPERATOR_ROLES:
+        raise InvalidOperatorRole
+    existing = await session.scalar(
+        select(Operator).where(Operator.email == email)
+    )
+    if existing is not None:
+        raise OperatorEmailTaken
+    raw, token_hash = _generate_operator_token()
+    op = Operator(
+        email=email,
+        name=name,
+        token_hash=token_hash,
+        role=role,
+    )
+    session.add(op)
+    await session.flush()
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="create_operator",
+            target_user_id=None,
+            params={"new_operator_id": str(op.id), "email": email, "role": role},
+        )
+    )
+    return op, raw
+
+
+async def update_operator(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    operator_id: uuid.UUID,
+    name: str | None = None,
+    role: str | None = None,
+    clock: Clock,
+) -> Operator:
+    target = await session.get(Operator, operator_id)
+    if target is None:
+        raise OperatorNotFound
+    if role is not None and role not in OPERATOR_ROLES:
+        raise InvalidOperatorRole
+
+    # Don't allow demoting the last active owner — bricks the org.
+    if (
+        role is not None
+        and role != "owner"
+        and target.role == "owner"
+        and target.revoked_at is None
+        and await _count_active_owners(session) <= 1
+    ):
+        raise CannotDemoteLastOwner
+
+    changes: dict[str, str] = {}
+    if name is not None and name != target.name:
+        target.name = name
+        changes["name"] = name
+    if role is not None and role != target.role:
+        target.role = role
+        changes["role"] = role
+    if changes:
+        session.add(
+            OperatorAudit(
+                operator_id=acting_operator.id,
+                action="update_operator",
+                target_user_id=None,
+                params={"target_operator_id": str(operator_id), "changes": changes},
+            )
+        )
+    await session.flush()
+    return target
+
+
+async def revoke_operator(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    operator_id: uuid.UUID,
+    clock: Clock,
+) -> Operator:
+    if operator_id == acting_operator.id:
+        raise CannotRevokeSelf
+    target = await session.get(Operator, operator_id)
+    if target is None:
+        raise OperatorNotFound
+    if target.revoked_at is not None:
+        return target
+    # Can't revoke the last active owner.
+    if target.role == "owner" and await _count_active_owners(session) <= 1:
+        raise CannotDemoteLastOwner
+    target.revoked_at = clock.now()
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="revoke_operator",
+            target_user_id=None,
+            params={"target_operator_id": str(operator_id)},
+        )
+    )
+    await session.flush()
+    return target
+
+
+async def rotate_operator_token(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    operator_id: uuid.UUID,
+    clock: Clock,
+) -> tuple[Operator, str]:
+    """Mint a new bearer token for the target operator. Returns (row, raw_token).
+
+    Caller-authz: the runtime layer enforces that the acting operator is
+    either an owner OR the target themselves. Service-layer is identity-
+    blind; just does the work.
+    """
+    target = await session.get(Operator, operator_id)
+    if target is None:
+        raise OperatorNotFound
+    raw, token_hash = _generate_operator_token()
+    target.token_hash = token_hash
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="rotate_operator_token",
+            target_user_id=None,
+            params={"target_operator_id": str(operator_id)},
+        )
+    )
+    await session.flush()
+    return target, raw
