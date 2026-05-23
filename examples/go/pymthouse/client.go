@@ -48,11 +48,14 @@ type Offering struct {
 }
 
 // Orchestrator is one entry returned by GET /v1/orchestrators.
+// The `capabilities` field is a nested list of Capability objects
+// (the orch's full advertisement) — not a flat list of capability names.
 type Orchestrator struct {
-	EthAddress      string   `json:"eth_address"`
-	ServiceURL      string   `json:"service_url"`
-	Capabilities    []string `json:"capabilities"`
-	FreshnessStatus string   `json:"freshness_status"`
+	EthAddress      string       `json:"eth_address"`
+	WorkerURL       string       `json:"worker_url"`
+	Capabilities    []Capability `json:"capabilities"`
+	SignatureStatus string       `json:"signature_status"`
+	FreshnessStatus string       `json:"freshness_status"`
 }
 
 // UsageReportResult is the response from POST /v1/usage/report. The

@@ -21,8 +21,9 @@ export interface Capability {
 
 export interface Orchestrator {
   eth_address: string;
-  service_url: string;
-  capabilities: string[];
+  worker_url: string;
+  capabilities: Capability[];
+  signature_status: string;
   freshness_status: string;
 }
 

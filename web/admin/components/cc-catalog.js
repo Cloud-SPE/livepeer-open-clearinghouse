@@ -40,11 +40,16 @@ function formatWei(weiStr) {
  * aggregation just for one tab.
  */
 function aggregate(capabilities, orchestrators) {
-  // capName -> count of orchs
+  // capName -> count of orchs that advertise that capability. The gateway
+  // returns each orch's capabilities as an array of objects, not strings,
+  // so key on cap.name. (string keys were silently coercing every object
+  // to "[object Object]" and producing zeros for every row.)
   const orchCount = new Map();
   for (const o of orchestrators) {
-    for (const cap of o.capabilities) {
-      orchCount.set(cap, (orchCount.get(cap) || 0) + 1);
+    for (const cap of o.capabilities || []) {
+      const key = typeof cap === "string" ? cap : cap.name;
+      if (!key) continue;
+      orchCount.set(key, (orchCount.get(key) || 0) + 1);
     }
   }
   return capabilities.map((c) => {

@@ -33,8 +33,9 @@ pub struct Capability {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Orchestrator {
     pub eth_address: String,
-    pub service_url: String,
-    pub capabilities: Vec<String>,
+    pub worker_url: String,
+    pub capabilities: Vec<Capability>,
+    pub signature_status: String,
     pub freshness_status: String,
 }
 
