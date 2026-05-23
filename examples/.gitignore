@@ -1,0 +1,14 @@
+# per-language build + dep directories
+python/.venv/
+python/dist/
+python/**/__pycache__/
+python/**/*.egg-info/
+python/.pytest_cache/
+
+typescript/node_modules/
+typescript/dist/
+
+go/cmd/example/example
+
+rust/target/
+rust/Cargo.lock
