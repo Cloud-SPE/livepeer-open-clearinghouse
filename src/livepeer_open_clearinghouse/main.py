@@ -70,7 +70,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("scheduler.idempotency_keys.expired", count=n)
 
     async def _snapshot_deposit() -> None:
-        from livepeer_open_clearinghouse.dependencies import _default_payment_daemon  # noqa: PLC0415
+        from livepeer_open_clearinghouse.dependencies import (
+            _default_payment_daemon,
+        )
 
         try:
             daemon = _default_payment_daemon()
@@ -81,7 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     deposit_wei=str(row.deposit_wei),
                     reserve_wei=str(row.reserve_wei),
                 )
-        except Exception as exc:  # noqa: BLE001 — never let a job kill the loop
+        except Exception as exc:
             log.warning("scheduler.deposit_snapshot.failed", error=str(exc))
 
     async def _auto_replenish() -> None:
@@ -90,7 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 n = await billing_service.run_auto_replenish(db, clock=clock, settings=cfg)
                 if n:
                     log.info("scheduler.auto_replenish.applied", users=n)
-        except Exception as exc:  # noqa: BLE001 — never let a job kill the loop
+        except Exception as exc:
             log.warning("scheduler.auto_replenish.failed", error=str(exc))
 
     register_interval_job(

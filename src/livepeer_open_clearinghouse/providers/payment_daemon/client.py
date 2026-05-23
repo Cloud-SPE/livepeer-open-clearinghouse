@@ -217,7 +217,6 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
     """Map our CreatePaymentRequest dataclass to the generated proto message."""
     # Lazy imports so the runtime image only loads the stubs when grpc mode
     # is actually selected.
-    from livepeer_open_clearinghouse import _gen  # noqa: F401, PLC0415
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2  # noqa: PLC0415
 
     return payer_daemon_pb2.CreatePaymentRequest(
@@ -288,8 +287,6 @@ class GrpcPaymentDaemonClient:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415
-
-        from livepeer_open_clearinghouse import _gen  # noqa: F401, PLC0415
         from livepeer.payments.v1 import payer_daemon_pb2_grpc  # noqa: PLC0415
 
         if self._lock is None:
@@ -308,7 +305,6 @@ class GrpcPaymentDaemonClient:
 
     async def health(self) -> bool:
         import grpc  # noqa: PLC0415
-
         from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
 
         stub = await self._ensure_stub()

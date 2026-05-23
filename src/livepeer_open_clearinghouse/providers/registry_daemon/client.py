@@ -164,8 +164,6 @@ class GrpcRegistryClient:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415
-
-        from livepeer_open_clearinghouse import _gen  # noqa: F401, PLC0415
         from livepeer.registry.v1 import resolver_pb2_grpc  # noqa: PLC0415
 
         if self._lock is None:
@@ -184,7 +182,6 @@ class GrpcRegistryClient:
 
     async def select(self, capability: str, offering: str) -> SelectedRoute | None:
         import grpc  # noqa: PLC0415
-
         from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
 
         stub = await self._ensure_stub()
@@ -237,7 +234,7 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:  # noqa: BLE001 — keep going on per-orch failures
+            except Exception:
                 continue
             for node in resolved.nodes:
                 for cap in node.capabilities:
@@ -271,7 +268,7 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             for node in resolved.nodes:
                 cap_views: list[CapabilityInfo] = []

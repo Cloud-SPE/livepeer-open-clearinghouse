@@ -27,6 +27,8 @@ from livepeer_open_clearinghouse.providers.clock import Clock, DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_dependency
 from livepeer_open_clearinghouse.providers.email import (
     EmailProvider,
+)
+from livepeer_open_clearinghouse.providers.email import (
     make_provider as make_email_provider,
 )
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -130,7 +132,7 @@ def rate_limit(*, route: str, capacity_attr: str, refill_attr: str):  # type: ig
     fields on Settings (so each route reads its own knobs from env).
     A capacity of 0 disables the limiter for that route.
     """
-    from fastapi import HTTPException, Request, status  # noqa: PLC0415
+    from fastapi import HTTPException, status  # noqa: PLC0415
 
     async def _dep(
         request: Request,
@@ -210,7 +212,7 @@ async def get_current_user_from_api_key(
 
 
 async def get_session_user(
-    request: Request,  # noqa: ARG001 — kept for symmetry/future use
+    request: Request,
     session: SessionDep,
     clock: ClockDep,
     settings: SettingsDep,

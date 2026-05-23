@@ -205,7 +205,7 @@ async def approve_user(
                     to=user.email, public_base_url=public_base_url
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort notification
+        except Exception as exc:
             logger.warning(
                 "admin.approve_user.notification_failed",
                 user_id=str(user_id),
@@ -296,18 +296,16 @@ def _generate_operator_token() -> tuple[str, str]:
 
 async def _count_active_owners(session: AsyncSession) -> int:
     n = await session.scalar(
-        select(func.count()).select_from(Operator).where(
-            Operator.role == "owner", Operator.revoked_at.is_(None)
-        )
+        select(func.count())
+        .select_from(Operator)
+        .where(Operator.role == "owner", Operator.revoked_at.is_(None))
     )
     return int(n or 0)
 
 
 async def list_operators(session: AsyncSession) -> list[Operator]:
     """Most-recent-first list of every operator (including revoked)."""
-    rows = await session.scalars(
-        select(Operator).order_by(Operator.created_at.desc())
-    )
+    rows = await session.scalars(select(Operator).order_by(Operator.created_at.desc()))
     return list(rows)
 
 
@@ -323,9 +321,7 @@ async def create_operator(
     """Create a new operator. Returns (row, raw_token)."""
     if role not in OPERATOR_ROLES:
         raise InvalidOperatorRole
-    existing = await session.scalar(
-        select(Operator).where(Operator.email == email)
-    )
+    existing = await session.scalar(select(Operator).where(Operator.email == email))
     if existing is not None:
         raise OperatorEmailTaken
     raw, token_hash = _generate_operator_token()

@@ -31,7 +31,7 @@ class User(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     email_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
     password_hash: Mapped[str | None] = mapped_column(nullable=True)
 
-    sessions: Mapped[list["UserSession"]] = relationship(
+    sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 

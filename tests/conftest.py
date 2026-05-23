@@ -25,7 +25,7 @@ def test_settings() -> Settings:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(test_settings: Settings) -> Iterator[TestClient]:
     """A synchronous test client against a fresh app instance."""
     app = create_app(test_settings)

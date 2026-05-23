@@ -93,9 +93,7 @@ def verify_signature(
         key = secret.encode("utf-8")
 
     signed = f"{webhook_id}.{webhook_timestamp}.".encode() + body
-    expected = base64.b64encode(
-        hmac.new(key, signed, hashlib.sha256).digest()
-    ).decode("ascii")
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode("ascii")
 
     presented = _extract_v1_signatures(webhook_signature)
     if not any(hmac.compare_digest(expected, p) for p in presented):
@@ -132,9 +130,7 @@ async def ingest_event(
     """
     # Dedup check
     existing = await session.scalar(
-        select(EmailEvent).where(
-            EmailEvent.provider_event_id == provider_event_id
-        )
+        select(EmailEvent).where(EmailEvent.provider_event_id == provider_event_id)
     )
     if existing is not None:
         return existing, False
@@ -143,9 +139,7 @@ async def ingest_event(
     send_id = None
     if event.data.email_id:
         send_row = await session.scalar(
-            select(EmailSend).where(
-                EmailSend.provider_message_id == event.data.email_id
-            )
+            select(EmailSend).where(EmailSend.provider_message_id == event.data.email_id)
         )
         if send_row is not None:
             send_id = send_row.id
@@ -182,15 +176,11 @@ def _status_for_event(event_type: str) -> str | None:
     }.get(event_type)
 
 
-async def list_recent_events(
-    session: AsyncSession, *, limit: int = 100
-) -> list[EmailEvent]:
+async def list_recent_events(session: AsyncSession, *, limit: int = 100) -> list[EmailEvent]:
     """Most-recent-first event log for the operator's admin UI."""
     return list(
         await session.scalars(
-            select(EmailEvent)
-            .order_by(EmailEvent.received_at.desc())
-            .limit(limit)
+            select(EmailEvent).order_by(EmailEvent.received_at.desc()).limit(limit)
         )
     )
 

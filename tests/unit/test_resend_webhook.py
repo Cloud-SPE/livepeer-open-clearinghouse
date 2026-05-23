@@ -25,9 +25,7 @@ DECODED_KEY = base64.b64decode(SECRET.removeprefix("whsec_"))
 
 def _sign(*, webhook_id: str, ts: int, body: bytes) -> str:
     signed = f"{webhook_id}.{ts}.".encode() + body
-    sig = base64.b64encode(
-        hmac.new(DECODED_KEY, signed, hashlib.sha256).digest()
-    ).decode("ascii")
+    sig = base64.b64encode(hmac.new(DECODED_KEY, signed, hashlib.sha256).digest()).decode("ascii")
     return f"v1,{sig}"
 
 

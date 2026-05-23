@@ -46,7 +46,7 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 @router.get("/users/pending", response_model=PendingUserList)
 async def list_pending_users_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001 — operator auth
+    operator: CurrentOperatorDep,
     db: SessionDep,
 ) -> PendingUserList:
     users = await service.list_pending_users(db)
@@ -55,7 +55,7 @@ async def list_pending_users_endpoint(
 
 @router.get("/users", response_model=AdminUserList)
 async def list_all_users_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001 — operator auth
+    operator: CurrentOperatorDep,
     db: SessionDep,
     limit: int = 100,
     offset: int = 0,
@@ -147,7 +147,7 @@ def _config_view(row: object | None, user_id: uuid.UUID) -> BillingConfigView:
 )
 async def get_billing_config_endpoint(
     user_id: uuid.UUID,
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     db: SessionDep,
     settings: SettingsDep,
 ) -> BillingConfigResponse:
@@ -207,7 +207,7 @@ async def put_billing_config_endpoint(
 
 @router.get("/deposit-snapshots", response_model=DepositSnapshotList)
 async def list_deposit_snapshots_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     db: SessionDep,
     limit: int = 100,
 ) -> DepositSnapshotList:
@@ -228,7 +228,7 @@ async def list_deposit_snapshots_endpoint(
 
 @router.get("/audit", response_model=AuditEntryList)
 async def list_audit_entries_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     db: SessionDep,
     limit: int = 100,
 ) -> AuditEntryList:
@@ -280,7 +280,7 @@ async def resend_verification_endpoint(
 
 @router.get("/discovery/capabilities")
 async def admin_list_capabilities_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     registry: RegistryDep,
 ) -> dict:
     """Operator view of the live capability catalog.
@@ -295,7 +295,7 @@ async def admin_list_capabilities_endpoint(
 
 @router.get("/discovery/orchestrators")
 async def admin_list_orchestrators_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     registry: RegistryDep,
     capability: str | None = None,
 ) -> dict:
@@ -322,7 +322,7 @@ def _operator_view(op: Operator) -> OperatorView:
 
 @router.get("/operators", response_model=OperatorList)
 async def list_operators_endpoint(
-    operator: CurrentOperatorDep,  # noqa: ARG001 — auth only
+    operator: CurrentOperatorDep,
     db: SessionDep,
 ) -> OperatorList:
     """Any operator can list. Mutations are owner-only."""
@@ -418,9 +418,7 @@ async def rotate_operator_token_endpoint(
 ) -> OperatorWithToken:
     """Owners can rotate any operator's token. Members can only rotate their own."""
     if operator.role != "owner" and operator.id != operator_id:
-        raise HTTPException(
-            status_code=403, detail="operator_role_required:owner_or_self"
-        )
+        raise HTTPException(status_code=403, detail="operator_role_required:owner_or_self")
     try:
         op, raw_token = await service.rotate_operator_token(
             db,

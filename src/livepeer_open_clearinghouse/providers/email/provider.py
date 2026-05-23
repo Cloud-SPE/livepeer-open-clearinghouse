@@ -124,7 +124,7 @@ class ResendEmailProvider:
         )
         try:
             result = await asyncio.to_thread(self._resend.Emails.send, payload)
-        except Exception as exc:  # noqa: BLE001 — provider-level catch
+        except Exception as exc:
             # ResendError carries .code / .message / .suggested_action.
             # Generic exceptions fall through to repr() for shape clarity.
             self._log.error(

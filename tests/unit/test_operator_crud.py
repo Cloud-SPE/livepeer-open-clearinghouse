@@ -13,6 +13,7 @@ session here to keep these tests independent of the gateway lifespan.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -22,19 +23,17 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from livepeer_open_clearinghouse.domains.admin import service as admin_service
-from livepeer_open_clearinghouse.domains.admin.repo import Operator
-from livepeer_open_clearinghouse.providers.clock import FrozenClock
-from livepeer_open_clearinghouse.providers.db.base import Base
-
 # Pull every domain's repo so Base.metadata.create_all knows about it.
 from livepeer_open_clearinghouse.domains.accounts import repo as _accounts  # noqa: F401
+from livepeer_open_clearinghouse.domains.admin import service as admin_service
+from livepeer_open_clearinghouse.domains.admin.repo import Operator
 from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys  # noqa: F401
 from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa: F401
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from datetime import UTC, datetime
+from livepeer_open_clearinghouse.providers.clock import FrozenClock
+from livepeer_open_clearinghouse.providers.db.base import Base
 
 
 @pytest_asyncio.fixture()
@@ -154,9 +153,7 @@ async def test_update_operator_changes_name_and_role(
 
 
 @pytest.mark.unit
-async def test_cannot_demote_last_owner(
-    session: AsyncSession, owner_operator: Operator
-) -> None:
+async def test_cannot_demote_last_owner(session: AsyncSession, owner_operator: Operator) -> None:
     """Demoting the only owner would brick the org."""
     clock = FrozenClock(datetime(2026, 5, 23, tzinfo=UTC))
     with pytest.raises(admin_service.CannotDemoteLastOwner):
@@ -170,9 +167,7 @@ async def test_cannot_demote_last_owner(
 
 
 @pytest.mark.unit
-async def test_revoke_self_forbidden(
-    session: AsyncSession, owner_operator: Operator
-) -> None:
+async def test_revoke_self_forbidden(session: AsyncSession, owner_operator: Operator) -> None:
     clock = FrozenClock(datetime(2026, 5, 23, tzinfo=UTC))
     with pytest.raises(admin_service.CannotRevokeSelf):
         await admin_service.revoke_operator(
@@ -184,9 +179,7 @@ async def test_revoke_self_forbidden(
 
 
 @pytest.mark.unit
-async def test_cannot_revoke_last_owner(
-    session: AsyncSession, owner_operator: Operator
-) -> None:
+async def test_cannot_revoke_last_owner(session: AsyncSession, owner_operator: Operator) -> None:
     """Same protection as demotion — except triggered by revoke, not role-change."""
     clock = FrozenClock(datetime(2026, 5, 23, tzinfo=UTC))
     # Create a second owner so we can have one operator try to revoke the original.

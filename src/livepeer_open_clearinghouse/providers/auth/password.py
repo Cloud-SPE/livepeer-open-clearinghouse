@@ -13,7 +13,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 _hasher = PasswordHasher()
 
 
-def hash(password: str) -> str:  # noqa: A001 — domain term
+def hash(password: str) -> str:
     """Return an argon2id hash string for the given password."""
     return _hasher.hash(password)
 

@@ -47,8 +47,8 @@ from livepeer_open_clearinghouse.domains.accounts.types import (
     VerifyEmailRequest,
 )
 from livepeer_open_clearinghouse.providers.auth import session as session_helper
-from livepeer_open_clearinghouse.providers.oauth import is_enabled as oauth_is_enabled
 from livepeer_open_clearinghouse.providers.oauth import get_oauth
+from livepeer_open_clearinghouse.providers.oauth import is_enabled as oauth_is_enabled
 
 router = APIRouter(tags=["accounts"])
 
@@ -327,7 +327,7 @@ async def oauth_callback_endpoint(
 
     try:
         token = await client.authorize_access_token(request)
-    except Exception as exc:  # noqa: BLE001 — authlib exceptions are not stable
+    except Exception as exc:
         raise HTTPException(status_code=400, detail="oauth_exchange_failed") from exc
 
     if provider == "google":

@@ -74,7 +74,7 @@ class TableNameFromClassMixin:
     """Derive `__tablename__` from the class name (CamelCase -> snake_case)."""
 
     @declared_attr.directive
-    def __tablename__(cls) -> str:  # noqa: N805
+    def __tablename__(cls) -> str:
         # Convert CamelCase -> snake_case
         name = cls.__name__
         out: list[str] = []

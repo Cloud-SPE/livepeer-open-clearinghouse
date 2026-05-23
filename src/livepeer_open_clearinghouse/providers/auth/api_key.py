@@ -33,7 +33,7 @@ def prefix(raw_key: str) -> str:
     return raw_key[:KEY_PREFIX_LEN]
 
 
-def hash(raw_key: str, pepper: str) -> str:  # noqa: A001 — domain term
+def hash(raw_key: str, pepper: str) -> str:
     """Return the hex-encoded sha256(pepper || raw_key)."""
     digest = hashlib.sha256()
     digest.update(pepper.encode("utf-8"))

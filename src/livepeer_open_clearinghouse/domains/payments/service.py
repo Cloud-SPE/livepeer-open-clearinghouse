@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -28,7 +28,6 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     PaymentIdempotencyKey,
 )
 from livepeer_open_clearinghouse.domains.payments.types import MintPaymentResponse
-from livepeer_open_clearinghouse.settings import Settings
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     DuplicateRequest,
@@ -45,6 +44,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     QuoteRef,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.settings import Settings
 
 
 async def _check_idempotency(

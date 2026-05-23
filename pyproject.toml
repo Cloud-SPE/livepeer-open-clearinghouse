@@ -78,7 +78,7 @@ default-groups = ["dev"]
 line-length = 100
 target-version = "py313"
 src = ["src", "tests"]
-extend-exclude = ["migrations/versions"]
+extend-exclude = ["migrations/versions", "src/livepeer_open_clearinghouse/_gen"]
 
 [tool.ruff.lint]
 select = [

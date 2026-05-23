@@ -433,7 +433,7 @@ async def run_auto_replenish(session: AsyncSession, *, clock: Clock, settings: S
     primitive that a reactive in-mint path would use, so the ledger
     rows produced are indistinguishable across triggers.
     """
-    # noqa: ARG001 — clock kept for symmetry with other scheduler funcs even
+
     # though _apply_delta doesn't need it. Keep it; the signature should look
     # like every other scheduler-callable.
     _ = clock

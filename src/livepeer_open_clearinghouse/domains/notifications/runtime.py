@@ -72,21 +72,17 @@ async def resend_webhook(
         )
     except service.WebhookSignatureError as exc:
         log.warning("resend.webhook.signature_rejected", reason=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
     try:
         event = ResendWebhookEvent.model_validate_json(body)
-    except Exception as exc:  # noqa: BLE001 — fall through to 400
+    except Exception as exc:
         log.warning("resend.webhook.bad_payload", error=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="bad_payload"
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bad_payload") from exc
 
     # webhook_id is the dedup key. Already-verified above to be non-None.
     assert webhook_id is not None
-    row, was_new = await service.ingest_event(
+    _row, was_new = await service.ingest_event(
         db, event=event, provider_event_id=webhook_id, clock=clock
     )
     log.info(
@@ -96,9 +92,7 @@ async def resend_webhook(
         provider_message_id=event.data.email_id,
         duplicate=not was_new,
     )
-    return WebhookAcceptedResponse(
-        ok=True, duplicate=not was_new, received_event_id=webhook_id
-    )
+    return WebhookAcceptedResponse(ok=True, duplicate=not was_new, received_event_id=webhook_id)
 
 
 @router.get(
@@ -106,7 +100,7 @@ async def resend_webhook(
     response_model=EmailEventList,
 )
 async def list_email_events(
-    operator: CurrentOperatorDep,  # noqa: ARG001
+    operator: CurrentOperatorDep,
     db: SessionDep,
     limit: int = 100,
 ) -> EmailEventList:
