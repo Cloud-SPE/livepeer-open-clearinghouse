@@ -257,5 +257,55 @@ CurrentApiKeyDep = Annotated[
     tuple[ApiKey, User], Depends(get_current_api_key_and_user)
 ]
 CurrentUserFromApiKeyDep = Annotated[User, Depends(get_current_user_from_api_key)]
+
+
+async def get_authed_user(
+    request: Request,
+    session: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+    cookie: Annotated[
+        str | None, Cookie(alias=session_helper.SESSION_COOKIE_NAME)
+    ] = None,
+    api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+) -> User:
+    """Resolve the user via *either* the session cookie *or* X-API-Key.
+
+    Used by read-only endpoints (currently discovery) that should be
+    callable by:
+      - server-side SDK clients holding a `pymth_live_...` API key, and
+      - the portal SPA, which is cookie-session-authenticated.
+
+    API-key takes precedence when both are present (server-side calls
+    usually don't also carry the portal cookie). Returns the matching
+    User. Raises 401 if neither resolves.
+    """
+    if api_key is not None and api_key.strip():
+        pair = await accounts_service.authenticate_api_key(
+            session,
+            raw_key=api_key,
+            pepper=settings.api_key_hash_pepper.get_secret_value(),
+            clock=clock,
+        )
+        if pair is None:
+            raise _unauthorized("invalid api key")
+        return pair[1]
+    if cookie is not None:
+        serializer = session_helper.make_serializer(
+            settings.session_secret.get_secret_value()
+        )
+        max_age = int(accounts_service.SESSION_TTL.total_seconds())
+        raw_token = session_helper.unseal(serializer, cookie, max_age_seconds=max_age)
+        if raw_token is not None:
+            user = await accounts_service.resolve_session(
+                session, raw_token=raw_token, clock=clock
+            )
+            if user is not None:
+                return user
+        raise _unauthorized("invalid session")
+    raise _unauthorized("missing credentials")
+
+
+AuthedUserDep = Annotated[User, Depends(get_authed_user)]
 SessionUserDep = Annotated[User, Depends(get_session_user)]
 CurrentOperatorDep = Annotated[Operator, Depends(get_current_operator)]

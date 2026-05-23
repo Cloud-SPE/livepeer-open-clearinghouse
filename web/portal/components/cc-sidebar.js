@@ -4,6 +4,7 @@ import { icon } from "/portal/lib/icons.js";
 const ITEMS = [
   { path: "/", label: "Dashboard", icon: "home" },
   { path: "/api-keys", label: "API keys", icon: "key" },
+  { path: "/catalog", label: "Catalog", icon: "search" },
   { path: "/activity", label: "Activity", icon: "activity" },
 ];
 

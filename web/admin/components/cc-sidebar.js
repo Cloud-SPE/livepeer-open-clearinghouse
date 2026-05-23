@@ -5,6 +5,7 @@ const ITEMS = [
   { key: "overview", label: "Overview", icon: "home" },
   { key: "users", label: "Users", icon: "users" },
   { key: "pending", label: "Pending", icon: "hourglass" },
+  { key: "catalog", label: "Catalog", icon: "search" },
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
 ];

@@ -77,3 +77,10 @@ export const confirmPasswordReset = (token, new_password) =>
 
 export const resendVerification = (email) =>
   api("/auth/resend-verification", { method: "POST", body: { email } });
+
+// Discovery — accepts session cookie or X-API-Key
+export const listCapabilities = () => api("/capabilities");
+export const listOrchestrators = (capability) => {
+  const qs = capability ? `?capability=${encodeURIComponent(capability)}` : "";
+  return api(`/orchestrators${qs}`);
+};

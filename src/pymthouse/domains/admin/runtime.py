@@ -10,6 +10,7 @@ from pymthouse.dependencies import (
     ClockDep,
     CurrentOperatorDep,
     EmailDep,
+    RegistryDep,
     SessionDep,
     SettingsDep,
 )
@@ -31,6 +32,7 @@ from pymthouse.domains.admin.types import (
     PendingUserView,
 )
 from pymthouse.domains.billing import service as billing_service
+from pymthouse.domains.discovery import service as discovery_service
 from pymthouse.domains.payments import service as payments_service
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -272,3 +274,30 @@ async def resend_verification_endpoint(
     except service.EmailAlreadyVerified as exc:
         raise HTTPException(status_code=409, detail=exc.code) from exc
     return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.get("/discovery/capabilities")
+async def admin_list_capabilities_endpoint(
+    operator: CurrentOperatorDep,  # noqa: ARG001
+    registry: RegistryDep,
+) -> dict:
+    """Operator view of the live capability catalog.
+
+    Proxies through the same service layer the app-dev /v1/capabilities
+    endpoint uses; the only difference is the auth model (bearer token
+    instead of API-key/session). No business logic duplication.
+    """
+    items = await discovery_service.list_capabilities(registry)
+    return {"items": [c.model_dump() for c in items]}
+
+
+@router.get("/discovery/orchestrators")
+async def admin_list_orchestrators_endpoint(
+    operator: CurrentOperatorDep,  # noqa: ARG001
+    registry: RegistryDep,
+    capability: str | None = None,
+) -> dict:
+    items = await discovery_service.list_orchestrators(
+        registry, capability=capability
+    )
+    return {"items": [o.model_dump() for o in items]}

@@ -1,14 +1,16 @@
 """FastAPI routes for the discovery domain (app-dev surface).
 
-All endpoints require a valid API key (or Bearer token) and are billed
-neutrally — discovery does not consume credit in MVP.
+All endpoints accept either an `X-API-Key` (server-side SDK callers)
+or a portal session cookie (logged-in browsers viewing the Catalog
+tab). Discovery is read-only and billed neutrally — it doesn't
+consume credit in MVP.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from pymthouse.dependencies import CurrentUserFromApiKeyDep, RegistryDep
+from pymthouse.dependencies import AuthedUserDep, RegistryDep
 from pymthouse.domains.discovery import service
 from pymthouse.domains.discovery.types import (
     CapabilityList,
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/v1", tags=["discovery"])
 
 @router.get("/capabilities", response_model=CapabilityList)
 async def list_capabilities_endpoint(
-    _user: CurrentUserFromApiKeyDep,
+    _user: AuthedUserDep,
     registry: RegistryDep,
 ) -> CapabilityList:
     items = await service.list_capabilities(registry)
@@ -30,7 +32,7 @@ async def list_capabilities_endpoint(
 
 @router.get("/orchestrators", response_model=OrchestratorList)
 async def list_orchestrators_endpoint(
-    _user: CurrentUserFromApiKeyDep,
+    _user: AuthedUserDep,
     registry: RegistryDep,
     capability: str | None = None,
 ) -> OrchestratorList:
@@ -40,7 +42,7 @@ async def list_orchestrators_endpoint(
 
 @router.get("/routes", response_model=RouteView)
 async def select_route_endpoint(
-    _user: CurrentUserFromApiKeyDep,
+    _user: AuthedUserDep,
     registry: RegistryDep,
     capability: str,
     offering: str,

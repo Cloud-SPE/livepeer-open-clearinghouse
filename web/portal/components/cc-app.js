@@ -99,6 +99,7 @@ export class CcApp extends LitElement {
       return html`<cc-reset-password .token=${params.get("token") || ""}></cc-reset-password>`;
     }
     if (path === "/api-keys") return html`<cc-api-keys></cc-api-keys>`;
+    if (path === "/catalog") return html`<cc-catalog></cc-catalog>`;
     if (path === "/activity") return html`<cc-activity></cc-activity>`;
     return html`<cc-dashboard .user=${this._user}></cc-dashboard>`;
   }

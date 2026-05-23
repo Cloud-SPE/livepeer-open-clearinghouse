@@ -70,3 +70,8 @@ export const listDepositSnapshots = (limit = 100) =>
   api(`/deposit-snapshots?limit=${limit}`);
 export const resendVerification = (id) =>
   api(`/users/${id}/resend-verification`, { method: "POST" });
+export const listCapabilities = () => api("/discovery/capabilities");
+export const listOrchestrators = (capability) => {
+  const qs = capability ? `?capability=${encodeURIComponent(capability)}` : "";
+  return api(`/discovery/orchestrators${qs}`);
+};
