@@ -105,13 +105,18 @@ export function fromResponse(args: {
   retryAfter: number | null;
 }): PymtHouseError {
   const dict = isRecord(args.body) ? args.body : { detail: String(args.body) };
-  const envelope = isRecord(dict["error"]) ? dict["error"] : {};
-  const code = (envelope["code"] as string | undefined) ?? (dict["detail"] as string | undefined) ?? null;
+  const envelope = isRecord(dict.error) ? dict.error : {};
+  const envCode = envelope.code;
+  const envMessage = envelope.message;
+  const dictDetail = dict.detail;
+  const code =
+    (typeof envCode === "string" ? envCode : null) ??
+    (typeof dictDetail === "string" ? dictDetail : null);
   const message =
-    (envelope["message"] as string | undefined) ??
-    (dict["detail"] as string | undefined) ??
-    `HTTP ${args.status}`;
-  const details = isRecord(envelope["details"]) ? envelope["details"] : {};
+    (typeof envMessage === "string" ? envMessage : null) ??
+    (typeof dictDetail === "string" ? dictDetail : null) ??
+    `HTTP ${String(args.status)}`;
+  const details = isRecord(envelope.details) ? envelope.details : {};
 
   const body: ErrorBody = {
     status: args.status,

@@ -19,6 +19,12 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	baseURL := mustEnv("PYMTHOUSE_URL")
 	apiKey := mustEnv("PYMTHOUSE_API_KEY")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -26,13 +32,13 @@ func main() {
 
 	ph, err := pymthouse.NewClient(pymthouse.Options{BaseURL: baseURL, APIKey: apiKey})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// 1. Pick an offering
 	caps, err := ph.ListCapabilities(ctx)
 	if err != nil {
-		log.Fatalf("list capabilities: %v", err)
+		return fmt.Errorf("list capabilities: %w", err)
 	}
 	var offering string
 	for _, c := range caps {
@@ -42,7 +48,7 @@ func main() {
 		}
 	}
 	if offering == "" {
-		log.Fatal("no chat-completions offering advertised right now")
+		return errors.New("no chat-completions offering advertised right now")
 	}
 	fmt.Println("using offering:", offering)
 
@@ -60,16 +66,16 @@ func main() {
 			switch {
 			case phErr.IsInsufficientCredit():
 				fmt.Println("need topup:", phErr.Details)
-				return
+				return nil
 			case phErr.IsNoRouteAvailable():
 				fmt.Println("no orch advertising this offering — try another")
-				return
+				return nil
 			case phErr.IsRateLimited():
 				fmt.Printf("rate limited; retry in %ds\n", phErr.RetryAfterSeconds)
-				return
+				return nil
 			}
 		}
-		log.Fatal(err)
+		return err
 	}
 	fmt.Printf("minted: work_id=%s… ev=%s\n", mint.WorkID[:min(16, len(mint.WorkID))], mint.ExpectedValueWei)
 	fmt.Println("orch:", mint.RecipientEthAddress)
@@ -85,9 +91,10 @@ func main() {
 		IdempotencyKey:  idem,
 	})
 	if err != nil {
-		log.Fatalf("report usage: %v", err)
+		return fmt.Errorf("report usage: %w", err)
 	}
 	fmt.Printf("refunded %s wei; new balance %s wei\n", result.RefundedWei, result.NewBalanceWei)
+	return nil
 }
 
 func mustEnv(name string) string {

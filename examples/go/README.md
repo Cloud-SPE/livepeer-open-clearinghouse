@@ -17,11 +17,34 @@ module.)
 ## Run the tests
 
 ```bash
-go test ./...
+go test ./pymthouse/...
 ```
 
 Uses `httptest.Server` to stub PymtHouse's HTTP surface; no live
 gateway needed.
+
+## Coverage
+
+```bash
+go test ./pymthouse/... -coverprofile=cover.out -covermode=atomic
+go tool cover -func=cover.out      # text summary
+go tool cover -html=cover.out      # opens an HTML report
+```
+
+The `cmd/example/` binary is intentionally excluded from coverage —
+it's documentation, not library code.
+
+## Lint
+
+```bash
+golangci-lint run ./...
+gofmt -l .              # list any unformatted files
+```
+
+Enabled linters: `errcheck`, `govet`, `staticcheck`, `unused`,
+`ineffassign`, `gosec`, `revive`, `gocritic`, `bodyclose`, `misspell`.
+Configured in `.golangci.yml`. Install with
+`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`.
 
 ## Run the example against a live stack
 

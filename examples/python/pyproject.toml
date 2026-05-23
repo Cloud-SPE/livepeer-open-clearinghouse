@@ -13,6 +13,7 @@ dependencies = [
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
+  "pytest-cov>=6",
   "respx>=0.21",
   "ruff>=0.6",
 ]
@@ -27,7 +28,41 @@ packages = ["src/pymthouse_sdk"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = [
+  "--strict-markers",
+  "--cov=pymthouse_sdk",
+  "--cov-report=term-missing",
+  "--cov-report=html:.coverage_html",
+  "--cov-fail-under=90",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/pymthouse_sdk"]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Boring strict baseline. E/F = pyflakes + pycodestyle, I = isort, B =
+# bugbear, UP = pyupgrade, RUF = ruff-native, SIM = simplify, ASYNC =
+# anti-pattern checks for async code, ANN = annotations.
+select = ["E", "F", "I", "B", "UP", "RUF", "SIM", "ASYNC"]
+ignore = [
+  "E501",   # line length — formatter handles it
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]   # assert allowed in tests
+"example.py" = ["E402"]  # imports below module docstring on purpose
+
+[tool.ruff.format]
+quote-style = "double"

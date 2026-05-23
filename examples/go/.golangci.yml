@@ -1,0 +1,48 @@
+# golangci-lint v2 config. The defaults give us govet + staticcheck +
+# unused + errcheck + ineffassign + gosimple already; we add the lints
+# that catch the kinds of mistakes worth catching in a small client SDK
+# (gosec for HTTP handling, revive for naming, gocritic for the rest).
+
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - revive
+    - gocritic
+    - bodyclose
+    - misspell
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: error-strings
+        - name: error-naming
+        - name: package-comments
+        - name: context-as-argument
+
+    gosec:
+      excludes:
+        # G304: file path provided by app is intentional in test code.
+        - G304
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - revive
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

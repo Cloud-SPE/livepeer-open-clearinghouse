@@ -85,9 +85,7 @@ class PymtHouseClient:
         r = await self._http.get("/v1/capabilities")
         return self._unwrap(r)["items"]
 
-    async def list_orchestrators(
-        self, *, capability: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def list_orchestrators(self, *, capability: str | None = None) -> list[dict[str, Any]]:
         params = {"capability": capability} if capability else None
         r = await self._http.get("/v1/orchestrators", params=params)
         return self._unwrap(r)["items"]

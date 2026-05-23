@@ -24,12 +24,12 @@ import (
 // PaymentBytes is base64; pass it verbatim in the "Livepeer-Payment"
 // header on your request to the orchestrator.
 type Mint struct {
-	PaymentID            string `json:"payment_id"`
-	WorkID               string `json:"work_id"`
-	PaymentBytes         string `json:"payment_bytes"`
-	ExpectedValueWei     string `json:"expected_value_wei"`
-	FundedValueWei       string `json:"funded_value_wei"`
-	RecipientEthAddress  string `json:"recipient_eth_address"`
+	PaymentID           string `json:"payment_id"`
+	WorkID              string `json:"work_id"`
+	PaymentBytes        string `json:"payment_bytes"`
+	ExpectedValueWei    string `json:"expected_value_wei"`
+	FundedValueWei      string `json:"funded_value_wei"`
+	RecipientEthAddress string `json:"recipient_eth_address"`
 }
 
 // Capability bundles a name with its work_unit and offerings.
@@ -39,27 +39,33 @@ type Capability struct {
 	Offerings []Offering `json:"offerings"`
 }
 
+// Offering describes one variant of a capability (e.g. a specific model)
+// with its price per work-unit.
 type Offering struct {
 	ID                  string `json:"id"`
 	PricePerWorkUnitWei string `json:"price_per_work_unit_wei"`
 	WorkUnit            string `json:"work_unit"`
 }
 
+// Orchestrator is one entry returned by GET /v1/orchestrators.
 type Orchestrator struct {
-	EthAddress     string   `json:"eth_address"`
-	ServiceURL     string   `json:"service_url"`
-	Capabilities   []string `json:"capabilities"`
-	FreshnessStatus string  `json:"freshness_status"`
+	EthAddress      string   `json:"eth_address"`
+	ServiceURL      string   `json:"service_url"`
+	Capabilities    []string `json:"capabilities"`
+	FreshnessStatus string   `json:"freshness_status"`
 }
 
+// UsageReportResult is the response from POST /v1/usage/report. The
+// gateway refunds the difference between the funded amount and what
+// the orchestrator actually consumed.
 type UsageReportResult struct {
 	RefundedWei   string `json:"refunded_wei"`
 	PaymentStatus string `json:"payment_status"`
 	NewBalanceWei string `json:"new_balance_wei"`
 	Usage         struct {
-		ID               string `json:"id"`
-		ActualWorkUnits  int    `json:"actual_work_units"`
-		FinalChargeWei   string `json:"final_charge_wei"`
+		ID              string `json:"id"`
+		ActualWorkUnits int    `json:"actual_work_units"`
+		FinalChargeWei  string `json:"final_charge_wei"`
 	} `json:"usage"`
 }
 
@@ -97,6 +103,8 @@ func NewClient(opts Options) (*Client, error) {
 
 // ---- discovery ----
 
+// ListCapabilities returns the capability catalog the gateway is currently
+// advertising via service-registry-daemon.
 func (c *Client) ListCapabilities(ctx context.Context) ([]Capability, error) {
 	var resp struct {
 		Items []Capability `json:"items"`
@@ -107,6 +115,8 @@ func (c *Client) ListCapabilities(ctx context.Context) ([]Capability, error) {
 	return resp.Items, nil
 }
 
+// ListOrchestrators returns the orchestrator catalog. Pass capability=""
+// for the full list, or a capability name to filter.
 func (c *Client) ListOrchestrators(ctx context.Context, capability string) ([]Orchestrator, error) {
 	path := "/v1/orchestrators"
 	if capability != "" {
@@ -131,11 +141,13 @@ type MintPaymentInput struct {
 	IdempotencyKey string
 }
 
+// MintPayment is the load-bearing call. Returns a signed payment ticket
+// you pass to the orchestrator in the Livepeer-Payment header.
 func (c *Client) MintPayment(ctx context.Context, in MintPaymentInput) (*Mint, error) {
 	body := map[string]any{
-		"capability":  in.Capability,
-		"offering":    in.Offering,
-		"work_units":  in.WorkUnits,
+		"capability": in.Capability,
+		"offering":   in.Offering,
+		"work_units": in.WorkUnits,
 	}
 	var out Mint
 	if err := c.do(ctx, http.MethodPost, "/v1/payments/mint", body, in.IdempotencyKey, &out); err != nil {
@@ -144,16 +156,20 @@ func (c *Client) MintPayment(ctx context.Context, in MintPaymentInput) (*Mint, e
 	return &out, nil
 }
 
+// ReportUsageInput collects the arguments for ReportUsage.
 type ReportUsageInput struct {
 	PaymentID       string
 	ActualWorkUnits int
 	IdempotencyKey  string
 }
 
+// ReportUsage tells the gateway how many work units the orchestrator
+// actually consumed so it can refund the unused portion of the funded
+// budget. Use the same Idempotency-Key as the MintPayment call.
 func (c *Client) ReportUsage(ctx context.Context, in ReportUsageInput) (*UsageReportResult, error) {
 	body := map[string]any{
-		"payment_id":         in.PaymentID,
-		"actual_work_units":  in.ActualWorkUnits,
+		"payment_id":        in.PaymentID,
+		"actual_work_units": in.ActualWorkUnits,
 	}
 	var out UsageReportResult
 	if err := c.do(ctx, http.MethodPost, "/v1/usage/report", body, in.IdempotencyKey, &out); err != nil {
@@ -196,7 +212,7 @@ func (c *Client) do(
 	if err != nil {
 		return fmt.Errorf("pymthouse: do: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	payload, err := io.ReadAll(res.Body)
 	if err != nil {
 		return fmt.Errorf("pymthouse: read body: %w", err)

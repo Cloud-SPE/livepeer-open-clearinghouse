@@ -10,14 +10,14 @@ embedding a copy is the simplest distribution.
 
 ## Languages
 
-| Language | Path | Toolchain | Test runner |
-|---|---|---|---|
-| Python | [`python/`](./python) | uv | pytest + respx |
-| TypeScript | [`typescript/`](./typescript) | pnpm | vitest |
-| Go | [`go/`](./go) | `go` (1.22+) | std `testing` + httptest |
-| Rust | [`rust/`](./rust) | cargo (1.75+) | std `test` + wiremock |
+| Language | Path | Toolchain | Test runner | Lint | Coverage |
+|---|---|---|---|---|---|
+| Python | [`python/`](./python) | uv | pytest + respx | ruff (E/F/I/B/UP/RUF/SIM/ASYNC) + ruff format | pytest-cov, ≥90% gate |
+| TypeScript | [`typescript/`](./typescript) | pnpm | vitest | ESLint (strict-type-checked + stylistic-type-checked) + Prettier | vitest v8, ≥90% gate |
+| Go | [`go/`](./go) | `go` (1.22+) | std `testing` + httptest | golangci-lint (errcheck, govet, staticcheck, unused, gosec, revive, gocritic, bodyclose, misspell) + gofmt | `go test -coverprofile` |
+| Rust | [`rust/`](./rust) | cargo (1.75+) | std `test` + wiremock | `cargo clippy -D warnings` with `pedantic + nursery` | `cargo llvm-cov` |
 
-Each subdirectory has a `README.md` with setup, test, and example
+Each subdirectory has a `README.md` with setup, test, lint, and example
 commands.
 
 ## API surface (consistent across all four)
@@ -101,11 +101,39 @@ the orch consumes as it goes.
 ## Smoke-test all four at once
 
 ```bash
-cd examples/python && uv sync --extra dev && uv run pytest -q && cd -
-cd examples/typescript && pnpm install && pnpm test && pnpm build && cd -
-cd examples/go && go test ./... && cd -
-cd examples/rust && cargo test && cd -
+# Tests
+( cd examples/python && uv sync --extra dev && uv run pytest -q )
+( cd examples/typescript && pnpm install && pnpm test && pnpm build )
+( cd examples/go && go test ./pymthouse/... )
+( cd examples/rust && cargo test )
 ```
 
 All four should pass without a running gateway — every SDK stubs its
 HTTP layer in tests.
+
+## Lint everything
+
+```bash
+( cd examples/python && uv run ruff check . && uv run ruff format --check . )
+( cd examples/typescript && pnpm lint )
+( cd examples/go && golangci-lint run ./... )
+( cd examples/rust && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check )
+```
+
+## Coverage reports
+
+```bash
+( cd examples/python && uv run pytest -q )           # term + html in .coverage_html
+( cd examples/typescript && pnpm test:coverage )     # term + html in coverage/
+( cd examples/go && go test ./pymthouse/... -coverprofile=cover.out && go tool cover -func=cover.out )
+( cd examples/rust && cargo llvm-cov --html )        # html in target/llvm-cov/html
+```
+
+Current coverage (one snapshot):
+
+| SDK | Statements / Lines |
+|---|---|
+| Python | 96.4% lines, 12 branches missed of 12 evaluated |
+| TypeScript | 100% statements, 96.5% branches |
+| Go (pymthouse package) | 89.7% statements |
+| Rust | 97.9% lines, 95.3% regions |

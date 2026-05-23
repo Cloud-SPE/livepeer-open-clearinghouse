@@ -133,3 +133,68 @@ func TestNewClientRejectsBadKey(t *testing.T) {
 		t.Errorf("expected pymth_ rejection; got %v", err)
 	}
 }
+
+func TestListCapabilitiesUnwrapsItems(t *testing.T) {
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"name":"openai:chat-completions","work_unit":"tokens","offerings":[]}]}`))
+	}))
+	caps, err := c.ListCapabilities(context.Background())
+	if err != nil {
+		t.Fatalf("list capabilities: %v", err)
+	}
+	if len(caps) != 1 || caps[0].Name != "openai:chat-completions" {
+		t.Errorf("unexpected: %+v", caps)
+	}
+}
+
+func TestListOrchestratorsPassesCapabilityFilter(t *testing.T) {
+	var seenQuery string
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	if _, err := c.ListOrchestrators(context.Background(), "openai:chat-completions"); err != nil {
+		t.Fatalf("list orchestrators: %v", err)
+	}
+	if !strings.Contains(seenQuery, "capability=openai%3Achat-completions") {
+		t.Errorf("query missing capability filter: %q", seenQuery)
+	}
+}
+
+func TestReportUsageReturnsRefund(t *testing.T) {
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refunded_wei":"12345","payment_status":"settled","new_balance_wei":"999999","usage":{"id":"u1","actual_work_units":800,"final_charge_wei":"20000"}}`))
+	}))
+	res, err := c.ReportUsage(context.Background(), pymthouse.ReportUsageInput{
+		PaymentID:       "00000000-0000-0000-0000-000000000001",
+		ActualWorkUnits: 800,
+		IdempotencyKey:  "abc-123",
+	})
+	if err != nil {
+		t.Fatalf("report usage: %v", err)
+	}
+	if res.RefundedWei != "12345" || res.NewBalanceWei != "999999" {
+		t.Errorf("unexpected: %+v", res)
+	}
+}
+
+func TestNonJSONErrorBodyFallsBackToText(t *testing.T) {
+	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("upstream down"))
+	}))
+	_, err := c.MintPayment(context.Background(), pymthouse.MintPaymentInput{
+		Capability: "x", Offering: "y", WorkUnits: 1,
+	})
+	phErr, ok := err.(*pymthouse.Error)
+	if !ok {
+		t.Fatalf("expected *Error, got %T", err)
+	}
+	if phErr.Status != 503 {
+		t.Errorf("expected 503; got %d", phErr.Status)
+	}
+}

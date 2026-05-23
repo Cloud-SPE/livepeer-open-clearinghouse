@@ -86,9 +86,7 @@ _CODE_MAP: dict[str, type[PymtHouseError]] = {
 }
 
 
-def from_response(
-    *, status: int, body: dict[str, Any], retry_after: int | None
-) -> PymtHouseError:
+def from_response(*, status: int, body: dict[str, Any], retry_after: int | None) -> PymtHouseError:
     """Build the right exception subclass from a parsed JSON error body."""
     envelope = body.get("error") or {}
     code = envelope.get("code") or body.get("detail")

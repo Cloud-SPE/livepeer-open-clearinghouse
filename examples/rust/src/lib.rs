@@ -1,4 +1,4 @@
-//! Reference Rust SDK for the PymtHouse payment clearinghouse.
+//! Reference Rust SDK for the `PymtHouse` payment clearinghouse.
 //!
 //! See the README + `examples/example.rs` for the mint -> orchestrator
 //! -> reconcile flow.

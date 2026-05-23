@@ -12,8 +12,8 @@ const KEY = "pymth_live_test_key_value";
 type FetchInput = Parameters<typeof fetch>[0];
 
 function mockFetch(impl: (req: Request) => Promise<Response> | Response): typeof fetch {
-  return vi.fn(async (input: FetchInput, init?: RequestInit) => {
-    const req = new Request(input as Request | string, init);
+  return vi.fn((input: FetchInput, init?: RequestInit) => {
+    const req = new Request(input, init);
     return impl(req);
   }) as unknown as typeof fetch;
 }
@@ -139,8 +139,87 @@ describe("PymtHouseClient", () => {
   });
 
   it("rejects obviously-wrong API keys at construction", () => {
-    expect(
-      () => new PymtHouseClient({ baseUrl: BASE, apiKey: "not-a-real-key" }),
-    ).toThrow(/pymth_/);
+    expect(() => new PymtHouseClient({ baseUrl: BASE, apiKey: "not-a-real-key" })).toThrow(
+      /pymth_/,
+    );
+  });
+
+  it("listCapabilities unwraps items", async () => {
+    const ph = new PymtHouseClient({
+      baseUrl: BASE,
+      apiKey: KEY,
+      fetch: mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              items: [{ name: "openai:chat-completions", work_unit: "tokens", offerings: [] }],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    });
+    const caps = await ph.listCapabilities();
+    expect(caps).toHaveLength(1);
+    expect(caps[0]?.name).toBe("openai:chat-completions");
+  });
+
+  it("listOrchestrators passes capability filter", async () => {
+    let seenUrl: string | undefined;
+    const ph = new PymtHouseClient({
+      baseUrl: BASE,
+      apiKey: KEY,
+      fetch: mockFetch((req) => {
+        seenUrl = req.url;
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    });
+    await ph.listOrchestrators({ capability: "openai:chat-completions" });
+    expect(seenUrl).toContain("capability=openai%3Achat-completions");
+  });
+
+  it("reportUsage returns reconciliation result", async () => {
+    const ph = new PymtHouseClient({
+      baseUrl: BASE,
+      apiKey: KEY,
+      fetch: mockFetch(
+        () =>
+          new Response(
+            JSON.stringify({
+              refunded_wei: "12345",
+              payment_status: "settled",
+              new_balance_wei: "999999",
+              usage: { id: "u1", actual_work_units: 800, final_charge_wei: "20000" },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    });
+    const result = await ph.reportUsage({
+      paymentId: "00000000-0000-0000-0000-000000000001",
+      actualWorkUnits: 800,
+      idempotencyKey: "abc-123",
+    });
+    expect(result.refunded_wei).toBe("12345");
+    expect(result.new_balance_wei).toBe("999999");
+  });
+
+  it("falls back to PymtHouseError on non-JSON error body", async () => {
+    const ph = new PymtHouseClient({
+      baseUrl: BASE,
+      apiKey: KEY,
+      fetch: mockFetch(
+        () =>
+          new Response("upstream down", {
+            status: 503,
+            headers: { "Content-Type": "text/plain" },
+          }),
+      ),
+    });
+    await expect(
+      ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
+    ).rejects.toMatchObject({ status: 503 });
   });
 });

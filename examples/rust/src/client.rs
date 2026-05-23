@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::{header, Method, StatusCode};
+use reqwest::{header, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -128,7 +128,9 @@ impl Client {
     // ---- discovery ----
 
     pub async fn list_capabilities(&self) -> Result<Vec<Capability>, PymtHouseError> {
-        let resp: Wrapped<Capability> = self.send(Method::GET, "/v1/capabilities", None, None).await?;
+        let resp: Wrapped<Capability> = self
+            .send(Method::GET, "/v1/capabilities", None, None)
+            .await?;
         Ok(resp.items)
     }
 
@@ -136,10 +138,10 @@ impl Client {
         &self,
         capability: Option<&str>,
     ) -> Result<Vec<Orchestrator>, PymtHouseError> {
-        let path = match capability {
-            Some(c) => format!("/v1/orchestrators?capability={}", urlencoded(c)),
-            None => "/v1/orchestrators".to_string(),
-        };
+        let path = capability.map_or_else(
+            || "/v1/orchestrators".to_string(),
+            |c| format!("/v1/orchestrators?capability={}", urlencoded(c)),
+        );
         let resp: Wrapped<Orchestrator> = self.send(Method::GET, &path, None, None).await?;
         Ok(resp.items)
     }
@@ -190,7 +192,9 @@ impl Client {
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<R, PymtHouseError> {
-        let mut req = self.http.request(method, format!("{}{}", self.base_url, path));
+        let mut req = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path));
         if let Some(b) = body {
             req = req.json(&b);
         }
@@ -208,16 +212,16 @@ impl Client {
         let body: Option<Value> = if text.is_empty() {
             None
         } else {
-            Some(serde_json::from_str(&text).unwrap_or_else(|_| {
-                serde_json::json!({ "detail": text })
-            }))
+            Some(
+                serde_json::from_str(&text)
+                    .unwrap_or_else(|_| serde_json::json!({ "detail": text })),
+            )
         };
 
         if status.is_success() {
             let body = body.unwrap_or(Value::Null);
-            return serde_json::from_value::<R>(body).map_err(|e| {
-                PymtHouseError::Config(format!("decode response: {e}"))
-            });
+            return serde_json::from_value::<R>(body)
+                .map_err(|e| PymtHouseError::Config(format!("decode response: {e}")));
         }
         Err(from_response(status.as_u16(), retry_after, body))
     }
@@ -228,8 +232,3 @@ fn urlencoded(s: &str) -> String {
     // include `:` and `-`, no spaces in practice.
     s.replace(':', "%3A").replace(' ', "%20")
 }
-
-// Quiet a warning about `StatusCode` being unused after the inline match
-// shifted into the helper.
-#[allow(dead_code)]
-fn _silence_status(_: StatusCode) {}

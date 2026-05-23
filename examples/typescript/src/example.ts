@@ -19,10 +19,11 @@ async function main(): Promise<void> {
   // 1. Pick an offering
   const caps = await ph.listCapabilities();
   const chatCap = caps.find((c) => c.name === "openai:chat-completions");
-  if (!chatCap || chatCap.offerings.length === 0) {
+  const firstOffering = chatCap?.offerings[0];
+  if (!firstOffering) {
     throw new Error("no chat-completions offering advertised right now");
   }
-  const offering = chatCap.offerings[0]!.id;
+  const offering = firstOffering.id;
   console.log(`using offering: ${offering}`);
 
   // 2. Mint with a budget of ~1000 tokens; one Idempotency-Key per logical request
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
       return;
     }
     if (err instanceof RateLimited) {
-      console.error(`rate limited; retry in ${err.retryAfterSeconds}s`);
+      console.error(`rate limited; retry in ${String(err.retryAfterSeconds)}s`);
       return;
     }
     throw err;
@@ -64,9 +65,7 @@ async function main(): Promise<void> {
     actualWorkUnits: actualTokens,
     idempotencyKey: idem,
   });
-  console.log(
-    `refunded ${result.refunded_wei} wei; new balance ${result.new_balance_wei} wei`,
-  );
+  console.log(`refunded ${result.refunded_wei} wei; new balance ${result.new_balance_wei} wei`);
 }
 
 function requireEnv(name: string): string {
@@ -75,7 +74,7 @@ function requireEnv(name: string): string {
   return v;
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err);
   process.exit(1);
 });

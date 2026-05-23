@@ -1,6 +1,4 @@
-use pymthouse_sdk::{
-    Client, ClientOptions, ErrorKind, MintPaymentInput, PymtHouseError,
-};
+use pymthouse_sdk::{Client, ClientOptions, ErrorKind, MintPaymentInput, PymtHouseError};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -132,10 +130,108 @@ async fn idempotency_key_threaded() {
 
 #[test]
 fn rejects_bad_api_key() {
-    let err = Client::new(ClientOptions::new("http://x", "not-a-real-key"))
-        .expect_err("should error");
+    let err =
+        Client::new(ClientOptions::new("http://x", "not-a-real-key")).expect_err("should error");
     match err {
         PymtHouseError::Config(msg) => assert!(msg.contains("pymth_"), "{msg}"),
         other => panic!("expected Config, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn list_capabilities_unwraps_items() {
+    let (mock, client) = server_client().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"name": "openai:chat-completions", "work_unit": "tokens", "offerings": []}]
+        })))
+        .mount(&mock)
+        .await;
+    let caps = client.list_capabilities().await.expect("list");
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0].name, "openai:chat-completions");
+}
+
+#[tokio::test]
+async fn list_orchestrators_passes_capability_filter() {
+    let (mock, client) = server_client().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/orchestrators"))
+        // The query "capability=openai:chat-completions" becomes
+        // "capability=openai%3Achat-completions" after our urlencoded()
+        // helper.
+        .and(wiremock::matchers::query_param(
+            "capability",
+            "openai:chat-completions",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})))
+        .mount(&mock)
+        .await;
+    let orchs = client
+        .list_orchestrators(Some("openai:chat-completions"))
+        .await
+        .expect("list");
+    assert!(orchs.is_empty());
+}
+
+#[tokio::test]
+async fn list_orchestrators_without_filter() {
+    let (mock, client) = server_client().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/orchestrators"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})))
+        .mount(&mock)
+        .await;
+    let orchs = client.list_orchestrators(None).await.expect("list");
+    assert!(orchs.is_empty());
+}
+
+#[tokio::test]
+async fn report_usage_returns_refund() {
+    let (mock, client) = server_client().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/usage/report"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "refunded_wei": "12345",
+            "payment_status": "settled",
+            "new_balance_wei": "999999",
+            "usage": {"id": "u1", "actual_work_units": 800, "final_charge_wei": "20000"}
+        })))
+        .mount(&mock)
+        .await;
+    let result = client
+        .report_usage(pymthouse_sdk::ReportUsageInput {
+            payment_id: "00000000-0000-0000-0000-000000000001",
+            actual_work_units: 800,
+            idempotency_key: Some("abc-123"),
+        })
+        .await
+        .expect("report");
+    assert_eq!(result.refunded_wei, "12345");
+    assert_eq!(result.new_balance_wei, "999999");
+}
+
+#[tokio::test]
+async fn non_json_error_body_falls_back_to_text() {
+    let (mock, client) = server_client().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payments/mint"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
+        .mount(&mock)
+        .await;
+    let err = client
+        .mint_payment(MintPaymentInput {
+            capability: "x",
+            offering: "y",
+            work_units: 1,
+            idempotency_key: None,
+        })
+        .await
+        .expect_err("should error");
+    if let PymtHouseError::Api { status, .. } = err {
+        assert_eq!(status, 503);
+    } else {
+        panic!("expected Api variant; got {err:?}");
     }
 }

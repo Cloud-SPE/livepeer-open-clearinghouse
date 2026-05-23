@@ -12,11 +12,11 @@ export interface Mint {
 export interface Capability {
   name: string;
   work_unit: string | null;
-  offerings: Array<{
+  offerings: {
     id: string;
     price_per_work_unit_wei: string;
     work_unit: string;
-  }>;
+  }[];
 }
 
 export interface Orchestrator {
@@ -66,13 +66,8 @@ export class PymtHouseClient {
   }
 
   async listOrchestrators(opts?: { capability?: string }): Promise<Orchestrator[]> {
-    const qs = opts?.capability
-      ? `?capability=${encodeURIComponent(opts.capability)}`
-      : "";
-    const data = await this.request<{ items: Orchestrator[] }>(
-      "GET",
-      `/v1/orchestrators${qs}`,
-    );
+    const qs = opts?.capability ? `?capability=${encodeURIComponent(opts.capability)}` : "";
+    const data = await this.request<{ items: Orchestrator[] }>("GET", `/v1/orchestrators${qs}`);
     return data.items;
   }
 
@@ -155,9 +150,7 @@ export class PymtHouseClient {
     if (!res.ok) {
       const retryAfterHeader = res.headers.get("retry-after");
       const retryAfter =
-        retryAfterHeader && /^\d+$/.test(retryAfterHeader)
-          ? Number(retryAfterHeader)
-          : null;
+        retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Number(retryAfterHeader) : null;
       throw fromResponse({ status: res.status, body: payload, retryAfter });
     }
     return payload as T;

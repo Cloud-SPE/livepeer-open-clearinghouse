@@ -1,8 +1,10 @@
 //! End-to-end example: mint a payment, simulate sending to an orch, reconcile usage.
 //!
+//! ```bash
 //! PYMTHOUSE_URL=http://localhost:8000 \
 //! PYMTHOUSE_API_KEY=pymth_live_... \
 //! cargo run --example example
+//! ```
 
 use std::env;
 

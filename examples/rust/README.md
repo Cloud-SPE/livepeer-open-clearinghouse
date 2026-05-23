@@ -18,8 +18,27 @@ cargo test
 ```
 
 Uses `wiremock` to stub the gateway's HTTP surface; no live PymtHouse
-needed. Tests cover the happy path, typed-error mapping, Retry-After,
-Idempotency-Key threading, and the bad-key construction check.
+needed.
+
+## Coverage
+
+```bash
+cargo install cargo-llvm-cov     # one-time
+cargo llvm-cov --summary-only    # text
+cargo llvm-cov --html            # html in target/llvm-cov/html
+```
+
+## Lint + format
+
+```bash
+cargo clippy --all-targets -- -D warnings    # lint
+cargo fmt --all -- --check                   # fmt check
+cargo fmt --all                              # auto-format
+```
+
+Clippy presets (in `Cargo.toml` `[lints.clippy]`): `pedantic` + `nursery`
+at warn, with a small set of explicit allows for SDK-shape reasons.
+`unsafe_code = "forbid"`.
 
 ## Run the example against a live stack
 

@@ -14,8 +14,6 @@ import asyncio
 import os
 import uuid
 
-import httpx
-
 from pymthouse_sdk import (
     InsufficientCredit,
     NoRouteAvailable,
@@ -82,10 +80,7 @@ async def chat(prompt: str) -> None:
             actual_work_units=actual_tokens,
             idempotency_key=idem,
         )
-        print(
-            f"refunded {result['refunded_wei']} wei; "
-            f"new balance {result['new_balance_wei']} wei"
-        )
+        print(f"refunded {result['refunded_wei']} wei; new balance {result['new_balance_wei']} wei")
 
 
 if __name__ == "__main__":

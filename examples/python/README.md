@@ -16,6 +16,20 @@ uv run pytest -q
 ```
 
 Stubs every HTTP call via `respx`, so no live PymtHouse needed.
+Coverage is auto-collected (HTML in `.coverage_html/`); the suite fails
+at < 90%.
+
+## Lint + format
+
+```bash
+uv run ruff check .             # lint
+uv run ruff format --check .    # format check
+uv run ruff check --fix .       # auto-fix
+uv run ruff format .            # auto-format
+```
+
+Rule set: `E,F,I,B,UP,RUF,SIM,ASYNC`. Configured in `pyproject.toml`
+under `[tool.ruff.lint]`.
 
 ## Run the example against a live stack
 

@@ -24,3 +24,17 @@ path = "examples/example.rs"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# Boring strict clippy preset. `pedantic` catches the kinds of nits worth
+# catching in client SDK code; the explicit allows are the unavoidable
+# stylistic differences (string formatting, doc lines).
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+needless_pass_by_value = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[lints.rust]
+unsafe_code = "forbid"

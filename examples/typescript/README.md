@@ -18,6 +18,27 @@ pnpm test
 
 Stubs `fetch` per test; no live PymtHouse needed.
 
+## Coverage
+
+```bash
+pnpm test:coverage
+```
+
+v8-based; HTML in `coverage/`. Thresholds enforced in `vitest.config.ts`
+(90% lines/statements/functions, 85% branches).
+
+## Lint + format
+
+```bash
+pnpm lint          # eslint + prettier --check
+pnpm lint:fix      # eslint --fix + prettier --write
+```
+
+Rules: ESLint flat config with `@typescript-eslint`'s
+`strict-type-checked` + `stylistic-type-checked` presets. Prettier
+handles formatting. Both ignore `*.config.{ts,js}` so the project
+parser doesn't choke on its own configs.
+
 ## Type-check
 
 ```bash
@@ -74,12 +95,12 @@ try {
 
 Method surface (camelCase on the client; PymtHouse wire is snake_case):
 
-| | |
-|---|---|
-| `listCapabilities()` | discovery |
-| `listOrchestrators({ capability })` | discovery |
-| `mintPayment({ capability, offering, workUnits, idempotencyKey? })` | the load-bearing call |
-| `reportUsage({ paymentId, actualWorkUnits, idempotencyKey? })` | reconcile over-committed budget |
+|                                                                     |                                 |
+| ------------------------------------------------------------------- | ------------------------------- |
+| `listCapabilities()`                                                | discovery                       |
+| `listOrchestrators({ capability })`                                 | discovery                       |
+| `mintPayment({ capability, offering, workUnits, idempotencyKey? })` | the load-bearing call           |
+| `reportUsage({ paymentId, actualWorkUnits, idempotencyKey? })`      | reconcile over-committed budget |
 
 Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,
