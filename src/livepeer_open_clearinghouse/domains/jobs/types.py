@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from livepeer_open_clearinghouse.domains.sessions.types import CapStatus
+
 
 class CreateJobRequest(BaseModel):
     """Inbound: ``POST /v1/jobs``.
@@ -67,7 +69,13 @@ class SettleJobResponse(BaseModel):
     """Outbound: ``POST /v1/jobs/{id}/settle``.
 
     Final accounting for the job: what the customer was billed and
-    how much encumbered value is being refunded.
+    how much encumbered value is being refunded, plus a fresh
+    ``cap_status`` snapshot. The cap_status here is informational —
+    jobs are one-shot so ``will_refuse_next_refill`` and
+    ``winddown_reason`` reflect whether the *next* mint of this
+    size would be refused (e.g., spend-period cap is nearly full
+    after this settlement). SDKs use it to surface "you're at N%
+    of your monthly cap" UX after each completed job.
     """
 
     job_id: uuid.UUID
@@ -77,3 +85,4 @@ class SettleJobResponse(BaseModel):
     refund_wei: int
     outcome: str
     closed_at: datetime
+    cap_status: CapStatus

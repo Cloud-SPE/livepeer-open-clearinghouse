@@ -758,8 +758,14 @@ async def _compute_cap_status(
     above :data:`_CAP_IMMINENT_THRESHOLD` AND the projected next mint
     would push it over. Sets ``winddown_reason`` to the offending cap.
     """
-    # Session (always enabled): include the just-minted refill in the sum.
-    session_billed = await _session_billed_so_far_wei(db, session_row.id)
+    # Session pct: prefer the persisted billed_value_wei for closed
+    # sessions (set by close_session/settle_job from actual_units);
+    # for live sessions, fall back to summing payment EVs (the
+    # running cumulative).
+    if session_row.billed_value_wei is not None:
+        session_billed = session_row.billed_value_wei
+    else:
+        session_billed = await _session_billed_so_far_wei(db, session_row.id)
     session_pct = float(session_billed / session_row.funded_value_wei)
     session_pct = min(max(session_pct, 0.0), 1.0)
 

@@ -355,11 +355,16 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
         outcome=None,
         settlement={"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
         clock=_clock(),
+        settings=_settings(),
     )
     assert settle_resp.actual_units == 600
     assert settle_resp.billed_value_wei == 60_000
     assert settle_resp.refund_wei == 40_000
     assert settle_resp.outcome == "OVERFUNDED"
+    # cap_status now ships with settle responses for portal UX.
+    # session_pct_used = 60_000 / 100_000 = 0.6
+    assert settle_resp.cap_status.session_pct_used == pytest.approx(0.6)
+    assert settle_resp.cap_status.will_refuse_next_refill is False
 
     ps = await db_session.get(PaymentSession, open_resp.job_id)
     assert ps is not None
@@ -382,6 +387,7 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
             outcome=None,
             settlement=None,
             clock=_clock(),
+            settings=_settings(),
         )
 
 
@@ -413,6 +419,7 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
         outcome=None,
         settlement=None,
         clock=_clock(),
+        settings=_settings(),
     )
     with pytest.raises(JobAlreadySettled):
         await jobs_service.settle_job(
@@ -423,6 +430,7 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
             outcome=None,
             settlement=None,
             clock=_clock(),
+            settings=_settings(),
         )
 
 

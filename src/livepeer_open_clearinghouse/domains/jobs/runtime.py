@@ -82,6 +82,7 @@ async def settle_job_endpoint(
     pair: CurrentApiKeyDep,
     db: SessionDep,
     clock: ClockDep,
+    settings: SettingsDep,
 ) -> SettleJobResponse:
     """Settle a job after the SDK has called the broker.
 
@@ -101,4 +102,5 @@ async def settle_job_endpoint(
         outcome=body.outcome,
         settlement=body.settlement,
         clock=clock,
+        settings=settings,
     )

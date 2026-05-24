@@ -262,6 +262,7 @@ async def settle_job(
     outcome: str | None,
     settlement: dict[str, Any] | None,
     clock: Clock,
+    settings: Settings,
 ) -> SettleJobResponse:
     """Settle a job after the SDK has called the broker and read the
     Livepeer-Work-Units header (or trailer for http-stream).
@@ -332,6 +333,23 @@ async def settle_job(
         raw_record=settlement,
     )
 
+    # Cap snapshot for the SDK to surface "you're at N% of your
+    # monthly cap" UX after the job. Project next_mint_value=0 — the
+    # session is closed, so will_refuse_next_refill should reflect
+    # absolute cap-fraction (e.g., spend-period cap at 95%+), not
+    # per-session headroom.
+    cfg = await billing_service.resolve_billing_config(
+        db, user_id=user_id, settings=settings
+    )
+    cap_status = await sessions_service._compute_cap_status(  # noqa: SLF001 — sibling helper
+        db,
+        session_row=job_row,
+        user_id=user_id,
+        next_mint_value_wei=Decimal(0),
+        cfg=cfg,
+        clock=clock,
+    )
+
     assert job_row.closed_at is not None
     return SettleJobResponse(
         job_id=job_row.id,
@@ -341,4 +359,5 @@ async def settle_job(
         refund_wei=int(max(refund_wei, Decimal(0))),
         outcome=final_outcome,
         closed_at=job_row.closed_at,
+        cap_status=cap_status,
     )
