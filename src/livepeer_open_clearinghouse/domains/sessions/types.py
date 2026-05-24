@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -82,6 +83,43 @@ class RefillSessionResponse(BaseModel):
     expected_value_wei: int
     funded_value_wei: int
     cap_status: CapStatus
+
+
+class CloseSessionRequest(BaseModel):
+    """Inbound: ``POST /v1/sessions/{id}/close``.
+
+    SDK reports the final actual_units consumed (read from the
+    broker's ``Livepeer-Work-Units`` trailer or the equivalent
+    in-band signal) and optionally the parsed ``SettlementRecord``
+    from the broker if one was delivered.
+
+    Per the trust model in the design doc, the SDK report is
+    advisory; the payer-daemon's ``GetSessionDebits`` is the
+    authoritative source. v1 trusts the SDK report on the synchronous
+    close path; the reconciliation janitor (PR-8) does the daemon
+    cross-check and corrects any divergence.
+    """
+
+    actual_units: int = Field(ge=0)
+    outcome: str | None = None
+    settlement: dict[str, Any] | None = None
+
+
+class CloseSessionResponse(BaseModel):
+    """Outbound: ``POST /v1/sessions/{id}/close``.
+
+    Carries the final accounting: how much the customer was billed
+    for the session, how much encumbered value is being refunded
+    back to their balance, and the settlement outcome string.
+    """
+
+    session_id: uuid.UUID
+    work_id: str
+    actual_units: int
+    billed_value_wei: int
+    refund_wei: int
+    outcome: str
+    closed_at: datetime
 
 
 class CreateSessionResponse(BaseModel):

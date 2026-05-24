@@ -33,6 +33,7 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
 )
 from livepeer_open_clearinghouse.domains.sessions.types import (
     CapStatus,
+    CloseSessionResponse,
     CreateSessionResponse,
     RefillSessionResponse,
 )
@@ -810,3 +811,140 @@ def _project_next_refusal(
     if spend_period_pct is not None and spend_period_pct >= _CAP_IMMINENT_THRESHOLD:
         return True, "spend_period_cap_imminent"
     return False, None
+
+
+# ---------------------------------------------------------------------------
+# Close orchestration (POST /v1/sessions/{id}/close)
+# ---------------------------------------------------------------------------
+
+
+def _infer_close_outcome(*, funded: Decimal, billed: Decimal) -> str:
+    """Default outcome when SDK doesn't supply one.
+
+    Mirrors the upstream `SettlementOutcome` enum:
+      - EXACT          : billed == funded
+      - OVERFUNDED     : billed < funded (the common path)
+      - UNDERFUNDED    : billed > funded (broker debited more than the
+                        ticket face value covered — unusual but possible)
+
+    `STOPPED_AT_BUDGET` and `TOPPED_UP` are SDK-supplied; we don't
+    infer them.
+    """
+    if billed > funded:
+        return "UNDERFUNDED"
+    if billed < funded:
+        return "OVERFUNDED"
+    return "EXACT"
+
+
+async def close_session(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    actual_units: int,
+    outcome: str | None,
+    settlement: dict[str, Any] | None,
+    clock: Clock,
+) -> CloseSessionResponse:
+    """Explicitly close a session and finalize accounting.
+
+    Pre-conditions:
+      1. Session exists, belongs to caller's user.
+      2. Session is in ``open`` or ``draining`` state. A second close
+         on an already-closed session raises :class:`SessionNotOpen`.
+
+    Performs (in order):
+      1. transition_state to ``closed``.
+      2. Compute ``billed_value_wei = actual_units x price`` (price
+         read from the initial mint's Payment row).
+      3. Compute ``refund_wei = funded_value_wei - billed_value_wei``
+         (the worst-case encumbrance minus what was actually used).
+      4. ``release_session_encumbrance(refund_wei)`` — credits the
+         user balance back. No-op if refund_wei <= 0 (overrun case;
+         operator absorbs).
+      5. Update ``payment_session`` with billed_value_wei,
+         actual_units, outcome.
+      6. ``record_settlement(event_type='close')`` with the final
+         numbers and any raw SettlementRecord from the SDK.
+      7. Return the typed response.
+
+    Per the trust model: ``actual_units`` is SDK-reported and trusted
+    on this synchronous path. The reconciliation janitor (PR-8) does
+    the daemon cross-check via ``GetSessionDebits`` and corrects any
+    divergence. v1 daemon client does not yet expose GetSessionDebits;
+    once it does, this function will also verify inline.
+    """
+    # 1. Lookup + ownership
+    session_row = await db.get(PaymentSession, session_id)
+    if session_row is None or session_row.user_id != user_id:
+        raise SessionNotFound
+
+    if session_row.state == SESSION_STATE_CLOSED:
+        raise SessionNotOpen(current_state=session_row.state)
+
+    # 2. Compute billed + refund
+    initial_payment_row = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == session_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment_row is None:
+        raise SessionNotFound  # defensive — open writes one
+
+    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
+    billed_value_wei = price_wei * Decimal(actual_units)
+    refund_wei = session_row.funded_value_wei - billed_value_wei
+
+    # 3. Transition state (open or draining → closed)
+    await transition_state(
+        db,
+        session_id,
+        from_state=session_row.state,
+        to_state=SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+
+    # 4. Release encumbrance (refund unused). Skip if billed exceeded
+    # funded — operator absorbs that delta; no balance change.
+    if refund_wei > 0:
+        await billing_service.release_session_encumbrance(
+            db,
+            user_id=user_id,
+            payment_id=initial_payment_row.id,
+            amount_wei=refund_wei,
+        )
+
+    # 5. Finalize payment_session fields
+    final_outcome = outcome or _infer_close_outcome(
+        funded=session_row.funded_value_wei, billed=billed_value_wei
+    )
+    session_row.actual_units = actual_units
+    session_row.billed_value_wei = billed_value_wei
+    session_row.outcome = final_outcome
+    await db.flush()
+
+    # 6. Append close settlement event
+    await record_settlement(
+        db,
+        session_id,
+        event_type="close",
+        clock=clock,
+        actual_units=actual_units,
+        billed_value_wei=billed_value_wei,
+        outcome=final_outcome,
+        raw_record=settlement,
+    )
+
+    # 7. Response
+    assert session_row.closed_at is not None  # transition_state set it
+    return CloseSessionResponse(
+        session_id=session_row.id,
+        work_id=session_row.work_id,
+        actual_units=actual_units,
+        billed_value_wei=int(billed_value_wei),
+        refund_wei=int(max(refund_wei, Decimal(0))),
+        outcome=final_outcome,
+        closed_at=session_row.closed_at,
+    )

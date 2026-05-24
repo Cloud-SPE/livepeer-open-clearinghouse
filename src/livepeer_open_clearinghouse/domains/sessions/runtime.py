@@ -4,10 +4,10 @@ Endpoints landed:
 
   * ``POST   /v1/sessions``                 — open a session
   * ``POST   /v1/sessions/{id}/refill``     — mint a top-up
+  * ``POST   /v1/sessions/{id}/close``      — explicit close
 
 Endpoints still to land in subsequent Phase 2 PRs:
 
-  * ``POST   /v1/sessions/{id}/close``      — explicit close
   * ``GET    /v1/sessions/{id}``            — status / balance (customer)
   * ``POST   /v1/jobs/{id}/settle``         — single-shot settlement
 
@@ -32,6 +32,8 @@ from livepeer_open_clearinghouse.dependencies import (
 )
 from livepeer_open_clearinghouse.domains.sessions import service
 from livepeer_open_clearinghouse.domains.sessions.types import (
+    CloseSessionRequest,
+    CloseSessionResponse,
     CreateSessionRequest,
     CreateSessionResponse,
     RefillSessionRequest,
@@ -111,4 +113,37 @@ async def refill_session_endpoint(
         daemon=daemon,
         clock=clock,
         settings=settings,
+    )
+
+
+@router.post(
+    "/{session_id}/close",
+    response_model=CloseSessionResponse,
+)
+async def close_session_endpoint(
+    session_id: uuid.UUID,
+    body: CloseSessionRequest,
+    pair: CurrentApiKeyDep,
+    db: SessionDep,
+    clock: ClockDep,
+) -> CloseSessionResponse:
+    """Explicitly close a session and finalize accounting.
+
+    Trusts the SDK-reported ``actual_units`` on this synchronous
+    path. The reconciliation janitor (PR-8) does the daemon
+    cross-check via ``GetSessionDebits`` and corrects divergence.
+
+    Returns 409 ``session_not_open`` for an already-closed session
+    (idempotency note: a second close is rejected, not a no-op —
+    the SDK should treat the first 200 as authoritative).
+    """
+    _api_key, user = pair
+    return await service.close_session(
+        db,
+        session_id=session_id,
+        user_id=user.id,
+        actual_units=body.actual_units,
+        outcome=body.outcome,
+        settlement=body.settlement,
+        clock=clock,
     )
