@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
@@ -19,6 +19,12 @@ from livepeer_open_clearinghouse.dependencies import (
 )
 from livepeer_open_clearinghouse.domains.telemetry import service
 from livepeer_open_clearinghouse.domains.telemetry.config import MAX_BATCH_SIZE
+from livepeer_open_clearinghouse.domains.telemetry.enrichment import (
+    EnrichmentContext,
+    NoopGeoIPProvider,
+    enrich,
+    resolve_ingest_node_id,
+)
 from livepeer_open_clearinghouse.domains.telemetry.types import (
     IngestRequest,
     IngestResponse,
@@ -36,6 +42,7 @@ _RATE_LIMIT_ROUTE = "POST /v1/telemetry"
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def ingest_endpoint(
+    request: Request,
     auth: CurrentApiKeyDep,
     db: SessionDep,
     clock: ClockDep,
@@ -72,6 +79,15 @@ async def ingest_endpoint(
                     headers={"Retry-After": str(retry_after)},
                 )
 
+    enrichment_ctx = EnrichmentContext(
+        source_ip=request.client.host if request.client is not None else None,
+        ingest_node_id=resolve_ingest_node_id(settings.ingest_node_id),
+        geoip=NoopGeoIPProvider(),
+    )
+    # Same enrichment for every event in this batch — they share the
+    # request-level context.
+    batch_enrichment = enrich(enrichment_ctx)
+
     try:
         accepted, reasons = await service.ingest_batch(
             db,
@@ -79,6 +95,7 @@ async def ingest_endpoint(
             user_id=user.id,
             events=body.events,
             clock=clock,
+            enrichment=batch_enrichment,
         )
     except service.BatchTooLarge as exc:
         raise HTTPException(

@@ -32,10 +32,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
 from livepeer_open_clearinghouse.domains.telemetry.config import CURRENT_SCHEMA_VERSION
+from livepeer_open_clearinghouse.domains.telemetry.enrichment import (
+    Enrichment,
+    resolve_ingest_node_id,
+)
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.telemetry import get_logger
+from livepeer_open_clearinghouse.settings import get_settings
 
 logger = get_logger(__name__)
+
+
+def _server_side_enrichment() -> Enrichment:
+    """Enrichment bundle for server-emitted events.
+
+    No source IP (LOC is the source), no broker_url payload (not yet
+    used). ``ingest_node_id`` is the only field with meaningful data;
+    everything else is reserved for future expansion.
+
+    Reads settings lazily so the test fixtures override correctly.
+    """
+    try:
+        configured = get_settings().ingest_node_id
+    except Exception:
+        configured = None
+    return Enrichment(ingest_node_id=resolve_ingest_node_id(configured))
 
 
 async def _safe_emit(
@@ -59,6 +80,7 @@ async def _safe_emit(
             user_id=user_id,
             correlation_id=correlation_id,
             clock=clock,
+            enrichment=_server_side_enrichment(),
         )
     except Exception as exc:
         logger.warning(

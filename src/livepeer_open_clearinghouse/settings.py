@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     # per-second rate so a healthy SDK draining its batch buffer doesn't
     # get throttled.
     telemetry_ingest_rate_per_key: int = Field(default=10_000, ge=0)
+    # Identifier for this LOC replica. Stamped on every telemetry row
+    # so admin can attribute ingest spikes to a specific node. Defaults
+    # to the container hostname when unset.
+    ingest_node_id: str | None = None
 
 
 @lru_cache(maxsize=1)

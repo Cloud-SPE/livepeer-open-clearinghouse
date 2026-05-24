@@ -28,6 +28,7 @@ from livepeer_open_clearinghouse.domains.telemetry.config import (
     SOURCE_SDK,
     SOURCE_SERVER,  # used by record_server_event
 )
+from livepeer_open_clearinghouse.domains.telemetry.enrichment import Enrichment
 from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 from livepeer_open_clearinghouse.domains.telemetry.types import IngestEventIn
 from livepeer_open_clearinghouse.providers.clock import Clock
@@ -68,6 +69,7 @@ async def ingest_batch(
     user_id: uuid.UUID | None,
     events: list[IngestEventIn],
     clock: Clock,
+    enrichment: Enrichment | None = None,
 ) -> tuple[int, list[str]]:
     """Persist a batch of SDK-emitted events.
 
@@ -84,6 +86,7 @@ async def ingest_batch(
     if len(events) > MAX_BATCH_SIZE:
         raise BatchTooLarge
 
+    enrich = enrichment or Enrichment()
     now = clock.now()
     reasons: list[str] = []
     rows: list[TelemetryEvent] = []
@@ -104,6 +107,10 @@ async def ingest_batch(
                 received_ts=now,
                 source=SOURCE_SDK,
                 payload=ev.payload,
+                geo_region=enrich.geo_region,
+                account_tier=enrich.account_tier,
+                broker_operator_id=enrich.broker_operator_id,
+                ingest_node_id=enrich.ingest_node_id,
             )
         )
     if rows:
@@ -123,6 +130,7 @@ async def record_server_event(
     user_id: uuid.UUID | None,
     correlation_id: uuid.UUID | None,
     clock: Clock,
+    enrichment: Enrichment | None = None,
 ) -> TelemetryEvent:
     """Persist a single LOC-emitted ``server.*`` event.
 
@@ -133,6 +141,7 @@ async def record_server_event(
     """
     if not event_type.startswith("server."):
         raise InvalidSource(f"server events must use server.* prefix, got {event_type!r}")
+    enrich = enrichment or Enrichment()
     row = TelemetryEvent(
         api_key_id=api_key_id,
         user_id=user_id,
@@ -143,6 +152,10 @@ async def record_server_event(
         received_ts=clock.now(),
         source=SOURCE_SERVER,
         payload=payload,
+        geo_region=enrich.geo_region,
+        account_tier=enrich.account_tier,
+        broker_operator_id=enrich.broker_operator_id,
+        ingest_node_id=enrich.ingest_node_id,
     )
     session.add(row)
     await session.flush()
