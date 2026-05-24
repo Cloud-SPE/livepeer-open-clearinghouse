@@ -7,6 +7,19 @@ export type {
   SessionHandle,
 } from "./client.js";
 export {
+  BOUNDED_MODES,
+  HTTP_TOPUP_MODES,
+  SessionRunner,
+  WS_TOPUP_MODES,
+} from "./session_runner.js";
+export type {
+  RefillCallback,
+  RefillEvent,
+  SessionRunnerOptions,
+  WinddownCallback,
+  WinddownEvent,
+} from "./session_runner.js";
+export {
   AccountNotApproved,
   DaemonUnavailable,
   DuplicateRequest,
