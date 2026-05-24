@@ -1,304 +1,251 @@
+// Tests for the handoff-mode Go SDK. Uses net/http/httptest for both
+// the LOC gateway and the broker.
 package openclearinghouse_test
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	openclearinghouse "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
+	loc "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
 )
 
-const apiKey = "pymth_live_test_key"
+const apiKey = "pymth_live_test"
 
-func newServerClient(t *testing.T, h http.Handler) *openclearinghouse.Client {
+func locOpenJob(t *testing.T, brokerURL string) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	c, err := openclearinghouse.NewClient(openclearinghouse.Options{
-		BaseURL: srv.URL,
-		APIKey:  apiKey,
-	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	return c
-}
-
-func TestMintPaymentHappyPath(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/payments/mint" || r.Method != http.MethodPost {
-			t.Fatalf("unexpected: %s %s", r.Method, r.URL.Path)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s on /v1/jobs", r.Method)
 		}
-		if got := r.Header.Get("X-API-Key"); got != apiKey {
-			t.Fatalf("bad api key: %q", got)
+		if got := r.Header.Get("Livepeer-Open-Clearinghouse-SDK"); !strings.HasPrefix(got, "go/") {
+			t.Errorf("expected SDK identity to start with go/, got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{
-			"payment_id": "00000000-0000-0000-0000-000000000001",
-			"work_id": "deadbeef",
-			"payment_bytes": "AAAA",
-			"expected_value_wei": "244140",
-			"funded_value_wei": "25000000000",
-			"recipient_eth_address": "0xd003"
-		}`))
-	}))
-	mint, err := c.MintPayment(context.Background(), openclearinghouse.MintPaymentInput{
-		Capability: "openai:chat-completions",
-		Offering:   "vllm-qwen3.6-27b-default",
-		WorkUnits:  1000,
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":             "00000000-0000-0000-0000-000000000abc",
+			"work_id":            "wid-abc",
+			"broker_url":         brokerURL,
+			"mode":               "http-reqresp@v0",
+			"payment_envelope":   "BASE64ENV",
+			"expected_value_wei": 100000,
+			"funded_value_wei":   100000,
+			"settle_endpoint":    "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+			"opened_at":          "2026-05-24T12:00:00Z",
+		})
 	})
-	if err != nil {
-		t.Fatalf("MintPayment: %v", err)
-	}
-	if mint.PaymentBytes != "AAAA" {
-		t.Errorf("payment_bytes: got %q", mint.PaymentBytes)
-	}
-	if mint.RecipientEthAddress != "0xd003" {
-		t.Errorf("recipient: got %q", mint.RecipientEthAddress)
-	}
-}
-
-func TestInsufficientCredit(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		au, _ := body["actual_units"].(float64)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusPaymentRequired)
-		w.Write([]byte(`{"error":{"code":"INSUFFICIENT_CREDIT","message":"0 < 1000","details":{"available_wei":"0","required_wei":"1000"}}}`))
-	}))
-	_, err := c.MintPayment(context.Background(), openclearinghouse.MintPaymentInput{
-		Capability: "x", Offering: "y", WorkUnits: 1,
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":           "00000000-0000-0000-0000-000000000abc",
+			"work_id":          "wid-abc",
+			"actual_units":     au,
+			"billed_value_wei": au * 1000,
+			"refund_wei":       100000 - au*1000,
+			"outcome":          "OVERFUNDED",
+			"closed_at":        "2026-05-24T12:00:30Z",
+			"cap_status": map[string]any{
+				"session_pct_used":        au / 100,
+				"spend_period_pct_used":   nil,
+				"user_balance_pct_used":   nil,
+				"operator_pool_pct_used":  nil,
+				"will_refuse_next_refill": false,
+				"winddown_reason":         nil,
+			},
+		})
 	})
-	phErr, ok := err.(*openclearinghouse.Error)
-	if !ok {
-		t.Fatalf("expected *Error, got %T (%v)", err, err)
-	}
-	if !phErr.IsInsufficientCredit() {
-		t.Errorf("expected IsInsufficientCredit; got code=%q", phErr.Code)
-	}
-	if phErr.Status != 402 {
-		t.Errorf("expected status 402; got %d", phErr.Status)
-	}
-	if phErr.Details["required_wei"] != "1000" {
-		t.Errorf("details lost: %#v", phErr.Details)
-	}
+	return httptest.NewServer(mux)
 }
 
-func TestRateLimitedCarriesRetryAfter(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Retry-After", "12")
+func brokerServer(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/cap" {
+			t.Fatalf("unexpected broker path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Livepeer-Payment"); got != "BASE64ENV" {
+			t.Errorf("expected Livepeer-Payment BASE64ENV, got %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"detail":"rate_limited"}`))
+		w.Header().Set("Livepeer-Work-Units", "42")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"reply":"ok"}`))
 	}))
-	_, err := c.MintPayment(context.Background(), openclearinghouse.MintPaymentInput{
-		Capability: "x", Offering: "y", WorkUnits: 1,
-	})
-	phErr, ok := err.(*openclearinghouse.Error)
-	if !ok {
-		t.Fatalf("expected *Error, got %T (%v)", err, err)
-	}
-	if !phErr.IsRateLimited() {
-		t.Errorf("expected IsRateLimited")
-	}
-	if phErr.RetryAfterSeconds != 12 {
-		t.Errorf("retry after: got %d", phErr.RetryAfterSeconds)
-	}
-}
-
-func TestIdempotencyKeyThreaded(t *testing.T) {
-	var seen string
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Header.Get("Idempotency-Key")
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"payment_id":"00000000-0000-0000-0000-000000000001","work_id":"x","payment_bytes":"AAAA","expected_value_wei":"1","funded_value_wei":"1","recipient_eth_address":"0xd003"}`))
-	}))
-	if _, err := c.MintPayment(context.Background(), openclearinghouse.MintPaymentInput{
-		Capability: "x", Offering: "y", WorkUnits: 1,
-		IdempotencyKey: "abc-123",
-	}); err != nil {
-		t.Fatalf("MintPayment: %v", err)
-	}
-	if seen != "abc-123" {
-		t.Errorf("idempotency-key not threaded; got %q", seen)
-	}
 }
 
 func TestNewClientRejectsBadKey(t *testing.T) {
-	_, err := openclearinghouse.NewClient(openclearinghouse.Options{
-		BaseURL: "http://x", APIKey: "not-a-real-key",
-	})
-	if err == nil || !strings.Contains(err.Error(), "pymth_") {
-		t.Errorf("expected pymth_ rejection; got %v", err)
+	if _, err := loc.NewClient(loc.Options{BaseURL: "x", APIKey: "nope"}); err == nil {
+		t.Fatal("expected error for malformed key")
 	}
 }
 
-func TestListCapabilitiesUnwrapsItems(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"items":[{"name":"openai:chat-completions","work_unit":"tokens","offerings":[]}]}`))
-	}))
-	caps, err := c.ListCapabilities(context.Background())
+func TestSubmitJobHappyPath(t *testing.T) {
+	broker := brokerServer(t, 200)
+	defer broker.Close()
+	loca := locOpenJob(t, broker.URL)
+	defer loca.Close()
+
+	client, err := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
 	if err != nil {
-		t.Fatalf("list capabilities: %v", err)
+		t.Fatal(err)
 	}
-	if len(caps) != 1 || caps[0].Name != "openai:chat-completions" {
-		t.Errorf("unexpected: %+v", caps)
-	}
-}
-
-func TestListOrchestratorsPassesCapabilityFilter(t *testing.T) {
-	var seenQuery string
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"items":[]}`))
-	}))
-	if _, err := c.ListOrchestrators(context.Background(), "openai:chat-completions"); err != nil {
-		t.Fatalf("list orchestrators: %v", err)
-	}
-	if !strings.Contains(seenQuery, "capability=openai%3Achat-completions") {
-		t.Errorf("query missing capability filter: %q", seenQuery)
-	}
-}
-
-func TestReportUsageReturnsRefund(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"refunded_wei":"12345","payment_status":"settled","new_balance_wei":"999999","usage":{"id":"u1","actual_work_units":800,"final_charge_wei":"20000"}}`))
-	}))
-	res, err := c.ReportUsage(context.Background(), openclearinghouse.ReportUsageInput{
-		PaymentID:       "00000000-0000-0000-0000-000000000001",
-		ActualWorkUnits: 800,
-		IdempotencyKey:  "abc-123",
+	result, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+		Capability:     "openai:chat-completions",
+		Offering:       "gpt-oss-20b",
+		EstimatedUnits: 80,
+		MaxTotalUnits:  100,
+		Body:           []byte(`{"prompt":"hello"}`),
 	})
 	if err != nil {
-		t.Fatalf("report usage: %v", err)
+		t.Fatal(err)
 	}
-	if res.RefundedWei != "12345" || res.NewBalanceWei != "999999" {
-		t.Errorf("unexpected: %+v", res)
+	if result.Status != 200 {
+		t.Errorf("status: got %d, want 200", result.Status)
+	}
+	if result.ActualUnits != 42 {
+		t.Errorf("actual_units: got %d, want 42", result.ActualUnits)
+	}
+	if result.BilledValueWei != 42000 {
+		t.Errorf("billed: got %d, want 42000", result.BilledValueWei)
+	}
+	if result.RefundWei != 58000 {
+		t.Errorf("refund: got %d, want 58000", result.RefundWei)
+	}
+	if result.Outcome != "OVERFUNDED" {
+		t.Errorf("outcome: got %q, want OVERFUNDED", result.Outcome)
+	}
+	if result.CapStatus.SessionPctUsed < 0.4 || result.CapStatus.SessionPctUsed > 0.5 {
+		t.Errorf("session_pct_used out of range: %v", result.CapStatus.SessionPctUsed)
 	}
 }
 
-func TestNonJSONErrorBodyFallsBackToText(t *testing.T) {
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("upstream down"))
+func TestSubmitJobMapsInsufficientCredit(t *testing.T) {
+	loca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(402)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    "INSUFFICIENT_CREDIT",
+				"message": "broke",
+				"details": map[string]any{"available_wei": "0", "required_wei": "1000"},
+			},
+		})
 	}))
-	_, err := c.MintPayment(context.Background(), openclearinghouse.MintPaymentInput{
-		Capability: "x", Offering: "y", WorkUnits: 1,
+	defer loca.Close()
+
+	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
+	_, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+		Capability:     "x",
+		Offering:       "x",
+		EstimatedUnits: 1,
+		Body:           []byte(`{}`),
 	})
-	phErr, ok := err.(*openclearinghouse.Error)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	apiErr, ok := err.(*loc.Error)
 	if !ok {
 		t.Fatalf("expected *Error, got %T", err)
 	}
-	if phErr.Status != 503 {
-		t.Errorf("expected 503; got %d", phErr.Status)
+	if apiErr.Code != "INSUFFICIENT_CREDIT" {
+		t.Errorf("code: got %q", apiErr.Code)
+	}
+	if apiErr.Status != 402 {
+		t.Errorf("status: got %d", apiErr.Status)
 	}
 }
 
-// TestSubmitJobRetriesOnInvalidRecipientRand drives one route, two mints, and
-// two orch POSTs through a single test server. The first orch POST returns
-// 401 with INVALID_RECIPIENT_RAND in the body; the SDK should re-mint with
-// a fresh idempotency key, retry once, and surface the resulting 200.
-func TestSubmitJobRetriesOnInvalidRecipientRand(t *testing.T) {
-	var mintCount, orchCount int
-	var seenPayments []string
-
-	// Orch server (separate from the gateway server).
-	orch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		orchCount++
-		seenPayments = append(seenPayments, r.Header.Get("Livepeer-Payment"))
-		if orchCount == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"code":"payment_invalid","message":"INVALID_RECIPIENT_RAND: rotated"}}`))
-			return
-		}
+func TestOpenSession(t *testing.T) {
+	loca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"Qwen","choices":[]}`))
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":         "11111111-1111-1111-1111-111111111111",
+			"work_id":            "wid-sess",
+			"broker_url":         "https://broker.example/livepeer",
+			"mode":               "session-control-plus-media@v0",
+			"payment_envelope":   "BASE64SESS",
+			"expected_value_wei": 100000,
+			"funded_value_wei":   200000,
+			"refill_endpoint":    "/v1/sessions/11111111-1111-1111-1111-111111111111/refill",
+			"close_endpoint":     "/v1/sessions/11111111-1111-1111-1111-111111111111/close",
+			"opened_at":          "2026-05-24T12:00:00Z",
+		})
 	}))
-	t.Cleanup(orch.Close)
+	defer loca.Close()
 
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/routes":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"eth_address":"0xd003","worker_url":"` + orch.URL + `","capability":"x","offering":"y","price_per_work_unit_wei":"1"}`))
-		case "/v1/payments/mint":
-			mintCount++
-			bytesField := "FIRST"
-			if mintCount > 1 {
-				bytesField = "SECOND"
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"payment_id":"00000000-0000-0000-0000-00000000000%d","work_id":"abc","payment_bytes":"%s","expected_value_wei":"1","funded_value_wei":"1","recipient_eth_address":"0xd003"}`, mintCount, bytesField)
-		default:
-			t.Fatalf("unexpected gateway path: %s", r.URL.Path)
-		}
-	}))
-
-	result, err := c.SubmitJob(context.Background(), openclearinghouse.SubmitJobInput{
-		Capability:  "x",
-		Offering:    "y",
-		WorkUnits:   1,
-		Body:        []byte(`{"messages":[]}`),
-		ContentType: "application/json",
+	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
+	handle, err := client.OpenSession(context.Background(), loc.OpenSessionInput{
+		Capability:           "livepeer:vtuber-session",
+		Offering:             "vtuber-1080p30",
+		EstimatedRunwayUnits: 100,
+		MaxTotalUnits:        200,
 	})
 	if err != nil {
-		t.Fatalf("SubmitJob: %v", err)
+		t.Fatal(err)
 	}
-	if mintCount != 2 {
-		t.Errorf("expected 2 mints; got %d", mintCount)
+	if handle.Mode != "session-control-plus-media@v0" {
+		t.Errorf("mode: got %q", handle.Mode)
 	}
-	if orchCount != 2 {
-		t.Errorf("expected 2 orch posts; got %d", orchCount)
-	}
-	if len(seenPayments) != 2 || seenPayments[0] == seenPayments[1] {
-		t.Errorf("expected distinct payment_bytes per attempt; got %v", seenPayments)
-	}
-	if result.Status != 200 {
-		t.Errorf("expected final status 200; got %d", result.Status)
+	if handle.FundedValueWei != 200000 {
+		t.Errorf("funded: got %d", handle.FundedValueWei)
 	}
 }
 
-// TestSubmitJobDoesNotRetryOnUnrelated401 confirms the retry trigger is
-// narrow — a 401 without INVALID_RECIPIENT_RAND must surface as-is.
-func TestSubmitJobDoesNotRetryOnUnrelated401(t *testing.T) {
-	var mintCount int
-	orch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestCloseSessionThreadsOutcome(t *testing.T) {
+	var captured map[string]any
+	loca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"code":"bad_token","message":"expired"}}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":       "22222222-2222-2222-2222-222222222222",
+			"work_id":          "w",
+			"actual_units":     100,
+			"billed_value_wei": 100000,
+			"refund_wei":       0,
+			"outcome":          "EXACT",
+			"closed_at":        "2026-05-24T12:30:00Z",
+		})
 	}))
-	t.Cleanup(orch.Close)
-	c := newServerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/routes":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"eth_address":"0xd003","worker_url":"` + orch.URL + `","capability":"x","offering":"y","price_per_work_unit_wei":"1"}`))
-		case "/v1/payments/mint":
-			mintCount++
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"payment_id":"00000000-0000-0000-0000-000000000001","work_id":"abc","payment_bytes":"AAAA","expected_value_wei":"1","funded_value_wei":"1","recipient_eth_address":"0xd003"}`))
-		}
-	}))
-	result, err := c.SubmitJob(context.Background(), openclearinghouse.SubmitJobInput{
-		Capability: "x", Offering: "y", WorkUnits: 1,
-		Body: []byte(`{"messages":[]}`), ContentType: "application/json",
-	})
+	defer loca.Close()
+
+	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
+	_, err := client.CloseSession(context.Background(), "22222222-2222-2222-2222-222222222222", 100, "EXACT", nil)
 	if err != nil {
-		t.Fatalf("SubmitJob: %v", err)
+		t.Fatal(err)
 	}
-	if mintCount != 1 {
-		t.Errorf("expected 1 mint; got %d", mintCount)
+	if captured["actual_units"].(float64) != 100 {
+		t.Errorf("actual_units: got %v", captured["actual_units"])
 	}
-	if result.Status != 401 {
-		t.Errorf("expected status 401; got %d", result.Status)
+	if captured["outcome"] != "EXACT" {
+		t.Errorf("outcome: got %v", captured["outcome"])
+	}
+}
+
+func TestListCapabilities(t *testing.T) {
+	loca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{
+				{"name": "openai:embeddings", "work_unit": "token", "offerings": []any{}},
+			},
+		})
+	}))
+	defer loca.Close()
+	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
+	caps, err := client.ListCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caps) != 1 || caps[0].Name != "openai:embeddings" {
+		t.Errorf("got %+v", caps)
 	}
 }

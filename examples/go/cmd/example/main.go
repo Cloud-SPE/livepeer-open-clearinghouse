@@ -1,21 +1,24 @@
-// End-to-end example: mint a payment, simulate sending to an orch, reconcile usage.
+// End-to-end example: submit a job via the handoff-mode Go SDK.
 //
 //	OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
 //	OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
 //	go run ./cmd/example
+//
+// The SDK handles the handoff dance: opens a job via POST /v1/jobs
+// (mints a payment envelope), calls the broker directly with the
+// envelope as Livepeer-Payment, reads Livepeer-Work-Units from the
+// broker's response, and posts settle back to LOC.
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	openclearinghouse "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
+	loc "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
 )
 
 func main() {
@@ -25,88 +28,62 @@ func main() {
 }
 
 func run() error {
-	baseURL := mustEnv("OPEN_CLEARINGHOUSE_URL")
-	apiKey := mustEnv("OPEN_CLEARINGHOUSE_API_KEY")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	baseURL := os.Getenv("OPEN_CLEARINGHOUSE_URL")
+	apiKey := os.Getenv("OPEN_CLEARINGHOUSE_API_KEY")
+	if baseURL == "" || apiKey == "" {
+		return errors.New("set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY")
+	}
+
+	client, err := loc.NewClient(loc.Options{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	ph, err := openclearinghouse.NewClient(openclearinghouse.Options{BaseURL: baseURL, APIKey: apiKey})
-	if err != nil {
-		return err
-	}
-
-	// 1. Pick an offering
-	caps, err := ph.ListCapabilities(ctx)
-	if err != nil {
-		return fmt.Errorf("list capabilities: %w", err)
-	}
-	var offering string
-	for _, c := range caps {
-		if c.Name == "openai:chat-completions" && len(c.Offerings) > 0 {
-			offering = c.Offerings[0].ID
-			break
-		}
-	}
-	if offering == "" {
-		return errors.New("no chat-completions offering advertised right now")
-	}
-	fmt.Println("using offering:", offering)
-
-	// 2. Mint with a 1000-token budget; one Idempotency-Key per logical request
-	idem := newIdempotencyKey()
-	mint, err := ph.MintPayment(ctx, openclearinghouse.MintPaymentInput{
+	result, err := client.SubmitJob(ctx, loc.SubmitJobInput{
 		Capability:     "openai:chat-completions",
-		Offering:       offering,
-		WorkUnits:      1000,
-		IdempotencyKey: idem,
+		Offering:       "gpt-oss-20b",
+		EstimatedUnits: 200,
+		MaxTotalUnits:  2000,
+		Body:           []byte(`{"messages":[{"role":"user","content":"explain handoff mode"}],"max_tokens":500}`),
 	})
 	if err != nil {
-		var phErr *openclearinghouse.Error
-		if errors.As(err, &phErr) {
-			switch {
-			case phErr.IsInsufficientCredit():
-				fmt.Println("need topup:", phErr.Details)
-				return nil
-			case phErr.IsNoRouteAvailable():
-				fmt.Println("no orch advertising this offering — try another")
-				return nil
-			case phErr.IsRateLimited():
-				fmt.Printf("rate limited; retry in %ds\n", phErr.RetryAfterSeconds)
-				return nil
-			}
+		var apiErr *loc.Error
+		if errors.As(err, &apiErr) {
+			fmt.Printf("loc error: %s - %s\n", apiErr.Code, apiErr.Message)
+			return nil
 		}
 		return err
 	}
-	fmt.Printf("minted: work_id=%s… ev=%s\n", mint.WorkID[:min(16, len(mint.WorkID))], mint.ExpectedValueWei)
-	fmt.Println("orch:", mint.RecipientEthAddress)
-	fmt.Println("Livepeer-Payment header (truncated):", mint.PaymentBytes[:min(48, len(mint.PaymentBytes))]+"…")
 
-	// 3. Real code POSTs to the orch's URL here. Pretend it consumed 873 tokens.
-	const actualTokens = 873
-
-	// 4. Reconcile
-	result, err := ph.ReportUsage(ctx, openclearinghouse.ReportUsageInput{
-		PaymentID:       mint.PaymentID,
-		ActualWorkUnits: actualTokens,
-		IdempotencyKey:  idem,
-	})
-	if err != nil {
-		return fmt.Errorf("report usage: %w", err)
+	if result.Status == 200 {
+		fmt.Println("==== broker response ====")
+		if result.Body != nil {
+			fmt.Println(string(result.Body))
+		} else {
+			fmt.Println(result.BodyText)
+		}
+		fmt.Println()
+		fmt.Println("==== final accounting ====")
+		fmt.Printf("actual units consumed: %d\n", result.ActualUnits)
+		fmt.Printf("billed:                %d wei\n", result.BilledValueWei)
+		fmt.Printf("refund:                %d wei\n", result.RefundWei)
+		fmt.Printf("outcome:               %s\n", result.Outcome)
+		if result.CapStatus.WillRefuseNextRefill {
+			reason := "unknown"
+			if result.CapStatus.WinddownReason != nil {
+				reason = *result.CapStatus.WinddownReason
+			}
+			fmt.Printf("⚠️  cap warning: %s — another job at this size may be refused\n", reason)
+		}
+	} else {
+		fmt.Printf("broker returned %d\n", result.Status)
+		fmt.Println(result.BodyText)
 	}
-	fmt.Printf("refunded %s wei; new balance %s wei\n", result.RefundedWei, result.NewBalanceWei)
 	return nil
-}
-
-func mustEnv(name string) string {
-	v := os.Getenv(name)
-	if v == "" {
-		log.Fatalf("missing required env var: %s", name)
-	}
-	return v
-}
-
-func newIdempotencyKey() string {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	return hex.EncodeToString(buf)
 }
