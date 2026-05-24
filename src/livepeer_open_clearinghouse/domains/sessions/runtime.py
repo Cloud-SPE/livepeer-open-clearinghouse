@@ -3,10 +3,10 @@
 Endpoints landed:
 
   * ``POST   /v1/sessions``                 — open a session
+  * ``POST   /v1/sessions/{id}/refill``     — mint a top-up
 
 Endpoints still to land in subsequent Phase 2 PRs:
 
-  * ``POST   /v1/sessions/{id}/refill``     — mint a top-up
   * ``POST   /v1/sessions/{id}/close``      — explicit close
   * ``GET    /v1/sessions/{id}``            — status / balance (customer)
   * ``POST   /v1/jobs/{id}/settle``         — single-shot settlement
@@ -17,6 +17,7 @@ contract each handler must satisfy.
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Header, status
@@ -33,6 +34,8 @@ from livepeer_open_clearinghouse.domains.sessions import service
 from livepeer_open_clearinghouse.domains.sessions.types import (
     CreateSessionRequest,
     CreateSessionResponse,
+    RefillSessionRequest,
+    RefillSessionResponse,
 )
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -71,6 +74,40 @@ async def open_session_endpoint(
         max_total_units=body.max_total_units,
         sdk_identity=sdk_identity,
         registry=registry,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
+
+
+@router.post(
+    "/{session_id}/refill",
+    response_model=RefillSessionResponse,
+)
+async def refill_session_endpoint(
+    session_id: uuid.UUID,
+    body: RefillSessionRequest,
+    pair: CurrentApiKeyDep,
+    db: SessionDep,
+    daemon: PaymentDaemonDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RefillSessionResponse:
+    """Mint a top-up envelope bound to an existing session.
+
+    Returns 400 ``refill_not_supported_for_mode`` for (d-bounded)
+    sessions (``ws-realtime@v0`` — no protocol topup). Returns 402
+    ``cap_reached`` when a session / spend-period cap is hit.
+    Returns 409 ``session_not_open`` when the session is in
+    ``draining`` or ``closed`` state.
+    """
+    api_key, user = pair
+    return await service.refill_session(
+        db,
+        session_id=session_id,
+        user_id=user.id,
+        api_key_id=api_key.id,
+        observed_consumed_units=body.observed_consumed_units,
         daemon=daemon,
         clock=clock,
         settings=settings,

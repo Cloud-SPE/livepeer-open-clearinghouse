@@ -26,6 +26,64 @@ class CreateSessionRequest(BaseModel):
     max_total_units: int = Field(gt=0)
 
 
+class CapStatus(BaseModel):
+    """Cap headroom snapshot returned with every successful refill.
+
+    All percentages are in ``[0.0, 1.0]``. ``None`` means the cap
+    isn't enabled / configured (e.g., user has no spend-period cap
+    set, or operator-pool cap is opt-in and disabled).
+
+    ``will_refuse_next_refill`` flips ``true`` when any enabled cap
+    is at or above the imminent-refusal threshold AND the projected
+    next-mint would push it over. SDK uses this to surface a
+    winddown warning to the customer one refill window early.
+
+    ``winddown_reason`` is a short machine-readable string when
+    ``will_refuse_next_refill=true``: ``"session_cap_imminent"``,
+    ``"spend_period_cap_imminent"``, ``"user_balance_imminent"``,
+    ``"operator_pool_cap_imminent"``. ``None`` otherwise.
+    """
+
+    session_pct_used: float = Field(ge=0.0, le=1.0)
+    spend_period_pct_used: float | None = Field(default=None, ge=0.0, le=1.0)
+    user_balance_pct_used: float | None = Field(default=None, ge=0.0, le=1.0)
+    operator_pool_pct_used: float | None = Field(default=None, ge=0.0, le=1.0)
+    will_refuse_next_refill: bool
+    winddown_reason: str | None = None
+
+
+class RefillSessionRequest(BaseModel):
+    """Inbound: ``POST /v1/sessions/{id}/refill``.
+
+    Body is mostly empty in v1 — the SDK signals "broker emitted
+    Livepeer-Balance-Low, please mint more." The optional
+    ``observed_consumed_units`` is an advisory hint from the SDK's
+    view of the broker's debit ledger; LOC cross-checks via
+    ``GetSessionDebits`` and uses the daemon's number as
+    authoritative (per the trust model).
+    """
+
+    observed_consumed_units: int | None = Field(default=None, ge=0)
+
+
+class RefillSessionResponse(BaseModel):
+    """Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
+
+    Carries the newly-minted top-up envelope plus a fresh cap_status
+    snapshot. The SDK delivers ``payment_envelope`` to the broker
+    via the mode-specific channel (``session.topup`` JSON frame for
+    ``session-control-plus-media@v0``; HTTP ``POST {topup_url}`` for
+    the ``live-session-*`` modes).
+    """
+
+    work_id: str
+    refill_seq: int
+    payment_envelope: str
+    expected_value_wei: int
+    funded_value_wei: int
+    cap_status: CapStatus
+
+
 class CreateSessionResponse(BaseModel):
     """Outbound: ``POST /v1/sessions``.
 

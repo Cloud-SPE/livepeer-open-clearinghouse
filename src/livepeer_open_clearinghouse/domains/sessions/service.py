@@ -31,7 +31,11 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
 )
-from livepeer_open_clearinghouse.domains.sessions.types import CreateSessionResponse
+from livepeer_open_clearinghouse.domains.sessions.types import (
+    CapStatus,
+    CreateSessionResponse,
+    RefillSessionResponse,
+)
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
@@ -124,6 +128,48 @@ class InvalidSessionRequest(OpenClearinghouseError):
             code="invalid_session_request",
             message=message,
             status_code=400,
+        )
+
+
+class RefillNotSupportedForMode(OpenClearinghouseError):
+    """The session's mode is in the (d-bounded) set — no topup possible."""
+
+    def __init__(self, *, mode: str) -> None:
+        super().__init__(
+            code="refill_not_supported_for_mode",
+            message=(
+                f"mode {mode!r} does not support mid-session topup; "
+                "this session is bounded by its initial mint and will "
+                "end when the funded runway is exhausted"
+            ),
+            status_code=400,
+        )
+
+
+class SessionNotOpen(OpenClearinghouseError):
+    """Refill or other live-session operation attempted on a non-open session."""
+
+    def __init__(self, *, current_state: str) -> None:
+        super().__init__(
+            code="session_not_open",
+            message=f"session is in state {current_state!r}; refill requires 'open'",
+            status_code=409,
+        )
+
+
+class SessionCapReached(OpenClearinghouseError):
+    """Refill refused because a cap would be crossed."""
+
+    def __init__(self, *, which: str, remaining_wei: int, advice: str) -> None:
+        super().__init__(
+            code="cap_reached",
+            message=f"refill refused: {which} cap reached",
+            status_code=402,
+            details={
+                "which": which,
+                "remaining_wei": str(remaining_wei),
+                "advice": advice,
+            },
         )
 
 
@@ -480,3 +526,287 @@ async def open_session(
         close_endpoint=_close_endpoint_for(session_row.id),
         opened_at=session_row.opened_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Refill orchestration (POST /v1/sessions/{id}/refill)
+# ---------------------------------------------------------------------------
+
+
+# Cap-status thresholds (per exec-plan 002 sub-decision 2): when any
+# enabled cap crosses this fraction AND the projected next-mint would
+# push it over, LOC sets ``will_refuse_next_refill=true`` in the
+# refill response so the SDK can warn the customer one window early.
+_CAP_IMMINENT_THRESHOLD = 0.95
+
+
+async def _session_billed_so_far_wei(db: AsyncSession, session_id: uuid.UUID) -> Decimal:
+    """Sum ``expected_value_wei`` across all Payment rows tied to this session."""
+    result = await db.scalars(
+        select(Payment.expected_value_wei).where(Payment.session_id == session_id)
+    )
+    return Decimal(sum((Decimal(v) for v in result.all()), Decimal(0)))
+
+
+async def refill_session(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    observed_consumed_units: int | None,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+) -> RefillSessionResponse:
+    """Mint a top-up bound to an existing session's work_id.
+
+    Pre-conditions (in order):
+
+      1. Session exists, belongs to caller's user.
+      2. Session is in ``open`` state.
+      3. Session's mode is in :data:`SESSION_OPEN_MODES` AND NOT
+         in the (d-bounded) set (currently just ``ws-realtime@v0``).
+         Bounded sessions reject with 400.
+      4. Cumulative minted EV + next mint EV <= session funded
+         (worst-case). If not, refuse with ``cap_reached: session``.
+      5. Spend-period cap has room for the next mint. If not,
+         refuse with ``cap_reached: spend_period`` (the encumbrance
+         at open recorded the worst case against the window, so
+         this is usually a no-op — but cap could shrink between
+         opens, so we re-check).
+
+    On success: mints via daemon (re-using the same
+    ``(recipient, capability, offering, funded_value_wei,
+    broker_url)`` session-cache key per the daemon's convention so
+    the new ticket attaches to the same ``work_id``), writes a new
+    Payment row tied to the session via ``session_id``, increments
+    ``last_debit_seq``, and returns the envelope plus a fresh
+    ``cap_status``.
+
+    Notes:
+      - Worst-case encumbrance was done at open; no additional
+        balance debit at refill (the funded value is already
+        reserved).
+      - ``observed_consumed_units`` is advisory only — the daemon's
+        ledger is authoritative; the SDK's hint is logged for
+        triage but not used to size the mint.
+    """
+    cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
+
+    # 1. Session exists + ownership
+    session_row = await db.get(PaymentSession, session_id)
+    if session_row is None or session_row.user_id != user_id:
+        raise SessionNotFound
+
+    # 2. State check
+    if session_row.state != SESSION_STATE_OPEN:
+        raise SessionNotOpen(current_state=session_row.state)
+
+    # 3. Mode check — refill only works on (d-extensible)
+    if session_row.mode == "ws-realtime@v0":
+        raise RefillNotSupportedForMode(mode=session_row.mode)
+
+    # Pull pricing context from the most recent Payment on this session
+    # (the initial mint's price; all refills use the same price).
+    initial_payment_row = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == session_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment_row is None:
+        # Should never happen — open_session writes one. Defensive.
+        raise SessionNotFound
+
+    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
+    next_mint_units = session_row.estimated_units  # refill chunk = runway size
+    next_mint_value_wei = price_wei * Decimal(next_mint_units)
+
+    # 4. Per-session cap check
+    billed_so_far = await _session_billed_so_far_wei(db, session_id)
+    session_remaining = session_row.funded_value_wei - billed_so_far
+    if next_mint_value_wei > session_remaining:
+        raise SessionCapReached(
+            which="session",
+            remaining_wei=int(session_remaining),
+            advice=(
+                "session would exceed max_total_units; "
+                "open a new session with a higher max_total_units to continue"
+            ),
+        )
+
+    # 5. Spend-period cap check
+    period_room = await billing_service.remaining_window_room(
+        db,
+        user_id=user_id,
+        clock=clock,
+        period_seconds=cfg.spend_period_seconds,
+        cap_wei=cfg.spend_period_cap_wei,
+    )
+    if next_mint_value_wei > period_room:
+        raise SessionCapReached(
+            which="spend_period",
+            remaining_wei=int(period_room) if period_room != Decimal("Infinity") else 0,
+            advice=(
+                "rolling spend-period cap reached; raise the cap at "
+                "/portal/billing or wait for period rollover"
+            ),
+        )
+
+    # ---- Daemon call. Same session-cache key as the initial mint so
+    # the daemon reuses recipient_rand_hash and increments nonce.
+    daemon_request = CreatePaymentRequest(
+        recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
+        ticket_params_base_url="",  # daemon uses its cached value
+        accepted_price=AcceptedPrice(
+            capability=initial_payment_row.capability,
+            offering=initial_payment_row.offering,
+            price_per_unit_wei=price_wei,
+            units_per_price=1,
+            work_unit_name="",
+            quote_ref=QuoteRef(
+                quote_id="",
+                quote_version=0,
+                constraint_fingerprint=b"\x00" * 32,
+                route_fingerprint=b"\x00" * 32,
+            ),
+        ),
+        funding=FundingIntent(
+            funded_value_wei=next_mint_value_wei,
+            estimated_units=next_mint_units,
+            max_total_units=next_mint_units,
+        ),
+    )
+    try:
+        daemon_response = await daemon.create_payment(daemon_request)
+    except PaymentDaemonError as exc:
+        raise DaemonUnavailable(
+            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
+        ) from exc
+
+    # ---- Persist the top-up Payment row + bump last_debit_seq
+    refill_payment = Payment(
+        user_id=user_id,
+        api_key_id=api_key_id,
+        session_id=session_id,
+        work_id=session_row.work_id,
+        recipient_eth_address=initial_payment_row.recipient_eth_address,
+        capability=initial_payment_row.capability,
+        offering=initial_payment_row.offering,
+        work_units_requested=next_mint_units,
+        price_per_work_unit_wei=price_wei,
+        funded_value_wei=daemon_response.funded_value_wei,
+        expected_value_wei=daemon_response.expected_value,
+        reserved_wei=daemon_response.expected_value,
+        refunded_wei=Decimal(0),
+        status="issued",
+    )
+    db.add(refill_payment)
+    session_row.last_debit_seq = session_row.last_debit_seq + 1
+    await db.flush()
+
+    # ---- Record a payment_settlement event
+    await record_settlement(
+        db,
+        session_id,
+        event_type="refill_granted",
+        clock=clock,
+        billed_value_wei=daemon_response.expected_value,
+        raw_record={
+            "refill_seq": session_row.last_debit_seq,
+            "observed_consumed_units": observed_consumed_units,
+        },
+    )
+
+    # ---- Build cap_status block
+    cap_status = await _compute_cap_status(
+        db,
+        session_row=session_row,
+        user_id=user_id,
+        next_mint_value_wei=next_mint_value_wei,
+        cfg=cfg,
+        clock=clock,
+    )
+
+    return RefillSessionResponse(
+        work_id=session_row.work_id,
+        refill_seq=session_row.last_debit_seq,
+        payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
+        expected_value_wei=int(daemon_response.expected_value),
+        funded_value_wei=int(daemon_response.funded_value_wei),
+        cap_status=cap_status,
+    )
+
+
+async def _compute_cap_status(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    user_id: uuid.UUID,
+    next_mint_value_wei: Decimal,
+    cfg: billing_service.ResolvedBillingConfig,
+    clock: Clock,
+) -> CapStatus:
+    """Compute the per-cap headroom snapshot returned with refill 200.
+
+    Percentages are over [0, 1]. Unconfigured caps surface as ``None``.
+    ``will_refuse_next_refill`` is set when any *enabled* cap is at or
+    above :data:`_CAP_IMMINENT_THRESHOLD` AND the projected next mint
+    would push it over. Sets ``winddown_reason`` to the offending cap.
+    """
+    # Session (always enabled): include the just-minted refill in the sum.
+    session_billed = await _session_billed_so_far_wei(db, session_row.id)
+    session_pct = float(session_billed / session_row.funded_value_wei)
+    session_pct = min(max(session_pct, 0.0), 1.0)
+
+    # Spend-period (enabled iff cap_wei > 0)
+    spend_period_pct: float | None = None
+    if cfg.spend_period_cap_wei > 0:
+        room = await billing_service.remaining_window_room(
+            db,
+            user_id=user_id,
+            clock=clock,
+            period_seconds=cfg.spend_period_seconds,
+            cap_wei=cfg.spend_period_cap_wei,
+        )
+        spent = Decimal(cfg.spend_period_cap_wei) - room
+        spend_period_pct = float(spent / Decimal(cfg.spend_period_cap_wei))
+        spend_period_pct = min(max(spend_period_pct, 0.0), 1.0)
+
+    # User balance and operator-pool are deferred to a later PR
+    # (need to track "starting balance" for a meaningful pct;
+    # operator-pool cap is opt-in v1).
+    user_balance_pct: float | None = None
+    operator_pool_pct: float | None = None
+
+    will_refuse, reason = _project_next_refusal(
+        session_pct=session_pct,
+        session_remaining_wei=session_row.funded_value_wei - session_billed,
+        next_mint_value_wei=next_mint_value_wei,
+        spend_period_pct=spend_period_pct,
+    )
+
+    return CapStatus(
+        session_pct_used=session_pct,
+        spend_period_pct_used=spend_period_pct,
+        user_balance_pct_used=user_balance_pct,
+        operator_pool_pct_used=operator_pool_pct,
+        will_refuse_next_refill=will_refuse,
+        winddown_reason=reason,
+    )
+
+
+def _project_next_refusal(
+    *,
+    session_pct: float,
+    session_remaining_wei: Decimal,
+    next_mint_value_wei: Decimal,
+    spend_period_pct: float | None,
+) -> tuple[bool, str | None]:
+    """Predict whether the *next* refill request will be refused."""
+    if session_pct >= _CAP_IMMINENT_THRESHOLD and next_mint_value_wei > session_remaining_wei:
+        return True, "session_cap_imminent"
+    if spend_period_pct is not None and spend_period_pct >= _CAP_IMMINENT_THRESHOLD:
+        return True, "spend_period_cap_imminent"
+    return False, None
