@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     rl_password_reset_capacity: int = Field(default=3, ge=0)
     rl_password_reset_refill_per_minute: int = Field(default=3, ge=0)
 
+    # ---- telemetry (exec-plan 002 §"SDK telemetry") ----
+    telemetry_raw_retention_days: int = Field(default=30, ge=0)
+    telemetry_retention_janitor_interval_seconds: int = Field(default=3600, ge=60)
+    # Per-API-key ingest cap, events/sec. Burst capacity matches the
+    # per-second rate so a healthy SDK draining its batch buffer doesn't
+    # get throttled.
+    telemetry_ingest_rate_per_key: int = Field(default=10_000, ge=0)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

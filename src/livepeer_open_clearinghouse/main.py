@@ -29,6 +29,8 @@ from livepeer_open_clearinghouse.domains.payments import runtime as payments_run
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.sessions import runtime as sessions_runtime
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
+from livepeer_open_clearinghouse.domains.telemetry import runtime as telemetry_runtime
+from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
 from livepeer_open_clearinghouse.errors import register_handlers
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_scope
@@ -111,6 +113,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
         except Exception as exc:
             log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
 
+    async def _purge_expired_telemetry() -> None:
+        try:
+            async with session_scope() as db:
+                n = await telemetry_service.purge_expired(
+                    db,
+                    retention_days=cfg.telemetry_raw_retention_days,
+                    clock=clock,
+                )
+                if n:
+                    log.info("scheduler.telemetry_retention.purged", count=n)
+        except Exception as exc:
+            log.warning("scheduler.telemetry_retention.failed", error=str(exc))
+
     register_interval_job(
         _expire_stale_idempotency_keys,
         name="expire_stale_idempotency_keys",
@@ -132,6 +147,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
         name="reconcile_open_sessions",
         seconds=sessions_service.DEFAULT_JANITOR_INTERVAL_SECONDS,
     )
+    if cfg.telemetry_raw_retention_days > 0:
+        register_interval_job(
+            _purge_expired_telemetry,
+            name="telemetry_retention",
+            seconds=cfg.telemetry_retention_janitor_interval_seconds,
+        )
     start_scheduler()
 
     yield
@@ -190,6 +211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(payments_runtime.router)
     app.include_router(jobs_runtime.router)
     app.include_router(sessions_runtime.router)
+    app.include_router(telemetry_runtime.router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).
