@@ -18,6 +18,7 @@ machine or repo queries.
 from __future__ import annotations
 
 import base64
+import time
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -39,11 +40,13 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     RefillSessionResponse,
     SessionStatusResponse,
 )
+from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
     OpenClearinghouseError,
+    SpendCapExceeded,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -434,12 +437,23 @@ async def open_session(
     # outstanding.)
     balance = await billing_service.get_balance(db, user_id=user_id)
     if balance.amount_wei < worst_case_value_wei:
+        await telemetry_events.emit_mint_refused(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            capability=capability,
+            offering=offering,
+            which_cap="user_balance",
+            remaining_wei=int(balance.amount_wei),
+            clock=clock,
+        )
         raise InsufficientCredit(
             available_wei=int(balance.amount_wei),
             required_wei=int(worst_case_value_wei),
         )
 
     # ---- 5. Daemon call (initial ticket sized for runway)
+    mint_started_ns = time.monotonic_ns()
     daemon_request = CreatePaymentRequest(
         recipient=_eth_address_to_bytes(route.eth_address),
         ticket_params_base_url=route.worker_url,
@@ -506,17 +520,55 @@ async def open_session(
     await db.flush()
 
     # ---- 8. Encumber worst-case from the user balance
-    await billing_service.encumber_for_session(
+    try:
+        await billing_service.encumber_for_session(
+            db,
+            user_id=user_id,
+            payment_id=payment.id,
+            amount_wei=worst_case_value_wei,
+            clock=clock,
+            period_seconds=cfg.spend_period_seconds,
+            cap_wei=cfg.spend_period_cap_wei,
+        )
+    except SpendCapExceeded as exc:
+        cap_wei = int(exc.details.get("cap_wei", 0))
+        spent_wei = int(exc.details.get("would_be_spent_wei", 0))
+        await telemetry_events.emit_mint_refused(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            capability=capability,
+            offering=offering,
+            which_cap="spend_period",
+            remaining_wei=max(cap_wei - spent_wei, 0),
+            clock=clock,
+        )
+        raise
+
+    # ---- 9. Emit server.mint_served + sdk_sha_mismatch if applicable
+    mint_latency_ms = (time.monotonic_ns() - mint_started_ns) // 1_000_000
+    await telemetry_events.emit_mint_served(
         db,
+        api_key_id=api_key_id,
         user_id=user_id,
-        payment_id=payment.id,
-        amount_wei=worst_case_value_wei,
+        capability=capability,
+        offering=offering,
+        mode=mode,
+        estimated_units=estimated_runway_units,
+        funded_value_wei=int(worst_case_value_wei),
+        mint_latency_ms=int(mint_latency_ms),
+        correlation_id=session_row.id,
         clock=clock,
-        period_seconds=cfg.spend_period_seconds,
-        cap_wei=cfg.spend_period_cap_wei,
+    )
+    await telemetry_events.emit_sha_mismatch_if_unapproved(
+        db,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        sdk_identity=sdk_identity,
+        clock=clock,
     )
 
-    # ---- 9. Return the typed response
+    # ---- 10. Return the typed response
     return CreateSessionResponse(
         session_id=session_row.id,
         work_id=daemon_response.work_id,
@@ -529,6 +581,8 @@ async def open_session(
         close_endpoint=_close_endpoint_for(session_row.id),
         opened_at=session_row.opened_at,
     )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +684,16 @@ async def refill_session(
     billed_so_far = await _session_billed_so_far_wei(db, session_id)
     session_remaining = session_row.funded_value_wei - billed_so_far
     if next_mint_value_wei > session_remaining:
+        await telemetry_events.emit_refill_denied(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            session_id=session_id,
+            refill_seq=session_row.last_debit_seq + 1,
+            which_cap="session",
+            remaining_wei=int(session_remaining),
+            clock=clock,
+        )
         raise SessionCapReached(
             which="session",
             remaining_wei=int(session_remaining),
@@ -648,9 +712,22 @@ async def refill_session(
         cap_wei=cfg.spend_period_cap_wei,
     )
     if next_mint_value_wei > period_room:
+        period_remaining_int = (
+            int(period_room) if period_room != Decimal("Infinity") else 0
+        )
+        await telemetry_events.emit_refill_denied(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            session_id=session_id,
+            refill_seq=session_row.last_debit_seq + 1,
+            which_cap="spend_period",
+            remaining_wei=period_remaining_int,
+            clock=clock,
+        )
         raise SessionCapReached(
             which="spend_period",
-            remaining_wei=int(period_room) if period_room != Decimal("Infinity") else 0,
+            remaining_wei=period_remaining_int,
             advice=(
                 "rolling spend-period cap reached; raise the cap at "
                 "/portal/billing or wait for period rollover"
@@ -729,6 +806,17 @@ async def refill_session(
         user_id=user_id,
         next_mint_value_wei=next_mint_value_wei,
         cfg=cfg,
+        clock=clock,
+    )
+
+    await telemetry_events.emit_refill_served(
+        db,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        session_id=session_id,
+        refill_seq=session_row.last_debit_seq,
+        funded_value_wei=int(daemon_response.funded_value_wei),
+        cap_status=cap_status.model_dump(),
         clock=clock,
     )
 
@@ -1122,7 +1210,7 @@ async def reconcile_open_sessions(
         # total_work_units, no outcome (close_session will infer one).
         if debits.closed:
             try:
-                await close_session(
+                close_response = await close_session(
                     db,
                     session_id=ps.id,
                     user_id=ps.user_id,
@@ -1131,10 +1219,38 @@ async def reconcile_open_sessions(
                     settlement={"reconciled_by": "janitor"},
                     clock=clock,
                 )
-                finalized += 1
             except SessionNotOpen:
                 # Raced with an explicit SDK close between the poll and
                 # the finalize. That's fine.
                 continue
+            finalized += 1
+            # Best-effort: how long was the session silent before the
+            # janitor finalized it? Bound by opened_at since the SDK
+            # never sent a close; precise idle measurement needs the
+            # last-debit-observed timestamp from the daemon (not yet
+            # exposed).
+            # opened_at may come back tz-naive from some drivers (SQLite);
+            # normalize both sides before subtracting.
+            opened_at_aware = (
+                ps.opened_at
+                if ps.opened_at.tzinfo is not None
+                else ps.opened_at.replace(tzinfo=now.tzinfo)
+            )
+            silence_seconds = max(
+                int((now - opened_at_aware).total_seconds()),
+                0,
+            )
+            await telemetry_events.emit_session_janitor_finalized(
+                db,
+                api_key_id=ps.api_key_id,
+                user_id=ps.user_id,
+                session_id=ps.id,
+                actual_units=close_response.actual_units,
+                billed_value_wei=int(close_response.billed_value_wei),
+                refund_wei=int(close_response.refund_wei),
+                outcome=close_response.outcome,
+                silence_duration_seconds=silence_seconds,
+                clock=clock,
+            )
 
     return finalized

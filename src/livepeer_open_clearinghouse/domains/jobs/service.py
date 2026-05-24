@@ -22,6 +22,7 @@ settle path mirrors ``sessions.service.close_session``. Differences:
 from __future__ import annotations
 
 import base64
+import time
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -37,11 +38,13 @@ from livepeer_open_clearinghouse.domains.jobs.types import (
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
     OpenClearinghouseError,
+    SpendCapExceeded,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -157,6 +160,16 @@ async def open_job(
     # Up-front balance check
     balance = await billing_service.get_balance(db, user_id=user_id)
     if balance.amount_wei < worst_case_value_wei:
+        await telemetry_events.emit_mint_refused(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            capability=capability,
+            offering=offering,
+            which_cap="user_balance",
+            remaining_wei=int(balance.amount_wei),
+            clock=clock,
+        )
         raise InsufficientCredit(
             available_wei=int(balance.amount_wei),
             required_wei=int(worst_case_value_wei),
@@ -164,6 +177,7 @@ async def open_job(
 
     # Daemon mint sized for the full worst case (one ticket covers
     # the whole job).
+    mint_started_ns = time.monotonic_ns()
     daemon_request = CreatePaymentRequest(
         recipient=sessions_service._eth_address_to_bytes(route.eth_address),
         ticket_params_base_url=route.worker_url,
@@ -230,14 +244,51 @@ async def open_job(
     await db.flush()
 
     # Encumber worst case
-    await billing_service.encumber_for_session(
+    try:
+        await billing_service.encumber_for_session(
+            db,
+            user_id=user_id,
+            payment_id=payment.id,
+            amount_wei=worst_case_value_wei,
+            clock=clock,
+            period_seconds=cfg.spend_period_seconds,
+            cap_wei=cfg.spend_period_cap_wei,
+        )
+    except SpendCapExceeded as exc:
+        cap_wei = int(exc.details.get("cap_wei", 0))
+        spent_wei = int(exc.details.get("would_be_spent_wei", 0))
+        await telemetry_events.emit_mint_refused(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            capability=capability,
+            offering=offering,
+            which_cap="spend_period",
+            remaining_wei=max(cap_wei - spent_wei, 0),
+            clock=clock,
+        )
+        raise
+
+    mint_latency_ms = (time.monotonic_ns() - mint_started_ns) // 1_000_000
+    await telemetry_events.emit_mint_served(
         db,
+        api_key_id=api_key_id,
         user_id=user_id,
-        payment_id=payment.id,
-        amount_wei=worst_case_value_wei,
+        capability=capability,
+        offering=offering,
+        mode=mode,
+        estimated_units=estimated_units,
+        funded_value_wei=int(worst_case_value_wei),
+        mint_latency_ms=int(mint_latency_ms),
+        correlation_id=job_row.id,
         clock=clock,
-        period_seconds=cfg.spend_period_seconds,
-        cap_wei=cfg.spend_period_cap_wei,
+    )
+    await telemetry_events.emit_sha_mismatch_if_unapproved(
+        db,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        sdk_identity=sdk_identity,
+        clock=clock,
     )
 
     return CreateJobResponse(
@@ -341,7 +392,7 @@ async def settle_job(
     cfg = await billing_service.resolve_billing_config(
         db, user_id=user_id, settings=settings
     )
-    cap_status = await sessions_service._compute_cap_status(  # noqa: SLF001 — sibling helper
+    cap_status = await sessions_service._compute_cap_status(
         db,
         session_row=job_row,
         user_id=user_id,
