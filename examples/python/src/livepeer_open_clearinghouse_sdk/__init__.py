@@ -1,25 +1,40 @@
-"""Reference Python SDK for Livepeer Open Clearinghouse.
+"""Reference Python SDK for Livepeer Open Clearinghouse (handoff mode).
 
-A thin, dependency-light wrapper around the gateway's HTTP API. Two
-things to remember:
+A thin, dependency-light wrapper around the gateway's HTTP API.
 
-* Every call needs `X-API-Key: pymth_live_...`. Get one from the portal
-  after operator approval.
-* `mint_payment` returns base64 `payment_bytes` — put those verbatim
-  into a `Livepeer-Payment` header on your request to the orchestrator.
+Two flows:
 
-See `example.py` for the full mint → orchestrator → reconcile flow.
+* ``submit_job`` — atomic / post-settled / streaming work (cases a/b/c).
+  Single function call that mints via ``POST /v1/jobs``, talks to the
+  broker directly, reads ``Livepeer-Work-Units`` from the response,
+  and settles via ``POST /v1/jobs/{id}/settle``.
+
+* ``open_session`` — long-running interactive work (case d). Returns a
+  ``SessionHandle`` carrying the broker URL + minted envelope; SDK
+  consumer drives the broker WS / RTMP wire today. Companion
+  ``refill_session`` and ``close_session`` helpers cover the LOC-side
+  refill / close calls.
+
+Every call needs ``X-API-Key: pymth_live_...`` — get one from the
+portal after operator approval. The SDK adds
+``Livepeer-Open-Clearinghouse-SDK`` automatically for operator-side
+trust scoring.
+
+See ``example.py`` for end-to-end usage.
 """
 
 from livepeer_open_clearinghouse_sdk.client import (
+    SDK_IDENTITY,
     Capability,
+    CapStatus,
     JobResult,
-    Mint,
     Offering,
     OpenClearinghouseClient,
     Orchestrator,
     RouteView,
-    UsageReportResult,
+    SessionHandle,
+    is_open_clearinghouse_error,
+    wei_to_eth,
 )
 from livepeer_open_clearinghouse_sdk.errors import (
     AccountNotApproved,
@@ -32,13 +47,14 @@ from livepeer_open_clearinghouse_sdk.errors import (
 )
 
 __all__ = [
+    "SDK_IDENTITY",
     "AccountNotApproved",
+    "CapStatus",
     "Capability",
     "DaemonUnavailable",
     "DuplicateRequest",
     "InsufficientCredit",
     "JobResult",
-    "Mint",
     "NoRouteAvailable",
     "Offering",
     "OpenClearinghouseClient",
@@ -46,5 +62,7 @@ __all__ = [
     "Orchestrator",
     "RateLimited",
     "RouteView",
-    "UsageReportResult",
+    "SessionHandle",
+    "is_open_clearinghouse_error",
+    "wei_to_eth",
 ]
