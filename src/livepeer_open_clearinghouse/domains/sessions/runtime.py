@@ -5,10 +5,10 @@ Endpoints landed:
   * ``POST   /v1/sessions``                 — open a session
   * ``POST   /v1/sessions/{id}/refill``     — mint a top-up
   * ``POST   /v1/sessions/{id}/close``      — explicit close
+  * ``GET    /v1/sessions/{id}``            — status / balance (customer)
 
 Endpoints still to land in subsequent Phase 2 PRs:
 
-  * ``GET    /v1/sessions/{id}``            — status / balance (customer)
   * ``POST   /v1/jobs/{id}/settle``         — single-shot settlement
 
 See ``docs/exec-plans/active/002-long-running-sessions.md`` for the
@@ -38,6 +38,7 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     CreateSessionResponse,
     RefillSessionRequest,
     RefillSessionResponse,
+    SessionStatusResponse,
 )
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -111,6 +112,33 @@ async def refill_session_endpoint(
         api_key_id=api_key.id,
         observed_consumed_units=body.observed_consumed_units,
         daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
+
+
+@router.get(
+    "/{session_id}",
+    response_model=SessionStatusResponse,
+)
+async def get_session_status_endpoint(
+    session_id: uuid.UUID,
+    pair: CurrentApiKeyDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> SessionStatusResponse:
+    """Customer-facing snapshot of a session's state + accounting.
+
+    Returns 404 ``session_not_found`` for unknown sessions or
+    sessions owned by another user (uniform — does not disclose
+    existence).
+    """
+    _api_key, user = pair
+    return await service.get_session_status(
+        db,
+        session_id=session_id,
+        user_id=user.id,
         clock=clock,
         settings=settings,
     )

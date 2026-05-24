@@ -85,6 +85,38 @@ class RefillSessionResponse(BaseModel):
     cap_status: CapStatus
 
 
+class SessionStatusResponse(BaseModel):
+    """Outbound: ``GET /v1/sessions/{id}``.
+
+    Customer-facing read-only view of a session's current state +
+    running totals. Powers the SDK's ``session.status`` callback and
+    the portal's per-session detail page. Always-on; no auth beyond
+    the standard CurrentApiKey ownership check.
+
+    For active sessions, ``cap_status`` carries the same shape the
+    refill endpoint returns so portal UIs can show "how close to
+    cap" without forcing a refill. For closed sessions, ``cap_status``
+    is omitted (irrelevant) and the close fields are populated.
+    """
+
+    session_id: uuid.UUID
+    work_id: str
+    capability: str
+    offering: str
+    mode: str
+    state: str
+    estimated_units: int
+    max_total_units: int
+    funded_value_wei: int
+    billed_value_wei: int  # cumulative across all minted tickets (live) OR final billed (closed)
+    refill_count: int
+    cap_status: CapStatus | None
+    opened_at: datetime
+    closed_at: datetime | None
+    actual_units: int | None
+    outcome: str | None
+
+
 class CloseSessionRequest(BaseModel):
     """Inbound: ``POST /v1/sessions/{id}/close``.
 

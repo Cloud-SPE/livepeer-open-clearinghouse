@@ -36,6 +36,7 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     CloseSessionResponse,
     CreateSessionResponse,
     RefillSessionResponse,
+    SessionStatusResponse,
 )
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
@@ -947,4 +948,85 @@ async def close_session(
         refund_wei=int(max(refund_wei, Decimal(0))),
         outcome=final_outcome,
         closed_at=session_row.closed_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Read endpoint (GET /v1/sessions/{id})
+# ---------------------------------------------------------------------------
+
+
+async def get_session_status(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    clock: Clock,
+    settings: Settings,
+) -> SessionStatusResponse:
+    """Return a snapshot of the session's current state + accounting.
+
+    Raises :class:`SessionNotFound` if the session is missing or
+    owned by a different user (uniform 404 — doesn't disclose
+    existence).
+
+    For ``open`` / ``draining`` sessions, ``cap_status`` is computed
+    on the fly using the same logic refill responses use (without
+    actually projecting a next mint — so ``will_refuse_next_refill``
+    is best-effort from current pct only).
+
+    For ``closed`` sessions, ``cap_status`` is ``None`` and the
+    close fields (``actual_units``, ``outcome``, ``closed_at``) are
+    populated.
+
+    ``billed_value_wei`` is the sum of expected_value across all
+    Payment rows for live sessions, or the final billed value for
+    closed sessions.
+    """
+    session_row = await db.get(PaymentSession, session_id)
+    if session_row is None or session_row.user_id != user_id:
+        raise SessionNotFound
+
+    is_live = session_row.state != SESSION_STATE_CLOSED
+
+    cap_status: CapStatus | None = None
+    if is_live:
+        cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
+        # next_mint_value=0 here — we're not projecting an actual mint,
+        # just reporting current headroom. Means
+        # will_refuse_next_refill reflects only the threshold-crossing
+        # state, not a projected-overrun.
+        cap_status = await _compute_cap_status(
+            db,
+            session_row=session_row,
+            user_id=user_id,
+            next_mint_value_wei=Decimal(0),
+            cfg=cfg,
+            clock=clock,
+        )
+
+    # billed_value_wei: for closed sessions use the persisted final
+    # value; for live use the cumulative payment EV.
+    if session_row.billed_value_wei is not None:
+        billed_wei = int(session_row.billed_value_wei)
+    else:
+        billed_wei = int(await _session_billed_so_far_wei(db, session_id))
+
+    return SessionStatusResponse(
+        session_id=session_row.id,
+        work_id=session_row.work_id,
+        capability=session_row.capability,
+        offering=session_row.offering,
+        mode=session_row.mode,
+        state=session_row.state,
+        estimated_units=session_row.estimated_units,
+        max_total_units=session_row.max_total_units,
+        funded_value_wei=int(session_row.funded_value_wei),
+        billed_value_wei=billed_wei,
+        refill_count=session_row.last_debit_seq,
+        cap_status=cap_status,
+        opened_at=session_row.opened_at,
+        closed_at=session_row.closed_at,
+        actual_units=session_row.actual_units,
+        outcome=session_row.outcome,
     )
