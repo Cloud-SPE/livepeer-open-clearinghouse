@@ -160,3 +160,95 @@ class OperatorWithToken(BaseModel):
 
     operator: OperatorView
     raw_token: str
+
+
+# ---- SDK approval list -----------------------------------------------------
+
+
+class SdkApprovalView(BaseModel):
+    """One row of sdk_approval — operator view."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lang: str
+    version: str
+    git_sha7: str
+    status: str
+    notes: str | None
+    added_by_operator_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SdkApprovalList(BaseModel):
+    items: list[SdkApprovalView]
+
+
+class CreateSdkApprovalRequest(BaseModel):
+    """Inbound: ``POST /v1/admin/sdk-approvals``."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    lang: str = Field(min_length=1, max_length=32)
+    version: str = Field(min_length=1, max_length=64)
+    git_sha7: str = Field(min_length=4, max_length=64)
+    status: str = "approved"
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class UpdateSdkApprovalRequest(BaseModel):
+    """Inbound: ``PATCH /v1/admin/sdk-approvals/{id}`` — at least one field."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    status: str | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class SdkManifestEntry(BaseModel):
+    """One row of the public SDK manifest."""
+
+    lang: str
+    version: str
+    git_sha7: str
+    status: str
+
+
+class SdkManifest(BaseModel):
+    """Public payload at ``GET /v1/sdk/manifest``."""
+
+    items: list[SdkManifestEntry]
+    generated_at: datetime
+
+
+class SessionWithSdkView(BaseModel):
+    """One row of the admin session-recent feed with the bucketed SDK
+    approval status attached."""
+
+    session_id: uuid.UUID
+    user_id: uuid.UUID
+    api_key_id: uuid.UUID
+    work_id: str
+    capability: str
+    offering: str
+    mode: str
+    state: str
+    sdk_identity: str | None
+    sdk_status: str
+    opened_at: datetime
+    closed_at: datetime | None
+
+
+class SessionWithSdkList(BaseModel):
+    items: list[SessionWithSdkView]
+
+
+class SdkDistributionEntry(BaseModel):
+    sdk_identity: str
+    count: int
+    status: str
+
+
+class SdkDistributionResponse(BaseModel):
+    items: list[SdkDistributionEntry]

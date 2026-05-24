@@ -184,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_keys_runtime.router)
     app.include_router(billing_runtime.router)
     app.include_router(admin_runtime.router)
+    app.include_router(admin_runtime.sdk_router)
     app.include_router(discovery_runtime.router)
     app.include_router(notifications_runtime.router)
     app.include_router(payments_runtime.router)

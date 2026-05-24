@@ -27,6 +27,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     BillingConfigUpdate,
     BillingConfigView,
     CreateOperatorRequest,
+    CreateSdkApprovalRequest,
     DepositSnapshotList,
     DepositSnapshotView,
     EffectiveBillingConfigView,
@@ -35,7 +36,16 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     OperatorWithToken,
     PendingUserList,
     PendingUserView,
+    SdkApprovalList,
+    SdkApprovalView,
+    SdkDistributionEntry,
+    SdkDistributionResponse,
+    SdkManifest,
+    SdkManifestEntry,
+    SessionWithSdkList,
+    SessionWithSdkView,
     UpdateOperatorRequest,
+    UpdateSdkApprovalRequest,
 )
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import service as discovery_service
@@ -429,3 +439,155 @@ async def rotate_operator_token_endpoint(
     except service.OperatorNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.code) from exc
     return OperatorWithToken(operator=_operator_view(op), raw_token=raw_token)
+
+
+# ---------------------------------------------------------------------------
+# SDK approval list — operator-managed allow/deprecate registry
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sdk-approvals", response_model=SdkApprovalList)
+async def list_sdk_approvals_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+) -> SdkApprovalList:
+    rows = await service.list_sdk_approvals(db)
+    return SdkApprovalList(items=[SdkApprovalView.model_validate(r) for r in rows])
+
+
+@router.post(
+    "/sdk-approvals",
+    response_model=SdkApprovalView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_sdk_approval_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    body: CreateSdkApprovalRequest,
+) -> SdkApprovalView:
+    try:
+        row = await service.create_sdk_approval(
+            db,
+            acting_operator=operator,
+            lang=body.lang,
+            version=body.version,
+            git_sha7=body.git_sha7,
+            status=body.status,
+            notes=body.notes,
+        )
+    except service.InvalidSdkApprovalStatus as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    except service.SdkApprovalAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return SdkApprovalView.model_validate(row)
+
+
+@router.patch("/sdk-approvals/{approval_id}", response_model=SdkApprovalView)
+async def update_sdk_approval_endpoint(
+    approval_id: uuid.UUID,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    body: UpdateSdkApprovalRequest,
+) -> SdkApprovalView:
+    try:
+        row = await service.update_sdk_approval(
+            db,
+            acting_operator=operator,
+            approval_id=approval_id,
+            status=body.status,
+            notes=body.notes,
+        )
+    except service.SdkApprovalNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except service.InvalidSdkApprovalStatus as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    return SdkApprovalView.model_validate(row)
+
+
+@router.delete("/sdk-approvals/{approval_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_sdk_approval_endpoint(
+    approval_id: uuid.UUID,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+) -> Response:
+    try:
+        await service.delete_sdk_approval(
+            db, acting_operator=operator, approval_id=approval_id
+        )
+    except service.SdkApprovalNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/sessions/recent", response_model=SessionWithSdkList)
+async def list_recent_sessions_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    limit: int = 100,
+) -> SessionWithSdkList:
+    rows = await service.list_recent_sessions_with_sdk(db, limit=limit)
+    return SessionWithSdkList(
+        items=[
+            SessionWithSdkView(
+                session_id=ps.id,
+                user_id=ps.user_id,
+                api_key_id=ps.api_key_id,
+                work_id=ps.work_id,
+                capability=ps.capability,
+                offering=ps.offering,
+                mode=ps.mode,
+                state=ps.state,
+                sdk_identity=ps.sdk_identity,
+                sdk_status=status_label,
+                opened_at=ps.opened_at,
+                closed_at=ps.closed_at,
+            )
+            for (ps, status_label) in rows
+        ]
+    )
+
+
+@router.get("/sdk-distribution", response_model=SdkDistributionResponse)
+async def sdk_distribution_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    limit: int = 50,
+) -> SdkDistributionResponse:
+    rows = await service.sdk_distribution(db, limit=limit)
+    return SdkDistributionResponse(
+        items=[
+            SdkDistributionEntry(sdk_identity=ident, count=count, status=status_label)
+            for (ident, count, status_label) in rows
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public SDK manifest — un-authed; SDKs hit it at startup
+# ---------------------------------------------------------------------------
+
+sdk_router = APIRouter(prefix="/v1/sdk", tags=["sdk"])
+
+
+@sdk_router.get("/manifest", response_model=SdkManifest)
+async def sdk_manifest_endpoint(
+    db: SessionDep,
+    clock: ClockDep,
+) -> SdkManifest:
+    """Public list of operator-approved SDK versions.
+
+    Returns ``approved`` + ``deprecated`` rows only. Blocked rows are
+    operator-internal and never published. SDKs hit this at startup
+    to warn the customer if their pinned version has been deprecated;
+    the response is intentionally cacheable.
+    """
+    rows = await service.list_approved_sdk_manifest(db)
+    return SdkManifest(
+        items=[
+            SdkManifestEntry(
+                lang=r.lang, version=r.version, git_sha7=r.git_sha7, status=r.status
+            )
+            for r in rows
+        ],
+        generated_at=clock.now(),
+    )
