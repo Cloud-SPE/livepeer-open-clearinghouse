@@ -1,5 +1,11 @@
-export { OpenClearinghouseClient } from "./client.js";
-export type { Mint, ClientOptions, JobResult, RouteView } from "./client.js";
+export { OpenClearinghouseClient, SDK_IDENTITY } from "./client.js";
+export type {
+  ClientOptions,
+  CapStatus,
+  JobResult,
+  RouteView,
+  SessionHandle,
+} from "./client.js";
 export {
   AccountNotApproved,
   DaemonUnavailable,
