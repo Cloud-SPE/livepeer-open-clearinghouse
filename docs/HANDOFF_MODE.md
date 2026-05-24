@@ -159,21 +159,36 @@ out-of-band and corrects discrepancies.
 
 The `Livepeer-Open-Clearinghouse-SDK` header lets operators
 distinguish customer integrations by language + version + git SHA.
-Operator actions tied to this:
+The `sdk_approval` table stores the operator-curated allow /
+deprecate / block list keyed on the `(lang, version, git_sha7)`
+triple. Operator actions:
 
-1. **Publish the approved versions** via
-   `GET /v1/sdk/manifest` (signed by operator key — see
-   exec-plan 002 § "SDK criticality and conformance"). Approved
-   manifest source-of-truth lives at the OPERATOR_SDK_MANIFEST_PATH
-   in operator settings; update + redeploy to roll the list.
-2. **Investigate SHA mismatches** via the admin SPA's SDK
-   visibility view. Mismatches don't block requests (LOC can't
-   enforce SDK integrity remotely), but appear in the
-   `sdk_sha_mismatch_count` per API key.
-3. **Bump min SDK version** by editing the manifest's
-   `min_version` field. Customers running older versions get HTTP
-   `426 Upgrade Required` with a clear "upgrade your SDK"
-   message.
+1. **Add or update a row** via:
+   - `POST /v1/admin/sdk-approvals` — body `{lang, version,
+     git_sha7, status, notes?}`. `status` is one of `approved`,
+     `deprecated`, `blocked`.
+   - `PATCH /v1/admin/sdk-approvals/{id}` — change status or
+     notes.
+   - `DELETE /v1/admin/sdk-approvals/{id}` — remove.
+   Every mutation lands a row in `operator_audit`.
+2. **List current approvals** via `GET /v1/admin/sdk-approvals`.
+3. **Inspect recent sessions** via
+   `GET /v1/admin/sessions/recent?limit=100` — each row carries
+   the observed `sdk_identity` and the bucketed
+   `sdk_status` (approved / deprecated / blocked / unknown).
+4. **Aggregate by SDK identity** via
+   `GET /v1/admin/sdk-distribution?limit=50` for dashboard panels
+   showing population spread.
+5. **Publish the approved list** via `GET /v1/sdk/manifest`
+   (public, no auth — SDKs hit it at startup). Returns only
+   approved + deprecated rows; blocked rows stay operator-internal.
+
+Mismatches don't (yet) block mints — LOC can't enforce SDK
+integrity remotely — but the data surfaces in admin so an
+operator can reach out to the customer running an old or
+non-conformant build. Mint-time enforcement on the `blocked`
+status is a follow-up gated behind exec-plan 002's enforcement
+phase.
 
 The full approval-list spec, signing protocol, and operator UI
 are documented in the design doc § "SDK criticality and
