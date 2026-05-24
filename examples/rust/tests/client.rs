@@ -1,379 +1,226 @@
+//! Tests for the handoff-mode Rust SDK. Uses wiremock to stub both
+//! the LOC gateway and the broker.
+
 use livepeer_open_clearinghouse_sdk::{
-    Client, ClientOptions, ErrorKind, MintPaymentInput, OpenClearinghouseError,
+    Client, ClientOptions, ErrorKind, JobBody, OpenSessionInput, SubmitJobInput,
 };
+use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const KEY: &str = "pymth_live_test_key";
+const API_KEY: &str = "pymth_live_test";
 
-async fn server_client() -> (MockServer, Client) {
-    let mock = MockServer::start().await;
-    let client = Client::new(ClientOptions::new(mock.uri(), KEY)).expect("client");
-    (mock, client)
+fn loc_client(loc: &MockServer) -> Client {
+    Client::new(ClientOptions::new(loc.uri(), API_KEY)).unwrap()
 }
 
-#[tokio::test]
-async fn mints_on_happy_path() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .and(header("x-api-key", KEY))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "payment_id": "00000000-0000-0000-0000-000000000001",
-            "work_id": "deadbeefdeadbeef",
-            "payment_bytes": "AAAA",
-            "expected_value_wei": "244140",
-            "funded_value_wei": "25000000000",
-            "recipient_eth_address": "0xd003"
-        })))
-        .mount(&mock)
-        .await;
-
-    let mint = client
-        .mint_payment(MintPaymentInput {
-            capability: "openai:chat-completions",
-            offering: "vllm-qwen3.6-27b-default",
-            work_units: 1000,
-            idempotency_key: None,
-        })
-        .await
-        .expect("mint");
-    assert_eq!(mint.payment_bytes, "AAAA");
-    assert_eq!(mint.recipient_eth_address, "0xd003");
+fn job_open_payload(broker_url: &str) -> serde_json::Value {
+    json!({
+        "job_id": "00000000-0000-0000-0000-000000000abc",
+        "work_id": "wid-abc",
+        "broker_url": broker_url,
+        "mode": "http-reqresp@v0",
+        "payment_envelope": "BASE64ENV",
+        "expected_value_wei": 100_000u64,
+        "funded_value_wei": 100_000u64,
+        "settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+        "opened_at": "2026-05-24T12:00:00Z"
+    })
 }
 
-#[tokio::test]
-async fn insufficient_credit_maps_to_kind() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(ResponseTemplate::new(402).set_body_json(serde_json::json!({
-            "error": {
-                "code": "INSUFFICIENT_CREDIT",
-                "message": "0 < 1000",
-                "details": { "available_wei": "0", "required_wei": "1000" }
-            }
-        })))
-        .mount(&mock)
-        .await;
-
-    let err = client
-        .mint_payment(MintPaymentInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            idempotency_key: None,
-        })
-        .await
-        .expect_err("should error");
-    assert_eq!(err.kind(), ErrorKind::InsufficientCredit);
-    if let OpenClearinghouseError::Api {
-        status, details, ..
-    } = err
-    {
-        assert_eq!(status, 402);
-        assert_eq!(details["required_wei"], "1000");
-    } else {
-        panic!("expected Api variant");
-    }
-}
-
-#[tokio::test]
-async fn rate_limited_carries_retry_after() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(
-            ResponseTemplate::new(429)
-                .insert_header("Retry-After", "12")
-                .set_body_json(serde_json::json!({ "detail": "rate_limited" })),
-        )
-        .mount(&mock)
-        .await;
-    let err = client
-        .mint_payment(MintPaymentInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            idempotency_key: None,
-        })
-        .await
-        .expect_err("should error");
-    assert_eq!(err.kind(), ErrorKind::RateLimited);
-    assert_eq!(err.retry_after_seconds(), Some(12));
-}
-
-#[tokio::test]
-async fn idempotency_key_threaded() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .and(header("Idempotency-Key", "abc-123"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "payment_id": "00000000-0000-0000-0000-000000000001",
-            "work_id": "x",
-            "payment_bytes": "AAAA",
-            "expected_value_wei": "1",
-            "funded_value_wei": "1",
-            "recipient_eth_address": "0xd003"
-        })))
-        .mount(&mock)
-        .await;
-    client
-        .mint_payment(MintPaymentInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            idempotency_key: Some("abc-123"),
-        })
-        .await
-        .expect("mint");
+fn settled_payload(actual: u64) -> serde_json::Value {
+    #[allow(clippy::cast_precision_loss)]
+    let pct = actual as f64 / 100.0;
+    json!({
+        "job_id": "00000000-0000-0000-0000-000000000abc",
+        "work_id": "wid-abc",
+        "actual_units": actual,
+        "billed_value_wei": actual * 1000,
+        "refund_wei": 100_000u64 - actual * 1000,
+        "outcome": "OVERFUNDED",
+        "closed_at": "2026-05-24T12:00:30Z",
+        "cap_status": {
+            "session_pct_used": pct,
+            "spend_period_pct_used": null,
+            "user_balance_pct_used": null,
+            "operator_pool_pct_used": null,
+            "will_refuse_next_refill": false,
+            "winddown_reason": null
+        }
+    })
 }
 
 #[test]
 fn rejects_bad_api_key() {
-    let err =
-        Client::new(ClientOptions::new("http://x", "not-a-real-key")).expect_err("should error");
-    match err {
-        OpenClearinghouseError::Config(msg) => assert!(msg.contains("pymth_"), "{msg}"),
-        other => panic!("expected Config, got {other:?}"),
-    }
+    let err = Client::new(ClientOptions::new("https://x", "nope")).unwrap_err();
+    assert!(matches!(
+        err,
+        livepeer_open_clearinghouse_sdk::OpenClearinghouseError::Config(_)
+    ));
+}
+
+#[tokio::test]
+async fn submit_job_happy_path() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let broker_uri = broker.uri();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .and(header("Livepeer-Open-Clearinghouse-SDK", "rust/0.2.0/dev"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(job_open_payload(&broker_uri)))
+        .mount(&loc)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/cap"))
+        .and(header("Livepeer-Payment", "BASE64ENV"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "reply": "ok" }))
+                .insert_header("Livepeer-Work-Units", "42"),
+        )
+        .mount(&broker)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(42)))
+        .mount(&loc)
+        .await;
+
+    let client = loc_client(&loc);
+    let result = client
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "gpt-oss-20b",
+            estimated_units: 80,
+            max_total_units: Some(100),
+            body: JobBody::Json(json!({"prompt": "hello"})),
+            request_id: None,
+            spec_version: None,
+        })
+        .await
+        .expect("submit_job");
+
+    assert_eq!(result.status, 200);
+    assert_eq!(result.actual_units, 42);
+    assert_eq!(result.billed_value_wei, 42_000);
+    assert_eq!(result.refund_wei, 58_000);
+    assert_eq!(result.outcome, "OVERFUNDED");
+    assert_eq!(result.body, Some(json!({"reply": "ok"})));
+    assert!(result.cap_status.session_pct_used > 0.4);
+}
+
+#[tokio::test]
+async fn submit_job_maps_insufficient_credit() {
+    let loc = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(json!({
+            "error": {
+                "code": "INSUFFICIENT_CREDIT",
+                "message": "broke",
+                "details": {"available_wei": "0", "required_wei": "1000"}
+            }
+        })))
+        .mount(&loc)
+        .await;
+
+    let client = loc_client(&loc);
+    let err = client
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "x",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({})),
+            request_id: None,
+            spec_version: None,
+        })
+        .await
+        .expect_err("expected error");
+    assert_eq!(err.kind(), ErrorKind::InsufficientCredit);
+}
+
+#[tokio::test]
+async fn open_session_returns_handle() {
+    let loc = MockServer::start().await;
+    let sid = "11111111-1111-1111-1111-111111111111";
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "session_id": sid,
+            "work_id": "wid-sess",
+            "broker_url": "https://broker.example/livepeer",
+            "mode": "session-control-plus-media@v0",
+            "payment_envelope": "BASE64SESS",
+            "expected_value_wei": 100_000u64,
+            "funded_value_wei": 200_000u64,
+            "refill_endpoint": format!("/v1/sessions/{sid}/refill"),
+            "close_endpoint": format!("/v1/sessions/{sid}/close"),
+            "opened_at": "2026-05-24T12:00:00Z"
+        })))
+        .mount(&loc)
+        .await;
+
+    let client = loc_client(&loc);
+    let handle = client
+        .open_session(OpenSessionInput {
+            capability: "livepeer:vtuber-session",
+            offering: "vtuber-1080p30",
+            estimated_runway_units: 100,
+            max_total_units: 200,
+        })
+        .await
+        .expect("open_session");
+    assert_eq!(handle.mode, "session-control-plus-media@v0");
+    assert_eq!(handle.funded_value_wei, 200_000);
+}
+
+#[tokio::test]
+async fn close_session_threads_outcome() {
+    let loc = MockServer::start().await;
+    let sid = "22222222-2222-2222-2222-222222222222";
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/sessions/{sid}/close")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "session_id": sid,
+            "work_id": "w",
+            "actual_units": 100,
+            "billed_value_wei": 100_000u64,
+            "refund_wei": 0u64,
+            "outcome": "EXACT",
+            "closed_at": "2026-05-24T12:30:00Z"
+        })))
+        .mount(&loc)
+        .await;
+
+    let client = loc_client(&loc);
+    let result = client
+        .close_session(sid, 100, Some("EXACT"), None)
+        .await
+        .expect("close_session");
+    assert_eq!(result.get("outcome").and_then(|v| v.as_str()), Some("EXACT"));
 }
 
 #[tokio::test]
 async fn list_capabilities_unwraps_items() {
-    let (mock, client) = server_client().await;
+    let loc = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/capabilities"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "items": [{"name": "openai:chat-completions", "work_unit": "tokens", "offerings": []}]
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "name": "openai:embeddings",
+                "work_unit": "token",
+                "offerings": []
+            }]
         })))
-        .mount(&mock)
+        .mount(&loc)
         .await;
-    let caps = client.list_capabilities().await.expect("list");
-    assert_eq!(caps.len(), 1);
-    assert_eq!(caps[0].name, "openai:chat-completions");
-}
-
-#[tokio::test]
-async fn list_orchestrators_passes_capability_filter() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/orchestrators"))
-        // The query "capability=openai:chat-completions" becomes
-        // "capability=openai%3Achat-completions" after our urlencoded()
-        // helper.
-        .and(wiremock::matchers::query_param(
-            "capability",
-            "openai:chat-completions",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})))
-        .mount(&mock)
-        .await;
-    let orchs = client
-        .list_orchestrators(Some("openai:chat-completions"))
-        .await
-        .expect("list");
-    assert!(orchs.is_empty());
-}
-
-#[tokio::test]
-async fn list_orchestrators_without_filter() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/orchestrators"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})))
-        .mount(&mock)
-        .await;
-    let orchs = client.list_orchestrators(None).await.expect("list");
-    assert!(orchs.is_empty());
-}
-
-#[tokio::test]
-async fn report_usage_returns_refund() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/usage/report"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "refunded_wei": "12345",
-            "payment_status": "settled",
-            "new_balance_wei": "999999",
-            "usage": {"id": "u1", "actual_work_units": 800, "final_charge_wei": "20000"}
-        })))
-        .mount(&mock)
-        .await;
-    let result = client
-        .report_usage(livepeer_open_clearinghouse_sdk::ReportUsageInput {
-            payment_id: "00000000-0000-0000-0000-000000000001",
-            actual_work_units: 800,
-            idempotency_key: Some("abc-123"),
-        })
-        .await
-        .expect("report");
-    assert_eq!(result.refunded_wei, "12345");
-    assert_eq!(result.new_balance_wei, "999999");
-}
-
-#[tokio::test]
-async fn non_json_error_body_falls_back_to_text() {
-    let (mock, client) = server_client().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
-        .mount(&mock)
-        .await;
-    let err = client
-        .mint_payment(MintPaymentInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            idempotency_key: None,
-        })
-        .await
-        .expect_err("should error");
-    if let OpenClearinghouseError::Api { status, .. } = err {
-        assert_eq!(status, 503);
-    } else {
-        panic!("expected Api variant; got {err:?}");
-    }
-}
-
-#[tokio::test]
-async fn submit_job_retries_on_invalid_recipient_rand() {
-    use livepeer_open_clearinghouse_sdk::{JobBody, SubmitJobInput};
-    use wiremock::matchers::{body_string_contains, method, path};
-    use wiremock::ResponseTemplate;
-
-    let orch = MockServer::start().await;
-    let (gateway, client) = server_client().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v1/routes"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "eth_address": "0xd003",
-            "worker_url": orch.uri(),
-            "capability": "x",
-            "offering": "y",
-            "price_per_work_unit_wei": "1",
-        })))
-        .mount(&gateway)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "payment_id": "00000000-0000-0000-0000-000000000001",
-            "work_id": "abc",
-            "payment_bytes": "FIRST",
-            "expected_value_wei": "1",
-            "funded_value_wei": "1",
-            "recipient_eth_address": "0xd003",
-        })))
-        .up_to_n_times(1)
-        .mount(&gateway)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "payment_id": "00000000-0000-0000-0000-000000000002",
-            "work_id": "abc",
-            "payment_bytes": "SECOND",
-            "expected_value_wei": "1",
-            "funded_value_wei": "1",
-            "recipient_eth_address": "0xd003",
-        })))
-        .mount(&gateway)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/cap"))
-        .and(wiremock::matchers::header("Livepeer-Payment", "FIRST"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-            "error": {"code": "payment_invalid", "message": "INVALID_RECIPIENT_RAND: rotated"}
-        })))
-        .mount(&orch)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/cap"))
-        .and(wiremock::matchers::header("Livepeer-Payment", "SECOND"))
-        .and(body_string_contains("messages"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "model": "Qwen", "choices": []
-        })))
-        .mount(&orch)
-        .await;
-
-    let r = client
-        .submit_job(SubmitJobInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            body: JobBody::Json(serde_json::json!({"messages": []})),
-            content_type: None,
-            idempotency_key: None,
-            request_id: None,
-            mode: None,
-            spec_version: None,
-            timeout: None,
-        })
-        .await
-        .expect("submit_job");
-    assert_eq!(r.status, 200);
-}
-
-#[tokio::test]
-async fn submit_job_does_not_retry_on_unrelated_401() {
-    use livepeer_open_clearinghouse_sdk::{JobBody, SubmitJobInput};
-    use wiremock::matchers::{method, path};
-    use wiremock::ResponseTemplate;
-
-    let orch = MockServer::start().await;
-    let (gateway, client) = server_client().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v1/routes"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "eth_address": "0xd003",
-            "worker_url": orch.uri(),
-            "capability": "x",
-            "offering": "y",
-            "price_per_work_unit_wei": "1",
-        })))
-        .mount(&gateway)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/payments/mint"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-            "payment_id": "00000000-0000-0000-0000-000000000001",
-            "work_id": "abc",
-            "payment_bytes": "AAAA",
-            "expected_value_wei": "1",
-            "funded_value_wei": "1",
-            "recipient_eth_address": "0xd003",
-        })))
-        .expect(1)
-        .mount(&gateway)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/cap"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-            "error": {"code": "bad_token", "message": "expired"}
-        })))
-        .mount(&orch)
-        .await;
-
-    let r = client
-        .submit_job(SubmitJobInput {
-            capability: "x",
-            offering: "y",
-            work_units: 1,
-            body: JobBody::Json(serde_json::json!({"messages": []})),
-            content_type: None,
-            idempotency_key: None,
-            request_id: None,
-            mode: None,
-            spec_version: None,
-            timeout: None,
-        })
-        .await
-        .expect("submit_job");
-    assert_eq!(r.status, 401);
+    let client = loc_client(&loc);
+    let caps = client.list_capabilities().await.unwrap();
+    assert_eq!(caps[0].name, "openai:embeddings");
 }

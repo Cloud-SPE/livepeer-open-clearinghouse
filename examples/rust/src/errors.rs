@@ -77,6 +77,29 @@ impl OpenClearinghouseError {
             _ => None,
         }
     }
+
+    /// Constructor helpers used by the v0.2 handoff-mode client.
+    #[must_use]
+    pub fn invalid_argument(msg: impl Into<String>) -> Self {
+        Self::Config(msg.into())
+    }
+
+    #[must_use]
+    pub fn transport(msg: impl Into<String>) -> Self {
+        Self::Config(format!("transport: {}", msg.into()))
+    }
+
+    /// Build an `Api` variant from a JSON body returned by LOC.
+    #[must_use]
+    pub fn from_response(status: u16, body: Value) -> Self {
+        from_response(status, None, Some(body))
+    }
+}
+
+impl From<serde_json::Error> for OpenClearinghouseError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Config(format!("json: {e}"))
+    }
 }
 
 pub fn from_response(

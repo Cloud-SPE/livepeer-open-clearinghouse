@@ -1,13 +1,15 @@
-//! Reference Rust SDK for the `Livepeer Open Clearinghouse` payment clearinghouse.
+//! Reference Rust SDK for the `Livepeer Open Clearinghouse` payment
+//! clearinghouse in handoff mode (exec-plan 002).
 //!
-//! See the README + `examples/example.rs` for the mint -> orchestrator
-//! -> reconcile flow.
+//! See the README + `examples/example.rs` for the full job + session
+//! flow.
 
 mod client;
 mod errors;
 
 pub use client::{
-    Capability, Client, ClientOptions, JobBody, JobResult, MintPaymentInput, MintResponse,
-    Offering, Orchestrator, ReportUsageInput, RouteView, SubmitJobInput, UsageReportResult,
+    Capability, CapStatus, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
+    JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionHandle, SubmitJobInput,
+    SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
 };
 pub use errors::{ErrorKind, OpenClearinghouseError};
