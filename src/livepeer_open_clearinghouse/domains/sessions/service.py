@@ -1102,7 +1102,7 @@ async def reconcile_open_sessions(
         # sender for lookup, we'll thread it through here.
         try:
             debits = await daemon.get_session_debits(sender=b"", work_id=ps.work_id)
-        except Exception:  # noqa: BLE001, S112 — transient daemon failure; retry next tick
+        except Exception:  # noqa: S112 — transient daemon failure; retry next tick
             # The scheduler's outer wrapper logs the failure for the
             # whole pass; per-session detail goes into telemetry once
             # PR-N wires it up.
