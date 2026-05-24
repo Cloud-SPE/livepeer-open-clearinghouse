@@ -148,6 +148,9 @@ async def emit_mint_refused(
         correlation_id=None,
         clock=clock,
     )
+    await _maybe_notify_cap_reached(
+        db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
+    )
 
 
 async def emit_refill_served(
@@ -201,6 +204,9 @@ async def emit_refill_denied(
         user_id=user_id,
         correlation_id=session_id,
         clock=clock,
+    )
+    await _maybe_notify_cap_reached(
+        db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
     )
 
 
@@ -345,3 +351,40 @@ async def emit_discrepancy_detected(
         correlation_id=job_or_session_id,
         clock=clock,
     )
+
+
+async def _maybe_notify_cap_reached(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    which_cap: str,
+    remaining_wei: int,
+    clock: Clock,
+) -> None:
+    """Fire the notifications.cap_reached trigger after a refill/mint
+    refusal. Best-effort: every failure path inside the notification
+    pipeline is logged + swallowed, so a telemetry-side problem can
+    never break the mint/refill data plane.
+
+    Lazy-imports the prefs module to keep the static dep direction
+    telemetry → notifications without forcing every importer of
+    server_events to also import notifications.
+    """
+    try:
+        from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+            prefs as notification_prefs,
+        )
+
+        await notification_prefs.notify_cap_reached(
+            db,
+            user_id=user_id,
+            which_cap=which_cap,
+            remaining_wei=remaining_wei,
+            clock=clock,
+        )
+    except Exception as exc:
+        logger.warning(
+            "telemetry.cap_reached_notify_failed",
+            user_id=str(user_id),
+            error=str(exc),
+        )

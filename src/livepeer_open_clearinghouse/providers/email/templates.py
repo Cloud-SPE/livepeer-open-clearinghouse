@@ -101,3 +101,38 @@ def approval_notification_email(*, to: str, public_base_url: str) -> EmailMessag
         f"it and store it securely.</p>"
     )
     return make_message(to=to, subject=subject, html=html, text=text)
+
+
+def notification_email(
+    *, to: str, subject: str, body: dict[str, object]
+) -> EmailMessage:
+    """Generic notification email used by the notification-preferences
+    system.
+
+    The trigger-specific subject + body are produced by the caller —
+    this just renders them. Body is a structured payload (the same
+    dict written to ``portal_notification.body``); rendered as a
+    bullet list for readability without templating logic per trigger.
+    """
+    if body:
+        lines = [f"  - {k}: {_safe(str(v))}" for k, v in body.items()]
+        text_body = "\n".join(lines)
+        html_items = "".join(
+            f"<li><strong>{_safe(k)}:</strong> {_safe(str(v))}</li>"
+            for k, v in body.items()
+        )
+        html_body = f"<ul>{html_items}</ul>"
+    else:
+        text_body = "(no details)"
+        html_body = "<p>(no details)</p>"
+    text = (
+        f"{subject}\n\n"
+        f"{text_body}\n\n"
+        f"You can adjust your notification preferences in the {BRAND} portal.\n"
+    )
+    html = (
+        f"<p>{_safe(subject)}</p>"
+        f"{html_body}"
+        f"<p>You can adjust your notification preferences in the {BRAND} portal.</p>"
+    )
+    return make_message(to=to, subject=subject, html=html, text=text)

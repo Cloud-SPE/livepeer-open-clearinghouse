@@ -10,22 +10,29 @@ Two surfaces:
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from livepeer_open_clearinghouse.dependencies import (
+    AuthedUserDep,
     ClockDep,
     CurrentOperatorDep,
     SessionDep,
     SettingsDep,
 )
-from livepeer_open_clearinghouse.domains.notifications import service
+from livepeer_open_clearinghouse.domains.notifications import prefs, service
 from livepeer_open_clearinghouse.domains.notifications.types import (
     EmailEventList,
     EmailEventView,
+    NotificationPrefsResponse,
+    NotificationPrefView,
+    PortalNotificationList,
+    PortalNotificationView,
     ResendWebhookEvent,
+    UpdateNotificationPrefRequest,
     WebhookAcceptedResponse,
 )
 
@@ -119,3 +126,89 @@ async def list_email_events(
             for r in rows
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Customer-facing notification preferences + in-portal banner feed
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v1/notifications/config", response_model=NotificationPrefsResponse)
+async def get_notification_prefs_endpoint(
+    user: AuthedUserDep,
+    db: SessionDep,
+) -> NotificationPrefsResponse:
+    resolved = await prefs.resolved_prefs_for_user(db, user_id=user.id)
+    overrides = {
+        (o.trigger, o.channel)
+        for o in await prefs.list_overrides_for_user(db, user_id=user.id)
+    }
+    items = [
+        NotificationPrefView(
+            trigger=trigger,
+            channel=channel,
+            enabled=enabled,
+            is_default=(trigger, channel) not in overrides,
+        )
+        for (trigger, channel), enabled in sorted(resolved.items())
+    ]
+    return NotificationPrefsResponse(items=items)
+
+
+@router.put("/v1/notifications/config", response_model=NotificationPrefView)
+async def put_notification_pref_endpoint(
+    user: AuthedUserDep,
+    db: SessionDep,
+    body: UpdateNotificationPrefRequest,
+) -> NotificationPrefView:
+    try:
+        row = await prefs.set_preference(
+            db,
+            user_id=user.id,
+            trigger=body.trigger,
+            channel=body.channel,
+            enabled=body.enabled,
+        )
+    except prefs.InvalidTrigger as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    except prefs.InvalidChannel as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    return NotificationPrefView(
+        trigger=row.trigger,
+        channel=row.channel,
+        enabled=row.enabled,
+        is_default=False,
+    )
+
+
+@router.get("/v1/notifications", response_model=PortalNotificationList)
+async def list_portal_notifications_endpoint(
+    user: AuthedUserDep,
+    db: SessionDep,
+    limit: int = 50,
+) -> PortalNotificationList:
+    rows = await prefs.list_active_portal_notifications(
+        db, user_id=user.id, limit=limit
+    )
+    return PortalNotificationList(
+        items=[PortalNotificationView.model_validate(r) for r in rows]
+    )
+
+
+@router.post("/v1/notifications/{notification_id}/dismiss", response_model=PortalNotificationView)
+async def dismiss_portal_notification_endpoint(
+    notification_id: uuid.UUID,
+    user: AuthedUserDep,
+    db: SessionDep,
+    clock: ClockDep,
+) -> PortalNotificationView:
+    try:
+        row = await prefs.dismiss_portal_notification(
+            db,
+            user_id=user.id,
+            notification_id=notification_id,
+            clock=clock,
+        )
+    except prefs.PortalNotificationNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    return PortalNotificationView.model_validate(row)
