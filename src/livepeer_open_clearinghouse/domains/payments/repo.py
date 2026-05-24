@@ -36,6 +36,14 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     api_key_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("api_key.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    # Nullable FK to the session this payment belongs to. NULL for the
+    # legacy single-shot mint path; populated for both initial mints
+    # and refills under exec-plan 002 handoff mode.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("payment_session.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
     recipient_eth_address: Mapped[str] = mapped_column(nullable=False)
     capability: Mapped[str] = mapped_column(nullable=False)
