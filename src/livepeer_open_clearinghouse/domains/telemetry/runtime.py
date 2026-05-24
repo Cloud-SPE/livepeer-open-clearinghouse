@@ -1,14 +1,19 @@
 """FastAPI routes for the telemetry domain.
 
-PR-1 lands only the ingest endpoint. Subsequent PRs add the customer
-query API (``GET /v1/telemetry/events``) and admin-side counters.
+Two endpoints:
+
+  - ``POST /v1/telemetry`` — SDK ingest (PR-1).
+  - ``GET  /v1/telemetry/events`` — customer query (PR-4).
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from collections.abc import AsyncIterator
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
@@ -25,7 +30,10 @@ from livepeer_open_clearinghouse.domains.telemetry.enrichment import (
     enrich,
     resolve_ingest_node_id,
 )
+from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 from livepeer_open_clearinghouse.domains.telemetry.types import (
+    EventList,
+    EventView,
     IngestRequest,
     IngestResponse,
 )
@@ -108,4 +116,143 @@ async def ingest_endpoint(
         accepted=accepted,
         rejected=rejected,
         rejections=[r for r in reasons if r] if rejected else [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/telemetry/events — customer query
+# ---------------------------------------------------------------------------
+
+
+_QUERY_RATE_LIMIT_ROUTE = "GET /v1/telemetry/events"
+
+
+def _event_view(row: TelemetryEvent) -> EventView:
+    return EventView(
+        id=row.id,
+        event_type=row.event_type,
+        event_schema_version=row.event_schema_version,
+        correlation_id=row.correlation_id,
+        client_ts=row.client_ts,
+        received_ts=row.received_ts,
+        source=row.source,
+        payload=row.payload,
+    )
+
+
+@router.get("/events")
+async def query_events_endpoint(
+    auth: CurrentApiKeyDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    from_ts: Annotated[
+        str, Query(alias="from", description="ISO-8601 lower bound on received_ts.")
+    ],
+    to_ts: Annotated[
+        str, Query(alias="to", description="ISO-8601 upper bound on received_ts.")
+    ],
+    type_glob: Annotated[
+        str | None,
+        Query(
+            alias="type",
+            description="Glob over event_type. Only `*` is a wildcard.",
+        ),
+    ] = None,
+    fmt: Annotated[Literal["json", "ndjson"], Query(alias="format")] = "json",
+    cursor: Annotated[str | None, Query()] = None,
+    page_size: Annotated[int | None, Query(ge=1, le=5000)] = None,
+):
+    """List the calling API key's telemetry events within ``[from, to]``.
+
+    Scoped strictly to the calling key — customers cannot see another
+    customer's events. ``from``/``to`` must fall within
+    ``TELEMETRY_RAW_RETENTION_DAYS``; older windows return 410.
+    ``format=ndjson`` streams one JSON object per line for large
+    downloads.
+    """
+    api_key, _user = auth
+
+    # Per-API-key rate limit on read.
+    capacity = int(settings.telemetry_query_rate_per_key_per_minute)
+    if capacity > 0:
+        allowed, retry_after = await limiter.acquire(
+            route=_QUERY_RATE_LIMIT_ROUTE,
+            key=str(api_key.id),
+            capacity=capacity,
+            refill_per_minute=capacity,
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="telemetry_query_rate_limited",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    # Parse the timestamps cooperatively — empty string or malformed
+    # → 400 with a clear message rather than a Pydantic blob.
+    # Naive timestamps are treated as UTC.
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    try:
+        from_dt = datetime.fromisoformat(from_ts)
+        to_dt = datetime.fromisoformat(to_ts)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "invalid_timestamp", "message": str(exc)},
+        ) from exc
+    if from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=UTC)
+    if to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=UTC)
+
+    effective_page_size = page_size or min(
+        100, int(settings.telemetry_query_max_page_size)
+    )
+
+    try:
+        rows, next_cursor = await service.list_events_for_api_key(
+            db,
+            api_key_id=api_key.id,
+            from_ts=from_dt,
+            to_ts=to_dt,
+            event_type_glob=type_glob,
+            cursor=cursor,
+            page_size=effective_page_size,
+            retention_days=int(settings.telemetry_raw_retention_days),
+            clock=clock,
+        )
+    except service.TelemetryWindowExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "retention_days": int(settings.telemetry_raw_retention_days),
+            },
+        ) from exc
+    except service.InvalidCursor as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+    if fmt == "ndjson":
+        async def _stream() -> AsyncIterator[bytes]:
+            for row in rows:
+                line = _event_view(row).model_dump_json()
+                yield (line + "\n").encode("utf-8")
+            # Trailing cursor record so streaming clients know where
+            # to resume without an extra round-trip.
+            yield (
+                json.dumps({"_cursor": next_cursor}, default=str) + "\n"
+            ).encode("utf-8")
+
+        return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+    return EventList(
+        items=[_event_view(r) for r in rows],
+        next_cursor=next_cursor,
     )

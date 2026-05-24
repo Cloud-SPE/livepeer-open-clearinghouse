@@ -43,3 +43,31 @@ class IngestResponse(BaseModel):
     # Per-event rejection reasons, ordered by input index. Empty when
     # ``rejected == 0``.
     rejections: list[str] = Field(default_factory=list)
+
+
+class EventView(BaseModel):
+    """One row of telemetry_event as the customer sees it.
+
+    The four enrichment columns (geo_region, account_tier,
+    broker_operator_id, ingest_node_id) are deliberately NOT exposed —
+    they're operator-only context.
+    """
+
+    id: uuid.UUID
+    event_type: str
+    event_schema_version: int
+    correlation_id: uuid.UUID | None
+    client_ts: datetime | None
+    received_ts: datetime
+    source: str
+    payload: dict[str, Any]
+
+
+class EventList(BaseModel):
+    """Outbound: ``GET /v1/telemetry/events?format=json`` response.
+
+    ``next_cursor`` is ``None`` when the page exhausts the result set.
+    """
+
+    items: list[EventView]
+    next_cursor: str | None = None

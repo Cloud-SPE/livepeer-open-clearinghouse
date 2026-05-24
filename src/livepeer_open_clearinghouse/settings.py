@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # per-second rate so a healthy SDK draining its batch buffer doesn't
     # get throttled.
     telemetry_ingest_rate_per_key: int = Field(default=10_000, ge=0)
+    # Per-API-key cap on GET /v1/telemetry/events, requests/min. Separate
+    # from ingest because read patterns are bursty (dashboards refresh)
+    # and a tighter rate is appropriate.
+    telemetry_query_rate_per_key_per_minute: int = Field(default=100, ge=0)
+    # Hard ceiling on events returned per query page. Pagination is
+    # cursor-based; clients walk pages to consume bigger windows.
+    telemetry_query_max_page_size: int = Field(default=500, ge=1, le=5000)
     # Identifier for this LOC replica. Stamped on every telemetry row
     # so admin can attribute ingest spikes to a specific node. Defaults
     # to the container hostname when unset.

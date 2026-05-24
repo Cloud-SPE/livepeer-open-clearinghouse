@@ -1,25 +1,15 @@
-"""Business logic for telemetry: ingest, server-side emit, retention.
-
-Three callers in PR-1:
-
-  - ``ingest_batch`` — runtime layer's ``POST /v1/telemetry`` handler
-    calls this with a parsed batch. Per-event validation, per-event
-    rejections returned alongside the accepted count.
-  - ``record_server_event`` — internal helper for follow-up PRs that
-    emit ``server.*`` events from LOC's own runtime. Shape-identical
-    to SDK ingest but bypasses the rate limiter and accepts only the
-    fields a server event would have.
-  - ``purge_expired`` — retention janitor. Deletes rows whose
-    ``received_ts`` is older than the configured cutoff.
-"""
+"""Business logic for telemetry: ingest, server-side emit, retention,
+customer query."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.telemetry.config import (
@@ -180,3 +170,137 @@ async def purge_expired(
         delete(TelemetryEvent).where(TelemetryEvent.received_ts < cutoff)
     )
     return int(result.rowcount or 0)
+
+
+# ---------------------------------------------------------------------------
+# Customer query API (GET /v1/telemetry/events)
+# ---------------------------------------------------------------------------
+
+
+class TelemetryWindowExpired(TelemetryServiceError):
+    """``from`` or ``to`` falls outside ``TELEMETRY_RAW_RETENTION_DAYS``.
+
+    Customers asking for older data must use the long-term store
+    (v2 — NaaP). v1 returns HTTP 410 for these.
+    """
+
+    code = "telemetry_window_expired"
+
+
+class InvalidCursor(TelemetryServiceError):
+    code = "invalid_cursor"
+
+
+def _glob_to_like(pattern: str) -> str:
+    """Translate the customer-facing glob into a SQL LIKE pattern.
+
+    Only ``*`` is supported as a wildcard — matches the documented
+    contract (``request.*``, ``session.refill_*``). SQL ``%`` and
+    ``_`` are escaped so they can't be smuggled in.
+    """
+    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("*", "%")
+
+
+def _encode_cursor(received_ts: datetime, event_id: uuid.UUID) -> str:
+    """Encode a (received_ts, id) tuple as an opaque pagination cursor.
+
+    URL-safe base64 over an ISO-8601 timestamp + UUID, separated by
+    ``|``. We don't want clients parsing this — bumping the encoding
+    later doesn't break them.
+    """
+    raw = f"{received_ts.isoformat()}|{event_id}".encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Reverse of :func:`_encode_cursor`. Raises :class:`InvalidCursor`
+    on any parse failure."""
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(cursor + padding).decode("ascii")
+        ts_str, id_str = raw.split("|", 1)
+        return datetime.fromisoformat(ts_str), uuid.UUID(id_str)
+    except (ValueError, binascii.Error) as exc:
+        raise InvalidCursor(f"cannot decode cursor: {exc}") from exc
+
+
+def _within_retention(
+    *, when: datetime, retention_days: int, now: datetime
+) -> bool:
+    """``when`` must be no older than the retention cutoff."""
+    if retention_days <= 0:
+        return True  # operator disabled retention; nothing to gate on
+    return when >= now - timedelta(days=retention_days)
+
+
+async def list_events_for_api_key(
+    session: AsyncSession,
+    *,
+    api_key_id: uuid.UUID,
+    from_ts: datetime,
+    to_ts: datetime,
+    event_type_glob: str | None,
+    cursor: str | None,
+    page_size: int,
+    retention_days: int,
+    clock: Clock,
+) -> tuple[list[TelemetryEvent], str | None]:
+    """Page through one API key's events within ``[from_ts, to_ts]``.
+
+    Returns ``(rows, next_cursor)``. ``next_cursor`` is ``None`` when
+    the page exhausts the result set.
+
+    Raises :class:`TelemetryWindowExpired` if either bound predates
+    the retention cutoff. Raises :class:`InvalidCursor` for malformed
+    cursors.
+
+    Ordering: ``received_ts DESC, id DESC`` (newest first). The cursor
+    encodes the *last* row of the previous page; the next query asks
+    for rows strictly older than that anchor.
+    """
+    now = clock.now()
+    if not _within_retention(when=from_ts, retention_days=retention_days, now=now):
+        raise TelemetryWindowExpired(
+            f"from_ts predates {retention_days}-day retention window"
+        )
+    if not _within_retention(when=to_ts, retention_days=retention_days, now=now):
+        raise TelemetryWindowExpired(
+            f"to_ts predates {retention_days}-day retention window"
+        )
+    if from_ts > to_ts:
+        # Treat as empty rather than 4xx — easier on naive clients.
+        return [], None
+
+    stmt = (
+        select(TelemetryEvent)
+        .where(
+            TelemetryEvent.api_key_id == api_key_id,
+            TelemetryEvent.received_ts >= from_ts,
+            TelemetryEvent.received_ts <= to_ts,
+        )
+        .order_by(TelemetryEvent.received_ts.desc(), TelemetryEvent.id.desc())
+        .limit(page_size + 1)  # fetch one extra to know if there's a next page
+    )
+    if event_type_glob is not None:
+        stmt = stmt.where(
+            TelemetryEvent.event_type.like(_glob_to_like(event_type_glob), escape="\\")
+        )
+    if cursor is not None:
+        anchor_ts, anchor_id = _decode_cursor(cursor)
+        stmt = stmt.where(
+            or_(
+                TelemetryEvent.received_ts < anchor_ts,
+                and_(
+                    TelemetryEvent.received_ts == anchor_ts,
+                    TelemetryEvent.id < anchor_id,
+                ),
+            )
+        )
+
+    rows = list((await session.scalars(stmt)).all())
+    if len(rows) > page_size:
+        truncated = rows[:page_size]
+        last = truncated[-1]
+        return truncated, _encode_cursor(last.received_ts, last.id)
+    return rows, None
