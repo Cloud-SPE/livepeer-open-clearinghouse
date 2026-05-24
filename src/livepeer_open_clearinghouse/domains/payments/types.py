@@ -1,4 +1,13 @@
-"""Pydantic models for the payments domain."""
+"""Pydantic models for the payments domain (read-only surface).
+
+Post-exec-plan-002 cleanup, the mint request/response types moved
+to ``domains/jobs/types.py`` (cases a/b/c) and
+``domains/sessions/types.py`` (case d). What remains:
+
+  - ``PaymentView`` — the customer-visible shape of a single
+    ``payment`` row.
+  - ``PaymentList`` — pagination wrapper around it.
+"""
 
 from __future__ import annotations
 
@@ -6,31 +15,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class MintPaymentRequest(BaseModel):
-    """Inbound: ``POST /v1/payments/mint``."""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    capability: str = Field(min_length=1)
-    offering: str = Field(min_length=1)
-    work_units: int = Field(gt=0, le=10_000_000)
-
-
-class MintPaymentResponse(BaseModel):
-    """Outbound: ``POST /v1/payments/mint`` success."""
-
-    payment_id: uuid.UUID
-    work_id: str
-    payment_bytes: str = Field(description="Base64-encoded; goes in Livepeer-Payment header")
-    expected_value_wei: Decimal
-    funded_value_wei: Decimal
-    recipient_eth_address: str
-    capability: str
-    offering: str
-    work_units_requested: int
+from pydantic import BaseModel, ConfigDict
 
 
 class PaymentView(BaseModel):

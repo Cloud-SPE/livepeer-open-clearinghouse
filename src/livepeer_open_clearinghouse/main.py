@@ -29,7 +29,6 @@ from livepeer_open_clearinghouse.domains.payments import runtime as payments_run
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.sessions import runtime as sessions_runtime
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.usage import runtime as usage_runtime
 from livepeer_open_clearinghouse.errors import register_handlers
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_scope
@@ -190,7 +189,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(payments_runtime.router)
     app.include_router(jobs_runtime.router)
     app.include_router(sessions_runtime.router)
-    app.include_router(usage_runtime.router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).

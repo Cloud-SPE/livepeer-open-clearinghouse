@@ -1,59 +1,28 @@
-"""FastAPI routes for the payments domain (app-dev surface)."""
+"""FastAPI routes for the payments domain (read-only surface).
+
+Per exec-plan 002, the legacy ``POST /v1/payments/mint`` and
+``POST /v1/usage/report`` endpoints were removed in favor of the
+handoff-mode ``POST /v1/jobs`` and ``POST /v1/jobs/{id}/settle``
+endpoints under ``domains/jobs/runtime.py``. What remains here is
+the historical read surface — list + lookup-by-work_id — useful
+for customer observability and admin audit.
+"""
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, HTTPException
 
 from livepeer_open_clearinghouse.dependencies import (
-    ClockDep,
     CurrentApiKeyDep,
-    PaymentDaemonDep,
-    RegistryDep,
     SessionDep,
-    SettingsDep,
 )
 from livepeer_open_clearinghouse.domains.payments import service
 from livepeer_open_clearinghouse.domains.payments.types import (
-    MintPaymentRequest,
-    MintPaymentResponse,
     PaymentList,
     PaymentView,
 )
 
 router = APIRouter(prefix="/v1/payments", tags=["payments"])
-
-
-@router.post(
-    "/mint",
-    response_model=MintPaymentResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def mint_payment_endpoint(
-    body: MintPaymentRequest,
-    pair: CurrentApiKeyDep,
-    db: SessionDep,
-    registry: RegistryDep,
-    daemon: PaymentDaemonDep,
-    clock: ClockDep,
-    settings: SettingsDep,
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-) -> MintPaymentResponse:
-    api_key, user = pair
-    return await service.mint_payment(
-        db,
-        user_id=user.id,
-        api_key_id=api_key.id,
-        capability=body.capability,
-        offering=body.offering,
-        work_units=body.work_units,
-        idempotency_key=idempotency_key,
-        registry=registry,
-        daemon=daemon,
-        clock=clock,
-        settings=settings,
-    )
 
 
 @router.get("/me", response_model=PaymentList)

@@ -196,3 +196,18 @@ the exec-plan that addressed it and remove it from this file.
 - **Bootstrap-operator-only admin auth** — replaced by full operator
   CRUD with `owner`/`member` role separation, hashed bearer tokens,
   rotation, revocation, and last-owner protection (2026-05-23).
+- **Legacy `POST /v1/payments/mint` + `POST /v1/usage/report`** —
+  removed in favor of handoff-mode `POST /v1/jobs` +
+  `POST /v1/jobs/{id}/settle` per exec-plan 002. Endpoints deleted,
+  `mint_payment` / `report_usage` service functions and their
+  request/response types pruned, `domains/usage/runtime.py`
+  removed, `domains/usage/service.py` + `types.py` removed
+  (orphaned). `payment_idempotency_key` table + the
+  `expire_stale_idempotency_keys` scheduler job kept as a
+  no-op-effective drain for any pre-existing in-flight rows
+  (2026-05-24).
+- **SDK retry-on-INVALID_RECIPIENT_RAND** — no longer relevant
+  under handoff mode. The SDK doesn't see broker 401s before
+  settling; LOC's reconciliation janitor handles session-rotation
+  via daemon `GetSessionDebits`. Removed retry logic from all
+  four SDKs (2026-05-24).
