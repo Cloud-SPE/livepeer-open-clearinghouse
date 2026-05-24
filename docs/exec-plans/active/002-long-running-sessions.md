@@ -604,7 +604,9 @@ aggregates, and surfaces.
    that every official SDK emits identically. Operators can build
    cross-language dashboards without language-specific parsing.
 5. **Operator-controlled retention.** Default 30 days; configurable
-   via `TELEMETRY_RETENTION_DAYS`.
+   via `TELEMETRY_RAW_RETENTION_DAYS`. v1 stores everything in
+   LOC's Postgres for the full window; v2 adds an async NaaP
+   forwarder for longer-term analytics.
 6. **Customer-visible aggregates + transparency surface.** Customers
    can see their own telemetry summaries via the portal — per-session
    latency, refill counts, error rates, full event categories,
@@ -740,75 +742,96 @@ context the SDK can't provide:
 These are not part of the SDK contract; they live alongside the SDK
 event in the stored row.
 
-### Storage strategy: LOC short-term + NaaP analytics pipeline
+### Storage strategy: LOC Postgres only (v1); NaaP analytics deferred to v2
 
-LOC does **not** compute rollups itself. The architecture is split:
+**Decision (2026-05-24)**: v1 ships telemetry storage on LOC's own
+Postgres. The NaaP forwarder, long-term ClickHouse-backed storage,
+and the operator dashboards that depend on them are deferred to v2.
+Rationale: NaaP product/vendor selection is a separate decision that
+shouldn't block telemetry shipping; the SDK contract, ingestion,
+retention, notifications, and customer queries are all independent
+of where long-term storage lives. v1 covers every immediate-need
+surface from Postgres; v2 layers analytics on top without an SDK
+change.
+
+#### v1 storage (in scope now)
 
 - **LOC stores raw events in Postgres** (existing infrastructure)
-  with **short-term retention** — default **7 days**, operator-
-  configurable via `TELEMETRY_RAW_RETENTION_DAYS`. Used for:
-  recent-event customer queries (B7), notification triggers (B6),
-  the reconciliation janitor's cross-checks, and short-window admin
-  debugging.
-- **LOC forwards every event** asynchronously to a configurable
-  external **NaaP analytics pipeline** (ClickHouse-backed) for
-  long-term storage, rollup computation, and operator dashboards.
-  The forwarder is fire-and-forget at the LOC layer: events land in
-  Postgres first (authoritative for short-term), then a background
-  shipper batches them to NaaP.
+  with operator-configurable retention via
+  `TELEMETRY_RAW_RETENTION_DAYS`. **Default 30 days** for v1 (bumped
+  from the original 7-day NaaP-era plan so the customer-facing
+  "30-day download" promise is satisfied from Postgres alone).
+  Powers: recent-event customer queries (B7), notification triggers
+  (B6), reconciliation janitor cross-checks, and admin debugging.
+- **All `server.*` events** land in the same table the same way SDK
+  events do — LOC writes directly, no `POST /v1/telemetry` round-trip
+  to itself.
+- **A cleanup janitor** purges rows older than the retention window
+  on a configurable cadence.
 
-This split lets LOC stay focused on its control-plane job (mint,
-reconcile, authorize) without owning a heavy time-series analytics
-stack, while NaaP handles the columnar storage, rollups, and
-cross-customer queries it's built for.
-
-#### Configuration
+#### v1 configuration
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `TELEMETRY_RAW_RETENTION_DAYS` | 7 | How long LOC keeps raw events in Postgres |
-| `TELEMETRY_NAAP_ENDPOINT` | unset | Where to ship events (omit to disable forwarding — useful for dev/local) |
+| `TELEMETRY_RAW_RETENTION_DAYS` | 30 | How long LOC keeps raw events in Postgres |
+| `TELEMETRY_RETENTION_JANITOR_INTERVAL_SECONDS` | 3600 | Cleanup-janitor cadence |
+| `TELEMETRY_INGEST_RATE_PER_KEY` | 10000 | Per-API-key cap on `POST /v1/telemetry` events/sec |
+
+#### v2 — NaaP forwarder (deferred, kept here as the next planner's brief)
+
+When v2 lands, LOC adds an async forwarder that drains the same
+Postgres store to a configurable external NaaP analytics pipeline
+(ClickHouse-backed) for long-term storage, rollup computation, and
+cross-customer dashboards. The v1 ingestion + storage path stays
+unchanged; the forwarder is a new background worker layered on top.
+
+Future-v2 settings (placeholders only in v1):
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `TELEMETRY_NAAP_ENDPOINT` | unset | Where to ship events (unset disables forwarding) |
 | `TELEMETRY_NAAP_AUTH` | — | Credentials for the NaaP endpoint |
 | `TELEMETRY_FORWARDER_BATCH_SIZE` | 500 | Events per outbound batch to NaaP |
 | `TELEMETRY_FORWARDER_FLUSH_SECONDS` | 10 | Max time to hold a partial batch |
 
-#### Forwarder behavior
+Future-v2 forwarder behavior:
 
-- **Async**: events are written to Postgres synchronously (so
+- **Async**: events written to Postgres synchronously (so
   `POST /v1/telemetry` returns once persisted locally), then a
-  separate worker drains a forwarding queue.
+  separate worker drains a forwarding queue. v1 stops here.
 - **At-least-once delivery**: forwarder retains a cursor; on
-  forwarder restart, resumes from last acked offset. NaaP may see
-  duplicates — its ingestion is responsible for dedup (event has
-  `correlation_id` + `client_ts` to make this trivial).
+  restart, resumes from last acked offset. NaaP may see duplicates —
+  its ingestion is responsible for dedup (event has `correlation_id`
+  + `client_ts` to make this trivial).
 - **Backpressure-tolerant**: if NaaP is unreachable, the forwarder
   queue grows; LOC keeps accepting events; eventually backlog
-  overflows operator-configurable threshold and LOC raises an
-  admin alert. LOC's local store keeps working for recent-event
-  queries.
+  overflows operator-configurable threshold and LOC raises an admin
+  alert. LOC's local store keeps working for recent-event queries.
 - **Idempotent on retry**: each batch carries a deterministic
   `batch_id` so NaaP can reject duplicate batches.
 
-#### Where dashboards live
+#### v1 dashboards: Postgres-only
 
-- **Operator dashboards** (broker latency, error rate, quality
-  scores, etc.) live in **NaaP's analytics UI**, not LOC. LOC's
-  admin SPA may embed NaaP-hosted views (iframe or chart-component)
-  for the unified-experience case, but the queries hit NaaP.
-- **Customer portal views** for *recent* data (last 7 days) query
-  LOC's local store directly. For *historical* data (older than
-  retention window), the portal queries NaaP via a customer-scoped
-  proxy endpoint LOC exposes (auth handled at LOC; query forwarded
-  to NaaP).
+- **Customer portal views** query LOC's local Postgres directly for
+  the full retention window (default 30 days). v1 ships the full
+  customer surface — per-session refill history, per-job latency,
+  outcome distribution, telemetry download — without an external
+  dependency.
+- **Admin SPA** computes recent-rate-limit-hits, recent-discrepancies,
+  recent-cap-reach events, and recent error rates directly from
+  Postgres for the retention window. Trend/analytics views deeper
+  than the retention window are **deferred to v2** (when NaaP lands).
+- **v2 promises** (not v1): the broker-latency heatmap, broker-error
+  rate, refill rate, refill-denial rate, settlement-discrepancy rate,
+  and capability quality scores. All of these need columnar storage
+  + cross-customer aggregation. Reserve the surface in the design;
+  build when NaaP is picked.
 
-#### Customer deletion requests
+#### v1 customer deletion requests
 
 - Purge raw events from LOC's Postgres for the identified key.
-- Propagate a delete instruction to NaaP for the same key
-  (NaaP responsibility to honor and purge from its store).
-- NaaP rollup aggregates that have already been computed and don't
-  carry individual-event identifiers may remain — these are not
-  reversible to the individual customer.
+- (v2) Propagate a delete instruction to NaaP for the same key —
+  no-op in v1 since no external store exists yet.
 
 ### Rate limiting and overload protection (v1)
 
@@ -830,15 +853,16 @@ ingestion. `POST /v1/telemetry` is rate-limited per API key.
 ### LOC server-side events (v1)
 
 LOC's own runtime emits telemetry alongside the SDK's events. Same
-schema, same NaaP pipeline, different source. These complement SDK
-events for a complete picture and let operators see things the SDK
-can't (e.g., the moment LOC's janitor finalized a session the SDK
-never closed).
+schema, same storage, different source. These complement SDK events
+for a complete picture and let operators see things the SDK can't
+(e.g., the moment LOC's janitor finalized a session the SDK never
+closed).
 
 Server-side events use a `server.*` event-type prefix and are
-written directly to the same Postgres store + forwarded to NaaP via
-the same pipeline — no `POST /v1/telemetry` round-trip; LOC writes
-to its own local store directly.
+written directly to the same Postgres store as SDK events — no
+`POST /v1/telemetry` round-trip; LOC writes to its own local store
+directly. (In v2 the NaaP forwarder will drain both SDK and server
+events to NaaP from the same Postgres table.)
 
 #### Mandatory server-side events (v1)
 
@@ -854,8 +878,8 @@ to its own local store directly.
 
 Server events have `correlation_id = api_key_id` (or session_id /
 job_id when scoped to one). They join cleanly with SDK events in
-NaaP for end-to-end visibility ("what did the SDK report vs what
-LOC saw").
+Postgres (and in v2, in NaaP) for end-to-end visibility ("what did
+the SDK report vs what LOC saw").
 
 ### Customer notification preferences (v1)
 
@@ -910,8 +934,9 @@ GET /v1/telemetry/events?from=<iso>&to=<iso>&type=<glob>&format=json
 - Strictly scoped to the calling key — customers cannot query
   another customer's data.
 - `from`/`to` MUST fall within LOC's `TELEMETRY_RAW_RETENTION_DAYS`
-  (default 7d). Older windows return 410 with a pointer to NaaP's
-  customer surface.
+  (default 30d in v1). Older windows return 410 with a body
+  explaining the retention limit. (v2: 410 includes a pointer to
+  NaaP's customer surface for older data.)
 - `type` is a glob: `request.*`, `session.refill_*`, `quota.*`.
 - `format` ∈ {`json`, `ndjson`}. `ndjson` for streaming-friendly
   downloads.
@@ -919,18 +944,36 @@ GET /v1/telemetry/events?from=<iso>&to=<iso>&type=<glob>&format=json
 - Rate-limited per API key (default 100 requests/min) — different
   from telemetry ingestion rate limit.
 
-For historical data (older than retention window), the portal links
-to a NaaP-hosted customer surface (or, if NaaP doesn't expose a
-customer-facing surface, LOC operates a proxy endpoint that
-authenticates the customer and forwards the query). Implementation
-detail to settle when picking the NaaP product.
+For historical data older than the v1 retention window: no v1
+answer (return 410). v2 adds a customer-facing NaaP surface
+(implementation detail to settle when picking the NaaP product).
 
-### Operator-facing dashboards (v1)
+### Operator-facing dashboards
 
-These views are computed in **NaaP** (ClickHouse-backed) using the
-forwarded event stream; LOC's admin SPA embeds or links to them
-rather than computing them locally. Listed here as a contract for
-what NaaP's analytics deployment must produce.
+#### v1 — Postgres-backed, retention-window-bounded
+
+LOC's admin SPA computes the following directly from the local
+Postgres store over the configured retention window
+(`TELEMETRY_RAW_RETENTION_DAYS`, default 30d):
+
+- **Live ingestion stats** — events/sec, rate-limited counts per
+  API key (last 1h / 24h).
+- **Recent server-event roll-ups** — `server.refill_denied`,
+  `server.mint_refused`, `server.discrepancy_detected`,
+  `server.sdk_sha_mismatch` counts per API key (last 24h / 7d).
+- **Per-API-key recent activity** — drill-in to a single key's
+  event stream for a given time range.
+- **Recent error rate** — `request.error` and `session.error` rates
+  by capability/offering (last 24h).
+
+These run cheaply on Postgres at v1 volumes; the queries are simple
+GROUP BYs over `received_ts` ranges, supported by an index on
+`(api_key_id, received_ts)`.
+
+#### v2 — NaaP-backed, full-history analytics (deferred)
+
+When NaaP lands, these views move to ClickHouse-computed dashboards
+embedded in the admin SPA:
 
 - **Broker latency heatmap** — p50/p90/p99 broker call latency per
   `(capability, offering, mode, broker_url)`. Identifies slow
@@ -950,18 +993,20 @@ what NaaP's analytics deployment must produce.
   `(capability, offering)`: latency + error rate + refill rate.
   Drives route selection improvements.
 
-Short-term operational surfaces (recent rate-limit hits, recent
-discrepancies for the last hour) may live in LOC's admin SPA
-directly, computed from the 7-day Postgres window. The line:
-trend/analytics views in NaaP, real-time/incident views in LOC.
+The line: real-time/incident + retention-window views in LOC
+(Postgres) in v1; trend/analytics across the full history in NaaP
+in v2.
 
 ### Customer-facing transparency (v1)
 
-Portal surfaces, scoped to the customer's own API keys:
+Portal surfaces, scoped to the customer's own API keys. v1 computes
+all of these directly from LOC's Postgres store over the
+`TELEMETRY_RAW_RETENTION_DAYS` window (default 30 days):
 
 - Per-job latency history.
 - Per-session refill counts, outcome distribution, cap-reach events.
-- Their own broker quality scores per capability they use.
+- Recent broker latency / error rate per capability they use.
+  (Full cross-customer "quality scores" deferred to v2 with NaaP.)
 - Telemetry download (last 30 days as JSON, for self-service
   debugging).
 
@@ -1868,32 +1913,41 @@ and adds SDK conformance as a first-class deliverable.
       schema with gzip + batching; rate-limited per API key
       (default 10K events/sec, configurable).
 - [ ] Postgres-backed raw event store with
-      `TELEMETRY_RAW_RETENTION_DAYS` (default 7) retention.
-- [ ] Asynchronous NaaP forwarder ships every event to the
-      configured `TELEMETRY_NAAP_ENDPOINT`. Cursor-based,
-      at-least-once, backpressure-tolerant.
+      `TELEMETRY_RAW_RETENTION_DAYS` (default 30) retention +
+      cleanup janitor on `TELEMETRY_RETENTION_JANITOR_INTERVAL_SECONDS`
+      cadence.
 - [ ] LOC emits the seven `server.*` events (mint_served,
       refill_served, refill_denied, session_janitor_finalized,
       mint_refused, sdk_sha_mismatch, discrepancy_detected) into
-      the same store + forwarder.
+      the same Postgres store.
 - [ ] Telemetry ingestion enriches events with `geo_region`,
       `account_tier`, `broker_operator_id`, `ingest_node_id`.
-- [ ] `GET /v1/telemetry/events` customer query endpoint (recent
-      retention window, paginated, rate-limited, ndjson + json).
-- [ ] Portal: per-API-key telemetry views (recent from LOC;
-      historical proxied to / linked from NaaP), 7-day JSON
-      download.
+- [ ] `GET /v1/telemetry/events` customer query endpoint
+      (retention window, paginated, rate-limited, ndjson + json).
+- [ ] Portal: per-API-key telemetry views (full retention window
+      from Postgres), 30-day JSON download.
 - [ ] `GET /v1/privacy/telemetry` serves the published privacy
       notice (categories, retention, lawful basis, contact).
 - [ ] Admin SPA accepts data-subject-deletion requests; LOC purges
-      per-key raw events + propagates delete instruction to NaaP.
+      per-key raw events from Postgres.
 - [ ] `notification_config` table + portal preferences UI;
       triggers fire emails + in-portal banners + opt-in
       Standard-Webhooks notifications on the five v1 triggers
       (cap_reached, period_rollover, winddown_warning,
       sdk_outdated, session_failed_repeatedly).
 - [ ] Admin SPA real-time surfaces for recent rate-limit hits,
-      recent discrepancies, NaaP forwarder backlog/health.
+      recent discrepancies, recent error rate.
+
+#### Deferred to v2 (telemetry analytics)
+
+- NaaP forwarder (`TELEMETRY_NAAP_ENDPOINT`, cursor-based,
+  at-least-once, backpressure-tolerant).
+- NaaP-computed operator dashboards (broker latency heatmap, broker
+  error rate, refill rate, refill denial rate, settlement-discrepancy
+  rate, capability quality scores).
+- Customer-facing NaaP surface for historical (>retention-window)
+  data and the LOC-proxied query path that fronts it.
+- Forwarder backlog/health admin panel.
 
 ### SDK (per language)
 
@@ -1973,3 +2027,4 @@ and adds SDK conformance as a first-class deliverable.
 | 2026-05-24 | Refill R2 (mode comparison): added the case-(d) mode comparison table (channel topology / media plane ownership / topup support / canonical use) alongside the existing eight-mode list in Q#1. Audited the full mode propagation path (orchestrator manifest → service-registry-daemon `interaction_mode` → `extra_json` bytes on `SelectedRoute` proto → LOC's registry client → session-open response → SDK driver selection) and surfaced the v1 integration gap: LOC's Python `SelectedRoute` dataclass drops `extra_json` during proto conversion, so mode is currently invisible to LOC. Added v1 Done-Looks-Like items to populate `extra` on the dataclass + read `interaction_mode` in session-open + include `mode` in the SDK-facing response payload. NaaP dashboard slice keys updated to include `mode`. |
 | 2026-05-24 | Refill R3 (case (d) splits clarified): added a per-layer behavior matrix (LOC / SDK / customer columns × (d-bounded) / (d-extensible) rows) covering session-open, refill endpoint, reconciliation janitor, close, on-balance-low, on-winddown, close outcomes, and the customer's mental model of `max_total_units`. Added a (d-bounded) lifecycle sketch alongside the existing (d-extensible) one. Added defensive `400 refill_not_supported_for_mode` on LOC's refill endpoint for bounded sessions to Done-Looks-Like. Added explicit SDK-doc conformance requirement: SDK docs MUST state what `max_total_units` guarantees in each class (different operational meaning, same input). |
 | 2026-05-24 | Refill R4 ("topup_url ownership" clarified): replaced the one-liner with an explicit three-dimensional definition — issuance (broker creates it), possession (SDK holds it, LOC never sees it), use authority (`Livepeer-Payment` envelope is the credential). Spelled out the consequences (LOC stays out of refill data path; can't initiate topups itself; loses incident-triage visibility unless SDK reports). Telemetry refinement: extended `session.broker_connected` event schema with `broker_session_id`, `topup_url`, `status_url`, `end_url` as optional observability fields — populated when the mode advertises them; LOC stores them for operator debugging but never *uses* them, preserving the handoff invariant. |
+| 2026-05-24 | Telemetry Q5 (NaaP forwarder deferred to v2). v1 ships telemetry on LOC's Postgres only — SDK contract, `POST /v1/telemetry` ingestion, server-side `server.*` events, 30-day retention + janitor, customer query API, customer portal views, customer 30-day download, notifications, privacy notice all land in v1. Default `TELEMETRY_RAW_RETENTION_DAYS` bumped from 7 to 30 so the customer-facing 30-day-download promise is satisfied without an external store. `TELEMETRY_NAAP_*` settings reserved as placeholders. Operator dashboards split: v1 = real-time + retention-window views computed from Postgres (live ingestion stats, recent server-event roll-ups, per-API-key recent activity, recent error rate); v2 = trend/analytics views computed in NaaP (broker latency heatmap, broker error rate, refill rate, refill denial rate, settlement-discrepancy rate, capability quality scores) + cross-customer aggregates + >retention-window historical queries. The forwarder + the dashboards depending on it move to a v2 follow-up; v1 acceptance list updated accordingly. Rationale: NaaP product/vendor selection is a separate decision that shouldn't block telemetry shipping; SDK contract is unchanged, so v2 layers on without an SDK rev. |
