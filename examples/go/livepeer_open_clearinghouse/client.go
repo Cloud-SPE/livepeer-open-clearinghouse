@@ -59,7 +59,7 @@ func errorCode(err error) string {
 // scoring. Operators reject obviously-stale versions per the design.
 const (
 	SDKLang    = "go"
-	SDKVersion = "0.2.0"
+	SDKVersion = "1.3.3"
 	SDKGitSHA  = "dev" // overwritten at build time
 )
 

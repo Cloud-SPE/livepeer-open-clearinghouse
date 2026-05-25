@@ -65,7 +65,7 @@ _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
 # SDK identity for the Livepeer-Open-Clearinghouse-SDK header.
 # Operators key per-API-key trust scoring off this string.
 SDK_LANG = "python"
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "1.3.3"
 SDK_GIT_SHA = "dev"  # overwritten at packaging time
 SDK_IDENTITY = f"{SDK_LANG}/{SDK_VERSION}/{SDK_GIT_SHA}"
 
