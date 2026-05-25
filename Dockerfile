@@ -59,6 +59,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # -----------------------------------------------------------------------------
 FROM python:3.13-slim AS runtime
 
+# OCI image metadata — the publish workflow's docker/metadata-action
+# layers more labels on top at release time (revision, version, created).
+# These bake-in labels carry across `make image-build` and any local
+# build, matching the sibling repos' published-image shape.
+LABEL org.opencontainers.image.title="livepeer-open-clearinghouse-gateway" \
+      org.opencontainers.image.description="FastAPI clearinghouse gateway for Livepeer probabilistic-payment ticket minting and session settlement." \
+      org.opencontainers.image.source="https://github.com/livepeer/livepeer-cloud-spe" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:$PATH \

@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# Pre-commit hook — keep cheap. Heavier checks live in CI.
+#
+# - Check that no relative link in AGENTS.md points to a missing file.
+# - Matches the hook in livepeer-modules-openai / -transcode-gateway
+#   so contributors see the same behavior across sibling repos.
+#
+# One-time install for a fresh clone (no npm needed; the script is
+# plain sh):
+#
+#   git config core.hooksPath .husky
+#
+# Or run `make install-hooks` which does the same thing.
+
+set -e
+
+if [ -f AGENTS.md ]; then
+  grep -oE '\]\(\./[^)]+\)' AGENTS.md | sed -E 's|\]\(\./([^)]+)\)|\1|' | while read -r path; do
+    if [ ! -e "$path" ]; then
+      echo "pre-commit: broken AGENTS.md link → $path" >&2
+      exit 1
+    fi
+  done
+fi

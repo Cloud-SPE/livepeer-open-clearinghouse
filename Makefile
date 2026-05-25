@@ -1,4 +1,4 @@
-.PHONY: help install sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e \
+.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e \
         run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc refresh-openapi
 
 UV ?= uv
@@ -11,10 +11,13 @@ help: ## Show this help
 # environment
 # ---------------------------------------------------------------------------
 
-install: sync ## Install dependencies (alias for sync)
+install: sync install-hooks ## Install dependencies + wire git hooks
 
 sync: ## Sync the local virtualenv with pyproject.toml + uv.lock
 	$(UV) sync
+
+install-hooks: ## Point git at .husky/ for the pre-commit AGENTS.md link check
+	git config core.hooksPath .husky
 
 # ---------------------------------------------------------------------------
 # code quality
