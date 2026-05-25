@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
     CurrentApiKeyDep,
+    CurrentOperatorDep,
     SessionDep,
     SessionUserDep,
     SettingsDep,
@@ -436,4 +437,63 @@ async def privacy_notice_endpoint(
             "no longer carry individual identifiers may remain."
         ),
         "contact": "privacy@livepeer-open-clearinghouse.local",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Admin SPA real-time panels
+#
+# Aggregates over the Postgres window — cheap GROUP BYs against the
+# (event_type, received_ts) and (api_key_id, received_ts) indexes.
+# Operator-bearer auth; the data covers the full retention window
+# regardless of who emitted what.
+# ---------------------------------------------------------------------------
+
+
+admin_router = APIRouter(prefix="/v1/admin/telemetry", tags=["telemetry-admin"])
+
+
+@admin_router.get("/event-counts")
+async def admin_event_counts_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    hours: Annotated[int, Query(ge=1, le=24 * 30)] = 24,
+) -> dict[str, Any]:
+    """Per-event-type counts over the last ``hours`` window.
+
+    Surfaces the operator-facing real-time roll-ups documented in
+    exec-plan 002 — server.refill_denied, server.mint_refused,
+    server.discrepancy_detected, server.sdk_sha_mismatch, *.error
+    rates.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    since = clock.now() - timedelta(hours=hours)
+    counts = await service.admin_event_counts(db, since=since, clock=clock)
+    _ = operator  # surface only — RBAC via CurrentOperatorDep
+    return {"window_hours": hours, "counts": counts}
+
+
+@admin_router.get("/rate-limit-offenders")
+async def admin_rate_limit_offenders_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    hours: Annotated[int, Query(ge=1, le=24 * 30)] = 1,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> dict[str, Any]:
+    """Top ``limit`` API keys by event count in the last ``hours`` —
+    helps spot a misbehaving SDK or undertuned per-key cap."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    since = clock.now() - timedelta(hours=hours)
+    rows = await service.admin_rate_limit_offenders(db, since=since, limit=limit)
+    _ = operator
+    return {
+        "window_hours": hours,
+        "items": [
+            {"api_key_id": str(api_key_id) if api_key_id else None, "count": count}
+            for (api_key_id, count) in rows
+        ],
     }

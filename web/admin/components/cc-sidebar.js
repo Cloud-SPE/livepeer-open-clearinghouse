@@ -9,6 +9,7 @@ const ITEMS = [
   { key: "catalog", label: "Catalog", icon: "search" },
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
+  { key: "telemetry", label: "Telemetry", icon: "activity" },
 ];
 
 export class CcSidebar extends LitElement {

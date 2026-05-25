@@ -108,6 +108,7 @@ export class CcApp extends LitElement {
     if (this._tab === "catalog") return html`<cc-catalog></cc-catalog>`;
     if (this._tab === "audit") return html`<cc-audit-log></cc-audit-log>`;
     if (this._tab === "deposits") return html`<cc-deposits></cc-deposits>`;
+    if (this._tab === "telemetry") return html`<cc-telemetry-admin></cc-telemetry-admin>`;
     return html`<cc-overview></cc-overview>`;
   }
 

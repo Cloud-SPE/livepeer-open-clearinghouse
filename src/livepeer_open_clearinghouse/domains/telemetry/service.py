@@ -9,7 +9,7 @@ import json
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.telemetry.config import (
@@ -232,6 +232,54 @@ def _within_retention(
     if retention_days <= 0:
         return True  # operator disabled retention; nothing to gate on
     return when >= now - timedelta(days=retention_days)
+
+
+async def admin_event_counts(
+    session: AsyncSession,
+    *,
+    since: datetime,
+    clock: Clock,
+) -> dict[str, int]:
+    """Count rows per event_type since ``since``.
+
+    Backs the admin "recent server-event roll-up" panel. Returns
+    every distinct event_type observed in the window — caller is
+    expected to filter for the events they care about (server.*,
+    *.error, etc.).
+    """
+    _ = clock.now()
+    rows = await session.execute(
+        select(
+            TelemetryEvent.event_type,
+            func.count().label("count"),
+        )
+        .where(TelemetryEvent.received_ts >= since)
+        .group_by(TelemetryEvent.event_type)
+    )
+    return {row.event_type: int(row.count) for row in rows}
+
+
+async def admin_rate_limit_offenders(
+    session: AsyncSession,
+    *,
+    since: datetime,
+    limit: int = 20,
+) -> list[tuple[uuid.UUID | None, int]]:
+    """List the ``(api_key_id, event_count)`` pairs with the most
+    events since ``since``. Surfaces customers driving the highest
+    ingest load — useful when tuning per-key rate limits.
+    """
+    rows = await session.execute(
+        select(
+            TelemetryEvent.api_key_id,
+            func.count().label("count"),
+        )
+        .where(TelemetryEvent.received_ts >= since)
+        .group_by(TelemetryEvent.api_key_id)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    return [(row.api_key_id, int(row.count)) for row in rows]
 
 
 async def list_events_for_user(
