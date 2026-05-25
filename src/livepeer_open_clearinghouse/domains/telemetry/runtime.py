@@ -188,13 +188,22 @@ async def ingest_endpoint(
 _SESSION_FAILURE_WINDOW_HOURS = 1
 _SESSION_FAILURE_THRESHOLD = 3
 
+# Per-api_key dedupe TTL: once we fire, suppress re-fires for one
+# window (= 1h). After a window has elapsed every contributing
+# session.error row has aged out, so the next fire requires a fresh
+# crossing — exactly the "drops back below and crosses again"
+# semantic, without an extra state column. In-process is fine: a LOC
+# restart at most over-notifies once, which is the safe direction for
+# a customer-visible alert.
+_session_failed_last_fired: dict[uuid.UUID, float] = {}
+
 
 async def _evaluate_post_ingest_triggers(
     db: SessionDep,
     *,
     api_key_id: uuid.UUID,
     user_id: uuid.UUID,
-    events: list,
+    events: list[Any],
     clock: ClockDep,
 ) -> None:
     """Inspect a successfully-ingested batch + fire notifications.
@@ -206,8 +215,9 @@ async def _evaluate_post_ingest_triggers(
         rollover.
       - ``session.error`` → ``session_failed_repeatedly``: when the
         per-API-key error count over the last hour crosses the
-        threshold, fire once. (Re-fires only after the count drops
-        back below and crosses again.)
+        threshold, fire once and suppress re-fires for the same
+        window. Once the window elapses the contributing rows have
+        aged out, so the next fire requires a fresh crossing.
     """
     from datetime import timedelta  # noqa: PLC0415
 
@@ -229,10 +239,12 @@ async def _evaluate_post_ingest_triggers(
             )
 
     # session_failed_repeatedly — fire when the batch contains a
-    # session.error AND the rolling per-key count crosses the threshold.
+    # session.error AND the rolling per-key count crosses the threshold,
+    # subject to the per-api_key dedupe TTL above.
     has_session_error = any(ev.event_type == "session.error" for ev in events)
     if has_session_error:
-        since = clock.now() - timedelta(hours=_SESSION_FAILURE_WINDOW_HOURS)
+        now = clock.now()
+        since = now - timedelta(hours=_SESSION_FAILURE_WINDOW_HOURS)
         from sqlalchemy import func, select  # noqa: PLC0415
 
         from livepeer_open_clearinghouse.domains.telemetry.repo import (  # noqa: PLC0415
@@ -249,6 +261,14 @@ async def _evaluate_post_ingest_triggers(
             )
         )
         if int(count or 0) >= _SESSION_FAILURE_THRESHOLD:
+            now_ts = now.timestamp()
+            last_fired = _session_failed_last_fired.get(api_key_id)
+            if last_fired is not None and (
+                now_ts - last_fired < _SESSION_FAILURE_WINDOW_HOURS * 3600
+            ):
+                # Inside the dedupe window — already notified this key.
+                return
+            _session_failed_last_fired[api_key_id] = now_ts
             await notification_prefs.notify_session_failed_repeatedly(
                 db,
                 user_id=user_id,

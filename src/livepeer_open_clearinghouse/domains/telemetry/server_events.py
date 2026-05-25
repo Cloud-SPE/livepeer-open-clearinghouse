@@ -27,6 +27,8 @@ server-side events (v1)":
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +43,55 @@ from livepeer_open_clearinghouse.providers.telemetry import get_logger
 from livepeer_open_clearinghouse.settings import get_settings
 
 logger = get_logger(__name__)
+
+
+IndependentSessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+
+def _default_independent_session_factory(
+    bound_session: AsyncSession | None = None,
+) -> AbstractAsyncContextManager[AsyncSession]:
+    """Open a fresh session for an independent write.
+
+    Two modes:
+
+      - ``bound_session=None`` (production default): open a session
+        against the process-global engine via ``session_scope()``.
+      - ``bound_session=...``: derive a sessionmaker from the passed-in
+        session's engine and open a fresh session against it. This is
+        the path that matters for tests, where the global engine isn't
+        configured but a per-test engine is bound to ``bound_session``.
+
+    Either way the new session is independent of ``bound_session``'s
+    transaction — its commit is durable even if the outer rolls back.
+    """
+    if bound_session is not None:
+        from contextlib import asynccontextmanager  # noqa: PLC0415
+
+        from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: PLC0415
+
+        engine = bound_session.bind
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+        from collections.abc import AsyncIterator  # noqa: PLC0415
+
+        @asynccontextmanager
+        async def _bound() -> AsyncIterator[AsyncSession]:
+            async with maker() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        return _bound()
+
+    from livepeer_open_clearinghouse.providers.db.engine import (  # noqa: PLC0415
+        session_scope,
+    )
+
+    return session_scope()
 
 
 def _server_side_enrichment() -> Enrichment:
@@ -91,6 +142,65 @@ async def _safe_emit(
         )
 
 
+async def _safe_emit_independent(
+    *,
+    event_type: str,
+    payload: dict[str, object],
+    api_key_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    correlation_id: uuid.UUID | None,
+    clock: Clock,
+    factory: IndependentSessionFactory | None = None,
+    bound_session: AsyncSession | None = None,
+) -> None:
+    """Persist a server event through a fresh session.
+
+    Used by refusal-path helpers (``emit_mint_refused``,
+    ``emit_refill_denied``) where the caller is about to raise — the
+    outer request transaction is therefore guaranteed to roll back,
+    which would eat a row written on the passed-in session. The
+    customer-facing portal banner already uses this pattern via
+    ``_fire_in_portal_independent`` in the notifications module; this
+    mirrors it for the server-event row itself so the operator-side
+    audit trail (admin telemetry panel + DSAR-purgeable history) is
+    not silently lost on refusals.
+
+    Factory resolution: explicit ``factory`` arg wins; otherwise we
+    open against the engine bound to ``bound_session`` when one is
+    supplied; otherwise we open against the process-global engine.
+    Tests typically pass ``bound_session=<their test session>`` so the
+    independent write lands in the same per-test DB as the rest of
+    their assertions.
+    """
+    open_session: IndependentSessionFactory
+    if factory is None:
+        open_session = lambda: _default_independent_session_factory(  # noqa: E731
+            bound_session=bound_session
+        )
+    else:
+        open_session = factory
+    try:
+        async with open_session() as db:
+            await telemetry_service.record_server_event(
+                db,
+                event_type=event_type,
+                event_schema_version=CURRENT_SCHEMA_VERSION,
+                payload=payload,
+                api_key_id=api_key_id,
+                user_id=user_id,
+                correlation_id=correlation_id,
+                clock=clock,
+                enrichment=_server_side_enrichment(),
+            )
+    except Exception as exc:
+        logger.warning(
+            "telemetry.server_event.emit_independent_failed",
+            event_type=event_type,
+            error=str(exc),
+            error_class=exc.__class__.__name__,
+        )
+
+
 async def emit_mint_served(
     db: AsyncSession,
     *,
@@ -133,9 +243,19 @@ async def emit_mint_refused(
     which_cap: str,
     remaining_wei: int,
     clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
 ) -> None:
-    await _safe_emit(
-        db,
+    """Record a ``server.mint_refused`` event + fire cap_reached.
+
+    The mint endpoint raises an HTTPException after this helper
+    returns, so the request transaction will roll back. We write the
+    telemetry row through an independent session (matching the
+    portal_notification pattern in ``prefs._fire_in_portal_independent``)
+    so the operator-side admin counts + DSAR history survive the
+    rollback. Callers don't need to know about this — the helper is
+    drop-in compatible with the old signature.
+    """
+    await _safe_emit_independent(
         event_type="server.mint_refused",
         payload={
             "capability": capability,
@@ -147,6 +267,8 @@ async def emit_mint_refused(
         user_id=user_id,
         correlation_id=None,
         clock=clock,
+        factory=independent_session_factory,
+        bound_session=db,
     )
     await _maybe_notify_cap_reached(
         db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
@@ -202,9 +324,15 @@ async def emit_refill_denied(
     which_cap: str,
     remaining_wei: int,
     clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
 ) -> None:
-    await _safe_emit(
-        db,
+    """Record a ``server.refill_denied`` event + fire cap_reached.
+
+    Same independent-session rationale as :func:`emit_mint_refused` —
+    the refill endpoint raises after this helper, so the row needs to
+    survive the outer rollback.
+    """
+    await _safe_emit_independent(
         event_type="server.refill_denied",
         payload={
             "session_id": str(session_id),
@@ -216,6 +344,8 @@ async def emit_refill_denied(
         user_id=user_id,
         correlation_id=session_id,
         clock=clock,
+        factory=independent_session_factory,
+        bound_session=db,
     )
     await _maybe_notify_cap_reached(
         db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock

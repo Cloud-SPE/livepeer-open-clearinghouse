@@ -35,7 +35,10 @@ addopts = [
   "--cov=livepeer_open_clearinghouse_sdk",
   "--cov-report=term-missing",
   "--cov-report=html:.coverage_html",
-  "--cov-fail-under=90",
+  # 75% matches the documented threshold on the Go and Rust SDKs;
+  # see docs/exec-plans/active/002-long-running-sessions.md
+  # §"SDK conformance criteria for telemetry".
+  "--cov-fail-under=75",
 ]
 
 [tool.coverage.run]

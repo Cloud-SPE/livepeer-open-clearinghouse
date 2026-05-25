@@ -4,6 +4,7 @@ period_rollover, session_failed_repeatedly."""
 
 from __future__ import annotations
 
+import typing
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -263,3 +264,211 @@ async def test_session_failed_repeatedly_threshold(session: AsyncSession, user: 
         )
     )
     assert int(count or 0) == 3
+
+
+@pytest.mark.unit
+async def test_session_failed_repeatedly_dedupes_within_window(
+    session: AsyncSession, user: User
+) -> None:
+    """Two batches inside the dedupe window should fire only once.
+
+    Builds 3 session.error rows, runs the post-ingest evaluator, then
+    runs it again — the second pass must NOT write a second
+    portal_notification row.
+    """
+    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry import runtime  # noqa: PLC0415
+
+    runtime._session_failed_last_fired.clear()
+
+    # Need a real api_key row — _evaluate_post_ingest_triggers reads
+    # api_key_id as the dedupe key. Use an ApiKey + a user that owns it.
+    api_key = ApiKey(
+        user_id=user.id,
+        prefix="pymth_live_dedupe_test",
+        hash="0" * 64,
+        label="dedupe-test",
+    )
+    session.add(api_key)
+    await session.flush()
+
+    await prefs.set_preference(
+        session,
+        user_id=user.id,
+        trigger=prefs.TRIGGER_SESSION_FAILED_REPEATEDLY,
+        channel=prefs.CHANNEL_IN_PORTAL,
+        enabled=True,
+    )
+
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+    for i in range(3):
+        session.add(
+            _make_event(
+                api_key_id=api_key.id,
+                user_id=user.id,
+                event_type="session.error",
+                when=now - timedelta(minutes=i),
+            )
+        )
+    await session.flush()
+
+    class _StubEvent:
+        event_type = "session.error"
+        payload: typing.ClassVar[dict[str, object]] = {}
+
+    clock = FrozenClock(start=now)
+
+    # Patch the helper's notify call so the in-portal write goes
+    # through the shared test session (the production path opens an
+    # independent engine session which sqlite-in-memory can't reach).
+    real_notify = prefs.notify_session_failed_repeatedly
+
+    async def _shim(*, user_id, api_key_id, failure_count, window_hours, clock, **_):
+        await real_notify(
+            session,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            failure_count=failure_count,
+            window_hours=window_hours,
+            clock=clock,
+            independent_session_factory=lambda: _shared_session_factory(session),
+        )
+
+    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod  # noqa: PLC0415
+
+    original = _prefs_mod.notify_session_failed_repeatedly
+    _prefs_mod.notify_session_failed_repeatedly = lambda db, **kw: _shim(**kw)  # type: ignore[assignment]
+    try:
+        await runtime._evaluate_post_ingest_triggers(
+            session,
+            api_key_id=api_key.id,
+            user_id=user.id,
+            events=[_StubEvent()],
+            clock=clock,
+        )
+        # Second pass — same window, same api_key_id, should be suppressed.
+        await runtime._evaluate_post_ingest_triggers(
+            session,
+            api_key_id=api_key.id,
+            user_id=user.id,
+            events=[_StubEvent()],
+            clock=clock,
+        )
+    finally:
+        _prefs_mod.notify_session_failed_repeatedly = original  # type: ignore[assignment]
+
+    rows = list(
+        (
+            await session.scalars(
+                select(PortalNotification).where(
+                    PortalNotification.trigger == prefs.TRIGGER_SESSION_FAILED_REPEATEDLY
+                )
+            )
+        ).all()
+    )
+    assert len(rows) == 1, "second evaluator call inside dedupe window should not re-fire"
+
+
+@pytest.mark.unit
+async def test_session_failed_repeatedly_refires_after_window(
+    session: AsyncSession, user: User
+) -> None:
+    """Once the dedupe TTL elapses, a fresh threshold-cross fires again."""
+    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry import runtime  # noqa: PLC0415
+
+    runtime._session_failed_last_fired.clear()
+
+    api_key = ApiKey(
+        user_id=user.id,
+        prefix="pymth_live_refire_test",
+        hash="1" * 64,
+        label="dedupe-refire-test",
+    )
+    session.add(api_key)
+    await session.flush()
+
+    await prefs.set_preference(
+        session,
+        user_id=user.id,
+        trigger=prefs.TRIGGER_SESSION_FAILED_REPEATEDLY,
+        channel=prefs.CHANNEL_IN_PORTAL,
+        enabled=True,
+    )
+
+    now_first = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+    for i in range(3):
+        session.add(
+            _make_event(
+                api_key_id=api_key.id,
+                user_id=user.id,
+                event_type="session.error",
+                when=now_first - timedelta(minutes=i),
+            )
+        )
+    await session.flush()
+
+    class _StubEvent:
+        event_type = "session.error"
+        payload: typing.ClassVar[dict[str, object]] = {}
+
+    real_notify = prefs.notify_session_failed_repeatedly
+
+    async def _shim(*, user_id, api_key_id, failure_count, window_hours, clock, **_):
+        await real_notify(
+            session,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            failure_count=failure_count,
+            window_hours=window_hours,
+            clock=clock,
+            independent_session_factory=lambda: _shared_session_factory(session),
+        )
+
+    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod  # noqa: PLC0415
+
+    original = _prefs_mod.notify_session_failed_repeatedly
+    _prefs_mod.notify_session_failed_repeatedly = lambda db, **kw: _shim(**kw)  # type: ignore[assignment]
+    try:
+        await runtime._evaluate_post_ingest_triggers(
+            session,
+            api_key_id=api_key.id,
+            user_id=user.id,
+            events=[_StubEvent()],
+            clock=FrozenClock(start=now_first),
+        )
+
+        # Second batch 90 minutes later — first batch's errors have
+        # aged out of the rolling window; add 3 fresh errors and run
+        # the evaluator again. With the dedupe TTL elapsed, this fires.
+        now_second = now_first + timedelta(minutes=90)
+        for i in range(3):
+            session.add(
+                _make_event(
+                    api_key_id=api_key.id,
+                    user_id=user.id,
+                    event_type="session.error",
+                    when=now_second - timedelta(minutes=i),
+                )
+            )
+        await session.flush()
+        await runtime._evaluate_post_ingest_triggers(
+            session,
+            api_key_id=api_key.id,
+            user_id=user.id,
+            events=[_StubEvent()],
+            clock=FrozenClock(start=now_second),
+        )
+    finally:
+        _prefs_mod.notify_session_failed_repeatedly = original  # type: ignore[assignment]
+
+    rows = list(
+        (
+            await session.scalars(
+                select(PortalNotification).where(
+                    PortalNotification.trigger == prefs.TRIGGER_SESSION_FAILED_REPEATEDLY
+                )
+            )
+        ).all()
+    )
+    assert len(rows) == 2, "evaluator past the dedupe window should re-fire"
