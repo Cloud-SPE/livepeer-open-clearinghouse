@@ -82,9 +82,10 @@ async def ensure_bootstrap_operator(session: AsyncSession, *, bootstrap_token: s
 async def authenticate_operator(session: AsyncSession, *, bearer_token: str) -> Operator | None:
     """Return the operator matching a bearer token, or None."""
     token_hash = _hash_bootstrap_token(bearer_token)
-    return await session.scalar(
+    result: Operator | None = await session.scalar(
         select(Operator).where(Operator.token_hash == token_hash, Operator.revoked_at.is_(None))
     )
+    return result
 
 
 async def list_all_users(
@@ -205,10 +206,21 @@ async def approve_user(
 
     if email_provider is not None and public_base_url is not None:
         try:
-            await email_provider.send(
-                templates.approval_notification_email(
-                    to=user.email, public_base_url=public_base_url
-                )
+            approval_message = templates.approval_notification_email(
+                to=user.email, public_base_url=public_base_url
+            )
+            provider_message_id = await email_provider.send(approval_message)
+            from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+                service as notif_service,
+            )
+
+            await notif_service.record_email_send(
+                session,
+                to=approval_message.to,
+                subject=approval_message.subject,
+                provider_message_id=provider_message_id,
+                user_id=user_id,
+                clock=clock,
             )
         except Exception as exc:
             logger.warning(

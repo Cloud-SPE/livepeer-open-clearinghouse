@@ -277,6 +277,8 @@ async def notify(
             to=user_email,
             subject=subject,
             body=body,
+            user_id=user_id,
+            clock=clock,
         )
     # CHANNEL_WEBHOOK reserved for PR-5b.
     return fired
@@ -388,7 +390,13 @@ async def _notify_trigger(
         )
     if _pref(overrides, trigger, CHANNEL_EMAIL):
         fired[CHANNEL_EMAIL] = await _fire_email(
-            provider, to=user.email, subject=subject, body=body
+            provider,
+            to=user.email,
+            subject=subject,
+            body=body,
+            user_id=user_id,
+            clock=clock,
+            independent_session_factory=independent_session_factory,
         )
     if _pref(overrides, trigger, CHANNEL_WEBHOOK):
         fired[CHANNEL_WEBHOOK] = await _fire_webhook(
@@ -604,7 +612,18 @@ async def _fire_email(
     to: str,
     subject: str,
     body: dict[str, object],
+    user_id: uuid.UUID | None = None,
+    clock: Clock | None = None,
+    independent_session_factory: IndependentSessionFactory | None = None,
 ) -> bool:
+    """Send a notification email + record it in ``email_send``.
+
+    The recording happens through an independent session because the
+    surrounding ``_notify_trigger`` call site is on the rollback-bound
+    request transaction. ``user_id`` and ``clock`` are optional so
+    callers that don't have one (rare) can still send without
+    recording — ``record_email_send`` itself is best-effort.
+    """
     if provider is None:
         return False
     try:
@@ -613,8 +632,7 @@ async def _fire_email(
             subject=subject,
             body=body,
         )
-        await provider.send(message)
-        return True
+        provider_message_id = await provider.send(message)
     except Exception as exc:
         logger.warning(
             "notify.email.failed",
@@ -623,6 +641,31 @@ async def _fire_email(
             error=str(exc),
         )
         return False
+
+    if clock is not None:
+        factory = independent_session_factory or _default_independent_session_factory
+        try:
+            from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+                service as notif_service,
+            )
+
+            async with factory() as db:
+                await notif_service.record_email_send(
+                    db,
+                    to=to,
+                    subject=subject,
+                    provider_message_id=provider_message_id,
+                    user_id=user_id,
+                    clock=clock,
+                )
+        except Exception as exc:
+            logger.warning(
+                "notify.email.record_failed",
+                to=to,
+                subject=subject,
+                error=str(exc),
+            )
+    return True
 
 
 async def _fire_webhook(

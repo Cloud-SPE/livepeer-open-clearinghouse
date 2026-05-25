@@ -23,6 +23,7 @@ import base64
 import hashlib
 import hmac
 import time
+import uuid
 from collections.abc import Iterable
 
 from sqlalchemy import select
@@ -87,7 +88,7 @@ def verify_signature(
     raw_secret = secret.removeprefix("whsec_")
     try:
         key = base64.b64decode(raw_secret)
-    except (ValueError, base64.binascii.Error):
+    except (ValueError, base64.binascii.Error):  # type: ignore[attr-defined]
         # Fall back to treating the secret literally — some self-hosted
         # backends document a raw-string secret instead of the base64 form.
         key = secret.encode("utf-8")
@@ -183,6 +184,52 @@ async def list_recent_events(session: AsyncSession, *, limit: int = 100) -> list
             select(EmailEvent).order_by(EmailEvent.received_at.desc()).limit(limit)
         )
     )
+
+
+async def record_email_send(
+    session: AsyncSession,
+    *,
+    to: str,
+    subject: str,
+    provider_message_id: str | None,
+    user_id: uuid.UUID | None,
+    clock: Clock,
+) -> EmailSend | None:
+    """Persist an outbound send so later webhook events can link back.
+
+    Callers invoke this after :meth:`EmailProvider.send` returns. When
+    the provider doesn't expose an ID (``NullEmailProvider`` in dev,
+    or a Resend self-host backend that returned a bare 2xx), we still
+    write the row — ``provider_message_id`` is nullable — so the admin
+    audit shows the send happened. Best-effort: a row-write failure
+    is logged but never raised back into the caller, matching the
+    "telemetry never breaks the data plane" posture used elsewhere.
+    """
+    try:
+        row = EmailSend(
+            user_id=user_id,
+            to_address=to,
+            subject=subject,
+            provider_message_id=provider_message_id,
+            status="sent",
+            sent_at=clock.now(),
+        )
+        session.add(row)
+        await session.flush()
+        return row
+    except Exception as exc:
+        from livepeer_open_clearinghouse.providers.telemetry import (  # noqa: PLC0415
+            get_logger,
+        )
+
+        get_logger(__name__).warning(
+            "email_send.record_failed",
+            to=to,
+            subject=subject,
+            provider_message_id=provider_message_id,
+            error=str(exc),
+        )
+        return None
 
 
 def now_unix() -> int:

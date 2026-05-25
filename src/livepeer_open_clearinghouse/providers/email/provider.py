@@ -3,6 +3,12 @@
 Always go through the Protocol; never call the Resend SDK directly from
 domain code. In dev, `NullEmailProvider` logs the email body so the
 verification token appears in stdout for testing.
+
+``send()`` returns the upstream provider message ID (or ``None`` for
+providers that don't track one — e.g. ``NullEmailProvider``). Domain
+callers persist this into ``EmailSend`` via
+``domains.notifications.service.record_email_send`` so inbound webhook
+events can correlate back to the original send.
 """
 
 from __future__ import annotations
@@ -51,9 +57,15 @@ class _Message:
 
 
 class EmailProvider(Protocol):
-    """An outbound transactional email sender."""
+    """An outbound transactional email sender.
 
-    async def send(self, message: EmailMessage) -> None: ...
+    Returns the upstream provider message ID on success, or ``None``
+    when the provider doesn't expose one (e.g. ``NullEmailProvider``
+    in dev). The ID is what inbound webhook events arrive against, so
+    persisting it into ``EmailSend`` is what enables event correlation.
+    """
+
+    async def send(self, message: EmailMessage) -> str | None: ...
 
 
 class NullEmailProvider:
@@ -62,13 +74,14 @@ class NullEmailProvider:
     def __init__(self, log: structlog.stdlib.BoundLogger | None = None) -> None:
         self._log = log or logger
 
-    async def send(self, message: EmailMessage) -> None:
+    async def send(self, message: EmailMessage) -> str | None:
         self._log.info(
             "email.null.send",
             to=message.to,
             subject=message.subject,
             text=message.text,
         )
+        return None
 
 
 class ResendEmailProvider:
@@ -95,7 +108,7 @@ class ResendEmailProvider:
         self._from = f"{settings.email_from_name} <{settings.email_from_address}>"
         self._log = logger
 
-    async def send(self, message: EmailMessage) -> None:
+    async def send(self, message: EmailMessage) -> str | None:
         import asyncio  # noqa: PLC0415
 
         payload = {
@@ -123,7 +136,7 @@ class ResendEmailProvider:
             text_preview=text_preview,
         )
         try:
-            result = await asyncio.to_thread(self._resend.Emails.send, payload)
+            result = await asyncio.to_thread(self._resend.Emails.send, payload)  # type: ignore[arg-type]
         except Exception as exc:
             # ResendError carries .code / .message / .suggested_action.
             # Generic exceptions fall through to repr() for shape clarity.
@@ -172,6 +185,7 @@ class ResendEmailProvider:
             raw_result=result if is_dict_result else repr(result),
             raw_result_keys=sorted(result.keys()) if is_dict_result else None,
         )
+        return provider_id if isinstance(provider_id, str) else None
 
 
 def make_message(*, to: str, subject: str, html: str, text: str) -> EmailMessage:
