@@ -115,3 +115,38 @@ class PortalNotificationView(BaseModel):
 
 class PortalNotificationList(BaseModel):
     items: list[PortalNotificationView]
+
+
+# ---- Webhook config ---------------------------------------------------------
+
+
+class WebhookConfigView(BaseModel):
+    """Public view of a user's webhook config — no secret material."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    url: str
+    last_test_at: datetime | None
+
+
+class WebhookConfigRequest(BaseModel):
+    """Inbound: ``PUT /v1/notifications/webhook``."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(min_length=1, max_length=512)
+
+
+class WebhookConfigCreated(BaseModel):
+    """Outbound when the customer first registers a webhook URL.
+    Carries the derived ``secret`` exactly once — the customer
+    must store it; LOC re-derives it on every send but never
+    surfaces it again."""
+
+    url: str
+    secret: str
+
+
+class WebhookTestResult(BaseModel):
+    ok: bool
+    detail: str | None = None

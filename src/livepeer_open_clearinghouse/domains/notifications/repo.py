@@ -107,3 +107,18 @@ class PortalNotification(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMi
     body: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     fired_at: Mapped[datetime] = mapped_column(nullable=False)
     dismissed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class NotificationWebhookConfig(Base, TimestampMixin, TableNameFromClassMixin):
+    """Per-user webhook destination + last-test marker.
+
+    Composite PK on user_id; one row per user. Signing secret is
+    derived from a server-side seed at send time (see
+    notifications.webhook), so no secret material lives on this row.
+    """
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), primary_key=True
+    )
+    url: Mapped[str] = mapped_column(String(512), nullable=False)
+    last_test_at: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -42,6 +42,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     SdkDistributionResponse,
     SdkManifest,
     SdkManifestEntry,
+    SdkManifestPubkey,
     SessionWithSdkList,
     SessionWithSdkView,
     UpdateOperatorRequest,
@@ -50,6 +51,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import service as discovery_service
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
+from livepeer_open_clearinghouse.settings import Settings
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -573,6 +575,7 @@ sdk_router = APIRouter(prefix="/v1/sdk", tags=["sdk"])
 async def sdk_manifest_endpoint(
     db: SessionDep,
     clock: ClockDep,
+    settings: SettingsDep,
 ) -> SdkManifest:
     """Public list of operator-approved SDK versions.
 
@@ -580,14 +583,86 @@ async def sdk_manifest_endpoint(
     operator-internal and never published. SDKs hit this at startup
     to warn the customer if their pinned version has been deprecated;
     the response is intentionally cacheable.
+
+    When the operator has configured ``SDK_MANIFEST_SIGNING_KEY``, the
+    payload is signed and the response carries ``signature`` +
+    ``key_fingerprint``. Unsigned otherwise (dev default).
     """
     rows = await service.list_approved_sdk_manifest(db)
-    return SdkManifest(
-        items=[
-            SdkManifestEntry(
-                lang=r.lang, version=r.version, git_sha7=r.git_sha7, status=r.status
-            )
-            for r in rows
-        ],
-        generated_at=clock.now(),
+    generated_at = clock.now()
+    items = [
+        SdkManifestEntry(
+            lang=r.lang, version=r.version, git_sha7=r.git_sha7, status=r.status
+        )
+        for r in rows
+    ]
+    keypair = _maybe_load_signing_keypair(settings)
+    if keypair is None:
+        return SdkManifest(items=items, generated_at=generated_at)
+    # Sign the canonical {items, generated_at} payload.
+    from livepeer_open_clearinghouse.providers.signing.manifest import (  # noqa: PLC0415
+        sign_payload,
     )
+
+    canonical_payload = {
+        "items": [i.model_dump() for i in items],
+        "generated_at": generated_at.isoformat(),
+    }
+    signature = sign_payload(keypair, canonical_payload)
+    return SdkManifest(
+        items=items,
+        generated_at=generated_at,
+        signature=signature,
+        key_fingerprint=keypair.fingerprint,
+    )
+
+
+@sdk_router.get("/manifest/pubkey", response_model=SdkManifestPubkey)
+async def sdk_manifest_pubkey_endpoint(
+    settings: SettingsDep,
+) -> SdkManifestPubkey:
+    """Operator's manifest-signing public key. SDKs fetch this once at
+    startup, cache it, and use it to verify subsequent
+    ``/v1/sdk/manifest`` responses offline.
+
+    503 when signing is not configured — SDKs treat that as "unsigned
+    mode, verification skipped" (acceptable for dev / single-operator
+    deployments where the SDK trusts LOC directly).
+    """
+    keypair = _maybe_load_signing_keypair(settings)
+    if keypair is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="sdk_manifest_signing_not_configured",
+        )
+    from livepeer_open_clearinghouse.providers.signing.manifest import (  # noqa: PLC0415
+        public_key_b64,
+    )
+
+    return SdkManifestPubkey(
+        public_key=public_key_b64(keypair),
+        key_fingerprint=keypair.fingerprint,
+    )
+
+
+def _maybe_load_signing_keypair(settings: Settings):  # type: ignore[no-untyped-def]
+    """Decode the configured seed into a keypair, or None if unset.
+
+    Errors are logged and treated as "unsigned" — operators set the
+    seed once on deploy, and a malformed value should be visible to
+    them via logs, not break the manifest endpoint.
+    """
+    if settings.sdk_manifest_signing_key is None:
+        return None
+    seed = settings.sdk_manifest_signing_key.get_secret_value()
+    if not seed:
+        return None
+    try:
+        from livepeer_open_clearinghouse.providers.signing.manifest import (  # noqa: PLC0415
+            load_keypair,
+        )
+
+        return load_keypair(seed)
+    except Exception:
+        # Bad config; serve unsigned. Operator should see this in logs.
+        return None

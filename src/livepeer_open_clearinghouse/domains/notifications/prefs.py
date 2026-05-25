@@ -390,6 +390,10 @@ async def _notify_trigger(
         fired[CHANNEL_EMAIL] = await _fire_email(
             provider, to=user.email, subject=subject, body=body
         )
+    if _pref(overrides, trigger, CHANNEL_WEBHOOK):
+        fired[CHANNEL_WEBHOOK] = await _fire_webhook(
+            session, user_id=user_id, trigger=trigger, body=body
+        )
     return fired
 
 
@@ -616,6 +620,57 @@ async def _fire_email(
             "notify.email.failed",
             to=to,
             subject=subject,
+            error=str(exc),
+        )
+        return False
+
+
+async def _fire_webhook(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    trigger: str,
+    body: dict[str, object],
+) -> bool:
+    """Look up the user's webhook config + POST the signed payload.
+
+    Returns True on a 2xx response within the configured retry
+    budget; False when the user has no webhook configured, the
+    server seed isn't set, or the send exhausts retries. Best-effort
+    like every other channel — never raises.
+    """
+    try:
+        from livepeer_open_clearinghouse.domains.notifications.repo import (  # noqa: PLC0415
+            NotificationWebhookConfig,
+        )
+        from livepeer_open_clearinghouse.domains.notifications.webhook import (  # noqa: PLC0415
+            derive_secret,
+            send_webhook,
+        )
+        from livepeer_open_clearinghouse.settings import get_settings  # noqa: PLC0415
+
+        row = await session.get(NotificationWebhookConfig, user_id)
+        if row is None:
+            return False
+        settings = get_settings()
+        if settings.webhook_signing_seed is None:
+            return False
+        secret = derive_secret(
+            settings.webhook_signing_seed.get_secret_value(), user_id
+        )
+        return await send_webhook(
+            http=None,
+            url=row.url,
+            secret=secret,
+            payload={"trigger": trigger, "body": body},
+            max_retries=settings.webhook_send_max_retries,
+            timeout_seconds=settings.webhook_send_timeout_seconds,
+        )
+    except Exception as exc:
+        logger.warning(
+            "notify.webhook.failed",
+            user_id=str(user_id),
+            trigger=trigger,
             error=str(exc),
         )
         return False

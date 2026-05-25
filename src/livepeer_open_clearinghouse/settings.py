@@ -111,6 +111,19 @@ class Settings(BaseSettings):
     # so admin can attribute ingest spikes to a specific node. Defaults
     # to the container hostname when unset.
     ingest_node_id: str | None = None
+    # Operator Ed25519 signing-key seed, base64-encoded (32 raw bytes →
+    # 44 chars). When unset, the SDK manifest is served unsigned — fine
+    # for dev; in prod set this in the operator's secret store so SDKs
+    # can verify against ``GET /v1/sdk/manifest/pubkey``.
+    sdk_manifest_signing_key: SecretStr | None = None
+    # HMAC seed used to derive per-user webhook signing secrets. Each
+    # customer's signing secret = HMAC_SHA256(seed, user_id). Rotating
+    # the seed invalidates every customer's webhook secret at once
+    # (v1 limitation). Unset → webhook channel disabled.
+    webhook_signing_seed: SecretStr | None = None
+    # Outbound webhook timing knobs.
+    webhook_send_timeout_seconds: float = Field(default=10.0, gt=0)
+    webhook_send_max_retries: int = Field(default=3, ge=0)
 
 
 @lru_cache(maxsize=1)

@@ -216,10 +216,27 @@ class SdkManifestEntry(BaseModel):
 
 
 class SdkManifest(BaseModel):
-    """Public payload at ``GET /v1/sdk/manifest``."""
+    """Public payload at ``GET /v1/sdk/manifest``.
+
+    When the operator has configured a signing key, the response also
+    carries ``signature`` (Ed25519 over the canonical JSON of
+    ``{items, generated_at}``) and ``key_fingerprint`` (first 16 hex
+    of SHA-256 of the public key). SDKs verify by fetching the
+    public key at ``/v1/sdk/manifest/pubkey`` and recomputing.
+    """
 
     items: list[SdkManifestEntry]
     generated_at: datetime
+    signature: str | None = None
+    key_fingerprint: str | None = None
+
+
+class SdkManifestPubkey(BaseModel):
+    """Public payload at ``GET /v1/sdk/manifest/pubkey``."""
+
+    public_key: str  # base64 of the 32-byte raw Ed25519 public key
+    key_fingerprint: str
+    algorithm: str = "ed25519"
 
 
 class SessionWithSdkView(BaseModel):
