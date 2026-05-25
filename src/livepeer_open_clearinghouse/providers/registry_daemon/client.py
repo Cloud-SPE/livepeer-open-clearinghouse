@@ -210,11 +210,11 @@ class GrpcRegistryClient:
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
-        self._channel = None  # type: ignore[assignment]
-        self._stub = None  # type: ignore[assignment]
-        self._lock = None  # type: ignore[assignment]
+        self._channel: Any | None = None
+        self._stub: Any | None = None
+        self._lock: Any | None = None
 
-    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+    async def _ensure_stub(self) -> Any:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415
@@ -288,7 +288,11 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:
+            except Exception as exc:
+                _logger.debug(
+                    "registry.list_capabilities.resolve_skip",
+                    extra={"addr": addr, "error": str(exc)},
+                )
                 continue
             for node in resolved.nodes:
                 for cap in node.capabilities:
@@ -322,7 +326,11 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:
+            except Exception as exc:
+                _logger.debug(
+                    "registry.list_orchestrators.resolve_skip",
+                    extra={"addr": addr, "error": str(exc)},
+                )
                 continue
             for node in resolved.nodes:
                 cap_views: list[CapabilityInfo] = []
@@ -375,9 +383,9 @@ class CachingRegistryClient:
         self._inner = inner
         self._ttl = ttl_seconds
         # Each entry: (expires_at_monotonic, value)
-        self._cache: dict[tuple, tuple[float, object]] = {}
+        self._cache: dict[tuple[Any, ...], tuple[float, object]] = {}
 
-    def _get(self, key: tuple) -> object | None:
+    def _get(self, key: tuple[Any, ...]) -> object | None:
         if self._ttl <= 0:
             return None
         import time  # noqa: PLC0415
@@ -391,7 +399,7 @@ class CachingRegistryClient:
             return None
         return value
 
-    def _set(self, key: tuple, value: object) -> None:
+    def _set(self, key: tuple[Any, ...], value: object) -> None:
         if self._ttl <= 0:
             return
         import time  # noqa: PLC0415

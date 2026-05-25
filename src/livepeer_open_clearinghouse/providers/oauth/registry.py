@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from authlib.integrations.starlette_client import OAuth
+from authlib.integrations.starlette_client import OAuth  # type: ignore[import-untyped]
 
 from livepeer_open_clearinghouse.settings import Settings, get_settings
 
@@ -50,12 +50,13 @@ def _has_secret(secret: object) -> bool:
 
 
 def _maybe_register_google(oauth: OAuth, settings: Settings) -> bool:
-    if not settings.google_oauth_client_id or not _has_secret(settings.google_oauth_client_secret):
+    secret = settings.google_oauth_client_secret
+    if not settings.google_oauth_client_id or secret is None or not _has_secret(secret):
         return False
     oauth.register(
         name="google",
         client_id=settings.google_oauth_client_id,
-        client_secret=settings.google_oauth_client_secret.get_secret_value(),
+        client_secret=secret.get_secret_value(),
         server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
         client_kwargs={"scope": "openid email profile"},
     )
@@ -64,13 +65,14 @@ def _maybe_register_google(oauth: OAuth, settings: Settings) -> bool:
 
 
 def _maybe_register_github(oauth: OAuth, settings: Settings) -> bool:
-    if not settings.github_oauth_client_id or not _has_secret(settings.github_oauth_client_secret):
+    secret = settings.github_oauth_client_secret
+    if not settings.github_oauth_client_id or secret is None or not _has_secret(secret):
         return False
     oauth.register(
         name="github",
         client_id=settings.github_oauth_client_id,
-        client_secret=settings.github_oauth_client_secret.get_secret_value(),
-        access_token_url="https://github.com/login/oauth/access_token",
+        client_secret=secret.get_secret_value(),
+        access_token_url="https://github.com/login/oauth/access_token",  # noqa: S106 — GitHub OAuth endpoint URL, not a credential
         authorize_url="https://github.com/login/oauth/authorize",
         api_base_url="https://api.github.com/",
         client_kwargs={"scope": "read:user user:email"},

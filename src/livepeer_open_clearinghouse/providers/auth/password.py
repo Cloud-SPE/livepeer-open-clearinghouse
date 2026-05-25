@@ -1,7 +1,7 @@
 """Password hashing with argon2id.
 
 We use the default `PasswordHasher()` parameters (memory_cost=64MB,
-time_cost=3, parallelism=4) — these are tuned for ~50–100ms per hash on
+time_cost=3, parallelism=4) - these are tuned for ~50-100ms per hash on
 modern hardware, which is what we want for login throttling.
 """
 

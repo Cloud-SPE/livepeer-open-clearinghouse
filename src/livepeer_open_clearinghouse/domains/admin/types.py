@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -108,7 +109,7 @@ class AuditEntryView(BaseModel):
     action: str
     target_user_email: str | None
     target_user_id: uuid.UUID | None
-    params: dict | None
+    params: dict[str, Any] | None
     created_at: datetime
 
 

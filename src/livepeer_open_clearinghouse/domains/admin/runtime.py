@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response, status
 
@@ -294,7 +295,7 @@ async def resend_verification_endpoint(
 async def admin_list_capabilities_endpoint(
     operator: CurrentOperatorDep,
     registry: RegistryDep,
-) -> dict:
+) -> dict[str, Any]:
     """Operator view of the live capability catalog.
 
     Proxies through the same service layer the app-dev /v1/capabilities
@@ -310,7 +311,7 @@ async def admin_list_orchestrators_endpoint(
     operator: CurrentOperatorDep,
     registry: RegistryDep,
     capability: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     items = await discovery_service.list_orchestrators(registry, capability=capability)
     return {"items": [o.model_dump() for o in items]}
 

@@ -19,7 +19,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.payments.v1 import ...` resolves. Loaded
@@ -332,11 +332,11 @@ class GrpcPaymentDaemonClient:
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
-        self._channel = None  # type: ignore[assignment]
-        self._stub = None  # type: ignore[assignment]
-        self._lock = None  # type: ignore[assignment]
+        self._channel: Any | None = None
+        self._stub: Any | None = None
+        self._lock: Any | None = None
 
-    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+    async def _ensure_stub(self) -> Any:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415

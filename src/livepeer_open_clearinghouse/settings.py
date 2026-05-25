@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # ---- application ----
     app_env: Literal["dev", "staging", "prod"] = "dev"
-    app_host: str = "0.0.0.0"
+    app_host: str = "0.0.0.0"  # noqa: S104 — server binds to all interfaces by design
     app_port: int = 8000
     public_base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
     log_level: Literal["debug", "info", "warn", "error"] = "info"

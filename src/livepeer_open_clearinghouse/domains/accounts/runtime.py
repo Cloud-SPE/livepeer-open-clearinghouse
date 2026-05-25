@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
@@ -15,22 +15,6 @@ from livepeer_open_clearinghouse.dependencies import (
     SessionUserDep,
     SettingsDep,
     rate_limit,
-)
-
-_rl_signup = rate_limit(
-    route="signup",
-    capacity_attr="rl_signup_capacity",
-    refill_attr="rl_signup_refill_per_minute",
-)
-_rl_login = rate_limit(
-    route="login",
-    capacity_attr="rl_login_capacity",
-    refill_attr="rl_login_refill_per_minute",
-)
-_rl_pwreset = rate_limit(
-    route="password_reset",
-    capacity_attr="rl_password_reset_capacity",
-    refill_attr="rl_password_reset_refill_per_minute",
 )
 from livepeer_open_clearinghouse.domains.accounts import oauth as oauth_service
 from livepeer_open_clearinghouse.domains.accounts import service
@@ -49,6 +33,22 @@ from livepeer_open_clearinghouse.domains.accounts.types import (
 from livepeer_open_clearinghouse.providers.auth import session as session_helper
 from livepeer_open_clearinghouse.providers.oauth import get_oauth
 from livepeer_open_clearinghouse.providers.oauth import is_enabled as oauth_is_enabled
+
+_rl_signup = rate_limit(
+    route="signup",
+    capacity_attr="rl_signup_capacity",
+    refill_attr="rl_signup_refill_per_minute",
+)
+_rl_login = rate_limit(
+    route="login",
+    capacity_attr="rl_login_capacity",
+    refill_attr="rl_login_refill_per_minute",
+)
+_rl_pwreset = rate_limit(
+    route="password_reset",
+    capacity_attr="rl_password_reset_capacity",
+    refill_attr="rl_password_reset_refill_per_minute",
+)
 
 router = APIRouter(tags=["accounts"])
 
@@ -273,10 +273,10 @@ async def oauth_login_endpoint(
     if client is None:
         raise HTTPException(status_code=404, detail="oauth_provider_disabled")
     redirect_uri = _redirect_uri(request, provider)
-    return await client.authorize_redirect(request, redirect_uri)
+    return await client.authorize_redirect(request, redirect_uri)  # type: ignore[no-any-return]
 
 
-async def _github_userinfo(token: dict) -> tuple[str, str, bool]:
+async def _github_userinfo(token: dict[str, Any]) -> tuple[str, str, bool]:
     """Fetch GitHub's profile + primary verified email.
 
     GitHub's OAuth profile endpoint returns the public profile; the

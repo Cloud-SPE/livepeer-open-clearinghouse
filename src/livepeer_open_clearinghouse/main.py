@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
                 log.info("scheduler.idempotency_keys.expired", count=n)
 
     async def _snapshot_deposit() -> None:
-        from livepeer_open_clearinghouse.dependencies import (
+        from livepeer_open_clearinghouse.dependencies import (  # noqa: PLC0415
             _default_payment_daemon,
         )
 
@@ -240,7 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # iterating on the SPA doesn't require a hard refresh per change. In
     # prod we serve them with Starlette's default headers.
     class _NoCacheStaticFiles(StaticFiles):
-        async def get_response(self, path: str, scope):  # type: ignore[override,no-untyped-def]
+        async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
             response = await super().get_response(path, scope)
             response.headers["Cache-Control"] = "no-cache"
             return response

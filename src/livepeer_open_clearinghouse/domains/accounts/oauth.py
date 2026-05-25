@@ -55,21 +55,21 @@ async def find_or_link_user(
             return user
 
     # 2. By email — link an additional identity to an existing local account.
-    user = await session.scalar(select(User).where(User.email == email))
-    if user is not None:
+    existing: User | None = await session.scalar(select(User).where(User.email == email))
+    if existing is not None:
         now = clock.now()
-        if user.email_verified_at is None:
-            user.email_verified_at = now
+        if existing.email_verified_at is None:
+            existing.email_verified_at = now
         session.add(
             UserOAuthIdentity(
-                user_id=user.id,
+                user_id=existing.id,
                 provider=provider,
                 provider_user_id=provider_user_id,
                 email_at_link=email,
             )
         )
         await session.flush()
-        return user
+        return existing
 
     # 3. Fresh account.
     now = clock.now()

@@ -407,9 +407,10 @@ async def get_billing_config(
     session: AsyncSession, *, user_id: uuid.UUID
 ) -> UserBillingConfig | None:
     """Return the user's UserBillingConfig row if one exists."""
-    return await session.scalar(
+    result: UserBillingConfig | None = await session.scalar(
         select(UserBillingConfig).where(UserBillingConfig.user_id == user_id)
     )
+    return result
 
 
 async def resolve_billing_config(

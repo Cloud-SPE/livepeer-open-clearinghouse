@@ -1299,7 +1299,7 @@ async def _emit_discrepancy_if_diverged(
         debits = await daemon.get_session_debits(
             sender=b"", work_id=session_row.work_id
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
     daemon_units = int(debits.total_work_units)
     delta = abs(sdk_units - daemon_units)

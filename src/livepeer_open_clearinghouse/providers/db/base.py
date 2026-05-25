@@ -76,7 +76,7 @@ class TableNameFromClassMixin:
     @declared_attr.directive
     def __tablename__(cls) -> str:
         # Convert CamelCase -> snake_case
-        name = cls.__name__
+        name = cls.__name__  # type: ignore[attr-defined]
         out: list[str] = []
         for i, ch in enumerate(name):
             if ch.isupper() and i > 0 and not name[i - 1].isupper():

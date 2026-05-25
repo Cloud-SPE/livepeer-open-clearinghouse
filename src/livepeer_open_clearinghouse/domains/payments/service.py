@@ -57,12 +57,13 @@ async def get_payment_by_work_id(
     work_id: str,
 ) -> Payment | None:
     """Look up a single payment by its work_id (scoped to user)."""
-    return await session.scalar(
+    result: Payment | None = await session.scalar(
         select(Payment).where(
             Payment.user_id == user_id,
             Payment.work_id == work_id,
         )
     )
+    return result
 
 
 # ---------------------------------------------------------------------------
