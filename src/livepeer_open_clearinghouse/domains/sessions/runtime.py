@@ -154,6 +154,7 @@ async def close_session_endpoint(
     pair: CurrentApiKeyDep,
     db: SessionDep,
     clock: ClockDep,
+    daemon: PaymentDaemonDep,
 ) -> CloseSessionResponse:
     """Explicitly close a session and finalize accounting.
 
@@ -174,4 +175,5 @@ async def close_session_endpoint(
         outcome=body.outcome,
         settlement=body.settlement,
         clock=clock,
+        daemon=daemon,
     )

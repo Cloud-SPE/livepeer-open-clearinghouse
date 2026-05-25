@@ -46,5 +46,8 @@ class TelemetryEvent(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     # Enrichment — added at ingest in a follow-up PR.
     geo_region: Mapped[str | None] = mapped_column(String(32), nullable=True)
     account_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    broker_operator_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # eth_address of the orchestrator (`0x` + 40 hex). Filled when an
+    # event carries a broker_url in its payload and the registry has
+    # a route for that URL.
+    broker_operator_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ingest_node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

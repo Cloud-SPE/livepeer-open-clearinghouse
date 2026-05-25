@@ -3,7 +3,6 @@ resolution, end-to-end column population."""
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -140,7 +139,7 @@ async def test_ingest_batch_stamps_enrichment_columns(
     enrichment = Enrichment(
         geo_region="us-west",
         account_tier="enterprise",
-        broker_operator_id=uuid.UUID("11111111-2222-3333-4444-555555555555"),
+        broker_operator_id="0xabcdef0123456789abcdef0123456789abcdef01",
         ingest_node_id="ingest-02",
     )
     accepted, _ = await telemetry_service.ingest_batch(
@@ -155,7 +154,7 @@ async def test_ingest_batch_stamps_enrichment_columns(
     row = (await session.scalars(select(TelemetryEvent))).one()
     assert row.geo_region == "us-west"
     assert row.account_tier == "enterprise"
-    assert str(row.broker_operator_id) == "11111111-2222-3333-4444-555555555555"
+    assert row.broker_operator_id == "0xabcdef0123456789abcdef0123456789abcdef01"
     assert row.ingest_node_id == "ingest-02"
 
 

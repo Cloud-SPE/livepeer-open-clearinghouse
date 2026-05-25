@@ -942,6 +942,7 @@ async def close_session(
     outcome: str | None,
     settlement: dict[str, Any] | None,
     clock: Clock,
+    daemon: PaymentDaemonClient | None = None,
 ) -> CloseSessionResponse:
     """Explicitly close a session and finalize accounting.
 
@@ -1032,6 +1033,19 @@ async def close_session(
         outcome=final_outcome,
         raw_record=settlement,
     )
+
+    # 6b. Inline daemon cross-check: SDK report vs payer-daemon
+    # ledger. Best-effort — never breaks the close path. Tolerance
+    # is the smaller of 1% or 5 units to suppress benign rounding
+    # noise; anything bigger is operator signal.
+    if daemon is not None:
+        await _emit_discrepancy_if_diverged(
+            db,
+            session_row=session_row,
+            sdk_units=actual_units,
+            daemon=daemon,
+            clock=clock,
+        )
 
     # 7. Response
     assert session_row.closed_at is not None  # transition_state set it
@@ -1254,3 +1268,51 @@ async def reconcile_open_sessions(
             )
 
     return finalized
+
+
+# ---------------------------------------------------------------------------
+# Discrepancy detection — settle-time SDK-vs-daemon cross-check
+# ---------------------------------------------------------------------------
+
+
+# Tolerance below which a SDK/daemon delta is benign rounding noise.
+# Anything larger fires server.discrepancy_detected so operators can
+# investigate the API key.
+_DISCREPANCY_MIN_ABS_UNITS = 5
+_DISCREPANCY_MIN_RELATIVE = 0.01  # 1 %
+
+
+async def _emit_discrepancy_if_diverged(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    sdk_units: int,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+) -> None:
+    """Compare the SDK-reported ``actual_units`` against the daemon's
+    ``GetSessionDebits.total_work_units``. Emit
+    ``server.discrepancy_detected`` if the delta exceeds the noise
+    floor. Best-effort: any failure (daemon unreachable, parse error)
+    is swallowed."""
+    try:
+        debits = await daemon.get_session_debits(
+            sender=b"", work_id=session_row.work_id
+        )
+    except Exception:  # noqa: BLE001
+        return
+    daemon_units = int(debits.total_work_units)
+    delta = abs(sdk_units - daemon_units)
+    if delta < _DISCREPANCY_MIN_ABS_UNITS:
+        return
+    if daemon_units > 0 and (delta / daemon_units) < _DISCREPANCY_MIN_RELATIVE:
+        return
+    await telemetry_events.emit_discrepancy_detected(
+        db,
+        api_key_id=session_row.api_key_id,
+        user_id=session_row.user_id,
+        job_or_session_id=session_row.id,
+        sdk_reported_units=sdk_units,
+        daemon_units=daemon_units,
+        clock=clock,
+    )

@@ -112,6 +112,9 @@ class UserBillingConfig(Base, TimestampMixin, TableNameFromClassMixin):
     spend_period_cap_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
     auto_replenish_increment_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
     auto_replenish_threshold_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    # Account tier label for telemetry enrichment (exec-plan 002
+    # §"Operator-only enrichment"). NULL means "no tier assigned".
+    tier: Mapped[str | None] = mapped_column(nullable=True)
     updated_by_operator_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("operator.id", ondelete="SET NULL"), nullable=True
     )

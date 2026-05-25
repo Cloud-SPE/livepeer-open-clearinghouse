@@ -60,6 +60,7 @@ async def ingest_batch(
     events: list[IngestEventIn],
     clock: Clock,
     enrichment: Enrichment | None = None,
+    event_enrichments: list[Enrichment | None] | None = None,
 ) -> tuple[int, list[str]]:
     """Persist a batch of SDK-emitted events.
 
@@ -76,16 +77,24 @@ async def ingest_batch(
     if len(events) > MAX_BATCH_SIZE:
         raise BatchTooLarge
 
-    enrich = enrichment or Enrichment()
+    base_enrich = enrichment or Enrichment()
     now = clock.now()
     reasons: list[str] = []
     rows: list[TelemetryEvent] = []
-    for ev in events:
+    for idx, ev in enumerate(events):
         reason = _validate_event(ev)
         if reason is not None:
             reasons.append(reason)
             continue
         reasons.append("")
+        # Per-event enrichment overrides the batch default, if provided
+        # (used for broker_operator_id which is payload-dependent).
+        per_event = (
+            event_enrichments[idx]
+            if event_enrichments is not None and idx < len(event_enrichments)
+            else None
+        )
+        enrich = per_event or base_enrich
         rows.append(
             TelemetryEvent(
                 api_key_id=api_key_id,
@@ -232,6 +241,23 @@ def _within_retention(
     if retention_days <= 0:
         return True  # operator disabled retention; nothing to gate on
     return when >= now - timedelta(days=retention_days)
+
+
+async def purge_for_user(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+) -> int:
+    """Hard-delete every telemetry_event for ``user_id``. Backs the
+    data-subject-deletion (DSAR) admin endpoint.
+
+    Returns the count deleted. Idempotent — running twice deletes
+    once then returns 0.
+    """
+    result = await session.execute(
+        delete(TelemetryEvent).where(TelemetryEvent.user_id == user_id)
+    )
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def admin_event_counts(

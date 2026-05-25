@@ -389,3 +389,79 @@ async def test_close_after_refills_billed_against_session_funded(
     # funded (worst case) was 1_000_000; refund 650_000
     assert close_resp.refund_wei == 650_000
     assert close_resp.outcome == "OVERFUNDED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_fires_discrepancy_when_daemon_disagrees(
+    db_session: AsyncSession,
+) -> None:
+    """SDK reports 400 units; daemon says 800. Delta crosses the 1%
+    + min-5 noise floor → server.discrepancy_detected lands."""
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent  # noqa: PLC0415
+
+    user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
+    daemon.set_session_debits(
+        sender=b"", work_id=open_resp.work_id, total_work_units=800, debit_count=8, closed=True
+    )
+
+    await sessions_service.close_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        actual_units=400,  # well under daemon's 800
+        outcome=None,
+        settlement=None,
+        clock=_clock(),
+        daemon=daemon,
+    )
+
+    rows = list(
+        (
+            await db_session.scalars(
+                select(TelemetryEvent).where(
+                    TelemetryEvent.event_type == "server.discrepancy_detected"
+                )
+            )
+        ).all()
+    )
+    assert len(rows) == 1
+    payload = rows[0].payload
+    assert payload["sdk_reported_units"] == 400
+    assert payload["daemon_units"] == 800
+    assert payload["difference"] == -400
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_does_not_fire_discrepancy_when_within_tolerance(
+    db_session: AsyncSession,
+) -> None:
+    """Tiny delta inside the noise floor (5-unit min + 1% relative)
+    should NOT fire the event."""
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent  # noqa: PLC0415
+
+    user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
+    daemon.set_session_debits(
+        sender=b"", work_id=open_resp.work_id, total_work_units=402, debit_count=8, closed=True
+    )
+    await sessions_service.close_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        actual_units=400,  # delta = 2 < min-5
+        outcome=None,
+        settlement=None,
+        clock=_clock(),
+        daemon=daemon,
+    )
+    rows = list(
+        (
+            await db_session.scalars(
+                select(TelemetryEvent).where(
+                    TelemetryEvent.event_type == "server.discrepancy_detected"
+                )
+            )
+        ).all()
+    )
+    assert rows == []

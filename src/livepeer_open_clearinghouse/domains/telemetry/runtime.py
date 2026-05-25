@@ -21,6 +21,7 @@ from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
     CurrentApiKeyDep,
     CurrentOperatorDep,
+    RegistryDep,
     SessionDep,
     SessionUserDep,
     SettingsDep,
@@ -29,9 +30,11 @@ from livepeer_open_clearinghouse.dependencies import (
 from livepeer_open_clearinghouse.domains.telemetry import service
 from livepeer_open_clearinghouse.domains.telemetry.config import MAX_BATCH_SIZE
 from livepeer_open_clearinghouse.domains.telemetry.enrichment import (
+    Enrichment,
     EnrichmentContext,
     NoopGeoIPProvider,
     enrich,
+    lookup_broker_operator,
     resolve_ingest_node_id,
 )
 from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
@@ -60,6 +63,7 @@ async def ingest_endpoint(
     clock: ClockDep,
     settings: SettingsDep,
     body: IngestRequest,
+    registry: RegistryDep,
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> IngestResponse:
     """Ingest a batch of SDK-emitted telemetry events.
@@ -91,14 +95,49 @@ async def ingest_endpoint(
                     headers={"Retry-After": str(retry_after)},
                 )
 
+    # Resolve the customer's tier once per batch — Telemetry-event
+    # enrichment column is reserved for this in PR-3.
+    from sqlalchemy import select as _select  # noqa: PLC0415
+
+    from livepeer_open_clearinghouse.domains.billing.repo import (  # noqa: PLC0415
+        UserBillingConfig,
+    )
+
+    account_tier: str | None = await db.scalar(
+        _select(UserBillingConfig.tier).where(UserBillingConfig.user_id == user.id)
+    )
+
     enrichment_ctx = EnrichmentContext(
         source_ip=request.client.host if request.client is not None else None,
         ingest_node_id=resolve_ingest_node_id(settings.ingest_node_id),
         geoip=NoopGeoIPProvider(),
+        account_tier=account_tier,
     )
-    # Same enrichment for every event in this batch — they share the
-    # request-level context.
+    # Base enrichment shared by all events.
     batch_enrichment = enrich(enrichment_ctx)
+
+    # Per-event override only for events with broker_url in payload —
+    # used to populate broker_operator_id. Lookups go through a
+    # process-wide TTL cache (registry list_orchestrators is small +
+    # stable).
+    event_enrichments: list[Enrichment | None] = []
+    needs_override = False
+    for ev in body.events:
+        broker_url = (ev.payload or {}).get("broker_url")
+        if isinstance(broker_url, str):
+            op_id = await lookup_broker_operator(registry, broker_url)
+            if op_id is not None:
+                needs_override = True
+                event_enrichments.append(
+                    Enrichment(
+                        geo_region=batch_enrichment.geo_region,
+                        account_tier=batch_enrichment.account_tier,
+                        broker_operator_id=op_id,
+                        ingest_node_id=batch_enrichment.ingest_node_id,
+                    )
+                )
+                continue
+        event_enrichments.append(None)
 
     try:
         accepted, reasons = await service.ingest_batch(
@@ -108,6 +147,7 @@ async def ingest_endpoint(
             events=body.events,
             clock=clock,
             enrichment=batch_enrichment,
+            event_enrichments=event_enrichments if needs_override else None,
         )
     except service.BatchTooLarge as exc:
         raise HTTPException(
@@ -571,6 +611,35 @@ async def admin_event_counts_endpoint(
     counts = await service.admin_event_counts(db, since=since, clock=clock)
     _ = operator  # surface only — RBAC via CurrentOperatorDep
     return {"window_hours": hours, "counts": counts}
+
+
+@admin_router.delete(
+    "/users/{user_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def admin_purge_user_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    user_id: uuid.UUID,
+) -> dict[str, Any]:
+    """DSAR (data-subject access-rights) purge: hard-delete every
+    ``telemetry_event`` row for the given user. The operator writes
+    an operator_audit row alongside so we can answer "when was this
+    deletion performed and by whom" later. Idempotent."""
+    from livepeer_open_clearinghouse.domains.admin.repo import (  # noqa: PLC0415
+        OperatorAudit,
+    )
+
+    deleted = await service.purge_for_user(db, user_id=user_id)
+    db.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="purge_user_telemetry",
+            target_user_id=user_id,
+            params={"deleted": deleted},
+        )
+    )
+    return {"user_id": str(user_id), "deleted": deleted}
 
 
 @admin_router.get("/rate-limit-offenders")
