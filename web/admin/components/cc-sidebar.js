@@ -10,6 +10,7 @@ const ITEMS = [
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
   { key: "telemetry", label: "Telemetry", icon: "activity" },
+  { key: "sdk-fleet", label: "SDK fleet", icon: "shield" },
 ];
 
 export class CcSidebar extends LitElement {
