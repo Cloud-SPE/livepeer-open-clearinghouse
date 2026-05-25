@@ -50,8 +50,15 @@ cargo run --example example
 
 ## Use it from your app
 
+Livepeer Open Clearinghouse runs in **handoff mode**: LOC mints the
+payment envelope; the SDK calls the broker directly with that
+envelope; LOC settles based on the broker's reported work units.
+
 ```rust
-use livepeer_open_clearinghouse_sdk::{Client, ClientOptions, ErrorKind, MintPaymentInput, ReportUsageInput};
+use livepeer_open_clearinghouse_sdk::{
+    Client, ClientOptions, ErrorKind, JobBody, SubmitJobInput,
+};
+use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,35 +67,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("OPEN_CLEARINGHOUSE_API_KEY")?,
     ))?;
 
-    let idem = "<your-uuid>";
-    let mint = match ph
-        .mint_payment(MintPaymentInput {
+    let result = match ph
+        .submit_job(SubmitJobInput {
             capability: "openai:chat-completions",
             offering: "vllm-qwen3.6-27b-default",
-            work_units: 1000,
-            idempotency_key: Some(idem),
+            estimated_units: 200,
+            body: JobBody::Json(json!({
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 50,
+            })),
+            max_total_units: Some(2000),
+            request_id: None,
+            spec_version: None,
         })
         .await
     {
-        Ok(m) => m,
+        Ok(r) => r,
         Err(e) if e.kind() == ErrorKind::InsufficientCredit => {
             eprintln!("need topup");
             return Ok(());
         }
         Err(e) => return Err(e.into()),
     };
-
-    // ... POST to mint.recipient_eth_address's orch with header
-    //     Livepeer-Payment: mint.payment_bytes ...
-
-    ph.report_usage(ReportUsageInput {
-        payment_id: &mint.payment_id,
-        actual_work_units: 873,
-        idempotency_key: Some(idem),
-    })
-    .await?;
+    println!(
+        "billed {} wei for {} units, outcome={}",
+        result.billed_value_wei, result.actual_units, result.outcome
+    );
     Ok(())
 }
+```
+
+Long-running session shape:
+
+```rust
+use livepeer_open_clearinghouse_sdk::{OpenSessionInput, CloseSessionInput};
+
+let handle = ph.open_session(OpenSessionInput {
+    capability: "cap.live",
+    offering: "off.live",
+    estimated_runway_units: 1000,
+    max_total_units: 10_000,
+}).await?;
+// ... stream work against handle.broker_url, refill via SessionRunner ...
+ph.close_session(CloseSessionInput {
+    session_id: &handle.session_id,
+    actual_units: 4250,
+}).await?;
 ```
 
 Method surface:
@@ -97,11 +121,19 @@ Method surface:
 |---|---|
 | `list_capabilities()` | discovery |
 | `list_orchestrators(capability)` | discovery |
-| `mint_payment(MintPaymentInput)` | the load-bearing call |
-| `report_usage(ReportUsageInput)` | reconcile over-committed budget |
+| `submit_job(SubmitJobInput)` | one-shot job (cases a/b/c) |
+| `open_session(OpenSessionInput)` | open long-running session (case d) |
+| `refill_session(...)` | top up an open session |
+| `close_session(CloseSessionInput)` | settle + close a session |
+| `telemetry()` | direct access to the (mandatory) `TelemetryEmitter` |
 
-`OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`, and
-`Config` variants. Call `.kind()` for the high-level `ErrorKind`
+The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on
+every call, and telemetry events (`request.mint_started`,
+`request.settle_completed`, `session.opened`, …) fire fire-and-forget
+through `/v1/telemetry`. There is no telemetry opt-out.
+
+`OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`,
+and `Config` variants. Call `.kind()` for the high-level `ErrorKind`
 (`InsufficientCredit`, `SpendCapExceeded`, `AccountNotApproved`,
 `EmailNotVerified`, `NoRouteAvailable`, `RateLimited`,
 `DuplicateRequest`, `DaemonUnavailable`, `Other`). For rate-limit
