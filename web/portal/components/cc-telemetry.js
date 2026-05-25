@@ -120,7 +120,7 @@ export class CcTelemetry extends LitElement {
             <button class="btn ${this._windowHours === 1 ? "primary" : "ghost"}" @click=${() => this._setWindow(1)}>1h</button>
             <button class="btn ${this._windowHours === 24 ? "primary" : "ghost"}" @click=${() => this._setWindow(24)}>24h</button>
             <button class="btn ${this._windowHours === 168 ? "primary" : "ghost"}" @click=${() => this._setWindow(168)}>7d</button>
-            <button class="btn primary" @click=${() => this._download()}>${icon("download")} 30-day download</button>
+            <button class="btn primary" @click=${() => this._download()}>${icon.download()} 30-day download</button>
           </div>
         </header>
         ${this._error
