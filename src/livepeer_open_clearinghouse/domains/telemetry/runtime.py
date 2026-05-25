@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -19,6 +19,7 @@ from livepeer_open_clearinghouse.dependencies import (
     ClockDep,
     CurrentApiKeyDep,
     SessionDep,
+    SessionUserDep,
     SettingsDep,
     get_rate_limiter,
 )
@@ -256,3 +257,183 @@ async def query_events_endpoint(
         items=[_event_view(r) for r in rows],
         next_cursor=next_cursor,
     )
+
+
+# ---------------------------------------------------------------------------
+# Portal-cookie-authenticated surface (`/v1/accounts/me/telemetry/*`)
+#
+# Same query semantics as the SDK-facing endpoint but scoped by user
+# rather than API key, and authed via the session cookie set by
+# /v1/auth/login. Powers the portal Telemetry tab.
+# ---------------------------------------------------------------------------
+
+
+portal_router = APIRouter(prefix="/v1/accounts/me/telemetry", tags=["telemetry"])
+
+
+def _parse_window_or_400(
+    from_ts: str, to_ts: str
+) -> tuple[Any, Any]:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    try:
+        from_dt = datetime.fromisoformat(from_ts)
+        to_dt = datetime.fromisoformat(to_ts)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "invalid_timestamp", "message": str(exc)},
+        ) from exc
+    if from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=UTC)
+    if to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=UTC)
+    return from_dt, to_dt
+
+
+@portal_router.get("/events", response_model=EventList)
+async def portal_query_events_endpoint(
+    user: SessionUserDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+    from_ts: Annotated[str, Query(alias="from")],
+    to_ts: Annotated[str, Query(alias="to")],
+    type_glob: Annotated[str | None, Query(alias="type")] = None,
+    cursor: Annotated[str | None, Query()] = None,
+    page_size: Annotated[int | None, Query(ge=1, le=5000)] = None,
+) -> EventList:
+    """Customer-facing event listing — aggregates across every API key
+    the user owns. Session-cookie auth; the SDK uses the per-key
+    variant at ``/v1/telemetry/events``."""
+    from_dt, to_dt = _parse_window_or_400(from_ts, to_ts)
+    effective_page_size = page_size or min(
+        100, int(settings.telemetry_query_max_page_size)
+    )
+    try:
+        rows, next_cursor = await service.list_events_for_user(
+            db,
+            user_id=user.id,
+            from_ts=from_dt,
+            to_ts=to_dt,
+            event_type_glob=type_glob,
+            cursor=cursor,
+            page_size=effective_page_size,
+            retention_days=int(settings.telemetry_raw_retention_days),
+            clock=clock,
+        )
+    except service.TelemetryWindowExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "retention_days": int(settings.telemetry_raw_retention_days),
+            },
+        ) from exc
+    except service.InvalidCursor as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return EventList(
+        items=[_event_view(r) for r in rows],
+        next_cursor=next_cursor,
+    )
+
+
+@portal_router.get("/download")
+async def portal_download_endpoint(
+    user: SessionUserDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> StreamingResponse:
+    """30-day NDJSON download — full event log for the user across
+    every API key. Streams to support large windows without buffering
+    in memory."""
+    from datetime import UTC, timedelta  # noqa: PLC0415
+
+    retention = int(settings.telemetry_raw_retention_days)
+    now = clock.now()
+    to_dt = now
+    # Window = retention days OR 30, whichever is smaller.
+    window_days = min(retention, 30) if retention > 0 else 30
+    from_dt = now - timedelta(days=window_days)
+    # Naive → UTC.
+    if from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=UTC)
+    if to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=UTC)
+    page_size = int(settings.telemetry_query_max_page_size)
+
+    async def _stream() -> AsyncIterator[bytes]:
+        cursor: str | None = None
+        while True:
+            rows, next_cursor = await service.list_events_for_user(
+                db,
+                user_id=user.id,
+                from_ts=from_dt,
+                to_ts=to_dt,
+                event_type_glob=None,
+                cursor=cursor,
+                page_size=page_size,
+                retention_days=retention,
+                clock=clock,
+            )
+            for row in rows:
+                yield (_event_view(row).model_dump_json() + "\n").encode("utf-8")
+            if next_cursor is None:
+                break
+            cursor = next_cursor
+
+    today = clock.now().date().isoformat()
+    headers = {
+        "Content-Disposition": f'attachment; filename="telemetry-{today}.ndjson"',
+    }
+    return StreamingResponse(
+        _stream(), media_type="application/x-ndjson", headers=headers
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public privacy notice
+# ---------------------------------------------------------------------------
+
+
+privacy_router = APIRouter(prefix="/v1/privacy", tags=["privacy"])
+
+
+@privacy_router.get("/telemetry")
+async def privacy_notice_endpoint(
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Static privacy notice for the telemetry pipeline. Exposed
+    un-authed so customers (and their compliance teams) can read it
+    before signing up."""
+    return {
+        "version": "1.0",
+        "effective_date": "2026-05-25",
+        "categories_collected": [
+            "request lifecycle timing + status codes",
+            "session lifecycle events + outcomes",
+            "billing events (refill granted/denied, cap_status snapshots)",
+            "SDK identity (lang, version, git sha)",
+        ],
+        "categories_not_collected": [
+            "request body content (prompts, payloads, frames)",
+            "response body content (completions, outputs, media)",
+            "any customer-identifiable content beyond the api_key_id",
+        ],
+        "retention_days": int(settings.telemetry_raw_retention_days),
+        "lawful_basis": "Performance of the contract — telemetry is "
+        "necessary to operate the billable service, including SLA "
+        "enforcement, incident response, and dispute resolution.",
+        "data_subject_rights": (
+            "Customers can request deletion of their telemetry under "
+            "data-subject-access rights via the operator's admin "
+            "surface. Aggregated metrics that have been computed and "
+            "no longer carry individual identifiers may remain."
+        ),
+        "contact": "privacy@livepeer-open-clearinghouse.local",
+    }

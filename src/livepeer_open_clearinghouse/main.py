@@ -219,6 +219,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_runtime.router)
     app.include_router(sessions_runtime.router)
     app.include_router(telemetry_runtime.router)
+    app.include_router(telemetry_runtime.portal_router)
+    app.include_router(telemetry_runtime.privacy_router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).

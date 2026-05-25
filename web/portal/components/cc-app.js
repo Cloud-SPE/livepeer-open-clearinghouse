@@ -101,6 +101,7 @@ export class CcApp extends LitElement {
     if (path === "/api-keys") return html`<cc-api-keys></cc-api-keys>`;
     if (path === "/catalog") return html`<cc-catalog></cc-catalog>`;
     if (path === "/activity") return html`<cc-activity></cc-activity>`;
+    if (path === "/telemetry") return html`<cc-telemetry></cc-telemetry>`;
     return html`<cc-dashboard .user=${this._user}></cc-dashboard>`;
   }
 

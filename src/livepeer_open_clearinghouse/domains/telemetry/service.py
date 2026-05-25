@@ -234,6 +234,70 @@ def _within_retention(
     return when >= now - timedelta(days=retention_days)
 
 
+async def list_events_for_user(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    from_ts: datetime,
+    to_ts: datetime,
+    event_type_glob: str | None,
+    cursor: str | None,
+    page_size: int,
+    retention_days: int,
+    clock: Clock,
+) -> tuple[list[TelemetryEvent], str | None]:
+    """Portal variant of :func:`list_events_for_api_key` — aggregates
+    every API key owned by ``user_id`` instead of scoping to one.
+
+    Same window-gating + cursor semantics. The portal uses this
+    via a session cookie; the SDK never sees this surface.
+    """
+    now = clock.now()
+    if not _within_retention(when=from_ts, retention_days=retention_days, now=now):
+        raise TelemetryWindowExpired(
+            f"from_ts predates {retention_days}-day retention window"
+        )
+    if not _within_retention(when=to_ts, retention_days=retention_days, now=now):
+        raise TelemetryWindowExpired(
+            f"to_ts predates {retention_days}-day retention window"
+        )
+    if from_ts > to_ts:
+        return [], None
+
+    stmt = (
+        select(TelemetryEvent)
+        .where(
+            TelemetryEvent.user_id == user_id,
+            TelemetryEvent.received_ts >= from_ts,
+            TelemetryEvent.received_ts <= to_ts,
+        )
+        .order_by(TelemetryEvent.received_ts.desc(), TelemetryEvent.id.desc())
+        .limit(page_size + 1)
+    )
+    if event_type_glob is not None:
+        stmt = stmt.where(
+            TelemetryEvent.event_type.like(_glob_to_like(event_type_glob), escape="\\")
+        )
+    if cursor is not None:
+        anchor_ts, anchor_id = _decode_cursor(cursor)
+        stmt = stmt.where(
+            or_(
+                TelemetryEvent.received_ts < anchor_ts,
+                and_(
+                    TelemetryEvent.received_ts == anchor_ts,
+                    TelemetryEvent.id < anchor_id,
+                ),
+            )
+        )
+
+    rows = list((await session.scalars(stmt)).all())
+    if len(rows) > page_size:
+        truncated = rows[:page_size]
+        last = truncated[-1]
+        return truncated, _encode_cursor(last.received_ts, last.id)
+    return rows, None
+
+
 async def list_events_for_api_key(
     session: AsyncSession,
     *,
