@@ -36,14 +36,6 @@ from livepeer_open_clearinghouse_sdk.client import (
     is_open_clearinghouse_error,
     wei_to_eth,
 )
-from livepeer_open_clearinghouse_sdk.session_runner import (
-    BOUNDED_MODES,
-    HTTP_TOPUP_MODES,
-    WS_TOPUP_MODES,
-    RefillEvent,
-    SessionRunner,
-    WinddownEvent,
-)
 from livepeer_open_clearinghouse_sdk.errors import (
     AccountNotApproved,
     DaemonUnavailable,
@@ -52,6 +44,14 @@ from livepeer_open_clearinghouse_sdk.errors import (
     NoRouteAvailable,
     OpenClearinghouseError,
     RateLimited,
+)
+from livepeer_open_clearinghouse_sdk.session_runner import (
+    BOUNDED_MODES,
+    HTTP_TOPUP_MODES,
+    WS_TOPUP_MODES,
+    RefillEvent,
+    SessionRunner,
+    WinddownEvent,
 )
 
 __all__ = [

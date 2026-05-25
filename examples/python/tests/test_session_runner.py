@@ -17,7 +17,6 @@ import uuid
 import httpx
 import pytest
 import respx
-import websockets
 from websockets.asyncio.server import serve
 
 from livepeer_open_clearinghouse_sdk import (
@@ -319,7 +318,7 @@ async def test_session_runner_http_topup_mode_delivers_via_post() -> None:
             # the runner's balance-low handler. This is what would
             # happen if the customer's media-plane code observed
             # balance-low and routed it to the runner.
-            await runner._on_balance_low({"observed_consumed_units": 50})  # noqa: SLF001
+            await runner._on_balance_low({"observed_consumed_units": 50})
             await runner.close(actual_units=0)
 
     # The runner POSTed the refill envelope to control.topup_url
@@ -350,7 +349,7 @@ async def test_session_runner_unsupported_mode_raises() -> None:
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
         runner = SessionRunner(client=client, handle=handle)
         with pytest.raises(OpenClearinghouseError):
-            await runner._start()  # noqa: SLF001
+            await runner._start()
 
 
 async def test_session_runner_close_sets_final_settle() -> None:

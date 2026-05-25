@@ -33,10 +33,27 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// runtimeGoVersion is split out so tests can swap it.
+var runtimeGoVersion = func() string {
+	return strings.TrimPrefix(runtime.Version(), "go")
+}
+
+// errorCode unwraps a typed *Error to its `code` for telemetry; non-Error
+// returns the empty string.
+func errorCode(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return ""
+}
 
 // SDK identity sent on every request to LOC for operator-side trust
 // scoring. Operators reject obviously-stale versions per the design.
@@ -150,6 +167,9 @@ type Client struct {
 	apiKey      string
 	sdkIdentity string
 	http        *http.Client
+	telemetry   *TelemetryEmitter
+
+	initOnce    sync.Once
 }
 
 // Options is the input to NewClient.
@@ -176,12 +196,47 @@ func NewClient(opts Options) (*Client, error) {
 	if sdkID == "" {
 		sdkID = SDKIdentity
 	}
-	return &Client{
+	c := &Client{
 		baseURL:     strings.TrimRight(opts.BaseURL, "/"),
 		apiKey:      opts.APIKey,
 		sdkIdentity: sdkID,
 		http:        httpClient,
-	}, nil
+	}
+	c.telemetry = newTelemetryEmitter(TelemetryEmitterOptions{
+		HTTP:        httpClient,
+		BaseURL:     c.baseURL,
+		APIKey:      opts.APIKey,
+		SDKIdentity: sdkID,
+	})
+	return c, nil
+}
+
+// Telemetry exposes the SDK's telemetry emitter for advanced cases.
+// Most users never touch this — events fire automatically from the
+// load-bearing Client methods.
+func (c *Client) Telemetry() *TelemetryEmitter {
+	return c.telemetry
+}
+
+// Close drains the telemetry buffer with one final flush. Idempotent.
+func (c *Client) Close(ctx context.Context) {
+	c.telemetry.Close(ctx)
+}
+
+// emitSdkInitOnce emits the `sdk.init` event the first time any
+// telemetry-producing method runs.
+func (c *Client) emitSdkInitOnce() {
+	c.initOnce.Do(func() {
+		c.telemetry.Emit(EmitTelemetryOptions{
+			EventType: "sdk.init",
+			Payload: map[string]interface{}{
+				"lang":            SDKLang,
+				"semver":          SDKVersion,
+				"git_sha7":        SDKGitSHA,
+				"runtime_version": "go/" + runtimeGoVersion(),
+			},
+		})
+	})
 }
 
 // ---- discovery ----
@@ -240,6 +295,22 @@ type SubmitJobInput struct {
 // non-nil err.
 func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, error) {
 	// 1. Open the job
+	c.emitSdkInitOnce()
+	requestID := in.RequestID
+	if requestID == "" {
+		requestID = newUUIDv4()
+	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "request.mint_started",
+		CorrelationID: requestID,
+		Payload: map[string]interface{}{
+			"capability":      in.Capability,
+			"offering":        in.Offering,
+			"estimated_units": in.EstimatedUnits,
+		},
+	})
+	mintStarted := time.Now()
+
 	body := map[string]any{
 		"capability":      in.Capability,
 		"offering":        in.Offering,
@@ -252,14 +323,28 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 	var job JobOpenResponse
 	if err := c.do(ctx, http.MethodPost, "/v1/jobs", body, &job); err != nil {
+		c.telemetry.Emit(EmitTelemetryOptions{
+			EventType:     "request.error",
+			CorrelationID: requestID,
+			Payload: map[string]interface{}{
+				"phase":       "mint",
+				"error_class": fmt.Sprintf("%T", err),
+				"error_code":  errorCode(err),
+			},
+		})
 		return nil, err
 	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "request.mint_completed",
+		CorrelationID: requestID,
+		Payload: map[string]interface{}{
+			"latency_ms":       time.Since(mintStarted).Milliseconds(),
+			"funded_value_wei": job.FundedValueWei,
+			"mode":             job.Mode,
+		},
+	})
 
 	// 2. Call the broker directly
-	requestID := in.RequestID
-	if requestID == "" {
-		requestID = newUUIDv4()
-	}
 	specVersion := in.SpecVersion
 	if specVersion == "" {
 		specVersion = "0.1"
@@ -306,11 +391,50 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 
 	// 4. Settle. Best-effort; LOC's janitor catches silent sessions.
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "request.settle_started",
+		CorrelationID: requestID,
+	})
+	settleStarted := time.Now()
 	settleBody := map[string]any{"actual_units": actualUnits}
 	var settled JobSettleResponse
 	if err := c.do(ctx, http.MethodPost, job.SettleEndpoint, settleBody, &settled); err != nil {
+		c.telemetry.Emit(EmitTelemetryOptions{
+			EventType:     "request.error",
+			CorrelationID: requestID,
+			Payload: map[string]interface{}{
+				"phase":       "settle",
+				"error_class": fmt.Sprintf("%T", err),
+				"error_code":  errorCode(err),
+			},
+		})
 		return nil, err
 	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "request.settle_completed",
+		CorrelationID: requestID,
+		Payload: map[string]interface{}{
+			"latency_ms":       time.Since(settleStarted).Milliseconds(),
+			"refund_wei":       settled.RefundWei,
+			"billed_value_wei": settled.BilledValueWei,
+			"outcome":          settled.Outcome,
+		},
+	})
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "request.completed",
+		CorrelationID: requestID,
+		Payload: map[string]interface{}{
+			"capability":       in.Capability,
+			"offering":         in.Offering,
+			"mode":             job.Mode,
+			"estimated_units":  in.EstimatedUnits,
+			"actual_units":     settled.ActualUnits,
+			"billed_value_wei": settled.BilledValueWei,
+			"refund_wei":       settled.RefundWei,
+			"outcome":          settled.Outcome,
+			"broker_url":       job.BrokerURL,
+		},
+	})
 
 	out := &JobResult{
 		Status:         status,
@@ -344,16 +468,28 @@ type OpenSessionInput struct {
 // OpenSession opens a long-running session and returns the SessionHandle.
 // The caller is responsible for the broker-side WS/RTMP wire today.
 func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*SessionHandle, error) {
+	c.emitSdkInitOnce()
 	body := map[string]any{
-		"capability":              in.Capability,
-		"offering":                in.Offering,
-		"estimated_runway_units":  in.EstimatedRunwayUnits,
-		"max_total_units":         in.MaxTotalUnits,
+		"capability":             in.Capability,
+		"offering":               in.Offering,
+		"estimated_runway_units": in.EstimatedRunwayUnits,
+		"max_total_units":        in.MaxTotalUnits,
 	}
 	var out SessionHandle
 	if err := c.do(ctx, http.MethodPost, "/v1/sessions", body, &out); err != nil {
 		return nil, err
 	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "session.opened",
+		CorrelationID: out.SessionID,
+		Payload: map[string]interface{}{
+			"capability":           in.Capability,
+			"offering":             in.Offering,
+			"mode":                 out.Mode,
+			"max_total_units":      in.MaxTotalUnits,
+			"initial_runway_units": in.EstimatedRunwayUnits,
+		},
+	})
 	return &out, nil
 }
 
@@ -361,6 +497,11 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 // is responsible for delivering the returned envelope to the broker via
 // the mode-specific channel (control-WS frame or HTTP POST to topup_url).
 func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64) (map[string]any, error) {
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "session.refill_requested",
+		CorrelationID: sessionID,
+	})
+	refillStarted := time.Now()
 	body := map[string]any{}
 	if observedConsumedUnits != nil {
 		body["observed_consumed_units"] = *observedConsumedUnits
@@ -369,8 +510,39 @@ func (c *Client) RefillSession(ctx context.Context, sessionID string, observedCo
 	}
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out); err != nil {
+		var locErr *Error
+		if errors.As(err, &locErr) && locErr.Status == 402 {
+			c.telemetry.Emit(EmitTelemetryOptions{
+				EventType:     "session.refill_denied",
+				CorrelationID: sessionID,
+				Payload: map[string]interface{}{
+					"which":         locErr.Details["which"],
+					"remaining_wei": locErr.Details["remaining_wei"],
+				},
+			})
+		} else {
+			c.telemetry.Emit(EmitTelemetryOptions{
+				EventType:     "session.error",
+				CorrelationID: sessionID,
+				Payload: map[string]interface{}{
+					"phase":       "refill",
+					"error_class": fmt.Sprintf("%T", err),
+					"error_code":  errorCode(err),
+				},
+			})
+		}
 		return nil, err
 	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "session.refill_granted",
+		CorrelationID: sessionID,
+		Payload: map[string]interface{}{
+			"latency_ms":       time.Since(refillStarted).Milliseconds(),
+			"refill_seq":       out["refill_seq"],
+			"funded_value_wei": out["funded_value_wei"],
+			"cap_status":       out["cap_status"],
+		},
+	})
 	return out, nil
 }
 
@@ -385,8 +557,28 @@ func (c *Client) CloseSession(ctx context.Context, sessionID string, actualUnits
 	}
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/close", body, &out); err != nil {
+		c.telemetry.Emit(EmitTelemetryOptions{
+			EventType:     "session.error",
+			CorrelationID: sessionID,
+			Payload: map[string]interface{}{
+				"phase":       "close",
+				"error_class": fmt.Sprintf("%T", err),
+				"error_code":  errorCode(err),
+			},
+		})
 		return nil, err
 	}
+	c.telemetry.Emit(EmitTelemetryOptions{
+		EventType:     "session.closed",
+		CorrelationID: sessionID,
+		Payload: map[string]interface{}{
+			"actual_units":     out["actual_units"],
+			"billed_value_wei": out["billed_value_wei"],
+			"refund_wei":       out["refund_wei"],
+			"outcome":          out["outcome"],
+			"closed_by":        "customer",
+		},
+	})
 	return out, nil
 }
 

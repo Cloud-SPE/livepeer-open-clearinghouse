@@ -1,4 +1,5 @@
 import { fromResponse } from "./errors.js";
+import { TelemetryEmitter } from "./telemetry.js";
 import type { components } from "./_generated/openapi.js";
 
 // ---- Generated-from-OpenAPI types ----------------------------------------
@@ -77,6 +78,8 @@ export class OpenClearinghouseClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly sdkIdentity: string;
+  private readonly _telemetry: TelemetryEmitter;
+  private telemetryInitDone = false;
 
   constructor(opts: ClientOptions) {
     if (!opts.apiKey.startsWith("pymth_")) {
@@ -87,6 +90,44 @@ export class OpenClearinghouseClient {
     this.fetchImpl = opts.fetch ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
     this.sdkIdentity = opts.sdkIdentity ?? SDK_IDENTITY;
+    // Telemetry is mandatory — exec-plan 002 §"SDK telemetry (v1)" has
+    // no opt-out. Customers route to operator-side ingest filtering
+    // for any allow-list / quiet-list behavior.
+    this._telemetry = new TelemetryEmitter({
+      fetch: this.fetchImpl,
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey,
+      sdkIdentity: this.sdkIdentity,
+    });
+  }
+
+  /** Direct access for advanced cases (e.g. customer-side emits). */
+  get telemetry(): TelemetryEmitter {
+    return this._telemetry;
+  }
+
+  /** Drain the telemetry buffer with one final flush. Idempotent. */
+  async close(): Promise<void> {
+    await this._telemetry.close();
+  }
+
+  private emitSdkInitOnce(): void {
+    if (this.telemetryInitDone) {
+      return;
+    }
+    this.telemetryInitDone = true;
+    this._telemetry.emit({
+      eventType: "sdk.init",
+      payload: {
+        lang: SDK_LANG,
+        semver: SDK_VERSION,
+        git_sha7: SDK_GIT_SHA,
+        runtime_version: `node/${process.version.replace(/^v/, "")}`,
+        os: process.platform,
+        os_version: process.arch,
+        process_id: process.pid,
+      },
+    });
   }
 
   // ---- discovery ----
@@ -135,8 +176,20 @@ export class OpenClearinghouseClient {
   }): Promise<JobResult> {
     const requestId = args.requestId ?? crypto.randomUUID();
 
+    this.emitSdkInitOnce();
+    this._telemetry.emit({
+      eventType: "request.mint_started",
+      correlationId: requestId,
+      payload: {
+        capability: args.capability,
+        offering: args.offering,
+        estimated_units: args.estimatedUnits,
+      },
+    });
+    const mintStartedNs = process.hrtime.bigint();
+
     // 1. Open the job
-    const job = await this.request<{
+    let job: {
       job_id: string;
       work_id: string;
       broker_url: string;
@@ -146,11 +199,36 @@ export class OpenClearinghouseClient {
       funded_value_wei: number;
       settle_endpoint: string;
       opened_at: string;
-    }>("POST", "/v1/jobs", {
-      capability: args.capability,
-      offering: args.offering,
-      estimated_units: args.estimatedUnits,
-      max_total_units: args.maxTotalUnits ?? null,
+    };
+    try {
+      job = await this.request<typeof job>("POST", "/v1/jobs", {
+        capability: args.capability,
+        offering: args.offering,
+        estimated_units: args.estimatedUnits,
+        max_total_units: args.maxTotalUnits ?? null,
+      });
+    } catch (exc) {
+      this._telemetry.emit({
+        eventType: "request.error",
+        correlationId: requestId,
+        payload: {
+          phase: "mint",
+          error_class: (exc as Error)?.name ?? "unknown",
+          error_code: (exc as { code?: string })?.code ?? null,
+        },
+      });
+      throw exc;
+    }
+    this._telemetry.emit({
+      eventType: "request.mint_completed",
+      correlationId: requestId,
+      payload: {
+        latency_ms: Number(
+          (process.hrtime.bigint() - mintStartedNs) / 1_000_000n,
+        ),
+        funded_value_wei: job.funded_value_wei,
+        mode: job.mode,
+      },
     });
 
     // 2. Call the broker directly with the minted envelope
@@ -198,7 +276,12 @@ export class OpenClearinghouseClient {
     const actualUnits = workUnitsStr ? Number.parseInt(workUnitsStr, 10) : 0;
 
     // 4. Settle. Best-effort — if this fails, LOC's janitor catches it.
-    const settled = await this.request<{
+    this._telemetry.emit({
+      eventType: "request.settle_started",
+      correlationId: requestId,
+    });
+    const settleStartedNs = process.hrtime.bigint();
+    let settled: {
       job_id: string;
       work_id: string;
       actual_units: number;
@@ -207,8 +290,53 @@ export class OpenClearinghouseClient {
       outcome: string;
       closed_at: string;
       cap_status: CapStatus;
-    }>("POST", `/v1/jobs/${job.job_id}/settle`, {
-      actual_units: actualUnits,
+    };
+    try {
+      settled = await this.request<typeof settled>(
+        "POST",
+        `/v1/jobs/${job.job_id}/settle`,
+        {
+          actual_units: actualUnits,
+        },
+      );
+    } catch (exc) {
+      this._telemetry.emit({
+        eventType: "request.error",
+        correlationId: requestId,
+        payload: {
+          phase: "settle",
+          error_class: (exc as Error)?.name ?? "unknown",
+          error_code: (exc as { code?: string })?.code ?? null,
+        },
+      });
+      throw exc;
+    }
+    this._telemetry.emit({
+      eventType: "request.settle_completed",
+      correlationId: requestId,
+      payload: {
+        latency_ms: Number(
+          (process.hrtime.bigint() - settleStartedNs) / 1_000_000n,
+        ),
+        refund_wei: settled.refund_wei,
+        billed_value_wei: settled.billed_value_wei,
+        outcome: settled.outcome,
+      },
+    });
+    this._telemetry.emit({
+      eventType: "request.completed",
+      correlationId: requestId,
+      payload: {
+        capability: args.capability,
+        offering: args.offering,
+        mode: job.mode,
+        estimated_units: args.estimatedUnits,
+        actual_units: settled.actual_units,
+        billed_value_wei: settled.billed_value_wei,
+        refund_wei: settled.refund_wei,
+        outcome: settled.outcome,
+        broker_url: job.broker_url,
+      },
     });
 
     // Parse body
@@ -249,6 +377,7 @@ export class OpenClearinghouseClient {
     estimatedRunwayUnits: number;
     maxTotalUnits: number;
   }): Promise<SessionHandle> {
+    this.emitSdkInitOnce();
     const data = await this.request<{
       session_id: string;
       work_id: string;
@@ -265,6 +394,17 @@ export class OpenClearinghouseClient {
       offering: args.offering,
       estimated_runway_units: args.estimatedRunwayUnits,
       max_total_units: args.maxTotalUnits,
+    });
+    this._telemetry.emit({
+      eventType: "session.opened",
+      correlationId: data.session_id,
+      payload: {
+        capability: args.capability,
+        offering: args.offering,
+        mode: data.mode,
+        max_total_units: args.maxTotalUnits,
+        initial_runway_units: args.estimatedRunwayUnits,
+      },
     });
     return {
       sessionId: data.session_id,
@@ -283,9 +423,56 @@ export class OpenClearinghouseClient {
     sessionId: string,
     opts: { observedConsumedUnits?: number } = {},
   ): Promise<unknown> {
-    return this.request("POST", `/v1/sessions/${sessionId}/refill`, {
-      observed_consumed_units: opts.observedConsumedUnits ?? null,
+    this._telemetry.emit({
+      eventType: "session.refill_requested",
+      correlationId: sessionId,
     });
+    const refillStartedNs = process.hrtime.bigint();
+    let result: Record<string, unknown>;
+    try {
+      result = (await this.request<Record<string, unknown>>(
+        "POST",
+        `/v1/sessions/${sessionId}/refill`,
+        { observed_consumed_units: opts.observedConsumedUnits ?? null },
+      )) as Record<string, unknown>;
+    } catch (exc) {
+      const status = (exc as { status?: number })?.status;
+      if (status === 402) {
+        const details = (exc as { details?: Record<string, unknown> })?.details ?? {};
+        this._telemetry.emit({
+          eventType: "session.refill_denied",
+          correlationId: sessionId,
+          payload: {
+            which: details["which"] ?? null,
+            remaining_wei: details["remaining_wei"] ?? null,
+          },
+        });
+      } else {
+        this._telemetry.emit({
+          eventType: "session.error",
+          correlationId: sessionId,
+          payload: {
+            phase: "refill",
+            error_class: (exc as Error)?.name ?? "unknown",
+            error_code: (exc as { code?: string })?.code ?? null,
+          },
+        });
+      }
+      throw exc;
+    }
+    this._telemetry.emit({
+      eventType: "session.refill_granted",
+      correlationId: sessionId,
+      payload: {
+        latency_ms: Number(
+          (process.hrtime.bigint() - refillStartedNs) / 1_000_000n,
+        ),
+        refill_seq: result["refill_seq"] ?? null,
+        funded_value_wei: result["funded_value_wei"] ?? null,
+        cap_status: result["cap_status"] ?? null,
+      },
+    });
+    return result;
   }
 
   async closeSession(
@@ -295,7 +482,37 @@ export class OpenClearinghouseClient {
     const body: Record<string, unknown> = { actual_units: args.actualUnits };
     if (args.outcome !== undefined) body.outcome = args.outcome;
     if (args.settlement !== undefined) body.settlement = args.settlement;
-    return this.request("POST", `/v1/sessions/${sessionId}/close`, body);
+    let result: Record<string, unknown>;
+    try {
+      result = (await this.request<Record<string, unknown>>(
+        "POST",
+        `/v1/sessions/${sessionId}/close`,
+        body,
+      )) as Record<string, unknown>;
+    } catch (exc) {
+      this._telemetry.emit({
+        eventType: "session.error",
+        correlationId: sessionId,
+        payload: {
+          phase: "close",
+          error_class: (exc as Error)?.name ?? "unknown",
+          error_code: (exc as { code?: string })?.code ?? null,
+        },
+      });
+      throw exc;
+    }
+    this._telemetry.emit({
+      eventType: "session.closed",
+      correlationId: sessionId,
+      payload: {
+        actual_units: Number(result["actual_units"] ?? 0),
+        billed_value_wei: Number(result["billed_value_wei"] ?? 0),
+        refund_wei: Number(result["refund_wei"] ?? 0),
+        outcome: result["outcome"] ?? null,
+        closed_by: "customer",
+      },
+    });
+    return result;
   }
 
   async getSessionStatus(sessionId: string): Promise<unknown> {

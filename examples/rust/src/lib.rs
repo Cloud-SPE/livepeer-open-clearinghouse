@@ -7,6 +7,7 @@
 mod client;
 mod errors;
 mod session_runner;
+mod telemetry;
 
 pub use client::{
     Capability, CapStatus, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
@@ -20,3 +21,4 @@ pub use session_runner::{
     MODE_LIVE_SESSION_GATEWAY_INGEST, MODE_LIVE_SESSION_REMOTE_RUNNER,
     MODE_RTMP_INGRESS_HLS_EGRESS, MODE_SESSION_CONTROL_PLUS_MEDIA, MODE_WS_REALTIME,
 };
+pub use telemetry::{EmitOptions, EmitterConfig, TelemetryEmitter};

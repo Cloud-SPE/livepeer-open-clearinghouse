@@ -117,5 +117,10 @@ try {
   fail("balance auth model", e);
 }
 
+// Drain telemetry before exiting — otherwise the buffered events
+// (sdk.init, request.mint_started, request.mint_completed, settle.*,
+// request.completed) never flush.
+await client.close();
+
 console.log(`\n=== ${failures === 0 ? "OK" : "FAILED (" + failures + ")"}  ===`);
 process.exit(failures === 0 ? 0 : 1);

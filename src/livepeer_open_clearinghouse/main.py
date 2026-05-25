@@ -34,6 +34,9 @@ from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_s
 from livepeer_open_clearinghouse.errors import register_handlers
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_scope
+from livepeer_open_clearinghouse.providers.http.gzip_request import (
+    GzipRequestMiddleware,
+)
 from livepeer_open_clearinghouse.providers.scheduler import (
     register_interval_job,
     shutdown_scheduler,
@@ -171,6 +174,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+
+    # Decompress gzipped request bodies before they reach the handler.
+    # SDK telemetry batches gzip when > 1 KiB (exec-plan 002 §"Mechanism").
+    app.add_middleware(GzipRequestMiddleware)
 
     # SessionMiddleware backs authlib's OAuth-state storage. It uses a
     # cookie distinct from our own open_clearinghouse_session (which is

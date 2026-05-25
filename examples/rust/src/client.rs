@@ -136,10 +136,30 @@ impl ClientOptions {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct Client {
     base_url: String,
     http: reqwest::Client,
+    telemetry: std::sync::Arc<crate::telemetry::TelemetryEmitter>,
+    init_emitted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Clone for Client {
+    fn clone(&self) -> Self {
+        Self {
+            base_url: self.base_url.clone(),
+            http: self.http.clone(),
+            telemetry: self.telemetry.clone(),
+            init_emitted: self.init_emitted.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,10 +215,53 @@ impl Client {
             .default_headers(headers)
             .build()
             .map_err(|e| OpenClearinghouseError::transport(format!("build http client: {e}")))?;
+        let base_url = opts.base_url.trim_end_matches('/').to_string();
+        let telemetry = crate::telemetry::TelemetryEmitter::new(
+            http.clone(),
+            &base_url,
+            opts.api_key.clone(),
+            opts.sdk_identity.clone(),
+            crate::telemetry::EmitterConfig::default(),
+        );
         Ok(Self {
-            base_url: opts.base_url.trim_end_matches('/').to_string(),
+            init_emitted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            telemetry,
+            base_url,
             http,
         })
+    }
+
+    /// Public access for advanced callers; most users never touch this.
+    #[must_use]
+    pub fn telemetry(&self) -> &std::sync::Arc<crate::telemetry::TelemetryEmitter> {
+        &self.telemetry
+    }
+
+    /// Drain the telemetry buffer with one last flush. Idempotent.
+    pub async fn close(&self) {
+        self.telemetry.close().await;
+    }
+
+    async fn emit_sdk_init_once(&self) {
+        if !self
+            .init_emitted
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.telemetry
+                .emit(
+                    "sdk.init",
+                    crate::telemetry::EmitOptions {
+                        payload: Some(serde_json::json!({
+                            "lang": SDK_LANG,
+                            "semver": SDK_VERSION,
+                            "git_sha7": SDK_GIT_SHA,
+                            "runtime_version": format!("rust/{}", env!("CARGO_PKG_VERSION")),
+                        })),
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
     }
 
     // ---- discovery ----
@@ -242,6 +305,23 @@ impl Client {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let spec_version = in_.spec_version.unwrap_or("0.1");
 
+        self.emit_sdk_init_once().await;
+        self.telemetry
+            .emit(
+                "request.mint_started",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(request_id.clone()),
+                    payload: Some(serde_json::json!({
+                        "capability": in_.capability,
+                        "offering": in_.offering,
+                        "estimated_units": in_.estimated_units,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let mint_started = std::time::Instant::now();
+
         // 1. Open the job
         let open_body = serde_json::json!({
             "capability": in_.capability,
@@ -249,9 +329,43 @@ impl Client {
             "estimated_units": in_.estimated_units,
             "max_total_units": in_.max_total_units,
         });
-        let job: JobOpenResponse = self
+        let job: JobOpenResponse = match self
             .request(Method::POST, "/v1/jobs", Some(&open_body))
-            .await?;
+            .await
+        {
+            Ok(j) => j,
+            Err(e) => {
+                self.telemetry
+                    .emit(
+                        "request.error",
+                        crate::telemetry::EmitOptions {
+                            correlation_id: Some(request_id.clone()),
+                            payload: Some(serde_json::json!({
+                                "phase": "mint",
+                                "error_code": telemetry_error_code(&e),
+                            })),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
+        self.telemetry
+            .emit(
+                "request.mint_completed",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(request_id.clone()),
+                    #[allow(clippy::cast_possible_truncation)]
+                    payload: Some(serde_json::json!({
+                        "latency_ms": mint_started.elapsed().as_millis() as u64,
+                        "funded_value_wei": job.funded_value_wei,
+                        "mode": job.mode,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
 
         // 2. Call the broker directly
         let endpoint = format!("{}/v1/cap", job.broker_url.trim_end_matches('/'));
@@ -303,10 +417,76 @@ impl Client {
         };
 
         // 3. Settle
+        self.telemetry
+            .emit(
+                "request.settle_started",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(request_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let settle_started = std::time::Instant::now();
         let settle_body = serde_json::json!({ "actual_units": actual_units });
-        let settled: JobSettleResponse = self
+        let settled: JobSettleResponse = match self
             .request(Method::POST, &job.settle_endpoint, Some(&settle_body))
-            .await?;
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                self.telemetry
+                    .emit(
+                        "request.error",
+                        crate::telemetry::EmitOptions {
+                            correlation_id: Some(request_id.clone()),
+                            payload: Some(serde_json::json!({
+                                "phase": "settle",
+                                "error_code": telemetry_error_code(&e),
+                            })),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let settle_latency_ms = settle_started.elapsed().as_millis() as u64;
+        self.telemetry
+            .emit(
+                "request.settle_completed",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(request_id.clone()),
+                    payload: Some(serde_json::json!({
+                        "latency_ms": settle_latency_ms,
+                        "refund_wei": settled.refund_wei,
+                        "billed_value_wei": settled.billed_value_wei,
+                        "outcome": settled.outcome,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
+        self.telemetry
+            .emit(
+                "request.completed",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(request_id.clone()),
+                    payload: Some(serde_json::json!({
+                        "capability": in_.capability,
+                        "offering": in_.offering,
+                        "mode": job.mode,
+                        "estimated_units": in_.estimated_units,
+                        "actual_units": settled.actual_units,
+                        "billed_value_wei": settled.billed_value_wei,
+                        "refund_wei": settled.refund_wei,
+                        "outcome": settled.outcome,
+                        "broker_url": job.broker_url,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
 
         Ok(JobResult {
             body,
@@ -329,7 +509,27 @@ impl Client {
         &self,
         in_: OpenSessionInput<'_>,
     ) -> Result<SessionHandle, OpenClearinghouseError> {
-        self.request(Method::POST, "/v1/sessions", Some(&in_)).await
+        self.emit_sdk_init_once().await;
+        let handle: SessionHandle = self
+            .request(Method::POST, "/v1/sessions", Some(&in_))
+            .await?;
+        self.telemetry
+            .emit(
+                "session.opened",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(handle.session_id.clone()),
+                    payload: Some(serde_json::json!({
+                        "capability": in_.capability,
+                        "offering": in_.offering,
+                        "mode": handle.mode,
+                        "max_total_units": in_.max_total_units,
+                        "initial_runway_units": in_.estimated_runway_units,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
+        Ok(handle)
     }
 
     pub async fn refill_session(
@@ -337,15 +537,81 @@ impl Client {
         session_id: &str,
         observed_consumed_units: Option<u64>,
     ) -> Result<Value, OpenClearinghouseError> {
+        self.telemetry
+            .emit(
+                "session.refill_requested",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(session_id.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let started = std::time::Instant::now();
         let body = serde_json::json!({
             "observed_consumed_units": observed_consumed_units,
         });
-        self.request(
-            Method::POST,
-            &format!("/v1/sessions/{session_id}/refill"),
-            Some(&body),
-        )
-        .await
+        let result: Value = match self
+            .request(
+                Method::POST,
+                &format!("/v1/sessions/{session_id}/refill"),
+                Some(&body),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                if let OpenClearinghouseError::Api { status, details, .. } = &e {
+                    if *status == 402 {
+                        self.telemetry
+                            .emit(
+                                "session.refill_denied",
+                                crate::telemetry::EmitOptions {
+                                    correlation_id: Some(session_id.to_string()),
+                                    payload: Some(serde_json::json!({
+                                        "which": details.get("which"),
+                                        "remaining_wei": details.get("remaining_wei"),
+                                    })),
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                    } else {
+                        self.telemetry
+                            .emit(
+                                "session.error",
+                                crate::telemetry::EmitOptions {
+                                    correlation_id: Some(session_id.to_string()),
+                                    payload: Some(serde_json::json!({
+                                        "phase": "refill",
+                                        "error_code": telemetry_error_code(&e),
+                                    })),
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                    }
+                }
+                return Err(e);
+            }
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let latency_ms = started.elapsed().as_millis() as u64;
+        self.telemetry
+            .emit(
+                "session.refill_granted",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(session_id.to_string()),
+                    payload: Some(serde_json::json!({
+                        "latency_ms": latency_ms,
+                        "refill_seq": result.get("refill_seq"),
+                        "funded_value_wei": result.get("funded_value_wei"),
+                        "cap_status": result.get("cap_status"),
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
+        Ok(result)
     }
 
     pub async fn close_session(
@@ -362,12 +628,49 @@ impl Client {
         if let Some(s) = settlement {
             body["settlement"] = s;
         }
-        self.request(
-            Method::POST,
-            &format!("/v1/sessions/{session_id}/close"),
-            Some(&body),
-        )
-        .await
+        let result: Value = match self
+            .request(
+                Method::POST,
+                &format!("/v1/sessions/{session_id}/close"),
+                Some(&body),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.telemetry
+                    .emit(
+                        "session.error",
+                        crate::telemetry::EmitOptions {
+                            correlation_id: Some(session_id.to_string()),
+                            payload: Some(serde_json::json!({
+                                "phase": "close",
+                                "error_code": telemetry_error_code(&e),
+                            })),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
+        self.telemetry
+            .emit(
+                "session.closed",
+                crate::telemetry::EmitOptions {
+                    correlation_id: Some(session_id.to_string()),
+                    payload: Some(serde_json::json!({
+                        "actual_units": result.get("actual_units"),
+                        "billed_value_wei": result.get("billed_value_wei"),
+                        "refund_wei": result.get("refund_wei"),
+                        "outcome": result.get("outcome"),
+                        "closed_by": "customer",
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await;
+        Ok(result)
     }
 
     pub async fn get_session_status(
@@ -414,6 +717,13 @@ impl Client {
         let body_value: Value =
             serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(format!("HTTP {}", status.as_u16())));
         Err(OpenClearinghouseError::from_response(status.as_u16(), body_value))
+    }
+}
+
+fn telemetry_error_code(err: &OpenClearinghouseError) -> Option<String> {
+    match err {
+        OpenClearinghouseError::Api { code, .. } => code.clone(),
+        _ => None,
     }
 }
 

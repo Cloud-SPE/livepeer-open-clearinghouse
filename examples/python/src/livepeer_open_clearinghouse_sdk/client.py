@@ -23,7 +23,11 @@ as the ``Livepeer-Payment`` header.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import os
+import platform
+import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -31,6 +35,7 @@ from typing import Any, cast
 
 import httpx
 
+from livepeer_open_clearinghouse_sdk import telemetry as telemetry_module
 from livepeer_open_clearinghouse_sdk._generated import (
     CapabilityView as Capability,
 )
@@ -44,6 +49,14 @@ from livepeer_open_clearinghouse_sdk._generated import (
     RouteView,  # noqa: F401 — re-exported in __init__.py
 )
 from livepeer_open_clearinghouse_sdk.errors import OpenClearinghouseError, from_response
+
+
+def _http2_available() -> bool:
+    try:
+        import h2  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 __all_generated__ = ("Capability", "Offering", "Orchestrator", "RouteView")
 
@@ -168,8 +181,51 @@ class OpenClearinghouseClient:
                 "X-API-Key": api_key,
                 "Livepeer-Open-Clearinghouse-SDK": sdk_identity,
             },
+            # HTTP/2 connection reuse for telemetry batches when the h2
+            # extra is installed (`pip install httpx[http2]`). Falls
+            # back to HTTP/1.1 keepalive otherwise — telemetry still
+            # works, just opens a TCP connection per batch.
+            http2=_http2_available(),
         )
         self._owns_http = http is None
+        # Telemetry: mandatory per exec-plan 002 §"SDK telemetry (v1)".
+        # No opt-out. Buffer + flush loop start lazily on first emit
+        # (which is sdk.init below) so we don't need an event loop yet.
+        self._telemetry = telemetry_module.TelemetryEmitter(http=self._http)
+        self._telemetry_started = False
+        self._sdk_identity = sdk_identity
+
+    def _ensure_telemetry_started(self) -> None:
+        """First call from inside a running event loop kicks off the
+        background flush task and emits sdk.init."""
+        if self._telemetry_started:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop yet — try again on the next operation
+        self._telemetry.start()
+        self._telemetry_started = True
+        # sdk.init carries the universal fields of the v1 contract;
+        # the operator-side ingest enrichment fills geo_region etc.
+        self._telemetry.emit(
+            event_type="sdk.init",
+            payload={
+                "lang": SDK_LANG,
+                "semver": SDK_VERSION,
+                "git_sha7": SDK_GIT_SHA,
+                "runtime_version": f"python/{platform.python_version()}",
+                "os": platform.system().lower(),
+                "os_version": platform.release(),
+                "process_id": os.getpid(),
+            },
+        )
+
+    @property
+    def telemetry(self) -> telemetry_module.TelemetryEmitter:
+        """Direct access for advanced cases (e.g. customer-side emits
+        from outside the SDK). Most users never touch this."""
+        return self._telemetry
 
     async def __aenter__(self) -> OpenClearinghouseClient:
         return self
@@ -178,6 +234,9 @@ class OpenClearinghouseClient:
         await self.aclose()
 
     async def aclose(self) -> None:
+        # Drain the telemetry buffer before closing the HTTP client —
+        # otherwise the final flush has no transport.
+        await self._telemetry.aclose()
         if self._owns_http:
             await self._http.aclose()
 
@@ -235,17 +294,52 @@ class OpenClearinghouseClient:
         req_id = request_id or str(uuid.uuid4())
         timeout = timeout if timeout is not None else httpx.Timeout(60.0)
 
-        # 1. Open the job
-        open_resp = await self._http.post(
-            "/v1/jobs",
-            json={
+        self._ensure_telemetry_started()
+        self._telemetry.emit(
+            event_type="request.mint_started",
+            correlation_id=req_id,
+            payload={
                 "capability": capability,
                 "offering": offering,
                 "estimated_units": estimated_units,
-                "max_total_units": max_total_units,
             },
         )
-        job = self._unwrap(open_resp)
+        mint_started_ns = time.monotonic_ns()
+
+        # 1. Open the job
+        try:
+            open_resp = await self._http.post(
+                "/v1/jobs",
+                json={
+                    "capability": capability,
+                    "offering": offering,
+                    "estimated_units": estimated_units,
+                    "max_total_units": max_total_units,
+                },
+            )
+            job = self._unwrap(open_resp)
+        except Exception as exc:
+            self._telemetry.emit(
+                event_type="request.error",
+                correlation_id=req_id,
+                payload={
+                    "phase": "mint",
+                    "error_class": exc.__class__.__name__,
+                    "error_code": getattr(exc, "code", None),
+                },
+            )
+            raise
+        mint_completed_ns = time.monotonic_ns()
+        self._telemetry.emit(
+            event_type="request.mint_completed",
+            correlation_id=req_id,
+            payload={
+                "latency_ms": (mint_completed_ns - mint_started_ns) // 1_000_000,
+                "loc_status_code": open_resp.status_code,
+                "funded_value_wei": job.get("funded_value_wei"),
+                "mode": job.get("mode"),
+            },
+        )
         job_id = uuid.UUID(job["job_id"])
         broker_url = job["broker_url"]
         envelope = job["payment_envelope"]
@@ -306,10 +400,53 @@ class OpenClearinghouseClient:
                 )
             except (ValueError, KeyError):
                 pass  # malformed — let LOC's daemon reconciliation handle it
-        settle_resp = await self._http.post(
-            settle_endpoint, json=settlement_payload
+        self._telemetry.emit(
+            event_type="request.settle_started",
+            correlation_id=req_id,
         )
-        settled = self._unwrap(settle_resp)
+        settle_started_ns = time.monotonic_ns()
+        try:
+            settle_resp = await self._http.post(
+                settle_endpoint, json=settlement_payload
+            )
+            settled = self._unwrap(settle_resp)
+        except Exception as exc:
+            self._telemetry.emit(
+                event_type="request.error",
+                correlation_id=req_id,
+                payload={
+                    "phase": "settle",
+                    "error_class": exc.__class__.__name__,
+                    "error_code": getattr(exc, "code", None),
+                },
+            )
+            raise
+        self._telemetry.emit(
+            event_type="request.settle_completed",
+            correlation_id=req_id,
+            payload={
+                "latency_ms": (time.monotonic_ns() - settle_started_ns) // 1_000_000,
+                "loc_status_code": settle_resp.status_code,
+                "refund_wei": int(settled["refund_wei"]),
+                "billed_value_wei": int(settled["billed_value_wei"]),
+                "outcome": settled["outcome"],
+            },
+        )
+        self._telemetry.emit(
+            event_type="request.completed",
+            correlation_id=req_id,
+            payload={
+                "capability": capability,
+                "offering": offering,
+                "mode": mode,
+                "estimated_units": estimated_units,
+                "actual_units": int(settled["actual_units"]),
+                "billed_value_wei": int(settled["billed_value_wei"]),
+                "refund_wei": int(settled["refund_wei"]),
+                "outcome": settled["outcome"],
+                "broker_url": broker_url,
+            },
+        )
 
         return JobResult(
             body=parsed,
@@ -345,6 +482,7 @@ class OpenClearinghouseClient:
         Use :meth:`refill_session` and :meth:`close_session` for the
         LOC-side refill / close calls.
         """
+        self._ensure_telemetry_started()
         r = await self._http.post(
             "/v1/sessions",
             json={
@@ -355,7 +493,7 @@ class OpenClearinghouseClient:
             },
         )
         data = self._unwrap(r)
-        return SessionHandle(
+        handle = SessionHandle(
             session_id=uuid.UUID(data["session_id"]),
             work_id=data["work_id"],
             broker_url=data["broker_url"],
@@ -366,6 +504,18 @@ class OpenClearinghouseClient:
             refill_endpoint=data["refill_endpoint"],
             close_endpoint=data["close_endpoint"],
         )
+        self._telemetry.emit(
+            event_type="session.opened",
+            correlation_id=handle.session_id,
+            payload={
+                "capability": capability,
+                "offering": offering,
+                "mode": handle.mode,
+                "max_total_units": max_total_units,
+                "initial_runway_units": estimated_runway_units,
+            },
+        )
+        return handle
 
     async def refill_session(
         self,
@@ -380,11 +530,52 @@ class OpenClearinghouseClient:
         ``session-control-plus-media@v0``, HTTP POST to
         ``control.topup_url`` for the ``live-session-*`` modes).
         """
-        r = await self._http.post(
-            f"/v1/sessions/{session_id}/refill",
-            json={"observed_consumed_units": observed_consumed_units},
+        self._telemetry.emit(
+            event_type="session.refill_requested",
+            correlation_id=str(session_id),
         )
-        return self._unwrap(r)
+        refill_started_ns = time.monotonic_ns()
+        try:
+            r = await self._http.post(
+                f"/v1/sessions/{session_id}/refill",
+                json={"observed_consumed_units": observed_consumed_units},
+            )
+            result = self._unwrap(r)
+        except OpenClearinghouseError as exc:
+            if exc.status == 402:
+                # session.refill_denied is one of the critical events that
+                # bypasses the batch timer — operators need to see it now.
+                details = exc.details if isinstance(exc.details, dict) else {}
+                self._telemetry.emit(
+                    event_type="session.refill_denied",
+                    correlation_id=str(session_id),
+                    payload={
+                        "which": details.get("which"),
+                        "remaining_wei": details.get("remaining_wei"),
+                    },
+                )
+            else:
+                self._telemetry.emit(
+                    event_type="session.error",
+                    correlation_id=str(session_id),
+                    payload={
+                        "phase": "refill",
+                        "error_class": exc.__class__.__name__,
+                        "error_code": exc.code,
+                    },
+                )
+            raise
+        self._telemetry.emit(
+            event_type="session.refill_granted",
+            correlation_id=str(session_id),
+            payload={
+                "latency_ms": (time.monotonic_ns() - refill_started_ns) // 1_000_000,
+                "refill_seq": result.get("refill_seq"),
+                "funded_value_wei": result.get("funded_value_wei"),
+                "cap_status": result.get("cap_status"),
+            },
+        )
+        return result
 
     async def close_session(
         self,
@@ -400,8 +591,33 @@ class OpenClearinghouseClient:
             body["outcome"] = outcome
         if settlement is not None:
             body["settlement"] = settlement
-        r = await self._http.post(f"/v1/sessions/{session_id}/close", json=body)
-        return self._unwrap(r)
+        try:
+            r = await self._http.post(f"/v1/sessions/{session_id}/close", json=body)
+            result = self._unwrap(r)
+        except Exception as exc:
+            self._telemetry.emit(
+                event_type="session.error",
+                correlation_id=str(session_id),
+                payload={
+                    "phase": "close",
+                    "error_class": exc.__class__.__name__,
+                    "error_code": getattr(exc, "code", None),
+                },
+            )
+            raise
+        # session.closed is critical — flushes immediately.
+        self._telemetry.emit(
+            event_type="session.closed",
+            correlation_id=str(session_id),
+            payload={
+                "actual_units": int(result.get("actual_units", 0)),
+                "billed_value_wei": int(result.get("billed_value_wei", 0)),
+                "refund_wei": int(result.get("refund_wei", 0)),
+                "outcome": result.get("outcome"),
+                "closed_by": "customer",
+            },
+        )
+        return result
 
     async def get_session_status(
         self, session_id: uuid.UUID | str
