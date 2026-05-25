@@ -184,10 +184,7 @@ async fn ws_realtime_bounded_fires_winddown_only() {
     let client = loc_client(&loc);
     let wd_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let wd_clone = wd_seen.clone();
-    let mut opts = SessionRunnerOptions::new(
-        client,
-        make_handle(ws_url, "ws-realtime@v0", sid),
-    );
+    let mut opts = SessionRunnerOptions::new(client, make_handle(ws_url, "ws-realtime@v0", sid));
     opts.on_winddown_warning = Some(Arc::new(move |e| {
         let wd = wd_clone.clone();
         Box::pin(async move {
@@ -208,7 +205,10 @@ async fn ws_realtime_bounded_fires_winddown_only() {
     .expect("timed out waiting for winddown");
 
     let _ = runner.close(0).await.unwrap();
-    assert_eq!(wd_seen.lock().await.clone().unwrap(), "ws_session_exhausting");
+    assert_eq!(
+        wd_seen.lock().await.clone().unwrap(),
+        "ws_session_exhausting"
+    );
 }
 
 #[tokio::test]
@@ -285,7 +285,9 @@ async fn unsupported_mode_raises_at_start() {
         ),
     ))
     .await;
-    let Err(err) = res else { panic!("expected error") };
+    let Err(err) = res else {
+        panic!("expected error")
+    };
     assert!(matches!(err, OpenClearinghouseError::Config(ref m) if m.contains("unsupported mode")));
 }
 
@@ -306,9 +308,7 @@ async fn close_is_idempotent() {
         .await;
 
     let (ws_url, _ws_task) = start_ws_server(Arc::new(move |mut ws| {
-        Box::pin(async move {
-            while ws.next().await.is_some() {}
-        })
+        Box::pin(async move { while ws.next().await.is_some() {} })
     }))
     .await;
 

@@ -42,12 +42,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Ok(r) => r,
         Err(OpenClearinghouseError::Api {
-            kind, code, message, ..
+            kind,
+            code,
+            message,
+            ..
         }) => {
             let code_s = code.unwrap_or_default();
             match kind {
                 ErrorKind::InsufficientCredit => println!("not enough credit"),
-                ErrorKind::NoRouteAvailable => println!("no orch advertising this capability/offering"),
+                ErrorKind::NoRouteAvailable => {
+                    println!("no orch advertising this capability/offering")
+                }
                 ErrorKind::RateLimited => println!("rate limited"),
                 _ => println!("loc error: {code_s} - {message}"),
             }

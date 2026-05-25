@@ -10,8 +10,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flate2::Compression;
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
@@ -135,7 +135,9 @@ impl TelemetryEmitter {
             event_schema_version: opts.event_schema_version.unwrap_or(1),
             correlation_id: opts.correlation_id,
             client_ts: opts.client_ts.unwrap_or_else(now_rfc3339),
-            payload: opts.payload.unwrap_or(Value::Object(serde_json::Map::new())),
+            payload: opts
+                .payload
+                .unwrap_or(Value::Object(serde_json::Map::new())),
         };
         let mut inner = self.inner.lock().await;
         if inner.closed {

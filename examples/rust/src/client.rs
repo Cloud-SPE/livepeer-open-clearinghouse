@@ -560,7 +560,10 @@ impl Client {
         {
             Ok(v) => v,
             Err(e) => {
-                if let OpenClearinghouseError::Api { status, details, .. } = &e {
+                if let OpenClearinghouseError::Api {
+                    status, details, ..
+                } = &e
+                {
                     if *status == 402 {
                         self.telemetry
                             .emit(
@@ -714,9 +717,12 @@ impl Client {
             }
             return serde_json::from_slice(&bytes).map_err(Into::into);
         }
-        let body_value: Value =
-            serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(format!("HTTP {}", status.as_u16())));
-        Err(OpenClearinghouseError::from_response(status.as_u16(), body_value))
+        let body_value: Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(format!("HTTP {}", status.as_u16())));
+        Err(OpenClearinghouseError::from_response(
+            status.as_u16(),
+            body_value,
+        ))
     }
 }
 

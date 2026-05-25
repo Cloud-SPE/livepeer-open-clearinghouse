@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -142,7 +143,7 @@ def _event_view(row: TelemetryEvent) -> EventView:
     )
 
 
-@router.get("/events")
+@router.get("/events", response_model=None)
 async def query_events_endpoint(
     auth: CurrentApiKeyDep,
     db: SessionDep,
@@ -165,7 +166,7 @@ async def query_events_endpoint(
     fmt: Annotated[Literal["json", "ndjson"], Query(alias="format")] = "json",
     cursor: Annotated[str | None, Query()] = None,
     page_size: Annotated[int | None, Query(ge=1, le=5000)] = None,
-):
+) -> EventList | StreamingResponse:
     """List the calling API key's telemetry events within ``[from, to]``.
 
     Scoped strictly to the calling key — customers cannot see another
@@ -274,8 +275,8 @@ portal_router = APIRouter(prefix="/v1/accounts/me/telemetry", tags=["telemetry"]
 
 def _parse_window_or_400(
     from_ts: str, to_ts: str
-) -> tuple[Any, Any]:
-    from datetime import UTC, datetime  # noqa: PLC0415
+) -> tuple[datetime, datetime]:
+    from datetime import UTC  # noqa: PLC0415
 
     try:
         from_dt = datetime.fromisoformat(from_ts)

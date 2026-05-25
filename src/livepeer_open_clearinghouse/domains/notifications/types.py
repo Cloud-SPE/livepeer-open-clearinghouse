@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -107,7 +108,7 @@ class PortalNotificationView(BaseModel):
 
     id: uuid.UUID
     trigger: str
-    body: dict
+    body: dict[str, Any]
     fired_at: datetime
     dismissed_at: datetime | None
 

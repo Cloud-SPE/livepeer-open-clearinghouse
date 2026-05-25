@@ -84,9 +84,7 @@ async fn submit_job_happy_path() {
         .await;
 
     Mock::given(method("POST"))
-        .and(path(
-            "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
-        ))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
         .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(42)))
         .mount(&loc)
         .await;
@@ -203,7 +201,10 @@ async fn close_session_threads_outcome() {
         .close_session(sid, 100, Some("EXACT"), None)
         .await
         .expect("close_session");
-    assert_eq!(result.get("outcome").and_then(|v| v.as_str()), Some("EXACT"));
+    assert_eq!(
+        result.get("outcome").and_then(|v| v.as_str()),
+        Some("EXACT")
+    );
 }
 
 #[tokio::test]

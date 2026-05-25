@@ -34,7 +34,8 @@ async fn emit_flushes_critical_immediately() {
             ..Default::default()
         },
     );
-    em.emit("session.refill_denied", EmitOptions::default()).await;
+    em.emit("session.refill_denied", EmitOptions::default())
+        .await;
     // Allow the loop to wake.
     tokio::time::sleep(Duration::from_millis(200)).await;
     em.close().await;
@@ -58,8 +59,10 @@ async fn emit_flushes_at_batch_size() {
             ..Default::default()
         },
     );
-    em.emit("request.mint_started", EmitOptions::default()).await;
-    em.emit("request.mint_completed", EmitOptions::default()).await;
+    em.emit("request.mint_started", EmitOptions::default())
+        .await;
+    em.emit("request.mint_completed", EmitOptions::default())
+        .await;
     em.emit("request.broker_call_started", EmitOptions::default())
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -115,6 +118,7 @@ async fn close_drains_remaining() {
             ..Default::default()
         },
     );
-    em.emit("request.mint_started", EmitOptions::default()).await;
+    em.emit("request.mint_started", EmitOptions::default())
+        .await;
     em.close().await;
 }

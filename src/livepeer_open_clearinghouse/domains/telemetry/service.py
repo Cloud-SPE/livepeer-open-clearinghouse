@@ -169,7 +169,7 @@ async def purge_expired(
     result = await session.execute(
         delete(TelemetryEvent).where(TelemetryEvent.received_ts < cutoff)
     )
-    return int(result.rowcount or 0)
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ async def admin_event_counts(
         .where(TelemetryEvent.received_ts >= since)
         .group_by(TelemetryEvent.event_type)
     )
-    return {row.event_type: int(row.count) for row in rows}
+    return {row[0]: int(row[1]) for row in rows}
 
 
 async def admin_rate_limit_offenders(
@@ -279,7 +279,7 @@ async def admin_rate_limit_offenders(
         .order_by(func.count().desc())
         .limit(limit)
     )
-    return [(row.api_key_id, int(row.count)) for row in rows]
+    return [(row[0], int(row[1])) for row in rows]
 
 
 async def list_events_for_user(

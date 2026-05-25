@@ -10,7 +10,7 @@ mod session_runner;
 mod telemetry;
 
 pub use client::{
-    Capability, CapStatus, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
+    CapStatus, Capability, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
     JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionHandle, SubmitJobInput,
     SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
 };

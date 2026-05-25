@@ -31,8 +31,8 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -56,7 +56,10 @@ pub fn bounded_modes() -> HashSet<&'static str> {
 
 #[must_use]
 pub fn ws_topup_modes() -> HashSet<&'static str> {
-    HashSet::from([MODE_SESSION_CONTROL_PLUS_MEDIA, MODE_RTMP_INGRESS_HLS_EGRESS])
+    HashSet::from([
+        MODE_SESSION_CONTROL_PLUS_MEDIA,
+        MODE_RTMP_INGRESS_HLS_EGRESS,
+    ])
 }
 
 #[must_use]
@@ -240,7 +243,9 @@ impl SessionRunner {
         if let Some(tx) = ws_tx {
             let _ = tx.send(Message::Close(None));
         }
-        let resp = client.close_session(&session_id, actual_units, None, None).await?;
+        let resp = client
+            .close_session(&session_id, actual_units, None, None)
+            .await?;
         let outcome = SessionOutcome {
             outcome: resp
                 .get("outcome")
@@ -268,9 +273,7 @@ impl Drop for SessionRunner {
     }
 }
 
-async fn open_ws(
-    inner: Arc<Mutex<Inner>>,
-) -> Result<JoinHandle<()>, OpenClearinghouseError> {
+async fn open_ws(inner: Arc<Mutex<Inner>>) -> Result<JoinHandle<()>, OpenClearinghouseError> {
     let (broker_url, envelope, mode) = {
         let g = inner.lock().await;
         (
@@ -329,7 +332,9 @@ async fn listen_ws(
     reader: &mut futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 ) {
     while let Some(msg) = reader.next().await {
-        let Ok(Message::Text(text)) = msg else { continue };
+        let Ok(Message::Text(text)) = msg else {
+            continue;
+        };
         let Ok(payload) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
@@ -355,11 +360,7 @@ async fn listen_ws(
             return;
         }
         g.close_started = true;
-        (
-            g.auto_close,
-            g.client.clone(),
-            g.handle.session_id.clone(),
-        )
+        (g.auto_close, g.client.clone(), g.handle.session_id.clone())
     };
     if !auto {
         return;
@@ -530,7 +531,9 @@ async fn handle_balance_low(
         if cs.will_refuse_next_refill {
             if let Some(cb) = on_winddown_warning {
                 cb(WinddownEvent {
-                    reason: cs.winddown_reason.unwrap_or_else(|| "cap_imminent".to_string()),
+                    reason: cs
+                        .winddown_reason
+                        .unwrap_or_else(|| "cap_imminent".to_string()),
                     projected_end_at: None,
                 })
                 .await;
