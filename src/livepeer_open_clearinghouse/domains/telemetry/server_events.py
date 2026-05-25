@@ -178,6 +178,18 @@ async def emit_refill_served(
         correlation_id=session_id,
         clock=clock,
     )
+    # When the cap-status block flags an imminent refusal, fire the
+    # winddown_warning notification so the customer can plan.
+    if cap_status.get("will_refuse_next_refill"):
+        reason_obj = cap_status.get("winddown_reason")
+        reason = str(reason_obj) if reason_obj else "cap_imminent"
+        await _maybe_notify_winddown(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            reason=reason,
+            clock=clock,
+        )
 
 
 async def emit_refill_denied(
@@ -270,6 +282,14 @@ async def emit_sdk_sha_mismatch(
         api_key_id=api_key_id,
         user_id=user_id,
         correlation_id=None,
+        clock=clock,
+    )
+    await _maybe_notify_sdk_outdated(
+        db,
+        user_id=user_id,
+        lang=lang,
+        semver=semver,
+        observed_status=observed_status,
         clock=clock,
     )
 
@@ -385,6 +405,93 @@ async def _maybe_notify_cap_reached(
     except Exception as exc:
         logger.warning(
             "telemetry.cap_reached_notify_failed",
+            user_id=str(user_id),
+            error=str(exc),
+        )
+
+
+async def _maybe_notify_winddown(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    reason: str,
+    clock: Clock,
+) -> None:
+    """Fire winddown_warning after a refill response sets
+    will_refuse_next_refill=true. Best-effort."""
+    try:
+        from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+            prefs as notification_prefs,
+        )
+
+        await notification_prefs.notify_winddown_warning(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            reason=reason,
+            clock=clock,
+        )
+    except Exception as exc:
+        logger.warning(
+            "telemetry.winddown_notify_failed",
+            user_id=str(user_id),
+            error=str(exc),
+        )
+
+
+# In-process TTL set used to dedupe sdk_outdated notifications. One
+# notification per (user_id, lang, semver) tuple per
+# SDK_OUTDATED_DEDUPE_HOURS — otherwise the customer drowns in mail
+# (the trigger would fire on every mint they make with an old SDK).
+SDK_OUTDATED_DEDUPE_HOURS = 24
+
+_sdk_outdated_seen: dict[tuple[uuid.UUID, str, str], float] = {}
+
+
+async def _maybe_notify_sdk_outdated(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    lang: str,
+    semver: str,
+    observed_status: str,
+    clock: Clock,
+) -> None:
+    """Fire sdk_outdated when LOC observes an unapproved SDK identity,
+    dedupe-throttled to once per ``(user_id, lang, semver)`` per
+    SDK_OUTDATED_DEDUPE_HOURS so a customer running an old build
+    doesn't get spammed."""
+    if not lang:
+        # The unknown-identity case (parse failed) carries an empty
+        # lang/semver; skip the notification — the admin still sees
+        # the server.* event.
+        return
+    import time  # noqa: PLC0415
+
+    key = (user_id, lang, semver)
+    now_ts = time.time()
+    last = _sdk_outdated_seen.get(key)
+    if last is not None and (now_ts - last) < SDK_OUTDATED_DEDUPE_HOURS * 3600:
+        return
+    _sdk_outdated_seen[key] = now_ts
+
+    try:
+        from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+            prefs as notification_prefs,
+        )
+
+        await notification_prefs.notify_sdk_outdated(
+            db,
+            user_id=user_id,
+            lang=lang,
+            semver=semver,
+            observed_status=observed_status,
+            clock=clock,
+        )
+    except Exception as exc:
+        logger.warning(
+            "telemetry.sdk_outdated_notify_failed",
             user_id=str(user_id),
             error=str(exc),
         )

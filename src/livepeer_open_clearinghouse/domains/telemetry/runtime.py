@@ -9,6 +9,7 @@ Two endpoints:
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -114,12 +115,108 @@ async def ingest_endpoint(
             detail={"code": exc.code, "max_batch_size": MAX_BATCH_SIZE},
         ) from exc
 
+    # Post-ingest trigger evaluation — best-effort, never raises.
+    try:
+        await _evaluate_post_ingest_triggers(
+            db,
+            api_key_id=api_key.id,
+            user_id=user.id,
+            events=body.events,
+            clock=clock,
+        )
+    except Exception as exc:
+        # Logged so admin can spot a misbehaving trigger; never
+        # affects the ingest response.
+        from livepeer_open_clearinghouse.providers.telemetry import (  # noqa: PLC0415
+            get_logger,
+        )
+
+        get_logger(__name__).warning(
+            "telemetry.post_ingest_triggers_failed",
+            error=str(exc),
+        )
+
     rejected = sum(1 for r in reasons if r)
     return IngestResponse(
         accepted=accepted,
         rejected=rejected,
         rejections=[r for r in reasons if r] if rejected else [],
     )
+
+
+# Window for the session_failed_repeatedly trigger.
+_SESSION_FAILURE_WINDOW_HOURS = 1
+_SESSION_FAILURE_THRESHOLD = 3
+
+
+async def _evaluate_post_ingest_triggers(
+    db: SessionDep,
+    *,
+    api_key_id: uuid.UUID,
+    user_id: uuid.UUID,
+    events: list,
+    clock: ClockDep,
+) -> None:
+    """Inspect a successfully-ingested batch + fire notifications.
+
+    Two SDK-driven triggers wire here:
+
+      - ``quota.period_rollover`` → ``period_rollover``: SDK detected
+        a spend-window cross. Fire one notification per observed
+        rollover.
+      - ``session.error`` → ``session_failed_repeatedly``: when the
+        per-API-key error count over the last hour crosses the
+        threshold, fire once. (Re-fires only after the count drops
+        back below and crosses again.)
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+        prefs as notification_prefs,
+    )
+
+    # period_rollover — fire on each quota.period_rollover in the batch.
+    for ev in events:
+        if ev.event_type == "quota.period_rollover":
+            payload = ev.payload or {}
+            await notification_prefs.notify_period_rollover(
+                db,
+                user_id=user_id,
+                period_start=str(payload.get("period_start", "")),
+                period_end=str(payload.get("period_end", "")),
+                previous_period_spend_wei=int(payload.get("previous_period_spend_wei", 0)),
+                clock=clock,
+            )
+
+    # session_failed_repeatedly — fire when the batch contains a
+    # session.error AND the rolling per-key count crosses the threshold.
+    has_session_error = any(ev.event_type == "session.error" for ev in events)
+    if has_session_error:
+        since = clock.now() - timedelta(hours=_SESSION_FAILURE_WINDOW_HOURS)
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        from livepeer_open_clearinghouse.domains.telemetry.repo import (  # noqa: PLC0415
+            TelemetryEvent,
+        )
+
+        count = await db.scalar(
+            select(func.count())
+            .select_from(TelemetryEvent)
+            .where(
+                TelemetryEvent.api_key_id == api_key_id,
+                TelemetryEvent.event_type == "session.error",
+                TelemetryEvent.received_ts >= since,
+            )
+        )
+        if int(count or 0) >= _SESSION_FAILURE_THRESHOLD:
+            await notification_prefs.notify_session_failed_repeatedly(
+                db,
+                user_id=user_id,
+                api_key_id=api_key_id,
+                failure_count=int(count or 0),
+                window_hours=_SESSION_FAILURE_WINDOW_HOURS,
+                clock=clock,
+            )
 
 
 # ---------------------------------------------------------------------------

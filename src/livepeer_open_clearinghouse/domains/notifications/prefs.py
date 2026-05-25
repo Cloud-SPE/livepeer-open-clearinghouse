@@ -330,36 +330,33 @@ def _default_independent_session_factory() -> AbstractAsyncContextManager[AsyncS
     return session_scope()
 
 
-async def notify_cap_reached(
+async def _notify_trigger(
     session: AsyncSession,
     *,
+    trigger: str,
     user_id: uuid.UUID,
-    which_cap: str,
-    remaining_wei: int,
+    subject: str,
+    body: dict[str, object],
     clock: Clock,
     independent_session_factory: IndependentSessionFactory | None = None,
 ) -> dict[str, bool]:
-    """Fire the cap_reached trigger for a user. Best-effort.
+    """Shared fan-out for failure-path triggers — the trigger fires
+    from inside a request transaction that's about to roll back.
 
-    Looks up the user's email + the default email provider internally
-    so the caller (the server-event emit helpers) doesn't have to
-    thread them. Returns the per-channel fired map, or ``{}`` if the
-    user record can't be loaded (silent — never raises).
-
-    Cross-transaction subtlety: cap_reached typically fires from a
-    refusal path that's about to raise — and the raise rolls back the
-    request session, taking the portal_notification + email-send-log
-    row with it. To make the customer-visible artifact survive the
-    rollback, the in-portal write uses an *independent* session
-    opened against the global engine. The email send is naturally
-    independent (it's an outbound HTTP call). The ``session``
-    parameter is kept only for the user-lookup convenience — that
-    read is safe to share with the outer transaction.
+    Looks up the user + email provider internally, resolves
+    preferences, writes the portal banner through an independent
+    session (so it survives the rollback), and sends the email
+    out-of-transaction (HTTP call). Best-effort; never raises into
+    the data plane.
     """
     try:
         user = await session.get(User, user_id)
     except Exception as exc:
-        logger.warning("notify_cap_reached.user_lookup_failed", error=str(exc))
+        logger.warning(
+            "notify._notify_trigger.user_lookup_failed",
+            trigger=trigger,
+            error=str(exc),
+        )
         return {}
     if user is None:
         return {}
@@ -371,35 +368,175 @@ async def notify_cap_reached(
 
         provider = _default_email()
     except Exception as exc:
-        logger.warning("notify_cap_reached.email_provider_unavailable", error=str(exc))
+        logger.warning(
+            "notify._notify_trigger.email_provider_unavailable",
+            trigger=trigger,
+            error=str(exc),
+        )
         provider = None
-    subject = f"{BRAND_PREFIX} spend cap reached: {which_cap}"
-    body = {
-        "trigger": TRIGGER_CAP_REACHED,
-        "which_cap": which_cap,
-        "remaining_wei": remaining_wei,
-    }
 
-    # Resolve which channels this user has enabled.
     overrides = await list_overrides_for_user(session, user_id=user_id)
     fired: dict[str, bool] = {}
-    enabled_email = _pref(overrides, TRIGGER_CAP_REACHED, CHANNEL_EMAIL)
-    enabled_portal = _pref(overrides, TRIGGER_CAP_REACHED, CHANNEL_IN_PORTAL)
-
-    if enabled_portal:
+    if _pref(overrides, trigger, CHANNEL_IN_PORTAL):
         factory = independent_session_factory or _default_independent_session_factory
         fired[CHANNEL_IN_PORTAL] = await _fire_in_portal_independent(
             user_id=user_id,
-            trigger=TRIGGER_CAP_REACHED,
+            trigger=trigger,
             body=body,
             clock=clock,
             factory=factory,
         )
-    if enabled_email:
+    if _pref(overrides, trigger, CHANNEL_EMAIL):
         fired[CHANNEL_EMAIL] = await _fire_email(
             provider, to=user.email, subject=subject, body=body
         )
     return fired
+
+
+async def notify_cap_reached(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    which_cap: str,
+    remaining_wei: int,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> dict[str, bool]:
+    """Fire the cap_reached trigger for a user. Best-effort."""
+    return await _notify_trigger(
+        session,
+        trigger=TRIGGER_CAP_REACHED,
+        user_id=user_id,
+        subject=f"{BRAND_PREFIX} spend cap reached: {which_cap}",
+        body={
+            "trigger": TRIGGER_CAP_REACHED,
+            "which_cap": which_cap,
+            "remaining_wei": remaining_wei,
+        },
+        clock=clock,
+        independent_session_factory=independent_session_factory,
+    )
+
+
+async def notify_winddown_warning(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    reason: str,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> dict[str, bool]:
+    """Fire when a refill response carries
+    ``cap_status.will_refuse_next_refill=true`` — the next refill on
+    this session will be rejected, so the customer should plan to
+    wind down."""
+    return await _notify_trigger(
+        session,
+        trigger=TRIGGER_WINDDOWN_WARNING,
+        user_id=user_id,
+        subject=f"{BRAND_PREFIX} session winding down: {reason}",
+        body={
+            "trigger": TRIGGER_WINDDOWN_WARNING,
+            "session_id": str(session_id),
+            "reason": reason,
+        },
+        clock=clock,
+        independent_session_factory=independent_session_factory,
+    )
+
+
+async def notify_sdk_outdated(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    lang: str,
+    semver: str,
+    observed_status: str,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> dict[str, bool]:
+    """Fire when LOC observes an SDK identity that isn't approved.
+
+    The server-side `_maybe_notify_sdk_outdated` wrapper at the
+    emit-helper layer applies a per-user dedupe TTL so the customer
+    doesn't get one notification per request — see
+    `telemetry.server_events`. This helper itself just runs the
+    fan-out.
+    """
+    return await _notify_trigger(
+        session,
+        trigger=TRIGGER_SDK_OUTDATED,
+        user_id=user_id,
+        subject=f"{BRAND_PREFIX} SDK out of date: {lang} {semver}",
+        body={
+            "trigger": TRIGGER_SDK_OUTDATED,
+            "lang": lang,
+            "semver": semver,
+            "observed_status": observed_status,
+        },
+        clock=clock,
+        independent_session_factory=independent_session_factory,
+    )
+
+
+async def notify_period_rollover(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    period_start: str,
+    period_end: str,
+    previous_period_spend_wei: int,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> dict[str, bool]:
+    """Fire when a customer's spend-period window rolls over —
+    surfaces 'you have a fresh quota for the new window' in the
+    portal."""
+    return await _notify_trigger(
+        session,
+        trigger=TRIGGER_PERIOD_ROLLOVER,
+        user_id=user_id,
+        subject=f"{BRAND_PREFIX} spend period rolled over",
+        body={
+            "trigger": TRIGGER_PERIOD_ROLLOVER,
+            "period_start": period_start,
+            "period_end": period_end,
+            "previous_period_spend_wei": previous_period_spend_wei,
+        },
+        clock=clock,
+        independent_session_factory=independent_session_factory,
+    )
+
+
+async def notify_session_failed_repeatedly(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    failure_count: int,
+    window_hours: int,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> dict[str, bool]:
+    """Fire when ≥3 ``session.error`` events for one API key land
+    inside the last hour. Surfaces 'something is repeatedly going
+    wrong' faster than a customer would notice from the dashboard.
+    """
+    return await _notify_trigger(
+        session,
+        trigger=TRIGGER_SESSION_FAILED_REPEATEDLY,
+        user_id=user_id,
+        subject=f"{BRAND_PREFIX} session failures detected",
+        body={
+            "trigger": TRIGGER_SESSION_FAILED_REPEATEDLY,
+            "api_key_id": str(api_key_id),
+            "failure_count": failure_count,
+            "window_hours": window_hours,
+        },
+        clock=clock,
+        independent_session_factory=independent_session_factory,
+    )
 
 
 def _pref(
