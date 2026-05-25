@@ -398,7 +398,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	settleStarted := time.Now()
 	settleBody := map[string]any{"actual_units": actualUnits}
 	var settled JobSettleResponse
-	if err := c.do(ctx, http.MethodPost, job.SettleEndpoint, settleBody, &settled); err != nil {
+	if err := c.doWithRetry(ctx, http.MethodPost, job.SettleEndpoint, settleBody, &settled, 3); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
 			EventType:     "request.error",
 			CorrelationID: requestID,
@@ -466,7 +466,29 @@ type OpenSessionInput struct {
 }
 
 // OpenSession opens a long-running session and returns the SessionHandle.
-// The caller is responsible for the broker-side WS/RTMP wire today.
+//
+// in.MaxTotalUnits is the same input across all case-(d) modes, but
+// the operational guarantee differs by mode class:
+//
+//   (d-bounded) modes (ws-realtime@v0):
+//     The session spends AT MOST MaxTotalUnits. It may end earlier;
+//     it ends no later than when this much is consumed. It cannot be
+//     extended — refills are not supported in these modes.
+//
+//   (d-extensible) modes (session-control-plus-media@v0,
+//   rtmp-ingress-hls-egress@v0, live-session-remote-runner@v0,
+//   live-session-gateway-ingest@v0):
+//     The session spends AT MOST MaxTotalUnits. Refills happen
+//     automatically within this ceiling; the session drains if a
+//     higher-tier cap (spend-period, operator-pool) is reached
+//     before MaxTotalUnits is exhausted.
+//
+// in.EstimatedRunwayUnits is the initial chunk LOC mints toward;
+// SessionRunner tops up automatically as the broker signals
+// balance-low.
+//
+// The caller is responsible for the broker-side WS / RTMP wire today
+// (or use SessionRunner to drive it).
 func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*SessionHandle, error) {
 	c.emitSdkInitOnce()
 	body := map[string]any{
@@ -603,7 +625,22 @@ func readBroker(client *http.Client, req *http.Request) (int, http.Header, []byt
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("openclearinghouse: read broker body: %w", err)
 	}
-	return res.StatusCode, res.Header, payload, nil
+	// http-stream brokers report Livepeer-Work-Units as a *trailer*
+	// rather than a header. Net/http exposes trailers on
+	// res.Trailer ONLY after the body has been fully consumed. Merge
+	// trailers into the returned Header so the caller can lookup
+	// the field via the same `.Get("Livepeer-Work-Units")` regardless
+	// of mode.
+	merged := res.Header
+	if len(res.Trailer) > 0 {
+		merged = res.Header.Clone()
+		for k, v := range res.Trailer {
+			for _, vv := range v {
+				merged.Add(k, vv)
+			}
+		}
+	}
+	return res.StatusCode, merged, payload, nil
 }
 
 func (c *Client) do(
@@ -650,6 +687,48 @@ func (c *Client) do(
 		return nil
 	}
 	return parseError(res.StatusCode, res.Header.Get("Retry-After"), payload)
+}
+
+// doWithRetry wraps `do` with exponential backoff on transient
+// failures. 5xx and 429 retry; 4xx surface immediately. Used by the
+// settle path so a transient LOC blip doesn't leave a session
+// unsettled — the janitor would catch it eventually, but synchronous
+// retry buys low latency for the common case.
+func (c *Client) doWithRetry(
+	ctx context.Context,
+	method, path string,
+	body any,
+	out any,
+	maxRetries int,
+) error {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
+	backoff := 500 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := c.do(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		var locErr *Error
+		if errors.As(err, &locErr) {
+			if locErr.Status < 500 && locErr.Status != http.StatusTooManyRequests {
+				return err
+			}
+		}
+		lastErr = err
+		if attempt >= maxRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return lastErr
 }
 
 func parseError(status int, retryAfter string, payload []byte) *Error {

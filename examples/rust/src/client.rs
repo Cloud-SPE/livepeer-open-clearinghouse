@@ -399,6 +399,13 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        // For http-reqresp / http-multipart this is in headers; for
+        // http-stream it arrives as an HTTP/1.1 chunked trailer.
+        // reqwest doesn't expose trailers natively today — until
+        // upstream support lands the http-stream wire degenerates to
+        // a header-only check; if the trailer is missing the SDK
+        // settles with actual_units=0 and the janitor's daemon
+        // cross-check correctly resolves the divergence.
         let actual_units = res
             .headers()
             .get("livepeer-work-units")
@@ -429,7 +436,7 @@ impl Client {
         let settle_started = std::time::Instant::now();
         let settle_body = serde_json::json!({ "actual_units": actual_units });
         let settled: JobSettleResponse = match self
-            .request(Method::POST, &job.settle_endpoint, Some(&settle_body))
+            .request_with_retry(Method::POST, &job.settle_endpoint, Some(&settle_body), 3)
             .await
         {
             Ok(s) => s,
@@ -505,6 +512,28 @@ impl Client {
 
     // ---- sessions (case d) ----
 
+    /// Open a long-running session and return a [`SessionHandle`].
+    ///
+    /// `max_total_units` is the same input across all case-(d) modes,
+    /// but its operational guarantee differs by mode class:
+    ///
+    /// **(d-bounded) modes** (`ws-realtime@v0`):
+    /// The session spends AT MOST `max_total_units`. It may end
+    /// earlier; it ends no later than when this much is consumed.
+    /// It cannot be extended — refills are not supported in these
+    /// modes.
+    ///
+    /// **(d-extensible) modes** (`session-control-plus-media@v0`,
+    /// `rtmp-ingress-hls-egress@v0`, `live-session-remote-runner@v0`,
+    /// `live-session-gateway-ingest@v0`):
+    /// The session spends AT MOST `max_total_units`. Refills happen
+    /// automatically within this ceiling; the session drains if a
+    /// higher-tier cap (spend-period, operator-pool) is reached
+    /// before `max_total_units` is exhausted.
+    ///
+    /// `estimated_runway_units` is the initial chunk LOC mints
+    /// toward; [`SessionRunner`] tops up automatically as the broker
+    /// signals balance-low.
     pub async fn open_session(
         &self,
         in_: OpenSessionInput<'_>,
@@ -689,6 +718,41 @@ impl Client {
     }
 
     // ---- internals ----
+
+    /// Wrapper around :meth:`request` that retries transient failures
+    /// (5xx, 429, transport errors) with exponential backoff. 4xx
+    /// surfaces immediately. Used by the settle path.
+    async fn request_with_retry<B: Serialize + Sync, R: for<'de> Deserialize<'de>>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        max_retries: u32,
+    ) -> Result<R, OpenClearinghouseError> {
+        let mut backoff = std::time::Duration::from_millis(500);
+        let mut last_err: Option<OpenClearinghouseError> = None;
+        for attempt in 1..=max_retries.max(1) {
+            match self.request(method.clone(), path, body).await {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    if let OpenClearinghouseError::Api { status, .. } = &e {
+                        if *status < 500 && *status != 429 {
+                            return Err(e);
+                        }
+                    }
+                    last_err = Some(e);
+                    if attempt >= max_retries {
+                        break;
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            OpenClearinghouseError::transport("request_with_retry exhausted attempts")
+        }))
+    }
 
     async fn request<B: Serialize + Sync, R: for<'de> Deserialize<'de>>(
         &self,

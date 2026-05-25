@@ -372,12 +372,18 @@ class OpenClearinghouseClient:
                 )
 
         # 3. Read actual_units from the broker's response. For
-        # http-reqresp/http-multipart, this is the
-        # Livepeer-Work-Units response header. For http-stream, it's
-        # an HTTP trailer (httpx surfaces trailers via resp.headers
-        # after the body is fully consumed — we await resp.aread()
-        # implicitly since we used .post()).
+        # http-reqresp/http-multipart, this is the Livepeer-Work-Units
+        # response header. For http-stream, it's an HTTP trailer —
+        # httpx merges trailers into resp.headers for HTTP/1.1 chunked
+        # responses once the body is fully consumed (.post() reads
+        # the whole body before returning). On newer httpx versions
+        # trailers ALSO show up under resp.trailing_headers; check
+        # both to be safe.
         actual_units_str = resp.headers.get("livepeer-work-units")
+        if not actual_units_str:
+            trailing = getattr(resp, "trailing_headers", None)
+            if trailing is not None:
+                actual_units_str = trailing.get("livepeer-work-units")
         actual_units = int(actual_units_str) if actual_units_str else 0
 
         # Parse body for the caller
@@ -406,7 +412,7 @@ class OpenClearinghouseClient:
         )
         settle_started_ns = time.monotonic_ns()
         try:
-            settle_resp = await self._http.post(
+            settle_resp = await self._post_with_retry(
                 settle_endpoint, json=settlement_payload
             )
             settled = self._unwrap(settle_resp)
@@ -474,13 +480,33 @@ class OpenClearinghouseClient:
     ) -> SessionHandle:
         """Open a long-running session and return a SessionHandle.
 
-        Returns the broker URL + minted envelope. The caller drives
-        the broker-side WS / RTMP wire today; the full automatic
-        driver (refill loop + close) is in active development per
-        the exec-plan 002 remaining Phase 2 items.
+        ``max_total_units`` is the same input across all case-(d)
+        modes, but its operational guarantee differs by mode class:
 
-        Use :meth:`refill_session` and :meth:`close_session` for the
-        LOC-side refill / close calls.
+        For **(d-bounded) modes** (``ws-realtime@v0``):
+            Your session will spend AT MOST ``max_total_units``.
+            It may end earlier; it will end no later than when this
+            much is consumed. The session **cannot be extended**
+            mid-flight — refills are not supported in these modes.
+
+        For **(d-extensible) modes** (``session-control-plus-media@v0``,
+        ``rtmp-ingress-hls-egress@v0``, ``live-session-remote-runner@v0``,
+        ``live-session-gateway-ingest@v0``):
+            Your session will spend AT MOST ``max_total_units``.
+            Refills happen automatically within this ceiling. Refills
+            stop and the session drains if a higher-tier cap
+            (spend-period, operator-pool) is reached before
+            ``max_total_units`` is exhausted.
+
+        ``estimated_runway_units`` is the initial chunk LOC mints
+        toward (a smaller fraction of ``max_total_units``). The
+        SessionRunner refill loop tops up automatically as the broker
+        signals balance-low.
+
+        Returns a :class:`SessionHandle` carrying the broker URL +
+        minted envelope. Use :class:`SessionRunner` for the automatic
+        refill loop, or call :meth:`refill_session` /
+        :meth:`close_session` directly for manual control.
         """
         self._ensure_telemetry_started()
         r = await self._http.post(
@@ -627,6 +653,53 @@ class OpenClearinghouseClient:
         return self._unwrap(r)
 
     # ---- internals ----
+
+    _SETTLE_MAX_RETRIES = 3
+
+    async def _post_with_retry(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        max_retries: int = _SETTLE_MAX_RETRIES,
+    ) -> httpx.Response:
+        """POST that retries on transient failures (5xx, 429,
+        connect/read errors). 4xx surfaces immediately — those won't
+        change on retry. Exponential backoff 0.5s / 1s / 2s ...
+
+        Used by the settle path so a transient LOC blip doesn't
+        leave a session unsettled; the reconciliation janitor would
+        catch it eventually, but a synchronous retry buys low
+        latency for the common case.
+        """
+        backoff = 0.5
+        last_resp: httpx.Response | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = await self._http.post(path, json=json)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt >= max_retries:
+                    raise
+                logger = __import__("logging").getLogger(__name__)
+                logger.info(
+                    "openclearinghouse: settle retry %d/%d after transport error: %r",
+                    attempt, max_retries, exc,
+                )
+                import asyncio  # noqa: PLC0415
+                await asyncio.sleep(backoff)
+                backoff *= 2.0
+                continue
+            last_resp = resp
+            # 5xx / 429 → retry. 4xx → fail fast (we own the bug).
+            if resp.status_code < 500 and resp.status_code != 429:
+                return resp
+            if attempt >= max_retries:
+                return resp
+            import asyncio  # noqa: PLC0415
+            await asyncio.sleep(backoff)
+            backoff *= 2.0
+        assert last_resp is not None  # loop returned or raised
+        return last_resp
 
     def _unwrap(self, response: httpx.Response) -> dict[str, Any]:
         if response.is_success:

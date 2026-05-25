@@ -271,7 +271,14 @@ export class OpenClearinghouseClient {
       clearTimeout(timeout);
     }
 
-    // 3. Read Livepeer-Work-Units from the broker response
+    // 3. Read Livepeer-Work-Units from the broker response.
+    // For http-reqresp / http-multipart this is a header. For
+    // http-stream it's an HTTP/1.1 chunked trailer; standard fetch
+    // (browser + Node) does not expose trailers via res.headers.
+    // Until WhatWG fetch grows trailer access, the http-stream
+    // wire falls back to header-only detection; missing trailer
+    // settles with actualUnits=0 and the LOC janitor reconciles
+    // via daemon GetSessionDebits.
     const workUnitsStr = res.headers.get("livepeer-work-units");
     const actualUnits = workUnitsStr ? Number.parseInt(workUnitsStr, 10) : 0;
 
@@ -292,7 +299,7 @@ export class OpenClearinghouseClient {
       cap_status: CapStatus;
     };
     try {
-      settled = await this.request<typeof settled>(
+      settled = await this.requestWithRetry<typeof settled>(
         "POST",
         `/v1/jobs/${job.job_id}/settle`,
         {
@@ -371,6 +378,29 @@ export class OpenClearinghouseClient {
 
   // ---- sessions (case d) ----
 
+  /**
+   * Open a long-running session and return a `SessionHandle`.
+   *
+   * `maxTotalUnits` is the same input across all case-(d) modes, but
+   * the operational guarantee differs by mode class:
+   *
+   * **(d-bounded) modes** (`ws-realtime@v0`):
+   *   The session spends AT MOST `maxTotalUnits`. It may end earlier;
+   *   it ends no later than when this much is consumed. It cannot be
+   *   extended — refills are not supported in these modes.
+   *
+   * **(d-extensible) modes** (`session-control-plus-media@v0`,
+   * `rtmp-ingress-hls-egress@v0`, `live-session-remote-runner@v0`,
+   * `live-session-gateway-ingest@v0`):
+   *   The session spends AT MOST `maxTotalUnits`. Refills happen
+   *   automatically within this ceiling; the session drains if a
+   *   higher-tier cap (spend-period, operator-pool) is reached
+   *   before `maxTotalUnits` is exhausted.
+   *
+   * `estimatedRunwayUnits` is the initial chunk LOC mints toward;
+   * `SessionRunner` tops up automatically as the broker signals
+   * balance-low.
+   */
   async openSession(args: {
     capability: string;
     offering: string;
@@ -520,6 +550,33 @@ export class OpenClearinghouseClient {
   }
 
   // ---- internals ----
+
+  private async requestWithRetry<T>(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    maxRetries = 3,
+  ): Promise<T> {
+    // Retry on transient failures (5xx, 429, network errors). 4xx
+    // bubbles up immediately — those won't change on retry.
+    let backoff = 500;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      try {
+        return await this.request<T>(method, path, body);
+      } catch (e) {
+        lastError = e;
+        const status = (e as { status?: number })?.status ?? 0;
+        if (status > 0 && status < 500 && status !== 429) {
+          throw e; // client error — give up
+        }
+        if (attempt >= maxRetries) throw e;
+        await new Promise((r) => setTimeout(r, backoff));
+        backoff *= 2;
+      }
+    }
+    throw lastError;
+  }
 
   private async request<T>(
     method: "GET" | "POST",
