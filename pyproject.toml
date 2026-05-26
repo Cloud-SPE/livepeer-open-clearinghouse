@@ -70,6 +70,12 @@ packages = ["src/livepeer_open_clearinghouse"]
 required-version = ">=0.5"
 default-groups = ["dev"]
 
+[tool.uv.workspace]
+members = [
+    "sdks/python",
+    "examples/python/*",
+]
+
 # ---------------------------------------------------------------------------
 # ruff: lint + format
 # ---------------------------------------------------------------------------

@@ -1,18 +1,13 @@
-# per-language build + dep directories
-python/.venv/
-python/dist/
+# per-example build + dep directories
+python/**/.venv/
 python/**/__pycache__/
 python/**/*.egg-info/
-python/.pytest_cache/
-python/.coverage
-python/.coverage_html/
+python/**/.pytest_cache/
+python/**/.coverage
+python/**/.coverage_html/
 
-typescript/node_modules/
-typescript/dist/
-typescript/coverage/
+typescript/**/node_modules/
+typescript/**/dist/
+typescript/**/coverage/
 
-go/cmd/example/example
-go/cover.out
-
-rust/target/
-rust/Cargo.lock
+go/**/cover.out

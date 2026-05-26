@@ -2,7 +2,7 @@
 //
 //	OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
 //	OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
-//	go run ./cmd/example
+//	go run ./examples/go/one-shot-job
 //
 // The SDK handles the handoff dance: opens a job via POST /v1/jobs
 // (mints a payment envelope), calls the broker directly with the

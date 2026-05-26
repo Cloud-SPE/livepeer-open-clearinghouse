@@ -3,7 +3,7 @@
  *
  *     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
  *     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
- *     pnpm example
+ *     pnpm --filter @livepeer/example-one-shot-job start
  *
  * The SDK handles the full handoff dance: opens a job via POST /v1/jobs
  * (which mints a payment envelope), calls the broker directly with the
@@ -17,7 +17,7 @@ import {
   OpenClearinghouseClient,
   OpenClearinghouseError,
   RateLimited,
-} from "./index.js";
+} from "@livepeer/open-clearinghouse-sdk";
 
 async function chat(prompt: string): Promise<void> {
   const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;

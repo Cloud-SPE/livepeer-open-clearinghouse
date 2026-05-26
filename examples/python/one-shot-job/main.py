@@ -2,10 +2,10 @@
 
 Run with:
 
-    uv sync --extra dev
+    uv sync
     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \\
     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \\
-    uv run python example.py
+    uv run --package loc-example-one-shot-job python examples/python/one-shot-job/main.py
 
 The SDK handles the full handoff dance for you: opens a job via
 POST /v1/jobs (which mints a payment envelope), calls the broker
