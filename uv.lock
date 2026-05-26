@@ -12,6 +12,8 @@ members = [
     "livepeer-open-clearinghouse",
     "livepeer-open-clearinghouse-sdk",
     "loc-example-one-shot-job",
+    "loc-example-streaming-http",
+    "loc-example-streaming-ws",
 ]
 
 [[package]]
@@ -1310,6 +1312,28 @@ provides-extras = ["dev"]
 name = "loc-example-one-shot-job"
 version = "0.0.0"
 source = { virtual = "examples/python/one-shot-job" }
+dependencies = [
+    { name = "livepeer-open-clearinghouse-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" }]
+
+[[package]]
+name = "loc-example-streaming-http"
+version = "0.0.0"
+source = { virtual = "examples/python/streaming-http" }
+dependencies = [
+    { name = "livepeer-open-clearinghouse-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" }]
+
+[[package]]
+name = "loc-example-streaming-ws"
+version = "0.0.0"
+source = { virtual = "examples/python/streaming-ws" }
 dependencies = [
     { name = "livepeer-open-clearinghouse-sdk" },
 ]
