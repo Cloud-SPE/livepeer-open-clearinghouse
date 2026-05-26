@@ -1,9 +1,21 @@
 import { LitElement, html } from "lit";
 import * as api from "/admin/lib/api.js";
 
-function formatWei(wei) {
+function formatEth(wei) {
   if (wei == null) return "—";
-  return String(wei).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  let n;
+  try {
+    n = BigInt(String(wei).split(".")[0]);
+  } catch {
+    return "—";
+  }
+  const E18 = 1_000_000_000_000_000_000n;
+  const sign = n < 0n ? "-" : "";
+  const abs = n < 0n ? -n : n;
+  const whole = (abs / E18).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fracMicro = ((abs % E18) * 1_000_000n) / E18;
+  const fracStr = fracMicro.toString().padStart(6, "0").replace(/0+$/, "");
+  return fracStr ? `${sign}${whole}.${fracStr}` : `${sign}${whole}`;
 }
 
 function timeAgo(iso) {
@@ -78,9 +90,9 @@ export class CcOverview extends LitElement {
           <div class="sub">Awaiting operator action</div>
         </div>
         <div class="metric info">
-          <div class="label">Pooled wallet deposit (wei)</div>
+          <div class="label">Pooled wallet deposit (ETH)</div>
           <div class="value mono" style="font-size: 18px;">
-            ${formatWei(latestDeposit?.deposit_wei)}
+            ${formatEth(latestDeposit?.deposit_wei)}
           </div>
           <div class="sub">
             ${latestDeposit

@@ -2,9 +2,21 @@ import { LitElement, html } from "lit";
 import * as api from "/admin/lib/api.js";
 import { icon } from "/admin/lib/icons.js";
 
-function formatWei(wei) {
+function formatEth(wei) {
   if (wei == null) return "—";
-  return String(wei).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  let n;
+  try {
+    n = BigInt(String(wei).split(".")[0]);
+  } catch {
+    return "—";
+  }
+  const E18 = 1_000_000_000_000_000_000n;
+  const sign = n < 0n ? "-" : "";
+  const abs = n < 0n ? -n : n;
+  const whole = (abs / E18).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fracMicro = ((abs % E18) * 1_000_000n) / E18;
+  const fracStr = fracMicro.toString().padStart(6, "0").replace(/0+$/, "");
+  return fracStr ? `${sign}${whole}.${fracStr}` : `${sign}${whole}`;
 }
 
 export class CcDeposits extends LitElement {
@@ -51,9 +63,9 @@ export class CcDeposits extends LitElement {
 
       <div class="metric-grid">
         <div class="metric accent">
-          <div class="label">Latest deposit (wei)</div>
+          <div class="label">Latest deposit (ETH)</div>
           <div class="value mono" style="font-size: 20px;">
-            ${formatWei(latest?.deposit_wei)}
+            ${formatEth(latest?.deposit_wei)}
           </div>
           <div class="sub">
             ${latest
@@ -62,9 +74,9 @@ export class CcDeposits extends LitElement {
           </div>
         </div>
         <div class="metric info">
-          <div class="label">Latest reserve (wei)</div>
+          <div class="label">Latest reserve (ETH)</div>
           <div class="value mono" style="font-size: 20px;">
-            ${formatWei(latest?.reserve_wei)}
+            ${formatEth(latest?.reserve_wei)}
           </div>
           <div class="sub">
             withdraw_round: ${latest?.withdraw_round ?? "—"}
@@ -88,8 +100,8 @@ export class CcDeposits extends LitElement {
                   <thead>
                     <tr>
                       <th>When</th>
-                      <th class="right">Deposit (wei)</th>
-                      <th class="right">Reserve (wei)</th>
+                      <th class="right">Deposit (ETH)</th>
+                      <th class="right">Reserve (ETH)</th>
                       <th class="right">Withdraw round</th>
                     </tr>
                   </thead>
@@ -98,8 +110,8 @@ export class CcDeposits extends LitElement {
                       (s) => html`
                         <tr>
                           <td>${new Date(s.taken_at).toLocaleString()}</td>
-                          <td class="right mono">${formatWei(s.deposit_wei)}</td>
-                          <td class="right mono">${formatWei(s.reserve_wei)}</td>
+                          <td class="right mono">${formatEth(s.deposit_wei)}</td>
+                          <td class="right mono">${formatEth(s.reserve_wei)}</td>
                           <td class="right mono">${s.withdraw_round}</td>
                         </tr>
                       `,
