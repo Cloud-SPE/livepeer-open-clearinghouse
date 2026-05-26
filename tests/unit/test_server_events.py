@@ -69,8 +69,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 def _settings() -> Settings:
     return Settings(
-        admin_bootstrap_token="x",  # noqa: S106
-        session_signing_secret="x",  # noqa: S106
+        admin_bootstrap_token="x",
+        session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
     )
 
@@ -279,7 +279,7 @@ async def test_sdk_sha_mismatch_silent_when_identity_approved(
     operator = Operator(
         email="op@example.com",
         name="Op",
-        token_hash="h",  # noqa: S106 — fixture, not a real credential
+        token_hash="h",
         role="owner",
     )
     db_session.add(operator)

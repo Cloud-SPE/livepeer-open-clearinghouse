@@ -217,7 +217,7 @@ def _make_event(
     event_type: str,
     when: datetime,
 ) -> TelemetryEvent:
-    from livepeer_open_clearinghouse.domains.telemetry.config import SOURCE_SDK  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry.config import SOURCE_SDK
 
     return TelemetryEvent(
         api_key_id=api_key_id,
@@ -239,9 +239,9 @@ async def test_session_failed_repeatedly_threshold(session: AsyncSession, user: 
 
     Use NULL api_key_id to skip the FK on a fixtured key.
     """
-    from sqlalchemy import func  # noqa: PLC0415
+    from sqlalchemy import func
 
-    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 
     now = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
     for i in range(3):
@@ -276,8 +276,8 @@ async def test_session_failed_repeatedly_dedupes_within_window(
     runs it again — the second pass must NOT write a second
     portal_notification row.
     """
-    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey  # noqa: PLC0415
-    from livepeer_open_clearinghouse.domains.telemetry import runtime  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
+    from livepeer_open_clearinghouse.domains.telemetry import runtime
 
     runtime._session_failed_last_fired.clear()
 
@@ -334,7 +334,7 @@ async def test_session_failed_repeatedly_dedupes_within_window(
             independent_session_factory=lambda: _shared_session_factory(session),
         )
 
-    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod  # noqa: PLC0415
+    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod
 
     original = _prefs_mod.notify_session_failed_repeatedly
     _prefs_mod.notify_session_failed_repeatedly = lambda db, **kw: _shim(**kw)  # type: ignore[assignment]
@@ -374,8 +374,8 @@ async def test_session_failed_repeatedly_refires_after_window(
     session: AsyncSession, user: User
 ) -> None:
     """Once the dedupe TTL elapses, a fresh threshold-cross fires again."""
-    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey  # noqa: PLC0415
-    from livepeer_open_clearinghouse.domains.telemetry import runtime  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
+    from livepeer_open_clearinghouse.domains.telemetry import runtime
 
     runtime._session_failed_last_fired.clear()
 
@@ -425,7 +425,7 @@ async def test_session_failed_repeatedly_refires_after_window(
             independent_session_factory=lambda: _shared_session_factory(session),
         )
 
-    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod  # noqa: PLC0415
+    import livepeer_open_clearinghouse.domains.notifications.prefs as _prefs_mod
 
     original = _prefs_mod.notify_session_failed_repeatedly
     _prefs_mod.notify_session_failed_repeatedly = lambda db, **kw: _shim(**kw)  # type: ignore[assignment]

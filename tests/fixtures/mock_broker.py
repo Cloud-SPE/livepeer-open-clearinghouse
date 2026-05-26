@@ -90,13 +90,13 @@ def build_mock_broker_app(
         actual_units = (
             int(x_mock_actual_units) if x_mock_actual_units else default_units
         )
-        from fastapi.responses import JSONResponse  # noqa: PLC0415
+        from fastapi.responses import JSONResponse
 
         headers: dict[str, str] = {"Livepeer-Work-Units": str(actual_units)}
         if return_settlement:
             # Stub base64 JSON: {"outcome":"OVERFUNDED","actual_units":<n>}
-            import base64  # noqa: PLC0415
-            import json  # noqa: PLC0415
+            import base64
+            import json
 
             settlement = base64.b64encode(
                 json.dumps(

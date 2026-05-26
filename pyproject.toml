@@ -107,7 +107,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004"]
+"tests/**" = [
+    "S101",    # assert is fine in tests
+    "PLR2004", # magic numbers in test assertions
+    "S105",    # synthetic test secrets in module-level strings (webhook keys, fixtures)
+    "S106",    # synthetic test secrets in kw-args (token_hash=, api_key=, etc.)
+    "PT011",   # pytest.raises without `match=` — fine when asserting any ValueError
+    "E501",    # long lines (fixture base64 blobs, descriptive docstrings)
+    "PLC0415", # local imports inside test funcs (lazy proto deps in grpc-mapping tests)
+]
 # The conformance harness is test scaffolding — relax the rules that
 # only matter in production code (security advisories on bare except,
 # magic-number rule on test assertions, etc.).

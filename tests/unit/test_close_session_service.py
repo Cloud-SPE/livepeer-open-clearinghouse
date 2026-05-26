@@ -73,8 +73,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 def _settings() -> Settings:
     return Settings(
-        admin_bootstrap_token="x",  # noqa: S106
-        session_signing_secret="x",  # noqa: S106
+        admin_bootstrap_token="x",
+        session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
     )
 
@@ -89,7 +89,7 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**12) -> tuple[uuid.UU
         id=uid,
         email=f"{uid.hex}@example.com",
         email_verified_at=datetime.now(UTC),
-        password_hash="x",  # noqa: S106
+        password_hash="x",
     )
     key_uid = uuid.uuid4()
     key = ApiKey(
@@ -398,7 +398,7 @@ async def test_close_fires_discrepancy_when_daemon_disagrees(
 ) -> None:
     """SDK reports 400 units; daemon says 800. Delta crosses the 1%
     + min-5 noise floor → server.discrepancy_detected lands."""
-    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 
     user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
     daemon.set_session_debits(
@@ -439,7 +439,7 @@ async def test_close_does_not_fire_discrepancy_when_within_tolerance(
 ) -> None:
     """Tiny delta inside the noise floor (5-unit min + 1% relative)
     should NOT fire the event."""
-    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent  # noqa: PLC0415
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 
     user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
     daemon.set_session_debits(

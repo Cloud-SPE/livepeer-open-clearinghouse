@@ -51,7 +51,7 @@ def fake_pkg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
 
     # Reload the lint module against this new package root.
-    import scripts.check_layering as cl  # noqa: PLC0415
+    import scripts.check_layering as cl
 
     monkeypatch.setattr(cl, "PACKAGE_ROOT", root)
     importlib.invalidate_caches()

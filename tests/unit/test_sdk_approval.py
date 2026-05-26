@@ -50,7 +50,7 @@ async def operator(session: AsyncSession) -> Operator:
     op = Operator(
         email="owner@example.com",
         name="Owner",
-        token_hash="hash-not-checked",  # noqa: S106 — fixture only, no real secret
+        token_hash="hash-not-checked",
         role="owner",
     )
     session.add(op)

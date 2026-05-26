@@ -73,8 +73,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 def _settings() -> Settings:
     return Settings(
-        admin_bootstrap_token="x",  # noqa: S106 fixture
-        session_signing_secret="x",  # noqa: S106 fixture
+        admin_bootstrap_token="x",
+        session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
     )
 
@@ -90,7 +90,7 @@ async def _seed_user_key_and_balance(
         id=uuid.uuid4(),
         email="a@example.com",
         email_verified_at=datetime.now(UTC),
-        password_hash="x",  # noqa: S106 fixture
+        password_hash="x",
     )
     key = ApiKey(
         id=uuid.uuid4(),

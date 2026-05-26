@@ -69,7 +69,7 @@ async def _seed_user_and_key(s: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
         id=uuid.uuid4(),
         email="alice@example.com",
         email_verified_at=datetime.now(UTC),
-        password_hash="x",  # noqa: S106 — test fixture, not a real secret
+        password_hash="x",
     )
     key = ApiKey(
         id=uuid.uuid4(),

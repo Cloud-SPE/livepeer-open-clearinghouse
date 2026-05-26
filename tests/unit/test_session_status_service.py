@@ -62,8 +62,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 def _settings() -> Settings:
     return Settings(
-        admin_bootstrap_token="x",  # noqa: S106
-        session_signing_secret="x",  # noqa: S106
+        admin_bootstrap_token="x",
+        session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
     )
 
@@ -78,7 +78,7 @@ async def _seed(db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
         id=uid,
         email=f"{uid.hex}@example.com",
         email_verified_at=datetime.now(UTC),
-        password_hash="x",  # noqa: S106
+        password_hash="x",
     )
     key_uid = uuid.uuid4()
     key = ApiKey(

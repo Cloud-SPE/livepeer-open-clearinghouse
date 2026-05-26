@@ -73,7 +73,7 @@ async def _seed(s: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
         id=uuid.uuid4(),
         email="a@example.com",
         email_verified_at=datetime.now(UTC),
-        password_hash="x",  # noqa: S106 — fixture
+        password_hash="x",
     )
     key = ApiKey(
         id=uuid.uuid4(),
