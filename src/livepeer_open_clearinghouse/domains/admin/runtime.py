@@ -514,9 +514,7 @@ async def delete_sdk_approval_endpoint(
     db: SessionDep,
 ) -> Response:
     try:
-        await service.delete_sdk_approval(
-            db, acting_operator=operator, approval_id=approval_id
-        )
+        await service.delete_sdk_approval(db, acting_operator=operator, approval_id=approval_id)
     except service.SdkApprovalNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.code) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -592,9 +590,7 @@ async def sdk_manifest_endpoint(
     rows = await service.list_approved_sdk_manifest(db)
     generated_at = clock.now()
     items = [
-        SdkManifestEntry(
-            lang=r.lang, version=r.version, git_sha7=r.git_sha7, status=r.status
-        )
+        SdkManifestEntry(lang=r.lang, version=r.version, git_sha7=r.git_sha7, status=r.status)
         for r in rows
     ]
     keypair = _maybe_load_signing_keypair(settings)

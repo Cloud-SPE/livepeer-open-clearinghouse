@@ -16,6 +16,7 @@ Usage in pytest::
 
     from tests.fixtures.mock_broker import build_mock_broker_app
 
+
     @pytest_asyncio.fixture()
     async def broker():
         app = build_mock_broker_app(default_units=42)
@@ -61,19 +62,11 @@ def build_mock_broker_app(
     async def handle_cap(
         request: Request,
         livepeer_payment: Annotated[str | None, Header(alias="Livepeer-Payment")] = None,
-        livepeer_capability: Annotated[
-            str | None, Header(alias="Livepeer-Capability")
-        ] = None,
-        livepeer_offering: Annotated[
-            str | None, Header(alias="Livepeer-Offering")
-        ] = None,
+        livepeer_capability: Annotated[str | None, Header(alias="Livepeer-Capability")] = None,
+        livepeer_offering: Annotated[str | None, Header(alias="Livepeer-Offering")] = None,
         livepeer_mode: Annotated[str | None, Header(alias="Livepeer-Mode")] = None,
-        livepeer_request_id: Annotated[
-            str | None, Header(alias="Livepeer-Request-Id")
-        ] = None,
-        x_mock_actual_units: Annotated[
-            str | None, Header(alias="X-Mock-Actual-Units")
-        ] = None,
+        livepeer_request_id: Annotated[str | None, Header(alias="Livepeer-Request-Id")] = None,
+        x_mock_actual_units: Annotated[str | None, Header(alias="X-Mock-Actual-Units")] = None,
     ) -> Any:
         body_bytes = await request.body()
         record = {
@@ -87,9 +80,7 @@ def build_mock_broker_app(
         }
         app.state.requests.append(record)
 
-        actual_units = (
-            int(x_mock_actual_units) if x_mock_actual_units else default_units
-        )
+        actual_units = int(x_mock_actual_units) if x_mock_actual_units else default_units
         from fastapi.responses import JSONResponse
 
         headers: dict[str, str] = {"Livepeer-Work-Units": str(actual_units)}
@@ -99,9 +90,7 @@ def build_mock_broker_app(
             import json
 
             settlement = base64.b64encode(
-                json.dumps(
-                    {"outcome": "OVERFUNDED", "actual_units": actual_units}
-                ).encode()
+                json.dumps({"outcome": "OVERFUNDED", "actual_units": actual_units}).encode()
             ).decode()
             headers["Livepeer-Settlement"] = settlement
 

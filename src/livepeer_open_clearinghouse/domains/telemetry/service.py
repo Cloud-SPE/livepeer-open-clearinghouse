@@ -234,9 +234,7 @@ def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         raise InvalidCursor(f"cannot decode cursor: {exc}") from exc
 
 
-def _within_retention(
-    *, when: datetime, retention_days: int, now: datetime
-) -> bool:
+def _within_retention(*, when: datetime, retention_days: int, now: datetime) -> bool:
     """``when`` must be no older than the retention cutoff."""
     if retention_days <= 0:
         return True  # operator disabled retention; nothing to gate on
@@ -254,9 +252,7 @@ async def purge_for_user(
     Returns the count deleted. Idempotent — running twice deletes
     once then returns 0.
     """
-    result = await session.execute(
-        delete(TelemetryEvent).where(TelemetryEvent.user_id == user_id)
-    )
+    result = await session.execute(delete(TelemetryEvent).where(TelemetryEvent.user_id == user_id))
     return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
@@ -328,13 +324,9 @@ async def list_events_for_user(
     """
     now = clock.now()
     if not _within_retention(when=from_ts, retention_days=retention_days, now=now):
-        raise TelemetryWindowExpired(
-            f"from_ts predates {retention_days}-day retention window"
-        )
+        raise TelemetryWindowExpired(f"from_ts predates {retention_days}-day retention window")
     if not _within_retention(when=to_ts, retention_days=retention_days, now=now):
-        raise TelemetryWindowExpired(
-            f"to_ts predates {retention_days}-day retention window"
-        )
+        raise TelemetryWindowExpired(f"to_ts predates {retention_days}-day retention window")
     if from_ts > to_ts:
         return [], None
 
@@ -399,13 +391,9 @@ async def list_events_for_api_key(
     """
     now = clock.now()
     if not _within_retention(when=from_ts, retention_days=retention_days, now=now):
-        raise TelemetryWindowExpired(
-            f"from_ts predates {retention_days}-day retention window"
-        )
+        raise TelemetryWindowExpired(f"from_ts predates {retention_days}-day retention window")
     if not _within_retention(when=to_ts, retention_days=retention_days, now=now):
-        raise TelemetryWindowExpired(
-            f"to_ts predates {retention_days}-day retention window"
-        )
+        raise TelemetryWindowExpired(f"to_ts predates {retention_days}-day retention window")
     if from_ts > to_ts:
         # Treat as empty rather than 4xx — easier on naive clients.
         return [], None

@@ -87,9 +87,7 @@ async def test_resolved_prefs_returns_defaults_when_no_overrides(
 
 
 @pytest.mark.unit
-async def test_set_preference_overrides_default(
-    session: AsyncSession, user: User
-) -> None:
+async def test_set_preference_overrides_default(session: AsyncSession, user: User) -> None:
     # Default for cap_reached+email is True; flip to False
     row = await prefs.set_preference(
         session,
@@ -104,9 +102,7 @@ async def test_set_preference_overrides_default(
 
 
 @pytest.mark.unit
-async def test_set_preference_upserts(
-    session: AsyncSession, user: User
-) -> None:
+async def test_set_preference_upserts(session: AsyncSession, user: User) -> None:
     await prefs.set_preference(
         session,
         user_id=user.id,
@@ -127,9 +123,7 @@ async def test_set_preference_upserts(
 
 
 @pytest.mark.unit
-async def test_set_preference_rejects_unknown_trigger(
-    session: AsyncSession, user: User
-) -> None:
+async def test_set_preference_rejects_unknown_trigger(session: AsyncSession, user: User) -> None:
     with pytest.raises(prefs.InvalidTrigger):
         await prefs.set_preference(
             session,
@@ -141,9 +135,7 @@ async def test_set_preference_rejects_unknown_trigger(
 
 
 @pytest.mark.unit
-async def test_set_preference_rejects_unknown_channel(
-    session: AsyncSession, user: User
-) -> None:
+async def test_set_preference_rejects_unknown_channel(session: AsyncSession, user: User) -> None:
     with pytest.raises(prefs.InvalidChannel):
         await prefs.set_preference(
             session,
@@ -155,9 +147,7 @@ async def test_set_preference_rejects_unknown_channel(
 
 
 @pytest.mark.unit
-async def test_notify_fires_email_and_portal_by_default(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_fires_email_and_portal_by_default(session: AsyncSession, user: User) -> None:
     provider = _RecordingEmailProvider()
     fired = await prefs.notify(
         session,
@@ -184,9 +174,7 @@ async def test_notify_fires_email_and_portal_by_default(
 
 
 @pytest.mark.unit
-async def test_notify_respects_user_disable(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_respects_user_disable(session: AsyncSession, user: User) -> None:
     await prefs.set_preference(
         session,
         user_id=user.id,
@@ -211,9 +199,7 @@ async def test_notify_respects_user_disable(
 
 
 @pytest.mark.unit
-async def test_notify_swallows_email_provider_failure(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_swallows_email_provider_failure(session: AsyncSession, user: User) -> None:
     class _BrokenProvider:
         async def send(self, message) -> str:
             raise RuntimeError("simulated send failure")
@@ -234,9 +220,7 @@ async def test_notify_swallows_email_provider_failure(
 
 
 @pytest.mark.unit
-async def test_list_active_excludes_dismissed(
-    session: AsyncSession, user: User
-) -> None:
+async def test_list_active_excludes_dismissed(session: AsyncSession, user: User) -> None:
     clock = FrozenClock(datetime(2026, 5, 24, 12, 0, tzinfo=UTC))
     a = PortalNotification(
         user_id=user.id, trigger=prefs.TRIGGER_CAP_REACHED, body={}, fired_at=clock.now()
@@ -257,9 +241,7 @@ async def test_list_active_excludes_dismissed(
 
 
 @pytest.mark.unit
-async def test_dismiss_marks_row(
-    session: AsyncSession, user: User
-) -> None:
+async def test_dismiss_marks_row(session: AsyncSession, user: User) -> None:
     clock = FrozenClock(datetime(2026, 5, 24, 12, 0, tzinfo=UTC))
     row = PortalNotification(
         user_id=user.id, trigger=prefs.TRIGGER_CAP_REACHED, body={}, fired_at=clock.now()
@@ -274,9 +256,7 @@ async def test_dismiss_marks_row(
 
 
 @pytest.mark.unit
-async def test_dismiss_other_users_row_not_found(
-    session: AsyncSession, user: User
-) -> None:
+async def test_dismiss_other_users_row_not_found(session: AsyncSession, user: User) -> None:
     other = User(email="other@example.com")
     session.add(other)
     await session.flush()
@@ -293,9 +273,7 @@ async def test_dismiss_other_users_row_not_found(
 
 
 @pytest.mark.unit
-async def test_notify_cap_reached_resolves_user(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_cap_reached_resolves_user(session: AsyncSession, user: User) -> None:
     """End-to-end through notify_cap_reached: looks up user, fires
     in-portal banner via the injected independent session factory.
 
@@ -304,6 +282,7 @@ async def test_notify_cap_reached_resolves_user(
     factory that yields the test session — same wiring, simpler
     fixture.
     """
+
     @asynccontextmanager
     async def _factory():
         yield session

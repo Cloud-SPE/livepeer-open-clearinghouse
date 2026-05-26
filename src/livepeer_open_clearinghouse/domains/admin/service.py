@@ -507,9 +507,7 @@ def parse_sdk_identity(header: str | None) -> tuple[str, str, str] | None:
     return lang, version, git_sha7
 
 
-async def evaluate_sdk_identity(
-    session: AsyncSession, *, sdk_identity: str | None
-) -> str:
+async def evaluate_sdk_identity(session: AsyncSession, *, sdk_identity: str | None) -> str:
     """Bucket an SDK identity header into ``approved`` / ``deprecated``
     / ``blocked`` / ``unknown``.
 
@@ -685,9 +683,7 @@ async def list_recent_sessions_with_sdk(
     return out
 
 
-async def sdk_distribution(
-    session: AsyncSession, *, limit: int = 50
-) -> list[tuple[str, int, str]]:
+async def sdk_distribution(session: AsyncSession, *, limit: int = 50) -> list[tuple[str, int, str]]:
     """Aggregate ``(sdk_identity, count, status)`` over payment_session.
 
     Useful for the admin dashboard's SDK-distribution panel. NULL/empty

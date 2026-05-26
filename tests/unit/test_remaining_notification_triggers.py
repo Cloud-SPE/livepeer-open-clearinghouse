@@ -71,9 +71,7 @@ async def _shared_session_factory(session: AsyncSession):
 
 
 @pytest.mark.unit
-async def test_notify_winddown_warning_writes_portal_row(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_winddown_warning_writes_portal_row(session: AsyncSession, user: User) -> None:
     fired = await prefs.notify_winddown_warning(
         session,
         user_id=user.id,
@@ -114,9 +112,7 @@ async def test_notify_sdk_outdated_writes_portal_row_when_enabled(
 
 
 @pytest.mark.unit
-async def test_notify_period_rollover_writes_portal_row(
-    session: AsyncSession, user: User
-) -> None:
+async def test_notify_period_rollover_writes_portal_row(session: AsyncSession, user: User) -> None:
     fired = await prefs.notify_period_rollover(
         session,
         user_id=user.id,

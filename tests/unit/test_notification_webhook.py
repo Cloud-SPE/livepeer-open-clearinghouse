@@ -56,12 +56,9 @@ def test_sign_body_matches_standard_webhooks() -> None:
     webhook_id, ts, body = "ev-1", "1700000000", b'{"x":1}'
     sig = sign_body(secret, webhook_id=webhook_id, timestamp=ts, body=body)
     expected_base = f"{webhook_id}.{ts}.".encode() + body
-    expected = (
-        "v1,"
-        + base64.b64encode(
-            hmac.new(key, expected_base, hashlib.sha256).digest()
-        ).decode("ascii")
-    )
+    expected = "v1," + base64.b64encode(
+        hmac.new(key, expected_base, hashlib.sha256).digest()
+    ).decode("ascii")
     assert sig == expected
 
 

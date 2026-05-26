@@ -144,8 +144,7 @@ async def get_notification_prefs_endpoint(
 ) -> NotificationPrefsResponse:
     resolved = await prefs.resolved_prefs_for_user(db, user_id=user.id)
     overrides = {
-        (o.trigger, o.channel)
-        for o in await prefs.list_overrides_for_user(db, user_id=user.id)
+        (o.trigger, o.channel) for o in await prefs.list_overrides_for_user(db, user_id=user.id)
     }
     items = [
         NotificationPrefView(
@@ -191,12 +190,8 @@ async def list_portal_notifications_endpoint(
     db: SessionDep,
     limit: int = 50,
 ) -> PortalNotificationList:
-    rows = await prefs.list_active_portal_notifications(
-        db, user_id=user.id, limit=limit
-    )
-    return PortalNotificationList(
-        items=[PortalNotificationView.model_validate(r) for r in rows]
-    )
+    rows = await prefs.list_active_portal_notifications(db, user_id=user.id, limit=limit)
+    return PortalNotificationList(items=[PortalNotificationView.model_validate(r) for r in rows])
 
 
 @router.post("/v1/notifications/{notification_id}/dismiss", response_model=PortalNotificationView)
@@ -263,9 +258,7 @@ async def put_webhook_config_endpoint(
     )
 
     if settings.webhook_signing_seed is None:
-        raise HTTPException(
-            status_code=503, detail="webhook_signing_not_configured"
-        )
+        raise HTTPException(status_code=503, detail="webhook_signing_not_configured")
     if not body.url.startswith(("https://", "http://")):
         raise HTTPException(
             status_code=400,

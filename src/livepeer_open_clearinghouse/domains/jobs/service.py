@@ -389,9 +389,7 @@ async def settle_job(
     # session is closed, so will_refuse_next_refill should reflect
     # absolute cap-fraction (e.g., spend-period cap at 95%+), not
     # per-session headroom.
-    cfg = await billing_service.resolve_billing_config(
-        db, user_id=user_id, settings=settings
-    )
+    cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
     cap_status = await sessions_service._compute_cap_status(
         db,
         session_row=job_row,

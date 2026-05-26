@@ -142,9 +142,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
        releases the encumbered balance correctly
     """
     user_id, key_id = await _seed(db_session)
-    balance_before = (
-        await billing_service.get_balance(db_session, user_id=user_id)
-    ).amount_wei
+    balance_before = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
 
     # Spin up the mock broker as an in-process ASGI app
     broker_app = build_mock_broker_app(default_units=120)
@@ -232,9 +230,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
 
     # Payment row was written and linked
     payments = (
-        await db_session.scalars(
-            select(Payment).where(Payment.session_id == job.job_id)
-        )
+        await db_session.scalars(select(Payment).where(Payment.session_id == job.job_id))
     ).all()
     assert len(payments) == 1
 
@@ -251,9 +247,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
     assert events[0].outcome == "OVERFUNDED"
 
     # Balance: encumbered 200_000, refunded 80_000 → net -120_000
-    balance_after = (
-        await billing_service.get_balance(db_session, user_id=user_id)
-    ).amount_wei
+    balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     assert balance_before - balance_after == Decimal(120_000)
 
 

@@ -79,9 +79,7 @@ class _BrokerOperatorCache:
         self._map: dict[str, str | None] = {}
         self._loaded_at: float = 0.0
 
-    async def lookup(
-        self, registry: object, worker_url: str | None
-    ) -> str | None:
+    async def lookup(self, registry: object, worker_url: str | None) -> str | None:
         if not worker_url:
             return None
         import time  # noqa: PLC0415
@@ -156,9 +154,7 @@ def enrich(
     )
 
 
-async def lookup_broker_operator(
-    registry: object, broker_url: str | None
-) -> str | None:
+async def lookup_broker_operator(registry: object, broker_url: str | None) -> str | None:
     """Public hook for the runtime to resolve a broker_url. Wraps
     the process-wide TTL cache."""
     return await _broker_cache.lookup(registry, broker_url)

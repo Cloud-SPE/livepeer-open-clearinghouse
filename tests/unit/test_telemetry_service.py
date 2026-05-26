@@ -95,11 +95,7 @@ async def test_ingest_batch_happy_path(
     assert accepted == 3
     assert reasons == ["", "", ""]
     rows = list(
-        (
-            await session.scalars(
-                select(TelemetryEvent).order_by(TelemetryEvent.event_type)
-            )
-        ).all()
+        (await session.scalars(select(TelemetryEvent).order_by(TelemetryEvent.event_type))).all()
     )
     assert len(rows) == 3
     assert all(r.source == SOURCE_SDK for r in rows)
@@ -188,9 +184,7 @@ async def test_record_server_event_rejects_wrong_prefix(
 
 
 @pytest.mark.unit
-async def test_purge_expired(
-    session: AsyncSession, user_and_key: tuple[User, ApiKey]
-) -> None:
+async def test_purge_expired(session: AsyncSession, user_and_key: tuple[User, ApiKey]) -> None:
     user, api_key = user_and_key
     now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
     clock = FrozenClock(now)
@@ -213,9 +207,7 @@ async def test_purge_expired(
         )
     await session.flush()
 
-    deleted = await telemetry_service.purge_expired(
-        session, retention_days=30, clock=clock
-    )
+    deleted = await telemetry_service.purge_expired(session, retention_days=30, clock=clock)
     assert deleted == 3
     remaining = await session.scalar(select(func.count()).select_from(TelemetryEvent))
     assert remaining == 2
@@ -241,9 +233,7 @@ async def test_purge_expired_noop_when_disabled(
         )
     )
     await session.flush()
-    deleted = await telemetry_service.purge_expired(
-        session, retention_days=0, clock=FrozenClock()
-    )
+    deleted = await telemetry_service.purge_expired(session, retention_days=0, clock=FrozenClock())
     assert deleted == 0
     remaining = await session.scalar(select(func.count()).select_from(TelemetryEvent))
     assert remaining == 1

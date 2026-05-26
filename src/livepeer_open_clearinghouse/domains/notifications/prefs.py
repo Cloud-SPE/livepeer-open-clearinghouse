@@ -72,9 +72,7 @@ CHANNEL_EMAIL = "email"
 CHANNEL_IN_PORTAL = "in_portal"
 CHANNEL_WEBHOOK = "webhook"  # reserved; wires in PR-5b
 
-ALL_CHANNELS: frozenset[str] = frozenset(
-    {CHANNEL_EMAIL, CHANNEL_IN_PORTAL, CHANNEL_WEBHOOK}
-)
+ALL_CHANNELS: frozenset[str] = frozenset({CHANNEL_EMAIL, CHANNEL_IN_PORTAL, CHANNEL_WEBHOOK})
 
 
 # Operator defaults per (trigger, channel). Customer can override via
@@ -84,19 +82,15 @@ DEFAULTS: Mapping[tuple[str, str], bool] = {
     (TRIGGER_CAP_REACHED, CHANNEL_EMAIL): True,
     (TRIGGER_CAP_REACHED, CHANNEL_IN_PORTAL): True,
     (TRIGGER_CAP_REACHED, CHANNEL_WEBHOOK): False,
-
     (TRIGGER_PERIOD_ROLLOVER, CHANNEL_EMAIL): False,
     (TRIGGER_PERIOD_ROLLOVER, CHANNEL_IN_PORTAL): True,
     (TRIGGER_PERIOD_ROLLOVER, CHANNEL_WEBHOOK): False,
-
     (TRIGGER_WINDDOWN_WARNING, CHANNEL_EMAIL): True,
     (TRIGGER_WINDDOWN_WARNING, CHANNEL_IN_PORTAL): True,
     (TRIGGER_WINDDOWN_WARNING, CHANNEL_WEBHOOK): False,
-
     (TRIGGER_SDK_OUTDATED, CHANNEL_EMAIL): True,
     (TRIGGER_SDK_OUTDATED, CHANNEL_IN_PORTAL): False,
     (TRIGGER_SDK_OUTDATED, CHANNEL_WEBHOOK): False,
-
     (TRIGGER_SESSION_FAILED_REPEATEDLY, CHANNEL_EMAIL): True,
     (TRIGGER_SESSION_FAILED_REPEATEDLY, CHANNEL_IN_PORTAL): False,
     (TRIGGER_SESSION_FAILED_REPEATEDLY, CHANNEL_WEBHOOK): False,
@@ -173,9 +167,7 @@ async def set_preference(
         existing.enabled = enabled
         await session.flush()
         return existing
-    row = NotificationConfig(
-        user_id=user_id, trigger=trigger, channel=channel, enabled=enabled
-    )
+    row = NotificationConfig(user_id=user_id, trigger=trigger, channel=channel, enabled=enabled)
     session.add(row)
     await session.flush()
     return row
@@ -551,9 +543,7 @@ async def notify_session_failed_repeatedly(
     )
 
 
-def _pref(
-    overrides: list[NotificationConfig], trigger: str, channel: str
-) -> bool:
+def _pref(overrides: list[NotificationConfig], trigger: str, channel: str) -> bool:
     """Lookup the (trigger, channel) preference: per-user override
     beats default. Helper for notify_cap_reached's two-channel fan-out;
     avoids re-computing the full matrix when only two cells matter."""
@@ -599,8 +589,6 @@ async def _fire_in_portal_independent(
             error=str(exc),
         )
         return False
-
-
 
 
 BRAND_PREFIX = "Livepeer Open Clearinghouse"
@@ -698,9 +686,7 @@ async def _fire_webhook(
         settings = get_settings()
         if settings.webhook_signing_seed is None:
             return False
-        secret = derive_secret(
-            settings.webhook_signing_seed.get_secret_value(), user_id
-        )
+        secret = derive_secret(settings.webhook_signing_seed.get_secret_value(), user_id)
         return await send_webhook(
             http=None,
             url=row.url,

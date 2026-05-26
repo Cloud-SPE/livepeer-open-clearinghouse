@@ -103,9 +103,7 @@ def approval_notification_email(*, to: str, public_base_url: str) -> EmailMessag
     return make_message(to=to, subject=subject, html=html, text=text)
 
 
-def notification_email(
-    *, to: str, subject: str, body: dict[str, object]
-) -> EmailMessage:
+def notification_email(*, to: str, subject: str, body: dict[str, object]) -> EmailMessage:
     """Generic notification email used by the notification-preferences
     system.
 
@@ -118,8 +116,7 @@ def notification_email(
         lines = [f"  - {k}: {_safe(str(v))}" for k, v in body.items()]
         text_body = "\n".join(lines)
         html_items = "".join(
-            f"<li><strong>{_safe(k)}:</strong> {_safe(str(v))}</li>"
-            for k, v in body.items()
+            f"<li><strong>{_safe(k)}:</strong> {_safe(str(v))}</li>" for k, v in body.items()
         )
         html_body = f"<ul>{html_items}</ul>"
     else:

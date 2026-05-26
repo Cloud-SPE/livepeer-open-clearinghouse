@@ -104,10 +104,7 @@ async def send_webhook(
                 resp = await client.post(url, content=body, headers=headers)
                 if _HTTP_2XX_MIN <= resp.status_code < _HTTP_3XX_MIN:
                     return True
-                if (
-                    resp.status_code >= _HTTP_5XX_MIN
-                    or resp.status_code == _HTTP_TOO_MANY
-                ):
+                if resp.status_code >= _HTTP_5XX_MIN or resp.status_code == _HTTP_TOO_MANY:
                     logger.info(
                         "notifications.webhook.retryable",
                         url=url,

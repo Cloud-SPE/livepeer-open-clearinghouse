@@ -91,9 +91,7 @@ class TestParseSdkIdentity:
 
 
 @pytest.mark.unit
-async def test_create_list_update_delete(
-    session: AsyncSession, operator: Operator
-) -> None:
+async def test_create_list_update_delete(session: AsyncSession, operator: Operator) -> None:
     row = await admin_service.create_sdk_approval(
         session,
         acting_operator=operator,
@@ -121,17 +119,13 @@ async def test_create_list_update_delete(
     assert updated.status == "deprecated"
     assert updated.notes == "superseded by 0.3.0"
 
-    await admin_service.delete_sdk_approval(
-        session, acting_operator=operator, approval_id=row.id
-    )
+    await admin_service.delete_sdk_approval(session, acting_operator=operator, approval_id=row.id)
     listed_after = await admin_service.list_sdk_approvals(session)
     assert listed_after == []
 
 
 @pytest.mark.unit
-async def test_create_rejects_invalid_status(
-    session: AsyncSession, operator: Operator
-) -> None:
+async def test_create_rejects_invalid_status(session: AsyncSession, operator: Operator) -> None:
     with pytest.raises(admin_service.InvalidSdkApprovalStatus):
         await admin_service.create_sdk_approval(
             session,
@@ -145,9 +139,7 @@ async def test_create_rejects_invalid_status(
 
 
 @pytest.mark.unit
-async def test_create_rejects_duplicate_triple(
-    session: AsyncSession, operator: Operator
-) -> None:
+async def test_create_rejects_duplicate_triple(session: AsyncSession, operator: Operator) -> None:
     await admin_service.create_sdk_approval(
         session,
         acting_operator=operator,
@@ -170,9 +162,7 @@ async def test_create_rejects_duplicate_triple(
 
 
 @pytest.mark.unit
-async def test_update_unknown_id_raises(
-    session: AsyncSession, operator: Operator
-) -> None:
+async def test_update_unknown_id_raises(session: AsyncSession, operator: Operator) -> None:
     with pytest.raises(admin_service.SdkApprovalNotFound):
         await admin_service.update_sdk_approval(
             session,
@@ -184,9 +174,7 @@ async def test_update_unknown_id_raises(
 
 
 @pytest.mark.unit
-async def test_evaluate_sdk_identity_buckets(
-    session: AsyncSession, operator: Operator
-) -> None:
+async def test_evaluate_sdk_identity_buckets(session: AsyncSession, operator: Operator) -> None:
     await admin_service.create_sdk_approval(
         session,
         acting_operator=operator,
@@ -215,21 +203,23 @@ async def test_evaluate_sdk_identity_buckets(
         notes="cheats",
     )
 
-    assert await admin_service.evaluate_sdk_identity(
-        session, sdk_identity="rust/0.2.0/aaaaaaa"
-    ) == "approved"
-    assert await admin_service.evaluate_sdk_identity(
-        session, sdk_identity="rust/0.1.0/bbbbbbb"
-    ) == "deprecated"
-    assert await admin_service.evaluate_sdk_identity(
-        session, sdk_identity="rust/0.0.1/ccccccc"
-    ) == "blocked"
-    assert await admin_service.evaluate_sdk_identity(
-        session, sdk_identity="rust/99.99.99/ddddddd"
-    ) == "unknown"
-    assert await admin_service.evaluate_sdk_identity(
-        session, sdk_identity=None
-    ) == "unknown"
+    assert (
+        await admin_service.evaluate_sdk_identity(session, sdk_identity="rust/0.2.0/aaaaaaa")
+        == "approved"
+    )
+    assert (
+        await admin_service.evaluate_sdk_identity(session, sdk_identity="rust/0.1.0/bbbbbbb")
+        == "deprecated"
+    )
+    assert (
+        await admin_service.evaluate_sdk_identity(session, sdk_identity="rust/0.0.1/ccccccc")
+        == "blocked"
+    )
+    assert (
+        await admin_service.evaluate_sdk_identity(session, sdk_identity="rust/99.99.99/ddddddd")
+        == "unknown"
+    )
+    assert await admin_service.evaluate_sdk_identity(session, sdk_identity=None) == "unknown"
 
 
 @pytest.mark.unit
@@ -251,9 +241,7 @@ async def test_list_approved_sdk_manifest_excludes_blocked(
     assert statuses == {"approved", "deprecated"}
 
 
-def _make_session_row(
-    *, user, api_key, sdk_identity: str | None
-) -> sessions_repo.PaymentSession:
+def _make_session_row(*, user, api_key, sdk_identity: str | None) -> sessions_repo.PaymentSession:
     return sessions_repo.PaymentSession(
         user_id=user.id,
         api_key_id=api_key.id,

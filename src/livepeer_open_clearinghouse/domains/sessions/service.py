@@ -583,8 +583,6 @@ async def open_session(
     )
 
 
-
-
 # ---------------------------------------------------------------------------
 # Refill orchestration (POST /v1/sessions/{id}/refill)
 # ---------------------------------------------------------------------------
@@ -712,9 +710,7 @@ async def refill_session(
         cap_wei=cfg.spend_period_cap_wei,
     )
     if next_mint_value_wei > period_room:
-        period_remaining_int = (
-            int(period_room) if period_room != Decimal("Infinity") else 0
-        )
+        period_remaining_int = int(period_room) if period_room != Decimal("Infinity") else 0
         await telemetry_events.emit_refill_denied(
             db,
             api_key_id=api_key_id,
@@ -1296,9 +1292,7 @@ async def _emit_discrepancy_if_diverged(
     floor. Best-effort: any failure (daemon unreachable, parse error)
     is swallowed."""
     try:
-        debits = await daemon.get_session_debits(
-            sender=b"", work_id=session_row.work_id
-        )
+        debits = await daemon.get_session_debits(sender=b"", work_id=session_row.work_id)
     except Exception:
         return
     daemon_units = int(debits.total_work_units)

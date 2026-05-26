@@ -167,11 +167,7 @@ async def test_ingest_batch_without_enrichment_writes_nulls(
         session,
         api_key_id=api_key.id,
         user_id=user.id,
-        events=[
-            IngestEventIn(
-                event_type="sdk.init", event_schema_version=1, payload={}
-            )
-        ],
+        events=[IngestEventIn(event_type="sdk.init", event_schema_version=1, payload={})],
         clock=FrozenClock(),
     )
     assert accepted == 1

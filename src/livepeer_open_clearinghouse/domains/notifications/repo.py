@@ -83,9 +83,7 @@ class NotificationConfig(Base, TimestampMixin, TableNameFromClassMixin):
     """
 
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "user_id", "trigger", "channel", name="pk_notification_config"
-        ),
+        PrimaryKeyConstraint("user_id", "trigger", "channel", name="pk_notification_config"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(

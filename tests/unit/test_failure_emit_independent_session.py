@@ -136,9 +136,7 @@ async def test_emit_mint_refused_survives_outer_rollback(
         rows = list(
             (
                 await verify.scalars(
-                    select(TelemetryEvent).where(
-                        TelemetryEvent.event_type == "server.mint_refused"
-                    )
+                    select(TelemetryEvent).where(TelemetryEvent.event_type == "server.mint_refused")
                 )
             ).all()
         )
@@ -172,9 +170,7 @@ async def test_emit_refill_denied_survives_outer_rollback(
     async with maker() as verify:
         row = (
             await verify.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.refill_denied"
-                )
+                select(TelemetryEvent).where(TelemetryEvent.event_type == "server.refill_denied")
             )
         ).one()
         assert row.api_key_id == api_key.id

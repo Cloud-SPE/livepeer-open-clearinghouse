@@ -310,9 +310,7 @@ async def query_events_endpoint(
     from_ts: Annotated[
         str, Query(alias="from", description="ISO-8601 lower bound on received_ts.")
     ],
-    to_ts: Annotated[
-        str, Query(alias="to", description="ISO-8601 upper bound on received_ts.")
-    ],
+    to_ts: Annotated[str, Query(alias="to", description="ISO-8601 upper bound on received_ts.")],
     type_glob: Annotated[
         str | None,
         Query(
@@ -368,9 +366,7 @@ async def query_events_endpoint(
     if to_dt.tzinfo is None:
         to_dt = to_dt.replace(tzinfo=UTC)
 
-    effective_page_size = page_size or min(
-        100, int(settings.telemetry_query_max_page_size)
-    )
+    effective_page_size = page_size or min(100, int(settings.telemetry_query_max_page_size))
 
     try:
         rows, next_cursor = await service.list_events_for_api_key(
@@ -400,15 +396,14 @@ async def query_events_endpoint(
         ) from exc
 
     if fmt == "ndjson":
+
         async def _stream() -> AsyncIterator[bytes]:
             for row in rows:
                 line = _event_view(row).model_dump_json()
                 yield (line + "\n").encode("utf-8")
             # Trailing cursor record so streaming clients know where
             # to resume without an extra round-trip.
-            yield (
-                json.dumps({"_cursor": next_cursor}, default=str) + "\n"
-            ).encode("utf-8")
+            yield (json.dumps({"_cursor": next_cursor}, default=str) + "\n").encode("utf-8")
 
         return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
@@ -430,9 +425,7 @@ async def query_events_endpoint(
 portal_router = APIRouter(prefix="/v1/accounts/me/telemetry", tags=["telemetry"])
 
 
-def _parse_window_or_400(
-    from_ts: str, to_ts: str
-) -> tuple[datetime, datetime]:
+def _parse_window_or_400(from_ts: str, to_ts: str) -> tuple[datetime, datetime]:
     from datetime import UTC  # noqa: PLC0415
 
     try:
@@ -466,9 +459,7 @@ async def portal_query_events_endpoint(
     the user owns. Session-cookie auth; the SDK uses the per-key
     variant at ``/v1/telemetry/events``."""
     from_dt, to_dt = _parse_window_or_400(from_ts, to_ts)
-    effective_page_size = page_size or min(
-        100, int(settings.telemetry_query_max_page_size)
-    )
+    effective_page_size = page_size or min(100, int(settings.telemetry_query_max_page_size))
     try:
         rows, next_cursor = await service.list_events_for_user(
             db,
@@ -550,9 +541,7 @@ async def portal_download_endpoint(
     headers = {
         "Content-Disposition": f'attachment; filename="telemetry-{today}.ndjson"',
     }
-    return StreamingResponse(
-        _stream(), media_type="application/x-ndjson", headers=headers
-    )
+    return StreamingResponse(_stream(), media_type="application/x-ndjson", headers=headers)
 
 
 # ---------------------------------------------------------------------------

@@ -79,9 +79,7 @@ def _clock() -> FrozenClock:
     return FrozenClock(datetime(2026, 5, 24, 12, 0, tzinfo=UTC))
 
 
-async def _seed_user(
-    db: AsyncSession, *, balance_wei: int
-) -> tuple[uuid.UUID, uuid.UUID]:
+async def _seed_user(db: AsyncSession, *, balance_wei: int) -> tuple[uuid.UUID, uuid.UUID]:
     user = User(email=f"u-{uuid.uuid4().hex[:8]}@example.com")
     db.add(user)
     await db.flush()
@@ -141,9 +139,7 @@ async def test_mint_refused_fires_on_insufficient_credit(
     rows = list(
         (
             await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.mint_refused"
-                )
+                select(TelemetryEvent).where(TelemetryEvent.event_type == "server.mint_refused")
             )
         ).all()
     )
@@ -196,9 +192,7 @@ async def test_mint_served_fires_on_open_session_success(
     rows = list(
         (
             await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.mint_served"
-                )
+                select(TelemetryEvent).where(TelemetryEvent.event_type == "server.mint_served")
             )
         ).all()
     )
@@ -256,9 +250,7 @@ async def test_sdk_sha_mismatch_fires_when_identity_unknown(
     rows = list(
         (
             await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.sdk_sha_mismatch"
-                )
+                select(TelemetryEvent).where(TelemetryEvent.event_type == "server.sdk_sha_mismatch")
             )
         ).all()
     )
@@ -332,9 +324,7 @@ async def test_sdk_sha_mismatch_silent_when_identity_approved(
     rows = list(
         (
             await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.sdk_sha_mismatch"
-                )
+                select(TelemetryEvent).where(TelemetryEvent.event_type == "server.sdk_sha_mismatch")
             )
         ).all()
     )
