@@ -140,8 +140,8 @@ platform**. It's responsible for:
    `Livepeer-Open-Clearinghouse-SDK: <lang>/<semver>/<git_sha7>`
    header on every LOC request.
 
-The official SDKs (`examples/python`, `examples/typescript`,
-`examples/go`, `examples/rust`) implement all of this. Custom
+The official SDKs (`sdks/python`, `sdks/typescript`,
+`sdks/go`, `sdks/rust`) implement all of this. Custom
 SDKs are tolerated for languages we don't ship but unsupported —
 LOC's reconciliation janitor + daemon ledger compensate for
 buggy/missing SDK behavior so the operator isn't left with
@@ -314,6 +314,7 @@ case-(d) workloads.
   in the design doc § Q#1
 - Upstream protocol repo:
   [`livepeer-cloud-spe/livepeer-network-modules`](https://github.com/Cloud-SPE/livepeer-network-modules)
-- Per-SDK README + example: `examples/{python,typescript,go,rust}/README.md`
+- Per-SDK README: `sdks/{python,typescript,go,rust}/README.md`
+- Per-language examples: `examples/{python,typescript,go,rust}/{one-shot-job,streaming-ws,streaming-http}/`
 - Tech-debt + deferred items:
   [`docs/exec-plans/tech-debt-tracker.md`](exec-plans/tech-debt-tracker.md)

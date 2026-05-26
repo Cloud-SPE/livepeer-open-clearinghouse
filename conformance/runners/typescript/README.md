@@ -2,7 +2,7 @@
 
 Placeholder — implements the same scenarios as
 `conformance/runners/python/` but drives the TypeScript SDK from
-`examples/typescript/`.
+`sdks/typescript/`.
 
 ## Implementation steps
 

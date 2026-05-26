@@ -3,7 +3,7 @@
 //! ```bash
 //! OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
 //! OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
-//! cargo run --example example
+//! cargo run -p one-shot-job-example
 //! ```
 //!
 //! The SDK handles the handoff dance: opens a job via POST /v1/jobs

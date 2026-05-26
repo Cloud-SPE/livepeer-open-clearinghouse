@@ -54,3 +54,7 @@ docs/generated/db-schema.md
 
 # Docker / compose volumes (host-mounted)
 .docker-data/
+
+# Rust (Cargo workspace target dir at repo root)
+/target/
+

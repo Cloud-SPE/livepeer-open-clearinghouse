@@ -1,0 +1,12 @@
+[project]
+name = "loc-example-one-shot-job"
+version = "0.0.0"
+description = "Example: submit a one-shot job via the handoff-mode SDK."
+requires-python = ">=3.10"
+dependencies = ["livepeer-open-clearinghouse-sdk"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+livepeer-open-clearinghouse-sdk = { workspace = true }

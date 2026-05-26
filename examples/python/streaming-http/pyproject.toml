@@ -1,0 +1,12 @@
+[project]
+name = "loc-example-streaming-http"
+version = "0.0.0"
+description = "Example: streaming session with HTTP topup (live-session-remote-runner@v0)."
+requires-python = ">=3.10"
+dependencies = ["livepeer-open-clearinghouse-sdk"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+livepeer-open-clearinghouse-sdk = { workspace = true }

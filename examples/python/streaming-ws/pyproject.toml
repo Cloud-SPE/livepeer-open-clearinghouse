@@ -1,0 +1,12 @@
+[project]
+name = "loc-example-streaming-ws"
+version = "0.0.0"
+description = "Example: streaming session with WS topup (session-control-plus-media@v0)."
+requires-python = ">=3.10"
+dependencies = ["livepeer-open-clearinghouse-sdk"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+livepeer-open-clearinghouse-sdk = { workspace = true }

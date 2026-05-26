@@ -1,7 +1,7 @@
 # Go SDK conformance runner
 
 Placeholder — implements the same scenarios as the Python runner but
-drives the Go SDK from `examples/go/`.
+drives the Go SDK from `sdks/go/`.
 
 ## Implementation steps
 

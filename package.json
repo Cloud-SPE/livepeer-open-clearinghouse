@@ -1,0 +1,5 @@
+{
+  "name": "livepeer-open-clearinghouse-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.15.0"
+}

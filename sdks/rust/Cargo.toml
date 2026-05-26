@@ -23,14 +23,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
-[[example]]
-name = "example"
-path = "examples/example.rs"
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-
 # Boring strict clippy preset. `pedantic` catches the kinds of nits worth
 # catching in client SDK code; the explicit allows are the unavoidable
 # stylistic differences (string formatting, doc lines).
