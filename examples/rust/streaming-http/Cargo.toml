@@ -1,0 +1,13 @@
+[package]
+name = "streaming-http-example"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "streaming-http"
+path = "src/main.rs"
+
+[dependencies]
+livepeer-open-clearinghouse-sdk = { path = "../../../sdks/rust" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

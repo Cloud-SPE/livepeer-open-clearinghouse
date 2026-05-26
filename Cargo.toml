@@ -4,6 +4,7 @@ members = [
     "sdks/rust",
     "examples/rust/one-shot-job",
     "examples/rust/streaming-ws",
+    "examples/rust/streaming-http",
 ]
 
 [profile.release]
