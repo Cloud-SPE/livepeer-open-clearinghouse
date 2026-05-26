@@ -56,6 +56,10 @@ go run ./cmd/example
 
 ## Use it from your app
 
+Livepeer Open Clearinghouse runs in **handoff mode**: LOC mints the
+payment envelope; the SDK calls the broker directly with that
+envelope; LOC settles based on the broker's reported work units.
+
 ```go
 import (
     "context"
@@ -75,11 +79,15 @@ func callLLM(ctx context.Context, prompt string) error {
         return err
     }
 
-    mint, err := ph.MintPayment(ctx, openclearinghouse.MintPaymentInput{
+    result, err := ph.SubmitJob(ctx, openclearinghouse.SubmitJobInput{
         Capability:     "openai:chat-completions",
         Offering:       "vllm-qwen3.6-27b-default",
-        WorkUnits:      1000,
-        IdempotencyKey: idem,
+        EstimatedUnits: 200,
+        MaxTotalUnits:  2000,
+        Body: map[string]any{
+            "messages":   []any{map[string]any{"role": "user", "content": prompt}},
+            "max_tokens": 50,
+        },
     })
     if err != nil {
         var phErr *openclearinghouse.Error
@@ -88,17 +96,26 @@ func callLLM(ctx context.Context, prompt string) error {
         }
         return err
     }
-
-    // ... POST to mint.RecipientEthAddress's orch with header
-    //     Livepeer-Payment: mint.PaymentBytes ...
-
-    _, err = ph.ReportUsage(ctx, openclearinghouse.ReportUsageInput{
-        PaymentID:       mint.PaymentID,
-        ActualWorkUnits: 873,
-        IdempotencyKey:  idem,
-    })
-    return err
+    log.Printf("billed %d wei for %d units, outcome=%s",
+        result.BilledValueWei, result.ActualUnits, result.Outcome)
+    return nil
 }
+```
+
+Long-running session shape:
+
+```go
+handle, _ := ph.OpenSession(ctx, openclearinghouse.OpenSessionInput{
+    Capability:           "cap.live",
+    Offering:             "off.live",
+    EstimatedRunwayUnits: 1000,
+    MaxTotalUnits:        10000,
+})
+// ... stream work against handle.BrokerURL, refill via SessionRunner ...
+_, _ = ph.CloseSession(ctx, openclearinghouse.CloseSessionInput{
+    SessionID:   handle.SessionID,
+    ActualUnits: 4250,
+})
 ```
 
 Method surface:
@@ -107,8 +124,16 @@ Method surface:
 |---|---|
 | `ListCapabilities(ctx)` | discovery |
 | `ListOrchestrators(ctx, capability)` | discovery |
-| `MintPayment(ctx, MintPaymentInput)` | the load-bearing call |
-| `ReportUsage(ctx, ReportUsageInput)` | reconcile over-committed budget |
+| `SubmitJob(ctx, SubmitJobInput)` | one-shot job (cases a/b/c) |
+| `OpenSession(ctx, OpenSessionInput)` | open long-running session (case d) |
+| `RefillSession(ctx, RefillSessionInput)` | top up an open session |
+| `CloseSession(ctx, CloseSessionInput)` | settle + close a session |
+| `Telemetry()` | direct access to the (mandatory) `*TelemetryEmitter` |
+
+The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on every
+call, and telemetry events (`request.mint_started`,
+`request.settle_completed`, `session.opened`, …) fire fire-and-forget
+through `/v1/telemetry`. There is no telemetry opt-out.
 
 Errors come back as `*openclearinghouse.Error` with predicate methods:
 `IsInsufficientCredit`, `IsSpendCapExceeded`, `IsAccountNotApproved`,

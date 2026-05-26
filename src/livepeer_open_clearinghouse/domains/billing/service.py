@@ -298,6 +298,72 @@ async def refund_payment(
     )
 
 
+async def encumber_for_session(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    amount_wei: Decimal,
+    clock: Clock,
+    period_seconds: int,
+    cap_wei: int,
+) -> CreditBalance:
+    """Encumber session worst-case from balance + record against the period cap.
+
+    Per exec-plan 002 Q#3 (resolved): at session-open LOC encumbers
+    ``max_total_units x EV-per-unit`` (the absolute worst case),
+    guaranteeing per-session refill is bounded by construction. The
+    encumbrance also counts against the spend-period cap so a long
+    session can't trivially bypass period limits.
+
+    Raises ``SpendCapExceeded`` (before any DB mutation) if the window
+    cap would be breached; ``InsufficientCredit`` if balance is too low.
+
+    ``related_payment_id`` ties the ledger entry to the session's
+    initial mint row; ``credit_ledger.reason`` is
+    ``session_encumbrance`` to distinguish from the per-mint
+    ``payment_charge`` entries that follow as refills happen.
+    """
+    await enforce_and_record_spend(
+        session,
+        user_id=user_id,
+        amount_wei=amount_wei,
+        clock=clock,
+        period_seconds=period_seconds,
+        cap_wei=cap_wei,
+    )
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=-amount_wei,
+        reason="session_encumbrance",
+        related_payment_id=payment_id,
+    )
+
+
+async def release_session_encumbrance(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    payment_id: uuid.UUID,
+    amount_wei: Decimal,
+) -> CreditBalance:
+    """Release unused encumbrance back to the user balance at session close.
+
+    ``amount_wei`` is typically ``encumbered - actually_billed``. Does
+    not touch the spend-period window (the original encumber call
+    recorded the spend; releasing doesn't un-spend it for cap
+    purposes). ``reason`` on the ledger is ``session_release``.
+    """
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=amount_wei,
+        reason="session_release",
+        related_payment_id=payment_id,
+    )
+
+
 async def get_balance(session: AsyncSession, *, user_id: uuid.UUID) -> CreditBalance:
     """Return the user's current balance row (creating it lazily if absent)."""
     row = await session.scalar(select(CreditBalance).where(CreditBalance.user_id == user_id))
@@ -341,9 +407,10 @@ async def get_billing_config(
     session: AsyncSession, *, user_id: uuid.UUID
 ) -> UserBillingConfig | None:
     """Return the user's UserBillingConfig row if one exists."""
-    return await session.scalar(
+    result: UserBillingConfig | None = await session.scalar(
         select(UserBillingConfig).where(UserBillingConfig.user_id == user_id)
     )
+    return result
 
 
 async def resolve_billing_config(

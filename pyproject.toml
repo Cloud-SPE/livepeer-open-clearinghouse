@@ -1,6 +1,6 @@
 [project]
 name = "livepeer-open-clearinghouse"
-version = "0.1.0"
+version = "1.3.3"
 description = "Non-custodial-by-design payment clearinghouse for Livepeer applications"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -102,6 +102,20 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004"]
+# The conformance harness is test scaffolding — relax the rules that
+# only matter in production code (security advisories on bare except,
+# magic-number rule on test assertions, etc.).
+"conformance/**" = [
+  "S101",      # assert in tests
+  "S110",      # try/except/pass — fine for "best-effort fallback" branches in the mock
+  "PLR0915",   # statement count in build_app — keeping all routes inline is intentional
+  "PLR2004",   # magic numbers in test assertions
+  "PLC0415",   # local imports inside funcs (lazy to avoid extra deps at import time)
+  "PT018",     # multi-part assertions in conformance tests
+  "PT022",     # fixture yield vs return — conformance fixtures cleanly yield
+  "SIM105",    # try/except/pass — equivalent to contextlib.suppress; we prefer the inline form
+  "E501",      # line length in scenario JSON URLs etc.
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -122,10 +136,16 @@ warn_return_any = true
 no_implicit_reexport = true
 disallow_untyped_decorators = false
 plugins = ["pydantic.mypy"]
-exclude = ["migrations/versions"]
+exclude = ["migrations/versions", "src/livepeer_open_clearinghouse/_gen"]
 
 [[tool.mypy.overrides]]
-module = ["resend.*", "apscheduler.*", "grpc.*", "grpc_tools.*"]
+module = [
+  "resend.*",
+  "apscheduler.*",
+  "grpc.*",
+  "livepeer.registry.*",
+  "livepeer.payments.*",
+]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

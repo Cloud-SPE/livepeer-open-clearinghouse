@@ -6,6 +6,7 @@ const ITEMS = [
   { path: "/api-keys", label: "API keys", icon: "key" },
   { path: "/catalog", label: "Catalog", icon: "search" },
   { path: "/activity", label: "Activity", icon: "activity" },
+  { path: "/telemetry", label: "Telemetry", icon: "activity" },
 ];
 
 export class CcSidebar extends LitElement {

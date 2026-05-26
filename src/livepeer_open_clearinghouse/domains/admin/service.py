@@ -11,9 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.accounts import service as accounts_service
 from livepeer_open_clearinghouse.domains.accounts.repo import OperatorApproval, User
-from livepeer_open_clearinghouse.domains.admin.repo import Operator, OperatorAudit
+from livepeer_open_clearinghouse.domains.admin.repo import (
+    Operator,
+    OperatorAudit,
+    SdkApproval,
+)
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.email import EmailProvider, templates
 from livepeer_open_clearinghouse.providers.telemetry import get_logger
@@ -77,9 +82,10 @@ async def ensure_bootstrap_operator(session: AsyncSession, *, bootstrap_token: s
 async def authenticate_operator(session: AsyncSession, *, bearer_token: str) -> Operator | None:
     """Return the operator matching a bearer token, or None."""
     token_hash = _hash_bootstrap_token(bearer_token)
-    return await session.scalar(
+    result: Operator | None = await session.scalar(
         select(Operator).where(Operator.token_hash == token_hash, Operator.revoked_at.is_(None))
     )
+    return result
 
 
 async def list_all_users(
@@ -200,10 +206,21 @@ async def approve_user(
 
     if email_provider is not None and public_base_url is not None:
         try:
-            await email_provider.send(
-                templates.approval_notification_email(
-                    to=user.email, public_base_url=public_base_url
-                )
+            approval_message = templates.approval_notification_email(
+                to=user.email, public_base_url=public_base_url
+            )
+            provider_message_id = await email_provider.send(approval_message)
+            from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+                service as notif_service,
+            )
+
+            await notif_service.record_email_send(
+                session,
+                to=approval_message.to,
+                subject=approval_message.subject,
+                provider_message_id=provider_message_id,
+                user_id=user_id,
+                clock=clock,
             )
         except Exception as exc:
             logger.warning(
@@ -447,3 +464,246 @@ async def rotate_operator_token(
     )
     await session.flush()
     return target, raw
+
+
+# ---------------------------------------------------------------------------
+# SDK approval list — operator-managed allow/deprecate registry
+# ---------------------------------------------------------------------------
+
+
+SDK_APPROVAL_STATUSES: frozenset[str] = frozenset({"approved", "deprecated", "blocked"})
+
+_SDK_IDENTITY_TRIPLE_PARTS = 3
+
+
+class InvalidSdkApprovalStatus(AdminServiceError):
+    code = "invalid_sdk_approval_status"
+
+
+class SdkApprovalNotFound(AdminServiceError):
+    code = "sdk_approval_not_found"
+
+
+class SdkApprovalAlreadyExists(AdminServiceError):
+    code = "sdk_approval_already_exists"
+
+
+def parse_sdk_identity(header: str | None) -> tuple[str, str, str] | None:
+    """Split a Livepeer-Open-Clearinghouse-SDK header into its triple.
+
+    The on-the-wire format is ``lang/version/git_sha7``. Returns
+    ``None`` if the header is missing, empty, or doesn't have three
+    parts. We don't validate semver / sha format here — that's a
+    forward-compat headache. The admin surface shows what it observed.
+    """
+    if not header:
+        return None
+    parts = header.strip().split("/")
+    if len(parts) != _SDK_IDENTITY_TRIPLE_PARTS:
+        return None
+    lang, version, git_sha7 = parts
+    if not lang or not version or not git_sha7:
+        return None
+    return lang, version, git_sha7
+
+
+async def evaluate_sdk_identity(
+    session: AsyncSession, *, sdk_identity: str | None
+) -> str:
+    """Bucket an SDK identity header into ``approved`` / ``deprecated``
+    / ``blocked`` / ``unknown``.
+
+    ``unknown`` covers both the missing-header case and triples not
+    present in the table. The admin surfaces use this to highlight
+    sessions that should be investigated.
+    """
+    triple = parse_sdk_identity(sdk_identity)
+    if triple is None:
+        return "unknown"
+    lang, version, git_sha7 = triple
+    row = await session.scalar(
+        select(SdkApproval).where(
+            SdkApproval.lang == lang,
+            SdkApproval.version == version,
+            SdkApproval.git_sha7 == git_sha7,
+        )
+    )
+    if row is None:
+        return "unknown"
+    return row.status
+
+
+async def list_sdk_approvals(session: AsyncSession) -> list[SdkApproval]:
+    rows = await session.scalars(
+        select(SdkApproval).order_by(
+            SdkApproval.lang, SdkApproval.version.desc(), SdkApproval.git_sha7
+        )
+    )
+    return list(rows)
+
+
+async def list_approved_sdk_manifest(
+    session: AsyncSession,
+) -> list[SdkApproval]:
+    """Public manifest content: approved + deprecated rows only.
+
+    Blocked rows are operator-internal and never published.
+    """
+    rows = await session.scalars(
+        select(SdkApproval)
+        .where(SdkApproval.status.in_(["approved", "deprecated"]))
+        .order_by(SdkApproval.lang, SdkApproval.version.desc(), SdkApproval.git_sha7)
+    )
+    return list(rows)
+
+
+async def create_sdk_approval(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    lang: str,
+    version: str,
+    git_sha7: str,
+    status: str,
+    notes: str | None,
+) -> SdkApproval:
+    if status not in SDK_APPROVAL_STATUSES:
+        raise InvalidSdkApprovalStatus
+    existing = await session.scalar(
+        select(SdkApproval).where(
+            SdkApproval.lang == lang,
+            SdkApproval.version == version,
+            SdkApproval.git_sha7 == git_sha7,
+        )
+    )
+    if existing is not None:
+        raise SdkApprovalAlreadyExists
+    row = SdkApproval(
+        lang=lang,
+        version=version,
+        git_sha7=git_sha7,
+        status=status,
+        notes=notes,
+        added_by_operator_id=acting_operator.id,
+    )
+    session.add(row)
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="create_sdk_approval",
+            target_user_id=None,
+            params={
+                "lang": lang,
+                "version": version,
+                "git_sha7": git_sha7,
+                "status": status,
+            },
+        )
+    )
+    await session.flush()
+    return row
+
+
+async def update_sdk_approval(
+    session: AsyncSession,
+    *,
+    acting_operator: Operator,
+    approval_id: uuid.UUID,
+    status: str | None,
+    notes: str | None,
+) -> SdkApproval:
+    row = await session.get(SdkApproval, approval_id)
+    if row is None:
+        raise SdkApprovalNotFound
+    if status is not None:
+        if status not in SDK_APPROVAL_STATUSES:
+            raise InvalidSdkApprovalStatus
+        row.status = status
+    if notes is not None:
+        row.notes = notes
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="update_sdk_approval",
+            target_user_id=None,
+            params={
+                "approval_id": str(approval_id),
+                "status": status,
+                "notes": notes,
+            },
+        )
+    )
+    await session.flush()
+    return row
+
+
+async def delete_sdk_approval(
+    session: AsyncSession, *, acting_operator: Operator, approval_id: uuid.UUID
+) -> None:
+    row = await session.get(SdkApproval, approval_id)
+    if row is None:
+        raise SdkApprovalNotFound
+    await session.delete(row)
+    session.add(
+        OperatorAudit(
+            operator_id=acting_operator.id,
+            action="delete_sdk_approval",
+            target_user_id=None,
+            params={"approval_id": str(approval_id)},
+        )
+    )
+    await session.flush()
+
+
+async def list_recent_sessions_with_sdk(
+    session: AsyncSession, *, limit: int = 100
+) -> list[tuple[PaymentSession, str]]:
+    """Return the most recent N payment_session rows with each one's
+    bucketed SDK approval status (joined locally to avoid an N+1)."""
+    rows = await session.scalars(
+        select(PaymentSession).order_by(PaymentSession.opened_at.desc()).limit(limit)
+    )
+    session_rows = list(rows)
+    if not session_rows:
+        return []
+    # Single query against sdk_approval keyed on the observed triples.
+    triples: set[tuple[str, str, str]] = set()
+    for ps in session_rows:
+        t = parse_sdk_identity(ps.sdk_identity)
+        if t is not None:
+            triples.add(t)
+    approvals: dict[tuple[str, str, str], str] = {}
+    if triples:
+        approval_rows = await session.scalars(select(SdkApproval))
+        for ar in approval_rows:
+            approvals[(ar.lang, ar.version, ar.git_sha7)] = ar.status
+    out: list[tuple[PaymentSession, str]] = []
+    for ps in session_rows:
+        t = parse_sdk_identity(ps.sdk_identity)
+        status = "unknown" if t is None else approvals.get(t, "unknown")
+        out.append((ps, status))
+    return out
+
+
+async def sdk_distribution(
+    session: AsyncSession, *, limit: int = 50
+) -> list[tuple[str, int, str]]:
+    """Aggregate ``(sdk_identity, count, status)`` over payment_session.
+
+    Useful for the admin dashboard's SDK-distribution panel. NULL/empty
+    sdk_identity rolls into a single ``unknown`` bucket.
+    """
+    rows = await session.execute(
+        select(
+            func.coalesce(PaymentSession.sdk_identity, ""),
+            func.count(),
+        )
+        .group_by(PaymentSession.sdk_identity)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    out: list[tuple[str, int, str]] = []
+    for ident, count in rows:
+        status = await evaluate_sdk_identity(session, sdk_identity=ident or None)
+        out.append((ident or "", int(count), status))
+    return out

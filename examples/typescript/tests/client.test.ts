@@ -1,341 +1,329 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   InsufficientCredit,
   NoRouteAvailable,
   OpenClearinghouseClient,
-  RateLimited,
 } from "../src/index.js";
 
-const BASE = "http://test.local";
-const KEY = "pymth_live_test_key_value";
+// --- helpers --------------------------------------------------------------
 
-type FetchInput = Parameters<typeof fetch>[0];
+const BASE = "http://loc.test";
+const BROKER = "https://broker.example/livepeer";
+const KEY = "pymth_live_test";
 
-function mockFetch(impl: (req: Request) => Promise<Response> | Response): typeof fetch {
-  return vi.fn((input: FetchInput, init?: RequestInit) => {
-    const req = new Request(input, init);
-    return impl(req);
-  }) as unknown as typeof fetch;
+interface FetchCall {
+  url: string;
+  init: RequestInit | undefined;
 }
 
+function makeFetch(
+  routes: Record<string, (call: FetchCall) => Promise<Response> | Response>,
+): { fetch: typeof fetch; calls: FetchCall[] } {
+  const calls: FetchCall[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    calls.push({ url, init });
+    for (const [pattern, handler] of Object.entries(routes)) {
+      if (url.endsWith(pattern) || url.includes(pattern)) {
+        return handler({ url, init });
+      }
+    }
+    return new Response(JSON.stringify({ detail: `unmatched ${url}` }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return { fetch: fetchImpl, calls };
+}
+
+function jsonResp(body: unknown, opts: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      ...((opts.headers as Record<string, string>) ?? {}),
+    },
+    ...opts,
+  });
+}
+
+const JOB_OPEN = {
+  job_id: "00000000-0000-0000-0000-000000000abc",
+  work_id: "wid-abc",
+  broker_url: BROKER,
+  mode: "http-reqresp@v0",
+  payment_envelope: "BASE64ENV",
+  expected_value_wei: 100_000,
+  funded_value_wei: 100_000,
+  settle_endpoint: "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+  opened_at: "2026-05-24T12:00:00Z",
+};
+
+function settledFor(actual: number) {
+  return {
+    job_id: JOB_OPEN.job_id,
+    work_id: JOB_OPEN.work_id,
+    actual_units: actual,
+    billed_value_wei: actual * 1000,
+    refund_wei: 100_000 - actual * 1000,
+    outcome: "OVERFUNDED",
+    closed_at: "2026-05-24T12:00:30Z",
+    cap_status: {
+      session_pct_used: actual / 100,
+      spend_period_pct_used: null,
+      user_balance_pct_used: null,
+      operator_pool_pct_used: null,
+      will_refuse_next_refill: false,
+      winddown_reason: null,
+    },
+  };
+}
+
+// --- tests ----------------------------------------------------------------
+
 describe("OpenClearinghouseClient", () => {
-  it("mints on the happy path", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(
-            JSON.stringify({
-              payment_id: "00000000-0000-0000-0000-000000000001",
-              work_id: "deadbeefdeadbeef",
-              payment_bytes: "AAAA",
-              expected_value_wei: "244140",
-              funded_value_wei: "25000000000",
-              recipient_eth_address: "0xd003",
-            }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
-    });
-    const mint = await ph.mintPayment({
-      capability: "openai:chat-completions",
-      offering: "vllm-qwen3.6-27b-default",
-      workUnits: 1000,
-    });
-    expect(mint.payment_bytes).toBe("AAAA");
-    expect(mint.recipient_eth_address).toBe("0xd003");
+  it("rejects an obviously wrong api key", () => {
+    expect(
+      () => new OpenClearinghouseClient({ baseUrl: BASE, apiKey: "nope" }),
+    ).toThrow(/looks wrong/);
   });
 
-  it("maps INSUFFICIENT_CREDIT to a typed error", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(
-            JSON.stringify({
-              error: {
-                code: "INSUFFICIENT_CREDIT",
-                message: "Available 0 < required 1000",
-                details: { available_wei: "0", required_wei: "1000" },
-              },
-            }),
-            { status: 402, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
+  it("attaches the SDK identity header on every request", async () => {
+    const { fetch, calls } = makeFetch({
+      "/v1/capabilities": () => jsonResp({ items: [] }),
     });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await client.listCapabilities();
+    const headers = (calls[0]?.init?.headers ?? {}) as Record<string, string>;
+    expect(headers["Livepeer-Open-Clearinghouse-SDK"]).toMatch(/^typescript\//);
+  });
+
+  it("submitJob does mint + broker + settle and returns the broker body", async () => {
+    const { fetch, calls } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp(settledFor(42)),
+      "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
+      "/v1/cap": () =>
+        new Response(JSON.stringify({ reply: "ok" }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Livepeer-Work-Units": "42",
+          },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const result = await client.submitJob({
+      capability: "openai:chat-completions",
+      offering: "gpt-oss-20b",
+      estimatedUnits: 80,
+      maxTotalUnits: 100,
+      body: { prompt: "hello" },
+    });
+    expect(result.actualUnits).toBe(42);
+    expect(result.billedValueWei).toBe(42_000n);
+    expect(result.refundWei).toBe(58_000n);
+    expect(result.outcome).toBe("OVERFUNDED");
+    expect(result.body).toEqual({ reply: "ok" });
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/v1/jobs`,
+      `${BROKER}/v1/cap`,
+      `${BASE}${JOB_OPEN.settle_endpoint}`,
+    ]);
+  });
+
+  it("submitJob forwards Livepeer-* headers to the broker", async () => {
+    let brokerHeaders: Record<string, string> | undefined;
+    const { fetch } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp(settledFor(10)),
+      "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
+      "/v1/cap": ({ init }) => {
+        brokerHeaders = (init?.headers ?? {}) as Record<string, string>;
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Livepeer-Work-Units": "10",
+          },
+        });
+      },
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await client.submitJob({
+      capability: "openai:chat-completions",
+      offering: "gpt-oss-20b",
+      estimatedUnits: 10,
+      body: { x: 1 },
+      requestId: "req-zzz",
+    });
+    expect(brokerHeaders?.["Livepeer-Capability"]).toBe("openai:chat-completions");
+    expect(brokerHeaders?.["Livepeer-Offering"]).toBe("gpt-oss-20b");
+    expect(brokerHeaders?.["Livepeer-Payment"]).toBe("BASE64ENV");
+    expect(brokerHeaders?.["Livepeer-Mode"]).toBe("http-reqresp@v0");
+    expect(brokerHeaders?.["Livepeer-Request-Id"]).toBe("req-zzz");
+  });
+
+  it("submitJob maps insufficient_credit error", async () => {
+    const { fetch } = makeFetch({
+      "/v1/jobs": () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "INSUFFICIENT_CREDIT",
+              message: "broke",
+              details: { available_wei: "0", required_wei: "1000" },
+            },
+          }),
+          { status: 402, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
     await expect(
-      ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
+      client.submitJob({
+        capability: "x",
+        offering: "x",
+        estimatedUnits: 1,
+        body: {},
+      }),
     ).rejects.toBeInstanceOf(InsufficientCredit);
   });
 
-  it("maps NO_ROUTE_AVAILABLE", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(
-            JSON.stringify({
-              error: { code: "NO_ROUTE_AVAILABLE", message: "no route" },
-            }),
-            { status: 404, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
+  it("submitJob maps no_route_available error", async () => {
+    const { fetch } = makeFetch({
+      "/v1/jobs": () =>
+        new Response(
+          JSON.stringify({ error: { code: "NO_ROUTE_AVAILABLE", message: "no orch" } }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
     });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
     await expect(
-      ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
+      client.submitJob({
+        capability: "x",
+        offering: "x",
+        estimatedUnits: 1,
+        body: {},
+      }),
     ).rejects.toBeInstanceOf(NoRouteAvailable);
   });
 
-  it("carries Retry-After on rate-limited responses", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(JSON.stringify({ detail: "rate_limited" }), {
-            status: 429,
-            headers: { "Retry-After": "12", "Content-Type": "application/json" },
-          }),
-      ),
+  it("submitJob surfaces broker 4xx in JobResult.status (no raise)", async () => {
+    const { fetch } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp(settledFor(0)),
+      "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
+      "/v1/cap": () =>
+        new Response(JSON.stringify({ error: "rate_limited" }), {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Livepeer-Work-Units": "0",
+          },
+        }),
     });
-    await expect(
-      ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
-    ).rejects.toMatchObject({
-      retryAfterSeconds: 12,
-      constructor: RateLimited,
-    });
-  });
-
-  it("threads Idempotency-Key header through", async () => {
-    let seenIdempotencyKey: string | null = null;
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch((req) => {
-        seenIdempotencyKey = req.headers.get("Idempotency-Key");
-        return new Response(
-          JSON.stringify({
-            payment_id: "00000000-0000-0000-0000-000000000001",
-            work_id: "x",
-            payment_bytes: "AAAA",
-            expected_value_wei: "1",
-            funded_value_wei: "1",
-            recipient_eth_address: "0xd003",
-          }),
-          { status: 201, headers: { "Content-Type": "application/json" } },
-        );
-      }),
-    });
-    await ph.mintPayment({
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const result = await client.submitJob({
       capability: "x",
-      offering: "y",
-      workUnits: 1,
-      idempotencyKey: "abc-123",
+      offering: "x",
+      estimatedUnits: 1,
+      body: {},
     });
-    expect(seenIdempotencyKey).toBe("abc-123");
+    expect(result.status).toBe(429);
+    expect(result.actualUnits).toBe(0);
   });
 
-  it("rejects obviously-wrong API keys at construction", () => {
-    expect(() => new OpenClearinghouseClient({ baseUrl: BASE, apiKey: "not-a-real-key" })).toThrow(
-      /pymth_/,
-    );
+  it("openSession returns a SessionHandle", async () => {
+    const sid = "11111111-1111-1111-1111-111111111111";
+    const { fetch } = makeFetch({
+      "/v1/sessions": () =>
+        jsonResp(
+          {
+            session_id: sid,
+            work_id: "wid-sess",
+            broker_url: BROKER,
+            mode: "session-control-plus-media@v0",
+            payment_envelope: "BASE64SESS",
+            expected_value_wei: 100_000,
+            funded_value_wei: 200_000,
+            refill_endpoint: `/v1/sessions/${sid}/refill`,
+            close_endpoint: `/v1/sessions/${sid}/close`,
+            opened_at: "2026-05-24T12:00:00Z",
+          },
+          { status: 201 },
+        ),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const handle = await client.openSession({
+      capability: "livepeer:vtuber-session",
+      offering: "vtuber-1080p30",
+      estimatedRunwayUnits: 100,
+      maxTotalUnits: 200,
+    });
+    expect(handle.sessionId).toBe(sid);
+    expect(handle.brokerUrl).toBe(BROKER);
+    expect(handle.fundedValueWei).toBe(200_000n);
+  });
+
+  it("closeSession threads outcome", async () => {
+    const sid = "22222222-2222-2222-2222-222222222222";
+    let captured: unknown;
+    const { fetch } = makeFetch({
+      [`/v1/sessions/${sid}/close`]: ({ init }) => {
+        captured = JSON.parse(init?.body as string);
+        return jsonResp({
+          session_id: sid,
+          work_id: "w",
+          actual_units: 100,
+          billed_value_wei: 100_000,
+          refund_wei: 0,
+          outcome: "EXACT",
+          closed_at: "2026-05-24T12:30:00Z",
+        });
+      },
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await client.closeSession(sid, { actualUnits: 100, outcome: "EXACT" });
+    expect(captured).toEqual({ actual_units: 100, outcome: "EXACT" });
+  });
+
+  it("getSessionStatus round-trips", async () => {
+    const sid = "33333333-3333-3333-3333-333333333333";
+    const { fetch } = makeFetch({
+      [`/v1/sessions/${sid}`]: () =>
+        jsonResp({
+          session_id: sid,
+          work_id: "w",
+          capability: "c",
+          offering: "o",
+          mode: "ws-realtime@v0",
+          state: "open",
+          estimated_units: 100,
+          max_total_units: 1000,
+          funded_value_wei: 1_000_000,
+          billed_value_wei: 100_000,
+          refill_count: 0,
+          cap_status: null,
+          opened_at: "2026-05-24T12:00:00Z",
+          closed_at: null,
+          actual_units: null,
+          outcome: null,
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const status = (await client.getSessionStatus(sid)) as { state: string };
+    expect(status.state).toBe("open");
   });
 
   it("listCapabilities unwraps items", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(
-            JSON.stringify({
-              items: [{ name: "openai:chat-completions", work_unit: "tokens", offerings: [] }],
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
+    const { fetch } = makeFetch({
+      "/v1/capabilities": () =>
+        jsonResp({
+          items: [{ name: "openai:embeddings", work_unit: "token", offerings: [] }],
+        }),
     });
-    const caps = await ph.listCapabilities();
-    expect(caps).toHaveLength(1);
-    expect(caps[0]?.name).toBe("openai:chat-completions");
-  });
-
-  it("listOrchestrators passes capability filter", async () => {
-    let seenUrl: string | undefined;
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch((req) => {
-        seenUrl = req.url;
-        return new Response(JSON.stringify({ items: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    });
-    await ph.listOrchestrators({ capability: "openai:chat-completions" });
-    expect(seenUrl).toContain("capability=openai%3Achat-completions");
-  });
-
-  it("reportUsage returns reconciliation result", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response(
-            JSON.stringify({
-              refunded_wei: "12345",
-              payment_status: "settled",
-              new_balance_wei: "999999",
-              usage: { id: "u1", actual_work_units: 800, final_charge_wei: "20000" },
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
-    });
-    const result = await ph.reportUsage({
-      paymentId: "00000000-0000-0000-0000-000000000001",
-      actualWorkUnits: 800,
-      idempotencyKey: "abc-123",
-    });
-    expect(result.refunded_wei).toBe("12345");
-    expect(result.new_balance_wei).toBe("999999");
-  });
-
-  it("falls back to OpenClearinghouseError on non-JSON error body", async () => {
-    const ph = new OpenClearinghouseClient({
-      baseUrl: BASE,
-      apiKey: KEY,
-      fetch: mockFetch(
-        () =>
-          new Response("upstream down", {
-            status: 503,
-            headers: { "Content-Type": "text/plain" },
-          }),
-      ),
-    });
-    await expect(
-      ph.mintPayment({ capability: "x", offering: "y", workUnits: 1 }),
-    ).rejects.toMatchObject({ status: 503 });
-  });
-
-  it("submitJob retries on 401 INVALID_RECIPIENT_RAND with a fresh payment", async () => {
-    let mintCalls = 0;
-    let orchCalls = 0;
-    const seenPayments: string[] = [];
-    const fetch = mockFetch((req) => {
-      const url = new URL(req.url);
-      if (url.pathname === "/v1/routes") {
-        return new Response(
-          JSON.stringify({
-            eth_address: "0xd003",
-            worker_url: "https://orch.example",
-            capability: "x",
-            offering: "y",
-            price_per_work_unit_wei: "1",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.pathname === "/v1/payments/mint") {
-        mintCalls += 1;
-        const bytes = mintCalls === 1 ? "FIRST" : "SECOND";
-        return new Response(
-          JSON.stringify({
-            payment_id: `00000000-0000-0000-0000-00000000000${String(mintCalls)}`,
-            work_id: "abc",
-            payment_bytes: bytes,
-            expected_value_wei: "1",
-            funded_value_wei: "1",
-            recipient_eth_address: "0xd003",
-          }),
-          { status: 201, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.host === "orch.example" && url.pathname === "/v1/cap") {
-        orchCalls += 1;
-        seenPayments.push(req.headers.get("Livepeer-Payment") ?? "");
-        if (orchCalls === 1) {
-          return new Response(
-            JSON.stringify({
-              error: {
-                code: "payment_invalid",
-                message: "INVALID_RECIPIENT_RAND: session rotated",
-              },
-            }),
-            { status: 401, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(JSON.stringify({ model: "Qwen", choices: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      throw new Error(`unexpected ${url.toString()}`);
-    });
-
-    const ph = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
-    const r = await ph.submitJob({
-      capability: "x",
-      offering: "y",
-      workUnits: 1,
-      body: { messages: [] },
-    });
-
-    expect(mintCalls).toBe(2);
-    expect(orchCalls).toBe(2);
-    expect(seenPayments).toEqual(["FIRST", "SECOND"]);
-    expect(r.status).toBe(200);
-  });
-
-  it("submitJob does not retry on an unrelated 401", async () => {
-    let mintCalls = 0;
-    const fetch = mockFetch((req) => {
-      const url = new URL(req.url);
-      if (url.pathname === "/v1/routes") {
-        return new Response(
-          JSON.stringify({
-            eth_address: "0xd003",
-            worker_url: "https://orch.example",
-            capability: "x",
-            offering: "y",
-            price_per_work_unit_wei: "1",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.pathname === "/v1/payments/mint") {
-        mintCalls += 1;
-        return new Response(
-          JSON.stringify({
-            payment_id: "00000000-0000-0000-0000-000000000001",
-            work_id: "abc",
-            payment_bytes: "AAAA",
-            expected_value_wei: "1",
-            funded_value_wei: "1",
-            recipient_eth_address: "0xd003",
-          }),
-          { status: 201, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      return new Response(JSON.stringify({ error: { code: "bad_token", message: "expired" } }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    });
-
-    const ph = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
-    const r = await ph.submitJob({
-      capability: "x",
-      offering: "y",
-      workUnits: 1,
-      body: { messages: [] },
-    });
-    expect(mintCalls).toBe(1);
-    expect(r.status).toBe(401);
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const caps = await client.listCapabilities();
+    expect(caps[0]?.name).toBe("openai:embeddings");
   });
 });

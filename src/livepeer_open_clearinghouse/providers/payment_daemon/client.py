@@ -19,7 +19,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.payments.v1 import ...` resolves. Loaded
@@ -88,6 +88,27 @@ class CreatePaymentRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionDebits:
+    """Mirror of `livepeer.payments.v1.GetSessionDebitsResponse`.
+
+    Returned by ``PaymentDaemonClient.get_session_debits``. Used by
+    the reconciliation janitor and by close_session as the
+    authoritative source of how much work the broker actually
+    debited against a session.
+
+    ``closed`` flips True once the broker has called ``CloseSession``
+    on the payee daemon (typically because the SDK disconnected, a
+    ws-realtime session exhausted, or an explicit close was issued).
+    The janitor finalizes any LOC-side payment_session whose daemon
+    record shows closed=True without an explicit close from the SDK.
+    """
+
+    total_work_units: int
+    debit_count: int
+    closed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class DepositInfo:
     """Snapshot of the daemon's TicketBroker deposit/reserve state."""
 
@@ -120,6 +141,8 @@ class PaymentDaemonClient(Protocol):
 
     async def get_deposit_info(self) -> DepositInfo: ...
 
+    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits: ...
+
     async def health(self) -> bool: ...
 
 
@@ -132,7 +155,7 @@ class MockPaymentDaemonClient:
     """Deterministic-faux payment minting for development and tests.
 
     Computes EV by simple proportional math instead of probabilistic
-    `face_value × win_prob / 2^256` and produces a `payment_bytes` blob
+    `face_value x win_prob / 2^256` and produces a `payment_bytes` blob
     that's a stable hash of the request (so retries / idempotency tests
     line up). Not wire-compatible with a real orchestrator.
     """
@@ -141,6 +164,26 @@ class MockPaymentDaemonClient:
         # EV = funded_value * ev_ratio. In a real daemon this is determined
         # by the receiver's faceValue/winProb choice.
         self._ev_ratio = ev_ratio
+        # In-memory session-debits ledger, keyed by (sender, work_id).
+        # Tests can set entries here via `set_session_debits` to control
+        # what `get_session_debits` returns. Defaults to all-zero / open.
+        self._session_debits: dict[tuple[bytes, str], SessionDebits] = {}
+
+    def set_session_debits(
+        self,
+        *,
+        sender: bytes,
+        work_id: str,
+        total_work_units: int,
+        debit_count: int,
+        closed: bool,
+    ) -> None:
+        """Test helper: pre-load a SessionDebits row the mock will return."""
+        self._session_debits[(sender, work_id)] = SessionDebits(
+            total_work_units=total_work_units,
+            debit_count=debit_count,
+            closed=closed,
+        )
 
     async def health(self) -> bool:
         return True
@@ -151,6 +194,16 @@ class MockPaymentDaemonClient:
             deposit_wei=Decimal(10**18),
             reserve_wei=Decimal(0),
             withdraw_round=0,
+        )
+
+    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits:
+        """Return whatever was pre-loaded via `set_session_debits`, or
+        the empty default (0 units, 0 debits, not closed). Mirrors the
+        real daemon's behavior of returning the empty default when it
+        has no record of the (sender, work_id) pair."""
+        return self._session_debits.get(
+            (sender, work_id),
+            SessionDebits(total_work_units=0, debit_count=0, closed=False),
         )
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
@@ -279,11 +332,11 @@ class GrpcPaymentDaemonClient:
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
-        self._channel = None  # type: ignore[assignment]
-        self._stub = None  # type: ignore[assignment]
-        self._lock = None  # type: ignore[assignment]
+        self._channel: Any | None = None
+        self._stub: Any | None = None
+        self._lock: Any | None = None
 
-    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+    async def _ensure_stub(self) -> Any:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415
@@ -323,6 +376,32 @@ class GrpcPaymentDaemonClient:
             deposit_wei=biguint_bytes_to_decimal(bytes(resp.deposit)),
             reserve_wei=biguint_bytes_to_decimal(bytes(resp.reserve)),
             withdraw_round=int(resp.withdraw_round),
+        )
+
+    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits:
+        """Read the per-session debit ledger for a long-lived session.
+
+        Per the proto docstring: the daemon may return UNIMPLEMENTED
+        when long-lived debit tracking isn't wired. We treat that as
+        "no record" (zero-default) matching the gateway-adapter
+        convention.
+        """
+        import grpc  # noqa: PLC0415
+        from livepeer.payments.v1 import payer_daemon_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        try:
+            resp = await stub.GetSessionDebits(
+                payer_daemon_pb2.GetSessionDebitsRequest(sender=sender, work_id=work_id)
+            )
+        except grpc.aio.AioRpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                return SessionDebits(total_work_units=0, debit_count=0, closed=False)
+            raise
+        return SessionDebits(
+            total_work_units=int(resp.total_work_units),
+            debit_count=int(resp.debit_count),
+            closed=bool(resp.closed),
         )
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:

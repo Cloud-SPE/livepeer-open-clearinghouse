@@ -10,9 +10,11 @@ surface this Protocol mirrors.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.registry.v1 import ...` resolves. Loading
@@ -20,10 +22,20 @@ from typing import Protocol
 # anywhere in this file can do the absolute `livepeer.*` import safely.
 from livepeer_open_clearinghouse import _gen  # noqa: F401
 
+_logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class SelectedRoute:
-    """One concrete route — output of ``Select`` / ``SelectMany``."""
+    """One concrete route — output of ``Select`` / ``SelectMany``.
+
+    ``extra`` carries the capability's opaque metadata block from the
+    upstream registry (proto field ``extra_json``, bytes). Decoded
+    once at the proto→dataclass boundary; consumers read keys like
+    ``extra.get("interaction_mode")`` to drive mode selection without
+    re-parsing JSON. Empty dict if the proto carries no extra blob
+    or the bytes don't parse as a JSON object.
+    """
 
     worker_url: str
     eth_address: str
@@ -36,6 +48,18 @@ class SelectedRoute:
     quote_version: int
     constraint_fingerprint: bytes
     route_fingerprint: bytes
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def interaction_mode(self) -> str | None:
+        """Convenience accessor for the upstream mode string.
+
+        Returns ``None`` if the offering doesn't declare a mode (only
+        legitimate for legacy capabilities; new offerings MUST set it
+        per the upstream coordinator manifest).
+        """
+        raw = self.extra.get("interaction_mode")
+        return raw if isinstance(raw, str) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +123,7 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        extra={"interaction_mode": "http-stream@v0"},
     ),
     SelectedRoute(
         worker_url="https://orch-2.example/livepeer",
@@ -112,6 +137,7 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x22" * 32,
+        extra={"interaction_mode": "http-reqresp@v0"},
     ),
 ]
 
@@ -121,10 +147,37 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
 # ---------------------------------------------------------------------------
 
 
+def _decode_extra_json(raw: bytes) -> dict[str, Any]:
+    """Parse the proto ``extra_json`` bytes into a dict.
+
+    Defensive: empty bytes → ``{}``; non-JSON / non-dict payloads log
+    a warning and return ``{}``. The upstream coordinator-envelope
+    schema guarantees a JSON object here, but we don't crash if a
+    misbehaving registry sends something else.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _logger.warning("registry_daemon.extra_json.parse_failed", extra={"error": str(exc)})
+        return {}
+    if not isinstance(parsed, dict):
+        _logger.warning(
+            "registry_daemon.extra_json.not_object",
+            extra={"type": type(parsed).__name__},
+        )
+        return {}
+    return parsed
+
+
 def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[no-untyped-def]
     """Map a proto SelectedRoute to our dataclass.
 
-    The proto stores price as a decimal big-int *string*; we parse to Decimal.
+    The proto stores price as a decimal big-int *string*; we parse to
+    Decimal. ``extra_json`` (bytes, JSON object) is decoded into the
+    ``extra`` dict so consumers (mint, session-open) can read
+    capability metadata like ``interaction_mode`` without re-parsing.
     """
     return SelectedRoute(
         worker_url=proto.worker_url,
@@ -138,6 +191,7 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
         quote_version=int(proto.quote_version),
         constraint_fingerprint=bytes(proto.constraint_fingerprint),
         route_fingerprint=bytes(proto.route_fingerprint),
+        extra=_decode_extra_json(bytes(proto.extra_json)),
     )
 
 
@@ -156,11 +210,11 @@ class GrpcRegistryClient:
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
-        self._channel = None  # type: ignore[assignment]
-        self._stub = None  # type: ignore[assignment]
-        self._lock = None  # type: ignore[assignment]
+        self._channel: Any | None = None
+        self._stub: Any | None = None
+        self._lock: Any | None = None
 
-    async def _ensure_stub(self):  # type: ignore[no-untyped-def]
+    async def _ensure_stub(self) -> Any:
         import asyncio  # noqa: PLC0415
 
         import grpc.aio  # noqa: PLC0415
@@ -234,7 +288,11 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:
+            except Exception as exc:
+                _logger.debug(
+                    "registry.list_capabilities.resolve_skip",
+                    extra={"addr": addr, "error": str(exc)},
+                )
                 continue
             for node in resolved.nodes:
                 for cap in node.capabilities:
@@ -268,7 +326,11 @@ class GrpcRegistryClient:
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
-            except Exception:
+            except Exception as exc:
+                _logger.debug(
+                    "registry.list_orchestrators.resolve_skip",
+                    extra={"addr": addr, "error": str(exc)},
+                )
                 continue
             for node in resolved.nodes:
                 cap_views: list[CapabilityInfo] = []
@@ -321,9 +383,9 @@ class CachingRegistryClient:
         self._inner = inner
         self._ttl = ttl_seconds
         # Each entry: (expires_at_monotonic, value)
-        self._cache: dict[tuple, tuple[float, object]] = {}
+        self._cache: dict[tuple[Any, ...], tuple[float, object]] = {}
 
-    def _get(self, key: tuple) -> object | None:
+    def _get(self, key: tuple[Any, ...]) -> object | None:
         if self._ttl <= 0:
             return None
         import time  # noqa: PLC0415
@@ -337,7 +399,7 @@ class CachingRegistryClient:
             return None
         return value
 
-    def _set(self, key: tuple, value: object) -> None:
+    def _set(self, key: tuple[Any, ...], value: object) -> None:
         if self._ttl <= 0:
             return
         import time  # noqa: PLC0415

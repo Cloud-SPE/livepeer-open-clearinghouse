@@ -23,13 +23,20 @@ from livepeer_open_clearinghouse.domains.api_keys import runtime as api_keys_run
 from livepeer_open_clearinghouse.domains.billing import runtime as billing_runtime
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import runtime as discovery_runtime
+from livepeer_open_clearinghouse.domains.jobs import runtime as jobs_runtime
 from livepeer_open_clearinghouse.domains.notifications import runtime as notifications_runtime
 from livepeer_open_clearinghouse.domains.payments import runtime as payments_runtime
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
-from livepeer_open_clearinghouse.domains.usage import runtime as usage_runtime
+from livepeer_open_clearinghouse.domains.sessions import runtime as sessions_runtime
+from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
+from livepeer_open_clearinghouse.domains.telemetry import runtime as telemetry_runtime
+from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
 from livepeer_open_clearinghouse.errors import register_handlers
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_scope
+from livepeer_open_clearinghouse.providers.http.gzip_request import (
+    GzipRequestMiddleware,
+)
 from livepeer_open_clearinghouse.providers.scheduler import (
     register_interval_job,
     shutdown_scheduler,
@@ -45,7 +52,7 @@ from livepeer_open_clearinghouse.settings import Settings, get_settings
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — composition root
     cfg: Settings = app.state.settings
     configure_logging(cfg)
     log = get_logger("livepeer_open_clearinghouse.startup")
@@ -70,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("scheduler.idempotency_keys.expired", count=n)
 
     async def _snapshot_deposit() -> None:
-        from livepeer_open_clearinghouse.dependencies import (
+        from livepeer_open_clearinghouse.dependencies import (  # noqa: PLC0415
             _default_payment_daemon,
         )
 
@@ -95,6 +102,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             log.warning("scheduler.auto_replenish.failed", error=str(exc))
 
+    async def _reconcile_open_sessions() -> None:
+        from livepeer_open_clearinghouse.dependencies import (  # noqa: PLC0415
+            _default_payment_daemon,
+        )
+
+        try:
+            daemon = _default_payment_daemon()
+            async with session_scope() as db:
+                n = await sessions_service.reconcile_open_sessions(db, daemon=daemon, clock=clock)
+                if n:
+                    log.info("scheduler.reconcile_open_sessions.finalized", count=n)
+        except Exception as exc:
+            log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
+
+    async def _purge_expired_telemetry() -> None:
+        try:
+            async with session_scope() as db:
+                n = await telemetry_service.purge_expired(
+                    db,
+                    retention_days=cfg.telemetry_raw_retention_days,
+                    clock=clock,
+                )
+                if n:
+                    log.info("scheduler.telemetry_retention.purged", count=n)
+        except Exception as exc:
+            log.warning("scheduler.telemetry_retention.failed", error=str(exc))
+
     register_interval_job(
         _expire_stale_idempotency_keys,
         name="expire_stale_idempotency_keys",
@@ -110,6 +144,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _auto_replenish,
             name="auto_replenish",
             seconds=cfg.auto_replenish_check_interval_seconds,
+        )
+    register_interval_job(
+        _reconcile_open_sessions,
+        name="reconcile_open_sessions",
+        seconds=sessions_service.DEFAULT_JANITOR_INTERVAL_SECONDS,
+    )
+    if cfg.telemetry_raw_retention_days > 0:
+        register_interval_job(
+            _purge_expired_telemetry,
+            name="telemetry_retention",
+            seconds=cfg.telemetry_retention_janitor_interval_seconds,
         )
     start_scheduler()
 
@@ -129,6 +174,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = cfg
+
+    # Decompress gzipped request bodies before they reach the handler.
+    # SDK telemetry batches gzip when > 1 KiB (exec-plan 002 §"Mechanism").
+    app.add_middleware(GzipRequestMiddleware)
 
     # SessionMiddleware backs authlib's OAuth-state storage. It uses a
     # cookie distinct from our own open_clearinghouse_session (which is
@@ -163,10 +212,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_keys_runtime.router)
     app.include_router(billing_runtime.router)
     app.include_router(admin_runtime.router)
+    app.include_router(admin_runtime.sdk_router)
     app.include_router(discovery_runtime.router)
     app.include_router(notifications_runtime.router)
     app.include_router(payments_runtime.router)
-    app.include_router(usage_runtime.router)
+    app.include_router(jobs_runtime.router)
+    app.include_router(sessions_runtime.router)
+    app.include_router(telemetry_runtime.router)
+    app.include_router(telemetry_runtime.portal_router)
+    app.include_router(telemetry_runtime.privacy_router)
+    app.include_router(telemetry_runtime.admin_router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).
@@ -185,7 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # iterating on the SPA doesn't require a hard refresh per change. In
     # prod we serve them with Starlette's default headers.
     class _NoCacheStaticFiles(StaticFiles):
-        async def get_response(self, path: str, scope):  # type: ignore[override,no-untyped-def]
+        async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
             response = await super().get_response(path, scope)
             response.headers["Cache-Control"] = "no-cache"
             return response

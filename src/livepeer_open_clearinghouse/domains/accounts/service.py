@@ -87,7 +87,20 @@ async def send_verification_email(
     await session.flush()
 
     verify_link = f"{public_base_url.rstrip('/')}/portal/#/verify-email?token={raw_token}"
-    await email_provider.send(templates.verification_email(to=user.email, verify_link=verify_link))
+    message = templates.verification_email(to=user.email, verify_link=verify_link)
+    provider_message_id = await email_provider.send(message)
+    from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+        service as notif_service,
+    )
+
+    await notif_service.record_email_send(
+        session,
+        to=message.to,
+        subject=message.subject,
+        provider_message_id=provider_message_id,
+        user_id=user.id,
+        clock=clock,
+    )
 
 
 async def signup(
@@ -279,12 +292,23 @@ async def request_password_reset(
     await session.flush()
 
     reset_link = f"{public_base_url.rstrip('/')}/portal/#/reset-password?token={raw_token}"
-    await email_provider.send(
-        templates.password_reset_email(
-            to=user.email,
-            reset_link=reset_link,
-            ttl_minutes=int(PASSWORD_RESET_TTL.total_seconds() // 60),
-        )
+    reset_message = templates.password_reset_email(
+        to=user.email,
+        reset_link=reset_link,
+        ttl_minutes=int(PASSWORD_RESET_TTL.total_seconds() // 60),
+    )
+    provider_message_id = await email_provider.send(reset_message)
+    from livepeer_open_clearinghouse.domains.notifications import (  # noqa: PLC0415
+        service as notif_service,
+    )
+
+    await notif_service.record_email_send(
+        session,
+        to=reset_message.to,
+        subject=reset_message.subject,
+        provider_message_id=provider_message_id,
+        user_id=user.id,
+        clock=clock,
     )
 
 

@@ -1,1 +1,4 @@
-"""payments — orchestrates registry.Select + payment-daemon.CreatePayment; charges EV at issuance."""
+"""payments — orchestrates registry.Select + payment-daemon.CreatePayment.
+
+Charges expected value at issuance.
+"""

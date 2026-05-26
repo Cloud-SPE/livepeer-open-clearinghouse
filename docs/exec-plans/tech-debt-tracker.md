@@ -65,22 +65,6 @@ the exec-plan that addressed it and remove it from this file.
 
 ### Email
 
-- **EmailSend rows aren't populated yet.** `POST /v1/webhooks/resend`
-  now persists every inbound Standard Webhooks event into `email_event`
-  with full signature verification + idempotency, and operators can
-  list events at `GET /v1/admin/email/events`. The companion table
-  `email_send` is created by migration 0005 but not yet written —
-  populating it from every outbound send would require each calling
-  service to write the row (providers/email/ can't reach into a domain
-  repo per layered-arch lint). When that wiring lands the
-  `email_send_id` column on `email_event` rows will start linking back
-  to the original send. *Trigger:* needing per-send delivery state
-  surfaced in the admin UI.
-- **No admin SPA tab for the email event log.** Operators can `curl
-  /v1/admin/email/events` but there's no Catalog-style component. A
-  read-only `cc-email-events` tab next to Audit log would be a small
-  follow-up. *Trigger:* operators routinely needing to triage
-  bounces/complaints.
 - **No "operator delivers initial API key by email" flow.** The
   original product sketch mentioned this; current build emails an
   approval notification and lets the user create their own key in the
@@ -196,3 +180,18 @@ the exec-plan that addressed it and remove it from this file.
 - **Bootstrap-operator-only admin auth** — replaced by full operator
   CRUD with `owner`/`member` role separation, hashed bearer tokens,
   rotation, revocation, and last-owner protection (2026-05-23).
+- **Legacy `POST /v1/payments/mint` + `POST /v1/usage/report`** —
+  removed in favor of handoff-mode `POST /v1/jobs` +
+  `POST /v1/jobs/{id}/settle` per exec-plan 002. Endpoints deleted,
+  `mint_payment` / `report_usage` service functions and their
+  request/response types pruned, `domains/usage/runtime.py`
+  removed, `domains/usage/service.py` + `types.py` removed
+  (orphaned). `payment_idempotency_key` table + the
+  `expire_stale_idempotency_keys` scheduler job kept as a
+  no-op-effective drain for any pre-existing in-flight rows
+  (2026-05-24).
+- **SDK retry-on-INVALID_RECIPIENT_RAND** — no longer relevant
+  under handoff mode. The SDK doesn't see broker 401s before
+  settling; LOC's reconciliation janitor handles session-rotation
+  via daemon `GetSessionDebits`. Removed retry logic from all
+  four SDKs (2026-05-24).

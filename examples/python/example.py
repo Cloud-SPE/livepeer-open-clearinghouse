@@ -1,4 +1,4 @@
-"""End-to-end example: mint a payment, send it to an orch, reconcile usage.
+"""End-to-end example: submit a job via the handoff-mode SDK.
 
 Run with:
 
@@ -6,6 +6,12 @@ Run with:
     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \\
     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \\
     uv run python example.py
+
+The SDK handles the full handoff dance for you: opens a job via
+POST /v1/jobs (which mints a payment envelope), calls the broker
+directly with the envelope as Livepeer-Payment, reads the broker's
+Livepeer-Work-Units header from the response, and posts the settle
+record back to LOC via POST /v1/jobs/{id}/settle.
 """
 
 from __future__ import annotations
@@ -18,7 +24,9 @@ from livepeer_open_clearinghouse_sdk import (
     InsufficientCredit,
     NoRouteAvailable,
     OpenClearinghouseClient,
+    OpenClearinghouseError,
     RateLimited,
+    wei_to_eth,
 )
 
 
@@ -26,62 +34,56 @@ async def chat(prompt: str) -> None:
     base_url = os.environ["OPEN_CLEARINGHOUSE_URL"]
     api_key = os.environ["OPEN_CLEARINGHOUSE_API_KEY"]
 
-    async with OpenClearinghouseClient(base_url=base_url, api_key=api_key) as ph:
-        # 1. Pick an offering. Pin to a specific one in prod; here we
-        #    just take the first chat-completions route we find.
-        caps = await ph.list_capabilities()
-        chat_cap = next(c for c in caps if c["name"] == "openai:chat-completions")
-        offering = chat_cap["offerings"][0]["id"]
-        print(f"using offering: {offering}")
-
-        # 2. Commit a budget of ~1000 tokens. Over-commit slightly; we
-        #    reconcile the real number at the end via report_usage.
-        budget = 1000
-        idem = str(uuid.uuid4())  # one per logical request
+    async with OpenClearinghouseClient(base_url=base_url, api_key=api_key) as client:
         try:
-            mint = await ph.mint_payment(
+            result = await client.submit_job(
                 capability="openai:chat-completions",
-                offering=offering,
-                work_units=budget,
-                idempotency_key=idem,
+                offering="gpt-oss-20b",
+                # Best-guess for input tokens; broker reports actual
+                # consumption back via Livepeer-Work-Units.
+                estimated_units=200,
+                # Worst-case ceiling — LOC encumbers this much up
+                # front. Refund happens at settle.
+                max_total_units=2000,
+                body={
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 500,
+                },
+                request_id=str(uuid.uuid4()),
             )
         except InsufficientCredit as exc:
-            print(f"need topup: {exc.details}")
+            print(f"not enough credit: {exc.details}")
             return
         except NoRouteAvailable:
-            print("no orch advertising this offering — try another")
+            print("no orchestrator advertising this capability/offering")
             return
         except RateLimited as exc:
-            print(f"rate limited; retry in {exc.retry_after_seconds}s")
+            print(f"rate limited; retry after {exc.retry_after_seconds}s")
             return
-        print(f"minted: work_id={mint.work_id[:16]}… ev={mint.expected_value_wei}")
+        except OpenClearinghouseError as exc:
+            print(f"loc error: {exc.code} - {exc}")
+            return
 
-        # 3. Look up the orch URL — your discovery layer / cache should
-        #    have this. For the example we'll skip the orch call and just
-        #    show the header shape you'd send:
-        print(f"orch={mint.recipient_eth_address}")
-        print(f"Livepeer-Payment header value (truncated): {mint.payment_bytes[:48]}…")
-
-        # The real call would be:
-        # async with httpx.AsyncClient() as orch:
-        #     r = await orch.post(
-        #         orch_url + "/v1/chat/completions",
-        #         headers={"Livepeer-Payment": mint.payment_bytes},
-        #         json={"model": offering, "messages": [{"role": "user", "content": prompt}]},
-        #         timeout=120.0,
-        #     )
-        #     reply = r.json()
-        #     actual_tokens = reply["usage"]["total_tokens"]
-        actual_tokens = 873  # pretend the orch said this
-
-        # 4. Reconcile. Same Idempotency-Key per logical request.
-        result = await ph.report_usage(
-            payment_id=mint.payment_id,
-            actual_work_units=actual_tokens,
-            idempotency_key=idem,
-        )
-        print(f"refunded {result['refunded_wei']} wei; new balance {result['new_balance_wei']} wei")
+    # Application output
+    if result.status == 200:
+        print("==== broker response ====")
+        print(result.body)
+        print()
+        print("==== final accounting ====")
+        print(f"actual units consumed: {result.actual_units}")
+        print(f"billed:                {wei_to_eth(result.billed_value_wei):.10f} ETH")
+        print(f"refund:                {wei_to_eth(result.refund_wei):.10f} ETH")
+        print(f"outcome:               {result.outcome}")
+        if result.cap_status.will_refuse_next_refill:
+            print(
+                "⚠️  cap warning:",
+                result.cap_status.winddown_reason,
+                "— another job at this size may be refused",
+            )
+    else:
+        print(f"broker returned {result.status}")
+        print(result.body)
 
 
 if __name__ == "__main__":
-    asyncio.run(chat("Hello, world."))
+    asyncio.run(chat("explain handoff mode in two sentences"))

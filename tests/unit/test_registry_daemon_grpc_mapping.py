@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pytest
 
 from livepeer_open_clearinghouse import _gen  # noqa: F401  — pulls _gen onto sys.path
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
+    SelectedRoute,
+    _decode_extra_json,
     _selected_route_proto_to_dataclass,
 )
 
@@ -64,6 +67,100 @@ def test_empty_price_string_decodes_to_zero() -> None:
     )
     dc = _selected_route_proto_to_dataclass(proto)
     assert dc.price_per_work_unit_wei == Decimal(0)
+
+
+@pytest.mark.unit
+def test_extra_json_decoded_into_extra_dict() -> None:
+    """Upstream `extra_json` carries `interaction_mode` (and other
+    capability metadata). The dataclass surfaces it via `extra` so
+    consumers don't re-parse JSON, plus an `interaction_mode`
+    convenience property."""
+    from livepeer.registry.v1 import resolver_pb2
+
+    proto = resolver_pb2.SelectedRoute(
+        worker_url="x",
+        eth_address="x",
+        capability="openai:realtime",
+        offering="openai-resale",
+        price_per_work_unit_wei="0",
+        work_unit="audio_second",
+        units_per_price=1,
+        quote_id="x",
+        quote_version=1,
+        constraint_fingerprint=b"",
+        route_fingerprint=b"",
+        extra_json=json.dumps(
+            {
+                "interaction_mode": "ws-realtime@v0",
+                "max_session_seconds": 3600,
+                "category": "audio",
+            }
+        ).encode("utf-8"),
+    )
+    dc = _selected_route_proto_to_dataclass(proto)
+    assert dc.extra["interaction_mode"] == "ws-realtime@v0"
+    assert dc.extra["max_session_seconds"] == 3600
+    assert dc.interaction_mode == "ws-realtime@v0"
+
+
+@pytest.mark.unit
+def test_missing_extra_json_yields_empty_dict() -> None:
+    """A proto with no extra_json (empty bytes) maps to {} — no crash,
+    no surprise."""
+    from livepeer.registry.v1 import resolver_pb2
+
+    proto = resolver_pb2.SelectedRoute(
+        worker_url="x",
+        eth_address="x",
+        capability="x",
+        offering="x",
+        price_per_work_unit_wei="0",
+        work_unit="x",
+        units_per_price=0,
+        quote_id="x",
+        quote_version=0,
+        constraint_fingerprint=b"",
+        route_fingerprint=b"",
+        extra_json=b"",
+    )
+    dc = _selected_route_proto_to_dataclass(proto)
+    assert dc.extra == {}
+    assert dc.interaction_mode is None
+
+
+@pytest.mark.unit
+def test_extra_json_invalid_payloads_do_not_crash() -> None:
+    """Defense-in-depth: malformed or non-object JSON is logged and
+    returned as empty dict rather than raising."""
+    # Invalid JSON
+    assert _decode_extra_json(b"not json {{{") == {}
+    # Valid JSON but wrong shape (list, scalar)
+    assert _decode_extra_json(b'["a", "b"]') == {}
+    assert _decode_extra_json(b"42") == {}
+    # Empty bytes
+    assert _decode_extra_json(b"") == {}
+
+
+@pytest.mark.unit
+def test_interaction_mode_property_rejects_non_string_values() -> None:
+    """A misbehaving registry that puts a non-string under
+    interaction_mode shouldn't poison downstream code paths that
+    expect a string."""
+    route = SelectedRoute(
+        worker_url="x",
+        eth_address="x",
+        capability="x",
+        offering="x",
+        price_per_work_unit_wei=Decimal(0),
+        work_unit="x",
+        units_per_price=0,
+        quote_id="x",
+        quote_version=0,
+        constraint_fingerprint=b"",
+        route_fingerprint=b"",
+        extra={"interaction_mode": 42},  # bad value
+    )
+    assert route.interaction_mode is None
 
 
 @pytest.mark.unit

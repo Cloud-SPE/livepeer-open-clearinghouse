@@ -9,6 +9,9 @@ const ITEMS = [
   { key: "catalog", label: "Catalog", icon: "search" },
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
+  { key: "telemetry", label: "Telemetry", icon: "activity" },
+  { key: "sdk-fleet", label: "SDK fleet", icon: "shield" },
+  { key: "email", label: "Email", icon: "log" },
 ];
 
 export class CcSidebar extends LitElement {
@@ -50,13 +53,14 @@ export class CcSidebar extends LitElement {
 
   _renderItem(item) {
     const active = item.key === this.current;
+    const iconFn = icon[item.icon];
     return html`
       <a
         class="sidebar-item ${active ? "active" : ""}"
         href="#"
         @click=${(ev) => this._go(ev, item.key)}
       >
-        ${icon[item.icon]()}
+        ${iconFn ? iconFn() : ""}
         <span>${item.label}</span>
       </a>
     `;

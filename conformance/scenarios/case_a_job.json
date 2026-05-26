@@ -1,0 +1,54 @@
+{
+  "id": "case_a_job",
+  "description": "Case (a): one-shot job — mint, broker call, settle. Covers SDK identity header on every LOC call, settle round-trip, and the request.* telemetry sequence (mint_started/completed → settle_started/completed → completed).",
+  "loc": {
+    "responses": {
+      "POST /v1/jobs": {
+        "status": 200,
+        "body": {
+          "job_id": "11111111-aaaa-bbbb-cccc-222222222222",
+          "work_id": "wid-conformance-a",
+          "broker_url": "{BROKER_URL}",
+          "mode": "http-stream@v0",
+          "payment_envelope": "BASE64ENV",
+          "expected_value_wei": 10000,
+          "funded_value_wei": 10000,
+          "settle_endpoint": "/v1/jobs/11111111-aaaa-bbbb-cccc-222222222222/settle"
+        }
+      },
+      "POST /v1/jobs/{job_id}/settle": {
+        "status": 200,
+        "body": {
+          "actual_units": 7,
+          "billed_value_wei": 7000,
+          "refund_wei": 3000,
+          "outcome": "OK",
+          "cap_status": {
+            "session_pct_used": 0.0,
+            "spend_period_pct_used": null,
+            "user_balance_pct_used": 0.07,
+            "operator_pool_pct_used": null,
+            "will_refuse_next_refill": false,
+            "winddown_reason": null
+          }
+        }
+      },
+      "POST /v1/telemetry": {
+        "status": 202,
+        "body": { "accepted": 1, "rejected": 0, "rejections": [] }
+      }
+    }
+  },
+  "broker": {
+    "responses": {
+      "POST /v1/cap": {
+        "status": 200,
+        "headers": {
+          "livepeer-work-units": "7",
+          "content-type": "application/json"
+        },
+        "body": { "ok": true, "result": "hello from broker" }
+      }
+    }
+  }
+}

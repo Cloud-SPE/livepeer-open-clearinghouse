@@ -1,0 +1,72 @@
+{
+  "id": "case_d_extensible_session",
+  "description": "Case (d-extensible): live-session-remote-runner@v0 — open, one auto-refill (HTTP topup), close. SDK must POST the refill envelope to the broker-issued control.topup_url.",
+  "loc": {
+    "responses": {
+      "POST /v1/sessions": {
+        "status": 200,
+        "body": {
+          "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+          "work_id": "wid",
+          "broker_url": "{BROKER_URL}",
+          "mode": "live-session-remote-runner@v0",
+          "payment_envelope": "BASE64ENV",
+          "expected_value_wei": 100000,
+          "funded_value_wei": 200000,
+          "refill_endpoint": "/v1/sessions/aaaaaaaa-1111-2222-3333-444444444444/refill",
+          "close_endpoint": "/v1/sessions/aaaaaaaa-1111-2222-3333-444444444444/close",
+          "opened_at": "2026-05-25T12:00:00Z"
+        }
+      },
+      "POST /v1/sessions/{session_id}/refill": {
+        "status": 200,
+        "body": {
+          "work_id": "wid",
+          "refill_seq": 1,
+          "payment_envelope": "REFILL-ENV",
+          "expected_value_wei": 50000,
+          "funded_value_wei": 50000,
+          "cap_status": {
+            "session_pct_used": 0.4,
+            "spend_period_pct_used": null,
+            "user_balance_pct_used": null,
+            "operator_pool_pct_used": null,
+            "will_refuse_next_refill": false,
+            "winddown_reason": null
+          }
+        }
+      },
+      "POST /v1/sessions/{session_id}/close": {
+        "status": 200,
+        "body": {
+          "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+          "work_id": "wid",
+          "actual_units": 60,
+          "billed_value_wei": 60000,
+          "refund_wei": 190000,
+          "outcome": "OK",
+          "closed_at": "2026-05-25T12:30:00Z"
+        }
+      },
+      "POST /v1/telemetry": {
+        "status": 202,
+        "body": { "accepted": 1, "rejected": 0, "rejections": [] }
+      }
+    }
+  },
+  "broker": {
+    "responses": {
+      "POST /v1/cap": {
+        "status": 200,
+        "body": {
+          "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+          "control": { "topup_url": "{BROKER_URL}/topup" }
+        }
+      },
+      "POST /topup": {
+        "status": 200,
+        "body": { "ok": true }
+      }
+    }
+  }
+}

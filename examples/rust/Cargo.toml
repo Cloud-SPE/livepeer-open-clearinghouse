@@ -1,22 +1,27 @@
 [package]
 name = "livepeer-open-clearinghouse-sdk"
-version = "0.1.0"
+version = "1.3.3"
 edition = "2021"
 rust-version = "1.75"
 description = "Reference Rust SDK for the Livepeer Open Clearinghouse payment clearinghouse."
 license = "MIT"
 
 [dependencies]
+flate2 = "1.1.9"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 wiremock = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [[example]]
 name = "example"

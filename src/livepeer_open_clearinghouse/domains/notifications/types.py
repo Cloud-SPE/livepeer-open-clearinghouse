@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -70,3 +71,82 @@ class WebhookAcceptedResponse(BaseModel):
     ok: bool = True
     duplicate: bool = False
     received_event_id: str | None = None
+
+
+# ---- Notification preferences ---------------------------------------------
+
+
+class NotificationPrefView(BaseModel):
+    """One cell of the (trigger x channel) matrix as the portal renders it."""
+
+    trigger: str
+    channel: str
+    enabled: bool
+    is_default: bool
+
+
+class NotificationPrefsResponse(BaseModel):
+    """Full resolved-preferences matrix for the calling user."""
+
+    items: list[NotificationPrefView]
+
+
+class UpdateNotificationPrefRequest(BaseModel):
+    """Inbound: ``PUT /v1/notifications/config``. One row at a time."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    trigger: str = Field(min_length=1, max_length=64)
+    channel: str = Field(min_length=1, max_length=16)
+    enabled: bool
+
+
+class PortalNotificationView(BaseModel):
+    """One row of the in-portal banner feed."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    trigger: str
+    body: dict[str, Any]
+    fired_at: datetime
+    dismissed_at: datetime | None
+
+
+class PortalNotificationList(BaseModel):
+    items: list[PortalNotificationView]
+
+
+# ---- Webhook config ---------------------------------------------------------
+
+
+class WebhookConfigView(BaseModel):
+    """Public view of a user's webhook config — no secret material."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    url: str
+    last_test_at: datetime | None
+
+
+class WebhookConfigRequest(BaseModel):
+    """Inbound: ``PUT /v1/notifications/webhook``."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: str = Field(min_length=1, max_length=512)
+
+
+class WebhookConfigCreated(BaseModel):
+    """Outbound when the customer first registers a webhook URL.
+    Carries the derived ``secret`` exactly once — the customer
+    must store it; LOC re-derives it on every send but never
+    surfaces it again."""
+
+    url: str
+    secret: str
+
+
+class WebhookTestResult(BaseModel):
+    ok: bool
+    detail: str | None = None

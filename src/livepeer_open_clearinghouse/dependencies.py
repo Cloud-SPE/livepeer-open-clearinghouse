@@ -141,7 +141,7 @@ def rate_limit(*, route: str, capacity_attr: str, refill_attr: str):  # type: ig
     ) -> None:
         capacity = int(getattr(settings, capacity_attr))
         refill = int(getattr(settings, refill_attr))
-        ip = request.client.host if request.client is not None else "0.0.0.0"
+        ip = request.client.host if request.client is not None else "0.0.0.0"  # noqa: S104 — fallback bucket key when request.client is None
         allowed, retry_after = await limiter.acquire(
             route=route,
             key=ip,

@@ -1,85 +1,81 @@
 /**
- * End-to-end example: mint a payment, simulate sending to an orch,
- * reconcile usage.
+ * End-to-end example: submit a job via the handoff-mode SDK.
  *
  *     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
  *     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
  *     pnpm example
+ *
+ * The SDK handles the full handoff dance: opens a job via POST /v1/jobs
+ * (which mints a payment envelope), calls the broker directly with the
+ * envelope as Livepeer-Payment, reads the broker's Livepeer-Work-Units
+ * header from the response, and posts settle back to LOC.
  */
 
-import { randomUUID } from "node:crypto";
 import {
   InsufficientCredit,
   NoRouteAvailable,
   OpenClearinghouseClient,
+  OpenClearinghouseError,
   RateLimited,
 } from "./index.js";
 
-async function main(): Promise<void> {
-  const baseUrl = requireEnv("OPEN_CLEARINGHOUSE_URL");
-  const apiKey = requireEnv("OPEN_CLEARINGHOUSE_API_KEY");
-
-  const ph = new OpenClearinghouseClient({ baseUrl, apiKey });
-
-  // 1. Pick an offering
-  const caps = await ph.listCapabilities();
-  const chatCap = caps.find((c) => c.name === "openai:chat-completions");
-  const firstOffering = chatCap?.offerings[0];
-  if (!firstOffering) {
-    throw new Error("no chat-completions offering advertised right now");
+async function chat(prompt: string): Promise<void> {
+  const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
+  const apiKey = process.env.OPEN_CLEARINGHOUSE_API_KEY;
+  if (!baseUrl || !apiKey) {
+    throw new Error("set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY");
   }
-  const offering = firstOffering.id;
-  console.log(`using offering: ${offering}`);
 
-  // 2. Mint with a budget of ~1000 tokens; one Idempotency-Key per logical request
-  const idem = randomUUID();
-  let mint;
+  const client = new OpenClearinghouseClient({ baseUrl, apiKey });
+
   try {
-    mint = await ph.mintPayment({
+    const result = await client.submitJob({
       capability: "openai:chat-completions",
-      offering,
-      workUnits: 1000,
-      idempotencyKey: idem,
+      offering: "gpt-oss-20b",
+      // Best-guess input tokens; broker reports actual via Livepeer-Work-Units.
+      estimatedUnits: 200,
+      // Worst-case ceiling — LOC encumbers this much up front.
+      maxTotalUnits: 2000,
+      body: {
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 500,
+      },
     });
-  } catch (err) {
-    if (err instanceof InsufficientCredit) {
-      console.error("need topup:", err.details);
-      return;
+
+    if (result.status === 200) {
+      console.log("==== broker response ====");
+      console.log(result.body);
+      console.log();
+      console.log("==== final accounting ====");
+      console.log(`actual units consumed: ${result.actualUnits}`);
+      console.log(`billed:                ${result.billedValueWei} wei`);
+      console.log(`refund:                ${result.refundWei} wei`);
+      console.log(`outcome:               ${result.outcome}`);
+      if (result.capStatus.will_refuse_next_refill) {
+        console.log(
+          `⚠️  cap warning: ${result.capStatus.winddown_reason} — another job at this size may be refused`,
+        );
+      }
+    } else {
+      console.log(`broker returned ${result.status}`);
+      console.log(result.body);
     }
-    if (err instanceof NoRouteAvailable) {
-      console.error("no orch advertising this offering — try another");
-      return;
+  } catch (exc) {
+    if (exc instanceof InsufficientCredit) {
+      console.log("not enough credit:", exc);
+    } else if (exc instanceof NoRouteAvailable) {
+      console.log("no orchestrator advertising this capability/offering");
+    } else if (exc instanceof RateLimited) {
+      console.log("rate limited");
+    } else if (exc instanceof OpenClearinghouseError) {
+      console.log("loc error:", exc.code, "-", exc.message);
+    } else {
+      throw exc;
     }
-    if (err instanceof RateLimited) {
-      console.error(`rate limited; retry in ${String(err.retryAfterSeconds)}s`);
-      return;
-    }
-    throw err;
   }
-  console.log(`minted: work_id=${mint.work_id.slice(0, 16)}… ev=${mint.expected_value_wei}`);
-  console.log(`orch=${mint.recipient_eth_address}`);
-  console.log(`Livepeer-Payment header (truncated): ${mint.payment_bytes.slice(0, 48)}…`);
-
-  // 3. Real code would POST to the orch's URL here. We simulate that the orch
-  //    responded and consumed 873 tokens.
-  const actualTokens = 873;
-
-  // 4. Reconcile
-  const result = await ph.reportUsage({
-    paymentId: mint.payment_id,
-    actualWorkUnits: actualTokens,
-    idempotencyKey: idem,
-  });
-  console.log(`refunded ${result.refunded_wei} wei; new balance ${result.new_balance_wei} wei`);
 }
 
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing required env var: ${name}`);
-  return v;
-}
-
-main().catch((err: unknown) => {
+chat("explain handoff mode in two sentences").catch((err) => {
   console.error(err);
   process.exit(1);
 });

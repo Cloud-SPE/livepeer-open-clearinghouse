@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # ---- application ----
     app_env: Literal["dev", "staging", "prod"] = "dev"
-    app_host: str = "0.0.0.0"
+    app_host: str = "0.0.0.0"  # noqa: S104 — server binds to all interfaces by design
     app_port: int = 8000
     public_base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
     log_level: Literal["debug", "info", "warn", "error"] = "info"
@@ -92,6 +92,38 @@ class Settings(BaseSettings):
     rl_signup_refill_per_minute: int = Field(default=5, ge=0)
     rl_password_reset_capacity: int = Field(default=3, ge=0)
     rl_password_reset_refill_per_minute: int = Field(default=3, ge=0)
+
+    # ---- telemetry (exec-plan 002 §"SDK telemetry") ----
+    telemetry_raw_retention_days: int = Field(default=30, ge=0)
+    telemetry_retention_janitor_interval_seconds: int = Field(default=3600, ge=60)
+    # Per-API-key ingest cap, events/sec. Burst capacity matches the
+    # per-second rate so a healthy SDK draining its batch buffer doesn't
+    # get throttled.
+    telemetry_ingest_rate_per_key: int = Field(default=10_000, ge=0)
+    # Per-API-key cap on GET /v1/telemetry/events, requests/min. Separate
+    # from ingest because read patterns are bursty (dashboards refresh)
+    # and a tighter rate is appropriate.
+    telemetry_query_rate_per_key_per_minute: int = Field(default=100, ge=0)
+    # Hard ceiling on events returned per query page. Pagination is
+    # cursor-based; clients walk pages to consume bigger windows.
+    telemetry_query_max_page_size: int = Field(default=500, ge=1, le=5000)
+    # Identifier for this LOC replica. Stamped on every telemetry row
+    # so admin can attribute ingest spikes to a specific node. Defaults
+    # to the container hostname when unset.
+    ingest_node_id: str | None = None
+    # Operator Ed25519 signing-key seed, base64-encoded (32 raw bytes →
+    # 44 chars). When unset, the SDK manifest is served unsigned — fine
+    # for dev; in prod set this in the operator's secret store so SDKs
+    # can verify against ``GET /v1/sdk/manifest/pubkey``.
+    sdk_manifest_signing_key: SecretStr | None = None
+    # HMAC seed used to derive per-user webhook signing secrets. Each
+    # customer's signing secret = HMAC_SHA256(seed, user_id). Rotating
+    # the seed invalidates every customer's webhook secret at once
+    # (v1 limitation). Unset → webhook channel disabled.
+    webhook_signing_seed: SecretStr | None = None
+    # Outbound webhook timing knobs.
+    webhook_send_timeout_seconds: float = Field(default=10.0, gt=0)
+    webhook_send_max_retries: int = Field(default=3, ge=0)
 
 
 @lru_cache(maxsize=1)

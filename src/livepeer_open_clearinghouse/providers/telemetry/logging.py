@@ -53,7 +53,7 @@ def configure_logging(settings: Settings) -> None:
 
 def get_logger(name: str | None = None, **bound: Any) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger, optionally pre-bound with fields."""
-    log = structlog.get_logger(name)
+    log: structlog.stdlib.BoundLogger = structlog.get_logger(name)
     if bound:
         log = log.bind(**bound)
     return log

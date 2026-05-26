@@ -1,0 +1,46 @@
+{
+  "id": "settle_retry",
+  "description": "Verify the SDK retries settle on 5xx. The mock returns 503; the SDK's _post_with_retry attempts up to max_retries (default 3) and then returns the 503 response. Runner inspects the call log to assert >1 settle attempt.",
+  "loc": {
+    "responses": {
+      "POST /v1/jobs": {
+        "status": 200,
+        "body": {
+          "job_id": "11111111-aaaa-bbbb-cccc-222222222222",
+          "work_id": "wid-conformance-retry",
+          "broker_url": "{BROKER_URL}",
+          "mode": "http-stream@v0",
+          "payment_envelope": "BASE64ENV",
+          "expected_value_wei": 10000,
+          "funded_value_wei": 10000,
+          "settle_endpoint": "/v1/jobs/11111111-aaaa-bbbb-cccc-222222222222/settle"
+        }
+      },
+      "POST /v1/jobs/{job_id}/settle": {
+        "status": 503,
+        "body": {
+          "error": {
+            "code": "service_unavailable",
+            "message": "transient backend error — SDK must retry"
+          }
+        }
+      },
+      "POST /v1/telemetry": {
+        "status": 202,
+        "body": { "accepted": 1, "rejected": 0, "rejections": [] }
+      }
+    }
+  },
+  "broker": {
+    "responses": {
+      "POST /v1/cap": {
+        "status": 200,
+        "headers": {
+          "livepeer-work-units": "5",
+          "content-type": "application/json"
+        },
+        "body": { "ok": true }
+      }
+    }
+  }
+}
