@@ -15,7 +15,7 @@
     "test:watch": "vitest",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint --fix . && prettier --write .",
-    "gen:openapi": "openapi-typescript ../openapi.json -o src/_generated/openapi.ts"
+    "gen:openapi": "openapi-typescript ../../openapi.json -o src/_generated/openapi.ts"
   },
   "engines": {
     "node": ">=20"

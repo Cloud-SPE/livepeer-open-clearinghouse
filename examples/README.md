@@ -1,139 +1,39 @@
-# Livepeer Open Clearinghouse — SDK examples
+# Livepeer Open Clearinghouse — example programs
 
-Reference clients for the gateway, one per major language. Each is a
-self-contained project — independent build, dependencies, and tests —
-so an app developer can drop the directory wherever and use it.
+Small reference programs that consume the SDKs in [`../sdks/<lang>/`](../sdks/).
+Each scenario is implemented in all four languages.
 
-These are **reference implementations, not packaged SDKs.** Treat them
-as starting points: the API surface is small enough (four methods) that
-embedding a copy is the simplest distribution.
-
-## Languages
-
-| Language | Path | Toolchain | Test runner | Lint | Coverage |
-|---|---|---|---|---|---|
-| Python | [`python/`](./python) | uv | pytest + respx | ruff (E/F/I/B/UP/RUF/SIM/ASYNC) + ruff format | pytest-cov, ≥90% gate |
-| TypeScript | [`typescript/`](./typescript) | pnpm | vitest | ESLint (strict-type-checked + stylistic-type-checked) + Prettier | vitest v8, ≥90% gate |
-| Go | [`go/`](./go) | `go` (1.22+) | std `testing` + httptest | golangci-lint (errcheck, govet, staticcheck, unused, gosec, revive, gocritic, bodyclose, misspell) + gofmt | `go test -coverprofile` |
-| Rust | [`rust/`](./rust) | cargo (1.75+) | std `test` + wiremock | `cargo clippy -D warnings` with `pedantic + nursery` | `cargo llvm-cov` |
-
-Each subdirectory has a `README.md` with setup, test, lint, and example
-commands.
-
-## API surface (consistent across all four)
-
-| Method | Wire endpoint |
+| Scenario | What it shows |
 |---|---|
-| `list_capabilities()` | `GET /v1/capabilities` |
-| `list_orchestrators(capability?)` | `GET /v1/orchestrators` |
-| `mint_payment(capability, offering, work_units, idempotency_key?)` | `POST /v1/payments/mint` |
-| `report_usage(payment_id, actual_work_units, idempotency_key?)` | `POST /v1/usage/report` |
+| `one-shot-job/` | Submit a single job via the handoff-mode SDK and read the final settlement. |
+| `streaming-ws/` | Open a long-lived session with WS-topup (`session-control-plus-media@v0`), observe a refill callback, and close. |
+| `streaming-http/` | Open a long-lived session with HTTP-topup (`live-session-remote-runner@v0`), manually trigger `onBalanceLow`, and close. |
 
-Method names follow each language's idiomatic style (`snake_case` in
-Python/Rust/Go, `camelCase` in TypeScript) but map to the same wire
-shape.
+Each `<scenario>/` directory has its own per-language manifest
+(`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) wired to
+the local sibling SDK via the repo's workspaces (pnpm-workspace.yaml,
+`[tool.uv.workspace]`, the Cargo `[workspace]`, and `go.work`). Editing
+a SDK and re-running an example here works without a publish step.
 
-## Error shape (consistent across all four)
+## Run an example
 
-Livepeer Open Clearinghouse returns errors as:
-
-```json
-{ "error": { "code": "...", "message": "...", "details": { ... } } }
-```
-
-Each SDK maps these into typed errors. The kinds you'll see:
-
-| Code | Meaning |
-|---|---|
-| `INSUFFICIENT_CREDIT` | Top up or wait for auto-replenish |
-| `SPEND_CAP_EXCEEDED` | Per-period cap reached |
-| `account_not_approved` | Operator hasn't approved you yet |
-| `email_not_verified` | Verification email pending |
-| `NO_ROUTE_AVAILABLE` | No orch advertising this capability+offering |
-| `rate_limited` | Back off; `Retry-After` header tells you how long |
-| `DUPLICATE_REQUEST` | Same `Idempotency-Key` reused with different inputs |
-| `DAEMON_UNAVAILABLE` | Livepeer Open Clearinghouse can't reach payment-daemon |
-
-## The integration shape (for your reference)
-
-```
-                 ┌────────────────┐
-your-app-server  │   Livepeer Open Clearinghouse    │   orch (real Livepeer
-                 │   gateway      │    orchestrator)
-─────────────────►                │
-1. POST /v1/payments/mint
-   { capability, offering, work_units }
-   X-API-Key: pymth_live_...
-   Idempotency-Key: <uuid>
-                 │ returns        │
-                 │ payment_bytes  │
-◄─────────────────                │
-                 │                │
-                 └────────────────┘
-
-──────────────────────────────────────────►
-2. POST {orch_url}/your-endpoint
-   Livepeer-Payment: <payment_bytes>
-   (your normal request body)
-                                       returns inference result
-◄──────────────────────────────────────────
-
-(optional — for request/response APIs where you over-committed budget)
-─────────────────►
-3. POST /v1/usage/report
-   { payment_id, actual_work_units }
-   Idempotency-Key: <same uuid as step 1>
-```
-
-The two HTTP round-trips (mint, then orch) are the load-bearing path.
-The third is a reconciliation refund — skip it for streaming APIs where
-the orch consumes as it goes.
-
-## What you don't have to do
-
-- **Talk to the blockchain.** Livepeer Open Clearinghouse + payment-daemon handle it.
-- **Manage a wallet.** The pooled signing wallet is the operator's.
-- **Verify tickets.** The orch does that against Livepeer Open Clearinghouse's signer key.
-- **Listen for ticket-win events.** Livepeer Open Clearinghouse charges Expected Value
-  at issuance (probabilistic micropayment math) and absorbs short-term
-  variance against the pool — Option A in the design docs.
-
-## Smoke-test all four at once
+All examples expect `OPEN_CLEARINGHOUSE_URL` and `OPEN_CLEARINGHOUSE_API_KEY`.
 
 ```bash
-# Tests
-( cd examples/python && uv sync --extra dev && uv run pytest -q )
-( cd examples/typescript && pnpm install && pnpm test && pnpm build )
-( cd examples/go && go test ./livepeer_open_clearinghouse/... )
-( cd examples/rust && cargo test )
+# TypeScript (from repo root)
+pnpm install
+pnpm --filter @livepeer/example-one-shot-job start
+
+# Python (from repo root)
+uv sync
+uv run --package loc-example-one-shot-job python examples/python/one-shot-job/main.py
+
+# Rust (from repo root)
+cargo run -p one-shot-job-example
+
+# Go (from repo root)
+go run ./examples/go/one-shot-job
 ```
 
-All four should pass without a running gateway — every SDK stubs its
-HTTP layer in tests.
-
-## Lint everything
-
-```bash
-( cd examples/python && uv run ruff check . && uv run ruff format --check . )
-( cd examples/typescript && pnpm lint )
-( cd examples/go && golangci-lint run ./... )
-( cd examples/rust && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check )
-```
-
-## Coverage reports
-
-```bash
-( cd examples/python && uv run pytest -q )           # term + html in .coverage_html
-( cd examples/typescript && pnpm test:coverage )     # term + html in coverage/
-( cd examples/go && go test ./livepeer_open_clearinghouse/... -coverprofile=cover.out && go tool cover -func=cover.out )
-( cd examples/rust && cargo llvm-cov --html )        # html in target/llvm-cov/html
-```
-
-Current coverage (one snapshot):
-
-| SDK | Statements / Lines |
-|---|---|
-| Python | 96.4% lines, 12 branches missed of 12 evaluated |
-| TypeScript | 100% statements, 96.5% branches |
-| Go (livepeer_open_clearinghouse package) | 89.7% statements |
-| Rust | 97.9% lines, 95.3% regions |
+Substitute the package/crate/module name for the other scenarios
+(`streaming-ws-example`, `streaming-http-example`, etc.).

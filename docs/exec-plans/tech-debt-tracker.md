@@ -156,7 +156,7 @@ the exec-plan that addressed it and remove it from this file.
   in QA that an e2e test would have caught.
 - **Rust SDK still hand-types response shapes.** TypeScript, Python,
   and Go SDKs now generate their wire-shape types from the gateway's
-  `/openapi.json` snapshot at `examples/openapi.json` (regen with
+  `/openapi.json` snapshot at the repo-root `openapi.json` (regen with
   `make refresh-openapi`). Rust was skipped: the standard generators
   (`openapi-generator-cli` is a Java tool; `progenitor` from Oxide
   emits a full client, not just types) are heavier than the

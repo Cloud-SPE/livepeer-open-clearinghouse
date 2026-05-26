@@ -72,18 +72,18 @@ IMAGE_TAG ?= dev
 image-build: ## Build the gateway image and tag it for local compose
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
-refresh-openapi: ## Snapshot /openapi.json into examples/ (requires a running gateway on :8000)
-	@if ! curl -sf http://localhost:8000/openapi.json > examples/openapi.json.tmp; then \
+refresh-openapi: ## Snapshot /openapi.json to repo root (requires a running gateway on :8000)
+	@if ! curl -sf http://localhost:8000/openapi.json > openapi.json.tmp; then \
 		echo "error: could not reach http://localhost:8000/openapi.json — is the gateway running?"; \
-		rm -f examples/openapi.json.tmp; \
+		rm -f openapi.json.tmp; \
 		exit 1; \
 	fi
-	@mv examples/openapi.json.tmp examples/openapi.json
-	@echo "snapshot updated: examples/openapi.json"
+	@mv openapi.json.tmp openapi.json
+	@echo "snapshot updated: openapi.json"
 	@echo "next: re-run codegen in each SDK that needs it"
-	@echo "  ts:     (cd examples/typescript && pnpm gen:openapi)"
-	@echo "  python: (cd examples/python && uv run datamodel-codegen --input ../openapi.json --input-file-type openapi --output src/livepeer_open_clearinghouse_sdk/_generated.py --output-model-type dataclasses.dataclass --use-double-quotes)"
-	@echo "  go:     (cd examples/go && oapi-codegen -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../openapi.json)"
+	@echo "  ts:     (cd sdks/typescript && pnpm gen:openapi)"
+	@echo "  python: (cd sdks/python && uv run datamodel-codegen --input ../../openapi.json --input-file-type openapi --output src/livepeer_open_clearinghouse_sdk/_generated.py --output-model-type dataclasses.dataclass --use-double-quotes)"
+	@echo "  go:     (cd sdks/go && oapi-codegen -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../../openapi.json)"
 
 dev: ## Bring the full stack up (postgres + daemons + gateway)
 	$(COMPOSE) up -d

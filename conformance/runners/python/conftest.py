@@ -20,7 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 # Also add the Python SDK so `livepeer_open_clearinghouse_sdk` resolves.
-_SDK_SRC = _REPO_ROOT / "examples" / "python" / "src"
+_SDK_SRC = _REPO_ROOT / "sdks" / "python" / "src"
 if str(_SDK_SRC) not in sys.path:
     sys.path.insert(0, str(_SDK_SRC))
 

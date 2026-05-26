@@ -1,7 +1,7 @@
 # Rust SDK conformance runner
 
 Placeholder — implements the same scenarios as the Python runner but
-drives the Rust SDK from `examples/rust/`.
+drives the Rust SDK from `sdks/rust/`.
 
 ## Implementation steps
 
