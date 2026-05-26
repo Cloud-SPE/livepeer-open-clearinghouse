@@ -3,4 +3,5 @@ go 1.23
 use (
 	./sdks/go
 	./examples/go/one-shot-job
+	./examples/go/streaming-ws
 )

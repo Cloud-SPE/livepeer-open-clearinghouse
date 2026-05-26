@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "sdks/rust",
     "examples/rust/one-shot-job",
+    "examples/rust/streaming-ws",
 ]
 
 [profile.release]
