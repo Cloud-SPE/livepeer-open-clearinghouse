@@ -75,9 +75,7 @@ async def test_emit_at_batch_size_flushes() -> None:
             ingest = mock.post("/v1/telemetry").mock(
                 return_value=httpx.Response(202, json={"accepted": DEFAULT_BATCH_SIZE})
             )
-            em = TelemetryEmitter(
-                http=http, flush_interval_seconds=999, batch_size=3
-            )
+            em = TelemetryEmitter(http=http, flush_interval_seconds=999, batch_size=3)
             em.start()
             em.emit(event_type="request.mint_started")
             em.emit(event_type="request.mint_completed")
@@ -92,9 +90,7 @@ async def test_emit_at_batch_size_flushes() -> None:
 
 async def test_buffer_overflow_drops_oldest() -> None:
     async with httpx.AsyncClient(base_url="http://loc.test") as http:
-        em = TelemetryEmitter(
-            http=http, flush_interval_seconds=999, buffer_cap=3, batch_size=999
-        )
+        em = TelemetryEmitter(http=http, flush_interval_seconds=999, buffer_cap=3, batch_size=999)
         em.emit(event_type="a.event")
         em.emit(event_type="b.event")
         em.emit(event_type="c.event")
@@ -134,9 +130,7 @@ async def test_retries_on_5xx_then_drops() -> None:
     async with httpx.AsyncClient(base_url="http://loc.test") as http:
         with respx.mock(base_url="http://loc.test") as mock:
             # Always 503 — should retry 3 times then give up.
-            route = mock.post("/v1/telemetry").mock(
-                return_value=httpx.Response(503)
-            )
+            route = mock.post("/v1/telemetry").mock(return_value=httpx.Response(503))
             em = TelemetryEmitter(
                 http=http,
                 flush_interval_seconds=999,
@@ -159,9 +153,7 @@ async def test_aclose_drains_remaining() -> None:
             route = mock.post("/v1/telemetry").mock(
                 return_value=httpx.Response(202, json={"accepted": 2})
             )
-            em = TelemetryEmitter(
-                http=http, flush_interval_seconds=999, batch_size=999
-            )
+            em = TelemetryEmitter(http=http, flush_interval_seconds=999, batch_size=999)
             em.start()
             em.emit(event_type="request.mint_started")
             em.emit(event_type="request.mint_completed")

@@ -11,6 +11,7 @@ the broker side and respx for the LOC HTTP surface. Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 
@@ -128,16 +129,18 @@ async def test_session_runner_refill_on_balance_low_ws_topup() -> None:
         async def on_refill(_event: RefillEvent) -> None:
             refill_event_received.set()
 
-        async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-            async with SessionRunner(
+        async with (
+            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
+            SessionRunner(
                 client=client,
                 handle=handle,
                 on_refill_succeeded=on_refill,
-            ) as runner:
-                # Give the balance_low → refill → topup-frame round-trip
-                # time to run.
-                await asyncio.wait_for(refill_event_received.wait(), timeout=3.0)
-                await runner.close(actual_units=0)
+            ) as runner,
+        ):
+            # Give the balance_low → refill → topup-frame round-trip
+            # time to run.
+            await asyncio.wait_for(refill_event_received.wait(), timeout=3.0)
+            await runner.close(actual_units=0)
     finally:
         await broker_close()
 
@@ -165,10 +168,8 @@ async def test_session_runner_bounded_mode_no_refill() -> None:
         )
         # Wait briefly to give the runner a chance to (incorrectly)
         # send a refill frame — none should arrive.
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ws.recv(), timeout=0.5)
-        except TimeoutError:
-            pass
 
     broker_url, broker_close = await _start_ws_broker(broker_handler)
     try:
@@ -186,14 +187,16 @@ async def test_session_runner_bounded_mode_no_refill() -> None:
         async def on_winddown(_event: WinddownEvent) -> None:
             winddown_event.set()
 
-        async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-            async with SessionRunner(
+        async with (
+            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
+            SessionRunner(
                 client=client,
                 handle=handle,
                 on_winddown_warning=on_winddown,
-            ) as runner:
-                await asyncio.wait_for(winddown_event.wait(), timeout=2.0)
-                await runner.close(actual_units=0)
+            ) as runner,
+        ):
+            await asyncio.wait_for(winddown_event.wait(), timeout=2.0)
+            await runner.close(actual_units=0)
     finally:
         await broker_close()
 
@@ -211,10 +214,8 @@ async def test_session_runner_refill_refused_fires_callback() -> None:
     async def broker_handler(ws):
         await ws.send(json.dumps({"type": "session.balance.low"}))
         # Keep the WS open briefly; runner shouldn't close it itself.
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ws.recv(), timeout=0.5)
-        except TimeoutError:
-            pass
 
     broker_url, broker_close = await _start_ws_broker(broker_handler)
     try:
@@ -241,14 +242,16 @@ async def test_session_runner_refill_refused_fires_callback() -> None:
             received.append(event)
             refused_event.set()
 
-        async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-            async with SessionRunner(
+        async with (
+            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
+            SessionRunner(
                 client=client,
                 handle=handle,
                 on_refill_refused=on_refused,
-            ) as runner:
-                await asyncio.wait_for(refused_event.wait(), timeout=3.0)
-                await runner.close(actual_units=0)
+            ) as runner,
+        ):
+            await asyncio.wait_for(refused_event.wait(), timeout=3.0)
+            await runner.close(actual_units=0)
     finally:
         await broker_close()
 
@@ -312,19 +315,19 @@ async def test_session_runner_http_topup_mode_delivers_via_post() -> None:
         return_value=httpx.Response(200, json=_close_response(sid))
     )
 
-    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-        async with SessionRunner(client=client, handle=handle) as runner:
-            # No WS for live-session — drive a refill by directly invoking
-            # the runner's balance-low handler. This is what would
-            # happen if the customer's media-plane code observed
-            # balance-low and routed it to the runner.
-            await runner._on_balance_low({"observed_consumed_units": 50})
-            await runner.close(actual_units=0)
+    async with (
+        OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
+        SessionRunner(client=client, handle=handle) as runner,
+    ):
+        # No WS for live-session — drive a refill by directly invoking
+        # the runner's balance-low handler. This is what would
+        # happen if the customer's media-plane code observed
+        # balance-low and routed it to the runner.
+        await runner._on_balance_low({"observed_consumed_units": 50})
+        await runner.close(actual_units=0)
 
     # The runner POSTed the refill envelope to control.topup_url
-    refill_call = next(
-        call for call in respx.calls if str(call.request.url) == fake_topup_url
-    )
+    refill_call = next(call for call in respx.calls if str(call.request.url) == fake_topup_url)
     body = json.loads(refill_call.request.content)
     assert body["gateway_session_id"] == str(sid)
     assert refill_call.request.headers["Livepeer-Payment"] == "REFILL-HTTP"
@@ -355,12 +358,11 @@ async def test_session_runner_unsupported_mode_raises() -> None:
 async def test_session_runner_close_sets_final_settle() -> None:
     """After close, runner.outcome / billed_value_wei / refund_wei are
     populated from the LOC close response."""
+
     async def broker_handler(ws):
         # Idle until disconnect
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ws.recv(), timeout=2.0)
-        except TimeoutError:
-            pass
 
     broker_url, broker_close = await _start_ws_broker(broker_handler)
     try:

@@ -251,7 +251,9 @@ class SessionRunner:
             async for message in self._ws:
                 await self._handle_ws_message(message)
         except ConnectionClosed:
-            _logger.info("session_runner.ws_closed", extra={"session_id": str(self._handle.session_id)})
+            _logger.info(
+                "session_runner.ws_closed", extra={"session_id": str(self._handle.session_id)}
+            )
         finally:
             if self._auto_close_on_disconnect and not self._closed_event.is_set():
                 # Broker dropped the WS; finalize on our side.
