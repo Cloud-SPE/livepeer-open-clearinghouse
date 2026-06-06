@@ -41,3 +41,23 @@ async def test_list_orchestrators_filter_by_capability() -> None:
     assert len(filtered) <= len(all_orchs)
     for o in filtered:
         assert any(c.name == "openai:chat-completions" for c in o.capabilities)
+
+
+@pytest.mark.unit
+async def test_list_capabilities_offerings_carry_extra() -> None:
+    client = MockRegistryClient()
+    caps = await client.list_capabilities()
+    chat = next(c for c in caps if c.name == "openai:chat-completions")
+    offering = chat.offerings[0]
+    # The route's extra metadata must survive the capability aggregation —
+    # gateways read keys like extra["openai"]["model"] from it.
+    assert offering.extra == {"interaction_mode": "http-stream@v0"}
+
+
+@pytest.mark.unit
+async def test_list_orchestrators_offerings_carry_extra() -> None:
+    client = MockRegistryClient()
+    orchs = await client.list_orchestrators(capability="openai:chat-completions")
+    assert orchs
+    offering = orchs[0].capabilities[0].offerings[0]
+    assert offering.extra == {"interaction_mode": "http-stream@v0"}

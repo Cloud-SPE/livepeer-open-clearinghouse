@@ -53,6 +53,34 @@ function snippetFor(capName, offeringId, unit) {
   ].join("\n");
 }
 
+function objectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function prettyJson(value) {
+  return JSON.stringify(objectOrEmpty(value), null, 2);
+}
+
+function hasExtra(value) {
+  return Object.keys(objectOrEmpty(value)).length > 0;
+}
+
+function curatedMetadata(offering) {
+  const extra = objectOrEmpty(offering.extra);
+  const openai = objectOrEmpty(extra.openai);
+  const rows = [];
+  if (typeof openai.name === "string" && openai.name.length > 0) {
+    rows.push(["Display name", openai.name]);
+  }
+  if (typeof openai.model === "string" && openai.model.length > 0) {
+    rows.push(["Runner model", openai.model]);
+  }
+  if (typeof extra.interaction_mode === "string" && extra.interaction_mode.length > 0) {
+    rows.push(["Mode", extra.interaction_mode]);
+  }
+  return rows;
+}
+
 export class CcCatalog extends LitElement {
   static properties = {
     _capabilities: { state: true },
@@ -139,7 +167,28 @@ export class CcCatalog extends LitElement {
                   ? html`
                       <tr>
                         <td colspan="3" style="background: var(--surface-soft);">
+                          ${curatedMetadata(o).length > 0
+                            ? html`
+                                <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
+                                  ${curatedMetadata(o).map(
+                                    ([label, value]) => html`
+                                      <span class="pill info" title=${label}>
+                                        ${label}: <code style="margin-left: 4px;">${value}</code>
+                                      </span>
+                                    `,
+                                  )}
+                                </div>
+                              `
+                            : null}
                           <pre style="margin: 0; padding: 8px; font-size: 12px; overflow-x: auto;"><code>${snippetFor(cap.name, o.id, o.work_unit)}</code></pre>
+                          ${hasExtra(o.extra)
+                            ? html`
+                                <details class="mt-1">
+                                  <summary class="muted small" style="cursor: pointer;">Metadata</summary>
+                                  <pre style="margin: 8px 0 0; padding: 8px; font-size: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);"><code>${prettyJson(o.extra)}</code></pre>
+                                </details>
+                              `
+                            : null}
                         </td>
                       </tr>
                     `

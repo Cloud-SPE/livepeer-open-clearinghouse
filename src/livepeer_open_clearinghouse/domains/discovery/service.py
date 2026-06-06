@@ -26,6 +26,7 @@ def _offering(info: object) -> OfferingView:
         id=info.id,  # type: ignore[attr-defined]
         price_per_work_unit_wei=info.price_per_work_unit_wei,  # type: ignore[attr-defined]
         work_unit=info.work_unit,  # type: ignore[attr-defined]
+        extra=getattr(info, "extra", {}) or {},
     )
 
 
@@ -57,6 +58,7 @@ def _route(r: SelectedRoute) -> RouteView:
         work_unit=r.work_unit,
         units_per_price=r.units_per_price,
         quote_id=r.quote_id,
+        extra=dict(r.extra),
     )
 
 

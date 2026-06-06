@@ -33,6 +33,22 @@ function formatWei(weiStr) {
   return `${weiStr} wei`;
 }
 
+function objectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function prettyJson(value) {
+  return JSON.stringify(objectOrEmpty(value), null, 2);
+}
+
+function hasExtra(value) {
+  return Object.keys(objectOrEmpty(value)).length > 0;
+}
+
+function extraKeyCount(value) {
+  return Object.keys(objectOrEmpty(value)).length;
+}
+
 /**
  * Aggregate orchestrators-per-capability + min/max prices across the
  * catalog. Done client-side because the underlying data already comes
@@ -63,13 +79,16 @@ function aggregate(capabilities, orchestrators) {
     }).filter((p) => p !== null);
     const min = prices.length ? prices.reduce((a, b) => (a < b ? a : b)) : null;
     const max = prices.length ? prices.reduce((a, b) => (a > b ? a : b)) : null;
+    const metadataCount = offerings.reduce((acc, o) => acc + (hasExtra(o.extra) ? 1 : 0), 0);
     return {
       name: c.name,
       unit: c.work_unit || "—",
-      offerings: offerings.length,
+      offeringCount: offerings.length,
+      offerings,
       orchs: orchCount.get(c.name) || 0,
       minWei: min,
       maxWei: max,
+      metadataCount,
     };
   });
 }
@@ -81,6 +100,7 @@ export class CcCatalog extends LitElement {
     _loading: { state: true },
     _error: { state: true },
     _refreshedAt: { state: true },
+    _expanded: { state: true },
   };
 
   constructor() {
@@ -90,6 +110,7 @@ export class CcCatalog extends LitElement {
     this._loading = true;
     this._error = null;
     this._refreshedAt = null;
+    this._expanded = new Set();
   }
 
   createRenderRoot() {
@@ -119,6 +140,15 @@ export class CcCatalog extends LitElement {
     }
   }
 
+  _toggle(name) {
+    if (this._expanded.has(name)) {
+      this._expanded.delete(name);
+    } else {
+      this._expanded.add(name);
+    }
+    this.requestUpdate();
+  }
+
   _renderMetrics() {
     return html`
       <div class="metric-grid">
@@ -135,11 +165,44 @@ export class CcCatalog extends LitElement {
         <div class="metric">
           <div class="label">Total offerings</div>
           <div class="value">
-            ${this._rows.reduce((acc, r) => acc + r.offerings, 0)}
+            ${this._rows.reduce((acc, r) => acc + r.offeringCount, 0)}
           </div>
           <div class="sub">across all capabilities</div>
         </div>
       </div>
+    `;
+  }
+
+  _renderOfferingDetails(row) {
+    return html`
+      <tr>
+        <td colspan="7" style="background: var(--surface-soft);">
+          <div style="display: grid; gap: 12px;">
+            ${row.offerings.map(
+              (o) => html`
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; background: var(--surface);">
+                  <div class="row" style="justify-content: space-between; align-items: flex-start;">
+                    <div>
+                      <code>${o.id}</code>
+                      <div class="muted small">
+                        ${formatWei(String(o.price_per_work_unit_wei))} / <code>${o.work_unit || row.unit}</code>
+                      </div>
+                    </div>
+                    <span class="pill ${hasExtra(o.extra) ? "info" : ""}">
+                      ${extraKeyCount(o.extra)} metadata key${extraKeyCount(o.extra) === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  ${hasExtra(o.extra)
+                    ? html`
+                        <pre style="margin: 10px 0 0; padding: 10px; font-size: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-soft);"><code>${prettyJson(o.extra)}</code></pre>
+                      `
+                    : null}
+                </div>
+              `,
+            )}
+          </div>
+        </td>
+      </tr>
     `;
   }
 
@@ -160,14 +223,21 @@ export class CcCatalog extends LitElement {
               <th>Unit</th>
               <th class="right">Min price</th>
               <th class="right">Max price</th>
+              <th class="right">Metadata</th>
             </tr>
           </thead>
           <tbody>
-            ${this._rows.map(
-              (r) => html`
-                <tr>
-                  <td><code>${r.name}</code></td>
-                  <td class="right">${r.offerings}</td>
+            ${this._rows.map((r) => {
+              const isExpanded = this._expanded.has(r.name);
+              return html`
+                <tr @click=${() => this._toggle(r.name)} style="cursor: pointer;">
+                  <td>
+                    <span class="muted small" style="display: inline-block; width: 14px;">
+                      ${isExpanded ? "▾" : "▸"}
+                    </span>
+                    <code>${r.name}</code>
+                  </td>
+                  <td class="right">${r.offeringCount}</td>
                   <td class="right">${r.orchs}</td>
                   <td><code>${r.unit}</code></td>
                   <td class="right mono">
@@ -176,9 +246,15 @@ export class CcCatalog extends LitElement {
                   <td class="right mono">
                     ${r.maxWei !== null ? formatWei(r.maxWei.toString()) : "—"}
                   </td>
+                  <td class="right">
+                    ${r.metadataCount > 0
+                      ? html`<span class="pill info">${r.metadataCount}</span>`
+                      : html`<span class="muted">—</span>`}
+                  </td>
                 </tr>
-              `,
-            )}
+                ${isExpanded ? this._renderOfferingDetails(r) : null}
+              `;
+            })}
           </tbody>
         </table>
       </div>
