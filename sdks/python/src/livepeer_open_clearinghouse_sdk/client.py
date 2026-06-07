@@ -58,6 +58,7 @@ def _http2_available() -> bool:
         return False
     return True
 
+
 __all_generated__ = ("Capability", "Offering", "Orchestrator", "RouteView")
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
@@ -86,15 +87,18 @@ class CapStatus:
         return cls(
             session_pct_used=float(d["session_pct_used"]),
             spend_period_pct_used=(
-                None if d.get("spend_period_pct_used") is None
+                None
+                if d.get("spend_period_pct_used") is None
                 else float(d["spend_period_pct_used"])
             ),
             user_balance_pct_used=(
-                None if d.get("user_balance_pct_used") is None
+                None
+                if d.get("user_balance_pct_used") is None
                 else float(d["user_balance_pct_used"])
             ),
             operator_pool_pct_used=(
-                None if d.get("operator_pool_pct_used") is None
+                None
+                if d.get("operator_pool_pct_used") is None
                 else float(d["operator_pool_pct_used"])
             ),
             will_refuse_next_refill=bool(d["will_refuse_next_refill"]),
@@ -246,9 +250,7 @@ class OpenClearinghouseClient:
         r = await self._http.get("/v1/capabilities")
         return cast("list[Capability]", self._unwrap(r)["items"])
 
-    async def list_orchestrators(
-        self, *, capability: str | None = None
-    ) -> list[Orchestrator]:
+    async def list_orchestrators(self, *, capability: str | None = None) -> list[Orchestrator]:
         params = {"capability": capability} if capability else None
         r = await self._http.get("/v1/orchestrators", params=params)
         return cast("list[Orchestrator]", self._unwrap(r)["items"])
@@ -401,9 +403,8 @@ class OpenClearinghouseClient:
         if livepeer_settlement:
             try:
                 import json
-                settlement_payload["settlement"] = json.loads(
-                    base64.b64decode(livepeer_settlement)
-                )
+
+                settlement_payload["settlement"] = json.loads(base64.b64decode(livepeer_settlement))
             except (ValueError, KeyError):
                 pass  # malformed — let LOC's daemon reconciliation handle it
         self._telemetry.emit(
@@ -412,9 +413,7 @@ class OpenClearinghouseClient:
         )
         settle_started_ns = time.monotonic_ns()
         try:
-            settle_resp = await self._post_with_retry(
-                settle_endpoint, json=settlement_payload
-            )
+            settle_resp = await self._post_with_retry(settle_endpoint, json=settlement_payload)
             settled = self._unwrap(settle_resp)
         except Exception as exc:
             self._telemetry.emit(
@@ -645,9 +644,7 @@ class OpenClearinghouseClient:
         )
         return result
 
-    async def get_session_status(
-        self, session_id: uuid.UUID | str
-    ) -> dict[str, Any]:
+    async def get_session_status(self, session_id: uuid.UUID | str) -> dict[str, Any]:
         """Read-only snapshot of a session's state + accounting."""
         r = await self._http.get(f"/v1/sessions/{session_id}")
         return self._unwrap(r)
@@ -683,9 +680,12 @@ class OpenClearinghouseClient:
                 logger = __import__("logging").getLogger(__name__)
                 logger.info(
                     "openclearinghouse: settle retry %d/%d after transport error: %r",
-                    attempt, max_retries, exc,
+                    attempt,
+                    max_retries,
+                    exc,
                 )
-                import asyncio  # noqa: PLC0415
+                import asyncio
+
                 await asyncio.sleep(backoff)
                 backoff *= 2.0
                 continue
@@ -695,7 +695,8 @@ class OpenClearinghouseClient:
                 return resp
             if attempt >= max_retries:
                 return resp
-            import asyncio  # noqa: PLC0415
+            import asyncio
+
             await asyncio.sleep(backoff)
             backoff *= 2.0
         assert last_resp is not None  # loop returned or raised

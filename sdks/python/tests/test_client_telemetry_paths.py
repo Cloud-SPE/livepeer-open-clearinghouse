@@ -51,9 +51,7 @@ async def test_submit_job_mint_failure_emits_request_error() -> None:
             )
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
             await client.submit_job(
                 capability="x",
@@ -93,9 +91,7 @@ async def test_close_session_emits_session_closed() -> None:
             )
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         await client.close_session(sid, actual_units=10)
         await client.aclose()
     assert "session.closed" in _captured_event_types(captured)
@@ -123,9 +119,7 @@ async def test_refill_session_402_emits_session_refill_denied() -> None:
             )
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
             await client.refill_session(sid)
         await client.aclose()
@@ -157,9 +151,7 @@ async def test_refill_non_402_error_emits_session_error() -> None:
             )
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
             await client.refill_session(sid)
         await client.aclose()
@@ -190,9 +182,7 @@ async def test_close_session_failure_emits_session_error() -> None:
             )
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
             await client.close_session(sid, actual_units=10)
         await client.aclose()
@@ -220,13 +210,9 @@ async def test_open_session_emits_session_opened() -> None:
         "opened_at": "2026-05-25T00:00:00Z",
     }
     with respx.mock(base_url="http://loc.test", assert_all_called=False) as mock:
-        mock.post("/v1/sessions").mock(
-            return_value=httpx.Response(200, json=payload)
-        )
+        mock.post("/v1/sessions").mock(return_value=httpx.Response(200, json=payload))
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
-        client = OpenClearinghouseClient(
-            base_url="http://loc.test", api_key="pymth_live_test"
-        )
+        client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         await client.open_session(
             capability="x",
             offering="y",

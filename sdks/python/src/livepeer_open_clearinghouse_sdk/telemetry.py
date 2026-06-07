@@ -169,9 +169,7 @@ class TelemetryEmitter:
         """Wait for either the flush event or the periodic deadline."""
         while not self._closed:
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self._flush_event.wait(), timeout=self._flush_interval
-                )
+                await asyncio.wait_for(self._flush_event.wait(), timeout=self._flush_interval)
             self._flush_event.clear()
             if self._buffer:
                 await self._flush_once()
@@ -196,9 +194,7 @@ class TelemetryEmitter:
         backoff = 0.5
         for attempt in range(1, self._max_retries + 1):
             try:
-                resp = await self._http.post(
-                    self._endpoint, content=body, headers=headers
-                )
+                resp = await self._http.post(self._endpoint, content=body, headers=headers)
                 if resp.status_code < 500 and resp.status_code != 429:
                     return  # success or client error (don't retry)
                 logger.debug(

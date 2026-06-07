@@ -64,11 +64,19 @@ class SelectedRoute:
 
 @dataclass(frozen=True, slots=True)
 class OfferingInfo:
-    """An advertised offering on an orchestrator."""
+    """An advertised offering on an orchestrator.
+
+    ``extra`` is the merged node+capability ``extra_json`` metadata
+    block (capability keys win on conflict). Consumers read keys like
+    ``extra["openai"]["model"]`` — the runner-facing serving name — and
+    ``extra["interaction_mode"]``. Without it, gateways can't map an
+    offering id back to the model name the runner actually accepts.
+    """
 
     id: str
     price_per_work_unit_wei: Decimal | None
     work_unit: str | None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,9 +303,11 @@ class GrpcRegistryClient:
                 )
                 continue
             for node in resolved.nodes:
+                node_extra = _decode_extra_json(bytes(node.extra_json))
                 for cap in node.capabilities:
                     offerings = merged.setdefault(cap.name, {})
                     work_units[cap.name] = cap.work_unit or None
+                    cap_extra = {**node_extra, **_decode_extra_json(bytes(cap.extra_json))}
                     for off in cap.offerings:
                         offerings.setdefault(
                             off.id,
@@ -309,6 +319,7 @@ class GrpcRegistryClient:
                                     else None
                                 ),
                                 work_unit=cap.work_unit or None,
+                                extra=cap_extra,
                             ),
                         )
         return [
@@ -333,10 +344,12 @@ class GrpcRegistryClient:
                 )
                 continue
             for node in resolved.nodes:
+                node_extra = _decode_extra_json(bytes(node.extra_json))
                 cap_views: list[CapabilityInfo] = []
                 for cap in node.capabilities:
                     if capability is not None and cap.name != capability:
                         continue
+                    cap_extra = {**node_extra, **_decode_extra_json(bytes(cap.extra_json))}
                     cap_views.append(
                         CapabilityInfo(
                             name=cap.name,
@@ -350,6 +363,7 @@ class GrpcRegistryClient:
                                         else None
                                     ),
                                     work_unit=cap.work_unit or None,
+                                    extra=cap_extra,
                                 )
                                 for off in cap.offerings
                             ],
@@ -477,6 +491,7 @@ class MockRegistryClient:
                     id=r.offering,
                     price_per_work_unit_wei=r.price_per_work_unit_wei,
                     work_unit=r.work_unit,
+                    extra=dict(r.extra),
                 ),
             )
             work_units[r.capability] = r.work_unit
@@ -503,6 +518,7 @@ class MockRegistryClient:
                     id=r.offering,
                     price_per_work_unit_wei=r.price_per_work_unit_wei,
                     work_unit=r.work_unit,
+                    extra=dict(r.extra),
                 )
             )
             work_units[(r.eth_address, r.capability)] = r.work_unit

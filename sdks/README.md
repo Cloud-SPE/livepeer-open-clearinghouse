@@ -15,6 +15,73 @@ Each subdirectory has a `README.md` with setup, test, and lint
 commands. Usage examples live in
 `../examples/<lang>/{one-shot-job,streaming-ws,streaming-http}/`.
 
+## Consuming without publishing
+
+None of these need to be on a registry to be used. Each toolchain can
+depend on the SDK straight from a local path or git checkout.
+
+### Python
+
+```bash
+# Editable install from the local checkout (picks up edits live):
+pip install -e sdks/python
+
+# Or with uv, in the consumer's pyproject.toml:
+#   [tool.uv.sources]
+#   livepeer-open-clearinghouse-sdk = { path = "../sdks/python", editable = true }
+
+# Straight from git:
+pip install "git+ssh://git@github.com/Cloud-SPE/livepeer-open-clearinghouse.git#subdirectory=sdks/python"
+```
+
+`import livepeer_open_clearinghouse_sdk` is unchanged.
+
+### TypeScript
+
+⚠️ The package's `main` points at `src/index.ts` (raw TS) and the build
+is `tsc --noEmit`, so there is **no compiled `dist/` to ship**. A
+local/git consumer must compile the TS itself — this works only through
+a TS-aware runtime/bundler (tsx, Vite, esbuild, Next, …), not plain
+Node. For plain-Node consumers the SDK must emit `dist/` first (flip
+`noEmit` off + add an `outDir`).
+
+```bash
+# pnpm workspace (consumer imports raw .ts, its own bundler compiles it):
+#   "dependencies": { "@livepeer/open-clearinghouse-sdk": "workspace:*" }
+# or a file: dependency:
+pnpm add file:../sdks/typescript        # or: npm link  from the sdk dir
+```
+
+### Rust
+
+```toml
+[dependencies]
+# Local path:
+livepeer-open-clearinghouse-sdk = { path = "../sdks/rust" }
+# Or from git, pinned to a branch/tag/rev:
+livepeer-open-clearinghouse-sdk = { git = "ssh://git@github.com/Cloud-SPE/livepeer-open-clearinghouse.git", branch = "main" }
+```
+
+Prefer the `path` form if git resolution of the monorepo subdir is fussy.
+
+### Go
+
+The module path (`github.com/livepeer/livepeer-open-clearinghouse-sdk-go`)
+does not resolve to a real repo — the code lives in `sdks/go/` of this
+monorepo — so `go get` will fail. Use a `replace` directive against the
+local checkout:
+
+```
+// consumer go.mod
+require github.com/livepeer/livepeer-open-clearinghouse-sdk-go v0.0.0
+
+replace github.com/livepeer/livepeer-open-clearinghouse-sdk-go => /abs/path/to/sdks/go
+```
+
+```go
+import openclearinghouse "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
+```
+
 ## API surface (consistent across all four)
 
 | Method | Wire endpoint |
@@ -97,7 +164,7 @@ the orch consumes as it goes.
 
 ```bash
 # Tests (run from repo root)
-( cd sdks/python     && uv sync && uv run pytest -q )
+( uv sync && uv run --package livepeer-open-clearinghouse-sdk --extra dev pytest sdks/python -q )
 ( cd sdks/typescript && pnpm install && pnpm test && pnpm build )
 ( cd sdks/go         && go test ./livepeer_open_clearinghouse/... )
 ( cd sdks/rust       && cargo test )
@@ -109,7 +176,7 @@ HTTP layer in tests.
 ## Lint everything
 
 ```bash
-( cd sdks/python     && uv run ruff check . && uv run ruff format --check . )
+( uv run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python && uv run --package livepeer-open-clearinghouse-sdk --extra dev ruff format --check sdks/python )
 ( cd sdks/typescript && pnpm lint )
 ( cd sdks/go         && golangci-lint run ./... )
 ( cd sdks/rust       && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check )
@@ -118,7 +185,7 @@ HTTP layer in tests.
 ## Coverage reports
 
 ```bash
-( cd sdks/python     && uv run pytest -q )           # term + html in .coverage_html
+( uv run --package livepeer-open-clearinghouse-sdk --extra dev pytest sdks/python -q )   # term + html in .coverage_html
 ( cd sdks/typescript && pnpm test:coverage )         # term + html in coverage/
 ( cd sdks/go         && go test ./livepeer_open_clearinghouse/... -coverprofile=cover.out && go tool cover -func=cover.out )
 ( cd sdks/rust       && cargo llvm-cov --html )      # html in target/llvm-cov/html

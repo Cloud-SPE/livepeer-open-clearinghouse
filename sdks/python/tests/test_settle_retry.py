@@ -6,9 +6,9 @@ focused on the new behavior."""
 from __future__ import annotations
 
 import asyncio
-import pytest
 
 import httpx
+import pytest
 
 from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
 
@@ -27,9 +27,7 @@ def _make_client_with_mock(handler) -> OpenClearinghouseClient:
             "Livepeer-Open-Clearinghouse-SDK": "python/test/dev",
         },
     )
-    return OpenClearinghouseClient(
-        base_url="http://loc.test", api_key="pymth_live_test", http=http
-    )
+    return OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test", http=http)
 
 
 async def test_post_with_retry_5xx_then_2xx(monkeypatch) -> None:

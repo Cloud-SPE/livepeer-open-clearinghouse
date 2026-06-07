@@ -91,9 +91,7 @@ async def test_constructor_sets_sdk_identity_header() -> None:
 @respx.mock
 async def test_submit_job_happy_path() -> None:
     jid = "00000000-0000-0000-0000-000000000abc"
-    respx.post(f"{BASE}/v1/jobs").mock(
-        return_value=httpx.Response(201, json=_job_open(jid))
-    )
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
     respx.post(f"{BROKER}/v1/cap").mock(
         return_value=httpx.Response(
             200,
@@ -127,9 +125,7 @@ async def test_submit_job_happy_path() -> None:
 @respx.mock
 async def test_submit_job_forwards_livepeer_headers_to_broker() -> None:
     jid = "00000000-0000-0000-0000-000000000bcd"
-    respx.post(f"{BASE}/v1/jobs").mock(
-        return_value=httpx.Response(201, json=_job_open(jid))
-    )
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
     broker_call = respx.post(f"{BROKER}/v1/cap").mock(
         return_value=httpx.Response(
             200,
@@ -205,9 +201,7 @@ async def test_submit_job_maps_no_route() -> None:
 async def test_submit_job_passes_through_broker_4xx() -> None:
     """Broker-side non-2xx is reported in JobResult.status, not raised."""
     jid = "00000000-0000-0000-0000-000000000def"
-    respx.post(f"{BASE}/v1/jobs").mock(
-        return_value=httpx.Response(201, json=_job_open(jid))
-    )
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
     respx.post(f"{BROKER}/v1/cap").mock(
         return_value=httpx.Response(
             429,
@@ -318,9 +312,7 @@ async def test_refill_session_posts_observed_consumed() -> None:
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
         result = await client.refill_session(sid, observed_consumed_units=80)
     assert result["payment_envelope"] == "REFILLENV"
-    assert json.loads(route.calls[0].request.content) == {
-        "observed_consumed_units": 80
-    }
+    assert json.loads(route.calls[0].request.content) == {"observed_consumed_units": 80}
 
 
 @respx.mock
@@ -351,9 +343,7 @@ async def test_close_session_threads_outcome() -> None:
 async def test_submit_job_sends_bytes_body_as_octet_stream() -> None:
     """Bytes body uses application/octet-stream."""
     jid = "00000000-0000-0000-0000-0000000000ff"
-    respx.post(f"{BASE}/v1/jobs").mock(
-        return_value=httpx.Response(201, json=_job_open(jid))
-    )
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
     broker_call = respx.post(f"{BROKER}/v1/cap").mock(
         return_value=httpx.Response(200, json={"x": 1}, headers={"Livepeer-Work-Units": "5"})
     )
@@ -373,9 +363,7 @@ async def test_submit_job_sends_bytes_body_as_octet_stream() -> None:
 @respx.mock
 async def test_submit_job_parses_text_body_when_not_json() -> None:
     jid = "00000000-0000-0000-0000-0000000000aa"
-    respx.post(f"{BASE}/v1/jobs").mock(
-        return_value=httpx.Response(201, json=_job_open(jid))
-    )
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
     respx.post(f"{BROKER}/v1/cap").mock(
         return_value=httpx.Response(
             200,

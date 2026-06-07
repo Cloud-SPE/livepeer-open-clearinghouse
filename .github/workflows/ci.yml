@@ -45,6 +45,92 @@ jobs:
       - name: Pytest (unit)
         run: uv run pytest -m unit
 
+  # Build/test the reference SDKs and compile-check the examples that
+  # consume them, so an SDK API change can't silently break either.
+  # None of these need a running gateway — SDK tests stub their HTTP
+  # layer and the examples are only compiled, not run.
+  sdk-python:
+    name: SDK + examples (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv python install 3.13
+      - run: uv sync --frozen || uv sync
+      - name: SDK lint
+        run: |
+          uv run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python
+          uv run --package livepeer-open-clearinghouse-sdk --extra dev ruff format --check sdks/python
+      - name: SDK tests
+        run: uv run --package livepeer-open-clearinghouse-sdk --extra dev pytest sdks/python -q
+      - name: Examples compile
+        run: uv run python -m py_compile examples/python/*/main.py
+
+  sdk-typescript:
+    name: SDK + examples (TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No pnpm-lock.yaml is committed, so this can't be --frozen-lockfile
+      # and setup-node's pnpm cache can't key off a lockfile. Commit a
+      # lockfile to enable both.
+      - run: pnpm install
+      - name: SDK lint + test + typecheck
+        run: |
+          pnpm --filter @livepeer/open-clearinghouse-sdk lint
+          pnpm --filter @livepeer/open-clearinghouse-sdk test
+          pnpm --filter @livepeer/open-clearinghouse-sdk build
+      - name: Examples typecheck
+        run: |
+          for e in one-shot-job streaming-ws streaming-http; do
+            pnpm --filter "@livepeer/example-$e" exec tsc --noEmit -p tsconfig.json
+          done
+
+  sdk-go:
+    name: SDK + examples (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: sdks/go/go.sum
+      - name: SDK vet + test
+        working-directory: sdks/go
+        run: |
+          go vet ./...
+          go test ./livepeer_open_clearinghouse/...
+      - name: Examples build
+        run: |
+          for m in examples/go/one-shot-job examples/go/streaming-ws examples/go/streaming-http; do
+            (cd "$m" && go build -o /dev/null ./...)
+          done
+
+  sdk-rust:
+    name: SDK + examples (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: SDK test
+        run: cargo test -p livepeer-open-clearinghouse-sdk
+      - name: Workspace check (SDK + examples)
+        run: cargo check --workspace --all-targets
+
   docker-build:
     name: Docker build (gateway)
     runs-on: ubuntu-latest
