@@ -106,6 +106,8 @@ This project uses `bd` as its durable work tracker. The project-local skill at
 - Never use Markdown checklists, scratch plans, or chat lists as a second task
   tracker, and never run `bd edit`.
 - Use `bd dolt push` only when the authority printed by `bd prime` permits it.
+- On a fresh clone, follow the tested bootstrap and upgrade procedure in
+  [`docs/PLANS.md`](docs/PLANS.md#bootstrapping-beads-on-a-fresh-clone).
 
 ## When in doubt
 
