@@ -170,7 +170,9 @@ async def open_job(
     # Daemon mint sized for the full worst case (one ticket covers
     # the whole job).
     mint_started_ns = time.monotonic_ns()
+    mint_request_id = f"loc:{broker_request_id}"
     daemon_request = CreatePaymentRequest(
+        mint_request_id=mint_request_id,
         recipient=sessions_service._eth_address_to_bytes(route.eth_address),
         ticket_params_base_url=route.worker_url,
         accepted_price=AcceptedPrice(
@@ -223,6 +225,7 @@ async def open_job(
         api_key_id=api_key_id,
         session_id=job_row.id,
         work_id=daemon_response.work_id,
+        mint_request_id=mint_request_id,
         recipient_eth_address=route.eth_address,
         capability=route.capability,
         offering=route.offering,

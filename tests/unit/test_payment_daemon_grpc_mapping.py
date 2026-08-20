@@ -59,6 +59,7 @@ def test_biguint_accepts_decimal_unsigned() -> None:
 
 def _sample_request(funded_wei: int = 200_000) -> CreatePaymentRequest:
     return CreatePaymentRequest(
+        mint_request_id="loc:test-mint-1",
         recipient=bytes.fromhex("11" * 20),
         ticket_params_base_url="https://orch.example/livepeer",
         accepted_price=AcceptedPrice(
@@ -86,6 +87,7 @@ def _sample_request(funded_wei: int = 200_000) -> CreatePaymentRequest:
 def test_request_to_proto_carries_every_field() -> None:
     req = _sample_request()
     proto = dataclass_request_to_proto(req)
+    assert proto.mint_request_id == "loc:test-mint-1"
     assert proto.recipient == req.recipient
     assert proto.ticket_params_base_url == req.ticket_params_base_url
 

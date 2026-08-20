@@ -56,12 +56,14 @@ Before calling `CreatePayment`, LOC commits an `in_flight` claim with a stable
 hours and replayed exactly without another mint or balance mutation. A concurrent
 identical request returns `IDEMPOTENCY_IN_PROGRESS`.
 
-The payer daemon does not yet accept a request idempotency key. Therefore an
-in-flight claim whose payer outcome cannot be proven is marked `expired` after
-60 seconds but is never reclaimed: subsequent retries return
-`IDEMPOTENCY_OUTCOME_UNKNOWN`. This deliberately fails closed instead of risking
-a second ticket. Once payer `CreatePayment` is idempotent, LOC can safely resolve
-that crash window using the same stable `request_id`.
+LOC derives a stable payer `mint_request_id` from the durable request claim, so
+an ordinary lost response can replay the daemon's recorded result. The daemon's
+current implementation nevertheless signs before writing its replay record and
+does not serialize concurrent calls for one mint id. An in-flight LOC claim
+whose payer outcome cannot be proven is therefore still marked `expired` after
+60 seconds and never reclaimed: subsequent retries return
+`IDEMPOTENCY_OUTCOME_UNKNOWN`. This remains fail-closed until payer minting makes
+the signature/nonce reservation and replay outcome atomic.
 
 ### Usage reports
 

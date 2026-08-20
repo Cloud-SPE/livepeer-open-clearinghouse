@@ -58,6 +58,7 @@ funding: FundingIntent {
     estimated_units: uint64
     max_total_units: uint64
 }
+mint_request_id: string             # required; unique in the daemon sender's namespace
 ```
 
 **Response:**
@@ -78,6 +79,13 @@ work_id: string                    # an opaque session key from the daemon
   (synchronous outbound HTTP, 5s timeout) before signing.
 - Daemon signs **one ticket per call**. If Livepeer Open Clearinghouse needs N tickets, it
   calls N times.
+- `mint_request_id` is bound to the full mint intent. Once the daemon has
+  durably recorded a response, an identical retry replays it exactly; changed
+  content is refused. LOC uses `loc:<stable request UUID>` for create paths.
+- The current daemon still has an unsafe crash window between signing the
+  ticket and durably recording the response, and it does not serialize
+  concurrent requests for one mint id. LOC therefore does not reclaim an
+  expired in-flight create until the daemon closes those windows.
 - Daemon caches session keyed by
   `(recipient, capability, offering, funded_value_wei, ticket_params_base_url)`
   so repeated calls reuse `recipient_rand_hash` and increment nonce.
@@ -98,6 +106,9 @@ work_id: string                    # an opaque session key from the daemon
   is zero or `WithdrawRound` is imminent → surface as
   `503 DAEMON_DEPOSIT_INSUFFICIENT`.
 - Anything else from the daemon → `503` to the caller.
+- `codes.InvalidArgument` for a reused mint id with different content is a
+  caller/key-derivation defect. `codes.FailedPrecondition` after replay-payload
+  expiry is fail-closed: never issue a fresh mint under that id.
 
 ## Other RPCs
 

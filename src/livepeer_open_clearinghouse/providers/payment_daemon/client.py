@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
@@ -81,6 +80,7 @@ class FundingIntent:
 class CreatePaymentRequest:
     """Mirror of `livepeer.payments.v1.CreatePaymentRequest`."""
 
+    mint_request_id: str
     recipient: bytes
     ticket_params_base_url: str
     accepted_price: AcceptedPrice
@@ -168,6 +168,7 @@ class MockPaymentDaemonClient:
         # Tests can set entries here via `set_session_debits` to control
         # what `get_session_debits` returns. Defaults to all-zero / open.
         self._session_debits: dict[tuple[bytes, str], SessionDebits] = {}
+        self._mint_replays: dict[str, tuple[CreatePaymentRequest, CreatePaymentResponse]] = {}
 
     def set_session_debits(
         self,
@@ -207,15 +208,25 @@ class MockPaymentDaemonClient:
         )
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
+        if not request.mint_request_id:
+            raise PaymentDaemonError("mint_request_id is required")
+        recorded = self._mint_replays.get(request.mint_request_id)
+        if recorded is not None:
+            original_request, original_response = recorded
+            if request != original_request:
+                raise PaymentDaemonError("mint_request_id was used for different request content")
+            return original_response
+
         funded = request.funding.funded_value_wei
         expected_value = (funded * self._ev_ratio).quantize(Decimal(1))
 
         # work_id = hex(sha256(recipient || quote_id || nonce)) per
         # the daemon's hex-recipient_rand_hash semantics. We synthesize
-        # a 32-byte digest from request fields + a session nonce.
-        nonce = secrets.token_bytes(8)
+        # a 32-byte digest from request fields + the mint intent id.
         digest = hashlib.sha256(
-            request.recipient + request.accepted_price.quote_ref.quote_id.encode("utf-8") + nonce
+            request.recipient
+            + request.accepted_price.quote_ref.quote_id.encode("utf-8")
+            + request.mint_request_id.encode("utf-8")
         ).digest()
         work_id = digest.hex()
 
@@ -229,7 +240,7 @@ class MockPaymentDaemonClient:
             + request.accepted_price.capability.encode("utf-8")
         )
 
-        return CreatePaymentResponse(
+        response = CreatePaymentResponse(
             payment_bytes=payload,
             tickets_created=1,
             expected_value=expected_value,
@@ -237,6 +248,8 @@ class MockPaymentDaemonClient:
             accepted_quote_ref=request.accepted_price.quote_ref,
             work_id=work_id,
         )
+        self._mint_replays[request.mint_request_id] = (request, response)
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +286,7 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2  # noqa: PLC0415
 
     return payer_daemon_pb2.CreatePaymentRequest(
+        mint_request_id=request.mint_request_id,
         recipient=request.recipient,
         ticket_params_base_url=request.ticket_params_base_url,
         accepted_price=types_pb2.AcceptedPrice(

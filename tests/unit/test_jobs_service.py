@@ -191,6 +191,7 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     ).all()
     assert len(payments) == 1
     assert payments[0].funded_value_wei == Decimal(100_000)
+    assert payments[0].mint_request_id == f"loc:{resp.request_id}"
 
 
 @pytest.mark.unit

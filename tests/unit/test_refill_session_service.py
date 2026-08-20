@@ -204,6 +204,8 @@ async def test_refill_writes_new_payment_and_bumps_debit_seq(
         await db_session.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
     ).all()
     assert len(payments) == 2
+    assert all(payment.mint_request_id for payment in payments)
+    assert payments[0].mint_request_id != payments[1].mint_request_id
 
     # Session's last_debit_seq bumped
     ps = await db_session.get(PaymentSession, open_resp.session_id)

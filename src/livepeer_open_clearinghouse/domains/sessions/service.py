@@ -448,7 +448,9 @@ async def open_session(
 
     # ---- 5. Daemon call (initial ticket sized for runway)
     mint_started_ns = time.monotonic_ns()
+    mint_request_id = f"loc:{broker_request_id}"
     daemon_request = CreatePaymentRequest(
+        mint_request_id=mint_request_id,
         recipient=_eth_address_to_bytes(route.eth_address),
         ticket_params_base_url=route.worker_url,
         accepted_price=AcceptedPrice(
@@ -501,6 +503,7 @@ async def open_session(
         api_key_id=api_key_id,
         session_id=session_row.id,
         work_id=daemon_response.work_id,
+        mint_request_id=mint_request_id,
         recipient_eth_address=route.eth_address,
         capability=route.capability,
         offering=route.offering,
@@ -739,7 +742,9 @@ async def refill_session(
 
     # ---- Daemon call. Same session-cache key as the initial mint so
     # the daemon reuses recipient_rand_hash and increments nonce.
+    mint_request_id = f"loc:{uuid.uuid4()}"
     daemon_request = CreatePaymentRequest(
+        mint_request_id=mint_request_id,
         recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
         ticket_params_base_url="",  # daemon uses its cached value
         accepted_price=AcceptedPrice(
@@ -776,6 +781,7 @@ async def refill_session(
         api_key_id=api_key_id,
         session_id=session_id,
         work_id=session_row.work_id,
+        mint_request_id=mint_request_id,
         recipient_eth_address=initial_payment_row.recipient_eth_address,
         capability=initial_payment_row.capability,
         offering=initial_payment_row.offering,

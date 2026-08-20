@@ -23,7 +23,7 @@ from livepeer.payments.v1 import types_pb2 as livepeer_dot_payments_dot_v1_dot_t
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\'livepeer/payments/v1/payer_daemon.proto\x12\x14livepeer.payments.v1\x1a livepeer/payments/v1/types.proto"\xbc\x01\n\x14\x43reatePaymentRequest\x12\x11\n\trecipient\x18\x01 \x01(\x0c\x12\x1e\n\x16ticket_params_base_url\x18\x02 \x01(\t\x12;\n\x0e\x61\x63\x63\x65pted_price\x18\x03 \x01(\x0b\x32#.livepeer.payments.v1.AcceptedPrice\x12\x34\n\x07\x66unding\x18\x04 \x01(\x0b\x32#.livepeer.payments.v1.FundingIntent"\x84\x02\n\x15\x43reatePaymentResponse\x12\x15\n\rpayment_bytes\x18\x01 \x01(\x0c\x12\x17\n\x0ftickets_created\x18\x02 \x01(\r\x12\x35\n\x0e\x65xpected_value\x18\x03 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x37\n\x10\x66unded_value_wei\x18\x04 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12:\n\x12\x61\x63\x63\x65pted_quote_ref\x18\x05 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\x12\x0f\n\x07work_id\x18\x06 \x01(\t"\x9b\x01\n\x1aReportPaymentResultRequest\x12\x0f\n\x07work_id\x18\x01 \x01(\t\x12\x12\n\ncapability\x18\x02 \x01(\t\x12\x10\n\x08offering\x18\x03 \x01(\t\x12\x46\n\x10rejection_reason\x18\x04 \x01(\x0e\x32,.livepeer.payments.v1.PaymentRejectionReason"\x1d\n\x1bReportPaymentResultResponse":\n\x17GetSessionDebitsRequest\x12\x0e\n\x06sender\x18\x01 \x01(\x0c\x12\x0f\n\x07work_id\x18\x02 \x01(\t"Y\n\x18GetSessionDebitsResponse\x12\x18\n\x10total_work_units\x18\x01 \x01(\x04\x12\x13\n\x0b\x64\x65\x62it_count\x18\x02 \x01(\x04\x12\x0e\n\x06\x63losed\x18\x03 \x01(\x08"\x17\n\x15GetDepositInfoRequest"R\n\x16GetDepositInfoResponse\x12\x0f\n\x07\x64\x65posit\x18\x01 \x01(\x0c\x12\x0f\n\x07reserve\x18\x02 \x01(\x0c\x12\x16\n\x0ewithdraw_round\x18\x03 \x01(\x03\x32\xa8\x04\n\x0bPayerDaemon\x12h\n\rCreatePayment\x12*.livepeer.payments.v1.CreatePaymentRequest\x1a+.livepeer.payments.v1.CreatePaymentResponse\x12z\n\x13ReportPaymentResult\x12\x30.livepeer.payments.v1.ReportPaymentResultRequest\x1a\x31.livepeer.payments.v1.ReportPaymentResultResponse\x12k\n\x0eGetDepositInfo\x12+.livepeer.payments.v1.GetDepositInfoRequest\x1a,.livepeer.payments.v1.GetDepositInfoResponse\x12q\n\x10GetSessionDebits\x12-.livepeer.payments.v1.GetSessionDebitsRequest\x1a..livepeer.payments.v1.GetSessionDebitsResponse\x12S\n\x06Health\x12#.livepeer.payments.v1.HealthRequest\x1a$.livepeer.payments.v1.HealthResponseBrZpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1b\x06proto3'
+    b'\n\'livepeer/payments/v1/payer_daemon.proto\x12\x14livepeer.payments.v1\x1a livepeer/payments/v1/types.proto"\xd5\x01\n\x14\x43reatePaymentRequest\x12\x11\n\trecipient\x18\x01 \x01(\x0c\x12\x1e\n\x16ticket_params_base_url\x18\x02 \x01(\t\x12;\n\x0e\x61\x63\x63\x65pted_price\x18\x03 \x01(\x0b\x32#.livepeer.payments.v1.AcceptedPrice\x12\x34\n\x07\x66unding\x18\x04 \x01(\x0b\x32#.livepeer.payments.v1.FundingIntent\x12\x17\n\x0fmint_request_id\x18\x05 \x01(\t"\x84\x02\n\x15\x43reatePaymentResponse\x12\x15\n\rpayment_bytes\x18\x01 \x01(\x0c\x12\x17\n\x0ftickets_created\x18\x02 \x01(\r\x12\x35\n\x0e\x65xpected_value\x18\x03 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x37\n\x10\x66unded_value_wei\x18\x04 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12:\n\x12\x61\x63\x63\x65pted_quote_ref\x18\x05 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\x12\x0f\n\x07work_id\x18\x06 \x01(\t"\x9b\x01\n\x1aReportPaymentResultRequest\x12\x0f\n\x07work_id\x18\x01 \x01(\t\x12\x12\n\ncapability\x18\x02 \x01(\t\x12\x10\n\x08offering\x18\x03 \x01(\t\x12\x46\n\x10rejection_reason\x18\x04 \x01(\x0e\x32,.livepeer.payments.v1.PaymentRejectionReason"\x1d\n\x1bReportPaymentResultResponse":\n\x17GetSessionDebitsRequest\x12\x0e\n\x06sender\x18\x01 \x01(\x0c\x12\x0f\n\x07work_id\x18\x02 \x01(\t"Y\n\x18GetSessionDebitsResponse\x12\x18\n\x10total_work_units\x18\x01 \x01(\x04\x12\x13\n\x0b\x64\x65\x62it_count\x18\x02 \x01(\x04\x12\x0e\n\x06\x63losed\x18\x03 \x01(\x08"\x17\n\x15GetDepositInfoRequest"R\n\x16GetDepositInfoResponse\x12\x0f\n\x07\x64\x65posit\x18\x01 \x01(\x0c\x12\x0f\n\x07reserve\x18\x02 \x01(\x0c\x12\x16\n\x0ewithdraw_round\x18\x03 \x01(\x03\x32\xa8\x04\n\x0bPayerDaemon\x12h\n\rCreatePayment\x12*.livepeer.payments.v1.CreatePaymentRequest\x1a+.livepeer.payments.v1.CreatePaymentResponse\x12z\n\x13ReportPaymentResult\x12\x30.livepeer.payments.v1.ReportPaymentResultRequest\x1a\x31.livepeer.payments.v1.ReportPaymentResultResponse\x12k\n\x0eGetDepositInfo\x12+.livepeer.payments.v1.GetDepositInfoRequest\x1a,.livepeer.payments.v1.GetDepositInfoResponse\x12q\n\x10GetSessionDebits\x12-.livepeer.payments.v1.GetSessionDebitsRequest\x1a..livepeer.payments.v1.GetSessionDebitsResponse\x12S\n\x06Health\x12#.livepeer.payments.v1.HealthRequest\x1a$.livepeer.payments.v1.HealthResponseBrZpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1b\x06proto3'
 )
 
 _globals = globals()
@@ -37,21 +37,21 @@ if not _descriptor._USE_C_DESCRIPTORS:
         "DESCRIPTOR"
     ]._serialized_options = b"Zpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1"
     _globals["_CREATEPAYMENTREQUEST"]._serialized_start = 100
-    _globals["_CREATEPAYMENTREQUEST"]._serialized_end = 288
-    _globals["_CREATEPAYMENTRESPONSE"]._serialized_start = 291
-    _globals["_CREATEPAYMENTRESPONSE"]._serialized_end = 551
-    _globals["_REPORTPAYMENTRESULTREQUEST"]._serialized_start = 554
-    _globals["_REPORTPAYMENTRESULTREQUEST"]._serialized_end = 709
-    _globals["_REPORTPAYMENTRESULTRESPONSE"]._serialized_start = 711
-    _globals["_REPORTPAYMENTRESULTRESPONSE"]._serialized_end = 740
-    _globals["_GETSESSIONDEBITSREQUEST"]._serialized_start = 742
-    _globals["_GETSESSIONDEBITSREQUEST"]._serialized_end = 800
-    _globals["_GETSESSIONDEBITSRESPONSE"]._serialized_start = 802
-    _globals["_GETSESSIONDEBITSRESPONSE"]._serialized_end = 891
-    _globals["_GETDEPOSITINFOREQUEST"]._serialized_start = 893
-    _globals["_GETDEPOSITINFOREQUEST"]._serialized_end = 916
-    _globals["_GETDEPOSITINFORESPONSE"]._serialized_start = 918
-    _globals["_GETDEPOSITINFORESPONSE"]._serialized_end = 1000
-    _globals["_PAYERDAEMON"]._serialized_start = 1003
-    _globals["_PAYERDAEMON"]._serialized_end = 1555
+    _globals["_CREATEPAYMENTREQUEST"]._serialized_end = 313
+    _globals["_CREATEPAYMENTRESPONSE"]._serialized_start = 316
+    _globals["_CREATEPAYMENTRESPONSE"]._serialized_end = 576
+    _globals["_REPORTPAYMENTRESULTREQUEST"]._serialized_start = 579
+    _globals["_REPORTPAYMENTRESULTREQUEST"]._serialized_end = 734
+    _globals["_REPORTPAYMENTRESULTRESPONSE"]._serialized_start = 736
+    _globals["_REPORTPAYMENTRESULTRESPONSE"]._serialized_end = 765
+    _globals["_GETSESSIONDEBITSREQUEST"]._serialized_start = 767
+    _globals["_GETSESSIONDEBITSREQUEST"]._serialized_end = 825
+    _globals["_GETSESSIONDEBITSRESPONSE"]._serialized_start = 827
+    _globals["_GETSESSIONDEBITSRESPONSE"]._serialized_end = 916
+    _globals["_GETDEPOSITINFOREQUEST"]._serialized_start = 918
+    _globals["_GETDEPOSITINFOREQUEST"]._serialized_end = 941
+    _globals["_GETDEPOSITINFORESPONSE"]._serialized_start = 943
+    _globals["_GETDEPOSITINFORESPONSE"]._serialized_end = 1025
+    _globals["_PAYERDAEMON"]._serialized_start = 1028
+    _globals["_PAYERDAEMON"]._serialized_end = 1580
 # @@protoc_insertion_point(module_scope)

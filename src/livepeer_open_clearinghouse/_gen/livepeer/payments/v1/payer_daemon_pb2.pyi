@@ -7,21 +7,30 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class CreatePaymentRequest(_message.Message):
-    __slots__ = ("recipient", "ticket_params_base_url", "accepted_price", "funding")
+    __slots__ = (
+        "recipient",
+        "ticket_params_base_url",
+        "accepted_price",
+        "funding",
+        "mint_request_id",
+    )
     RECIPIENT_FIELD_NUMBER: _ClassVar[int]
     TICKET_PARAMS_BASE_URL_FIELD_NUMBER: _ClassVar[int]
     ACCEPTED_PRICE_FIELD_NUMBER: _ClassVar[int]
     FUNDING_FIELD_NUMBER: _ClassVar[int]
+    MINT_REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     recipient: bytes
     ticket_params_base_url: str
     accepted_price: _types_pb2.AcceptedPrice
     funding: _types_pb2.FundingIntent
+    mint_request_id: str
     def __init__(
         self,
         recipient: _Optional[bytes] = ...,
         ticket_params_base_url: _Optional[str] = ...,
         accepted_price: _Optional[_Union[_types_pb2.AcceptedPrice, _Mapping]] = ...,
         funding: _Optional[_Union[_types_pb2.FundingIntent, _Mapping]] = ...,
+        mint_request_id: _Optional[str] = ...,
     ) -> None: ...
 
 class CreatePaymentResponse(_message.Message):

@@ -11,12 +11,16 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     CreatePaymentRequest,
     FundingIntent,
     MockPaymentDaemonClient,
+    PaymentDaemonError,
     QuoteRef,
 )
 
 
-def _request(funded_wei: int = 100_000) -> CreatePaymentRequest:
+def _request(
+    funded_wei: int = 100_000, *, mint_request_id: str = "loc:test-mint"
+) -> CreatePaymentRequest:
     return CreatePaymentRequest(
+        mint_request_id=mint_request_id,
         recipient=bytes.fromhex("11" * 20),
         ticket_params_base_url="https://orch.example/livepeer",
         accepted_price=AcceptedPrice(
@@ -59,13 +63,30 @@ async def test_payment_bytes_has_recognizable_magic() -> None:
 @pytest.mark.unit
 async def test_work_id_is_hex_and_carries_request_signal() -> None:
     client = MockPaymentDaemonClient()
-    a = await client.create_payment(_request())
-    b = await client.create_payment(_request())
+    a = await client.create_payment(_request(mint_request_id="loc:a"))
+    b = await client.create_payment(_request(mint_request_id="loc:b"))
     # work_id derives from a nonce; two calls produce different ids
     assert a.work_id != b.work_id
     # 64 hex chars = sha256
     assert len(a.work_id) == 64
     int(a.work_id, 16)  # raises if not hex
+
+
+@pytest.mark.unit
+async def test_identical_mint_request_replays_exact_response() -> None:
+    client = MockPaymentDaemonClient()
+    request = _request(mint_request_id="loc:replay")
+    first = await client.create_payment(request)
+    replay = await client.create_payment(request)
+    assert replay == first
+
+
+@pytest.mark.unit
+async def test_mint_request_id_reuse_with_different_content_is_refused() -> None:
+    client = MockPaymentDaemonClient()
+    await client.create_payment(_request(100, mint_request_id="loc:reuse"))
+    with pytest.raises(PaymentDaemonError, match="different request content"):
+        await client.create_payment(_request(101, mint_request_id="loc:reuse"))
 
 
 @pytest.mark.unit

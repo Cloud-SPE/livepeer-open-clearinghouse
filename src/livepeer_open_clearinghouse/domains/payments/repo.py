@@ -45,6 +45,7 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
         index=True,
     )
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
+    mint_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     recipient_eth_address: Mapped[str] = mapped_column(nullable=False)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)

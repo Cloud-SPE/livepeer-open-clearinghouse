@@ -90,6 +90,10 @@ message CreatePaymentRequest {
 
   // Funding scope the gateway is authorizing for this minted payment batch.
   FundingIntent funding = 4;
+
+  // Caller-supplied idempotency key for this mint intent. Required by
+  // payment-daemon v2; identical retries replay the original response.
+  string mint_request_id = 5;
 }
 
 message CreatePaymentResponse {

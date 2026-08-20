@@ -200,6 +200,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     p = payments[0]
     assert p.session_id == ps.id
     assert p.work_id == response.work_id
+    assert p.mint_request_id == f"loc:{response.request_id}"
     # Initial ticket funded for runway (not worst case).
     assert p.funded_value_wei == Decimal(3_600_000)
 
