@@ -115,6 +115,7 @@ class SelectedRoute(_message.Message):
         "constraint_fingerprint",
         "route_fingerprint",
         "units_per_price",
+        "protocol",
     )
     WORKER_URL_FIELD_NUMBER: _ClassVar[int]
     ETH_ADDRESS_FIELD_NUMBER: _ClassVar[int]
@@ -129,6 +130,7 @@ class SelectedRoute(_message.Message):
     CONSTRAINT_FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
     ROUTE_FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
     UNITS_PER_PRICE_FIELD_NUMBER: _ClassVar[int]
+    PROTOCOL_FIELD_NUMBER: _ClassVar[int]
     worker_url: str
     eth_address: str
     capability: str
@@ -142,6 +144,7 @@ class SelectedRoute(_message.Message):
     constraint_fingerprint: bytes
     route_fingerprint: bytes
     units_per_price: int
+    protocol: str
     def __init__(
         self,
         worker_url: _Optional[str] = ...,
@@ -157,6 +160,7 @@ class SelectedRoute(_message.Message):
         constraint_fingerprint: _Optional[bytes] = ...,
         route_fingerprint: _Optional[bytes] = ...,
         units_per_price: _Optional[int] = ...,
+        protocol: _Optional[str] = ...,
     ) -> None: ...
 
 class ListKnownRequest(_message.Message):

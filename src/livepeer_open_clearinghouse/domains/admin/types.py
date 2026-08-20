@@ -250,7 +250,7 @@ class SessionWithSdkView(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     sdk_identity: str | None
     sdk_status: str

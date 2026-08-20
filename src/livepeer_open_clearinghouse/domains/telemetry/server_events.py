@@ -208,7 +208,7 @@ async def emit_mint_served(
     user_id: uuid.UUID,
     capability: str,
     offering: str,
-    mode: str,
+    protocol: str,
     estimated_units: int,
     funded_value_wei: int,
     mint_latency_ms: int,
@@ -221,7 +221,7 @@ async def emit_mint_served(
         payload={
             "capability": capability,
             "offering": offering,
-            "mode": mode,
+            "protocol": protocol,
             "estimated_units": estimated_units,
             "funded_value_wei": funded_value_wei,
             "mint_latency_ms": mint_latency_ms,

@@ -108,7 +108,14 @@ def _route() -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": "session-control-plus-media@v0"},
+        protocol="paid-session/v1",
+        extra={
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": "extensible",
+            }
+        },
     )
 
 
@@ -146,7 +153,7 @@ async def test_status_for_open_session_has_cap_status(db_session: AsyncSession) 
     )
     assert status.session_id == open_resp.session_id
     assert status.state == SESSION_STATE_OPEN
-    assert status.mode == "session-control-plus-media@v0"
+    assert status.protocol == "paid-session/v1"
     assert status.funded_value_wei == 1_000_000
     # billed so far = initial mint EV = 100 x 1000 = 100_000
     assert status.billed_value_wei == 100_000

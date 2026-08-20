@@ -11,20 +11,24 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     CachingRegistryClient,
     CapabilityInfo,
     GrpcRegistryClient,
+    JobAxes,
     MockRegistryClient,
     OfferingInfo,
     OrchestratorInfo,
     RegistryClient,
     SelectedRoute,
+    SessionAxes,
 )
 
 __all__ = [
     "CachingRegistryClient",
     "CapabilityInfo",
     "GrpcRegistryClient",
+    "JobAxes",
     "MockRegistryClient",
     "OfferingInfo",
     "OrchestratorInfo",
     "RegistryClient",
     "SelectedRoute",
+    "SessionAxes",
 ]

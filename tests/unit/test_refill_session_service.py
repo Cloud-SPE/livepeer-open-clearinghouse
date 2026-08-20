@@ -41,7 +41,7 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
-    RefillNotSupportedForMode,
+    RefillNotSupported,
     SessionCapReached,
     SessionNotFound,
     SessionNotOpen,
@@ -123,7 +123,14 @@ def _route(mode: str, *, price_wei: int = 1000) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": mode},
+        protocol="paid-session/v1",
+        extra={
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": "bounded" if mode == "ws-realtime@v0" else "extensible",
+            }
+        },
     )
 
 
@@ -342,8 +349,8 @@ async def test_refill_rejects_closed_session(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_refill_rejects_bounded_mode(db_session: AsyncSession) -> None:
-    """ws-realtime@v0 has no protocol topup; LOC refuses defensively."""
+async def test_refill_rejects_bounded_declaration(db_session: AsyncSession) -> None:
+    """session.refill=bounded refuses top-up independently of runtime shape."""
     user_id, key_id = await _seed(db_session)
     registry = MockRegistryClient(routes=[_route("ws-realtime@v0")])
     daemon = MockPaymentDaemonClient()
@@ -361,7 +368,7 @@ async def test_refill_rejects_bounded_mode(db_session: AsyncSession) -> None:
         clock=_clock(),
         settings=_settings(),
     )
-    with pytest.raises(RefillNotSupportedForMode):
+    with pytest.raises(RefillNotSupported):
         await sessions_service.refill_session(
             db_session,
             session_id=open_resp.session_id,

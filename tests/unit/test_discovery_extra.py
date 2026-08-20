@@ -34,8 +34,9 @@ _ROUTE = SelectedRoute(
     quote_version=1,
     constraint_fingerprint=b"\x00" * 32,
     route_fingerprint=b"\x11" * 32,
+    protocol="paid-job/v1",
     extra={
-        "interaction_mode": "http-reqresp@v0",
+        "job": {"transports": ["unary", "stream"]},
         "openai": {"model": "Qwen3.6-27B", "name": "Qwen 3.6 27B"},
     },
 )
@@ -48,7 +49,9 @@ async def test_capability_offering_view_carries_extra() -> None:
     assert len(caps) == 1
     offering = caps[0].offerings[0]
     assert offering.extra["openai"]["model"] == "Qwen3.6-27B"
-    assert offering.extra["interaction_mode"] == "http-reqresp@v0"
+    assert offering.protocol == "paid-job/v1"
+    assert offering.job is not None
+    assert offering.job.transports == {"unary", "stream"}
 
 
 @pytest.mark.unit
@@ -77,7 +80,9 @@ async def test_offering_view_defaults_to_empty_extra() -> None:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol="paid-job/v1",
+        extra={"job": {"transports": ["unary"]}},
     )
     client = MockRegistryClient(routes=[route])
     caps = await list_capabilities(client)
-    assert caps[0].offerings[0].extra == {}
+    assert caps[0].offerings[0].extra == {"job": {"transports": ["unary"]}}

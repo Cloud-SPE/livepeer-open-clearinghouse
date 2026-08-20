@@ -44,7 +44,7 @@ class CreateJobResponse(BaseModel):
     request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int

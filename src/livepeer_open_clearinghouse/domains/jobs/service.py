@@ -3,14 +3,13 @@
 Composes the same primitives ``sessions.service`` uses
 (``create_session``, ``transition_state``, ``record_settlement``,
 ``billing.encumber_for_session`` / ``release_session_encumbrance``)
-but gated on the ``http-*@v0`` mode set instead of the case-(d)
-session modes.
+but gated on the authoritative ``paid-job/v1`` protocol.
 
 A job is just a short-lived ``payment_session`` row with a job-class
-mode. The mint path mirrors ``sessions.service.open_session``; the
+protocol. The mint path mirrors ``sessions.service.open_session``; the
 settle path mirrors ``sessions.service.close_session``. Differences:
 
-  - Mode gate: JOB_MODES instead of SESSION_OPEN_MODES.
+  - Protocol gate: ``paid-job/v1`` instead of ``paid-session/v1``.
   - Initial mint is sized for ``max_total_units`` (jobs are
     one-shot — no refills — so the full worst case lives in the
     single ticket).
@@ -58,27 +57,18 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
 from livepeer_open_clearinghouse.settings import Settings
 
-# Modes that POST /v1/jobs accepts. Long-running session modes go
-# through POST /v1/sessions instead.
-JOB_MODES: frozenset[str] = frozenset(
-    {
-        "http-reqresp@v0",
-        "http-stream@v0",
-        "http-multipart@v0",
-    }
-)
+PAID_JOB_PROTOCOL = "paid-job/v1"
 
 
-class ModeNotSupportedForJob(OpenClearinghouseError):
-    """Mode is known upstream but isn't a job-class mode."""
+class ProtocolNotSupportedForJob(OpenClearinghouseError):
+    """The selected route is not a paid-job/v1 offering."""
 
-    def __init__(self, *, mode: str) -> None:
+    def __init__(self, *, protocol: str) -> None:
         super().__init__(
-            code="mode_not_supported_for_job",
+            code="protocol_not_supported_for_job",
             message=(
-                f"mode {mode!r} is not a job mode; use POST /v1/sessions "
-                "for ws-realtime / session-control-plus-media / live-session-* "
-                "workloads"
+                f"protocol {protocol!r} is not accepted by POST /v1/jobs; "
+                "paid sessions use POST /v1/sessions"
             ),
             status_code=400,
         )
@@ -124,8 +114,8 @@ async def open_job(
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
 
-    Behaves like ``sessions.service.open_session`` except the mode
-    gate is :data:`JOB_MODES`, and the initial mint funds the full
+        Behaves like ``sessions.service.open_session`` except the protocol
+    gate is ``paid-job/v1``, and the initial mint funds the full
     worst case (no refills are possible for jobs).
 
     Defaults ``max_total_units`` to ``estimated_units`` when the SDK
@@ -146,18 +136,18 @@ async def open_job(
     if route is None:
         raise NoRouteAvailable(capability=capability, offering=offering)
 
-    # Mode declaration + validation
-    mode = route.interaction_mode
-    if mode is None:
-        raise sessions_service.ModeNotDeclared(capability=capability, offering=offering)
-    if mode not in JOB_MODES:
-        raise ModeNotSupportedForJob(mode=mode)
+    protocol = route.protocol
+    if protocol != PAID_JOB_PROTOCOL:
+        raise ProtocolNotSupportedForJob(protocol=protocol)
 
     # Worst case = full max_total_units (jobs have no refills, so the
     # initial mint funds the entire envelope).
     price_wei = Decimal(route.price_per_work_unit_wei)
-    units_per_price = Decimal(route.units_per_price or 1)
-    worst_case_value_wei = price_wei * Decimal(effective_max) / units_per_price
+    worst_case_value_wei = sessions_service._bill_value_wei(
+        units=effective_max,
+        amount_wei=price_wei,
+        per_units=route.units_per_price,
+    )
 
     # Up-front balance check
     balance = await billing_service.get_balance(db, user_id=user_id)
@@ -217,7 +207,9 @@ async def open_job(
         work_id=daemon_response.work_id,
         capability=route.capability,
         offering=route.offering,
-        mode=mode,
+        protocol=protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=broker_request_id,
         estimated_units=estimated_units,
         max_total_units=effective_max,
         funded_value_wei=worst_case_value_wei,
@@ -278,7 +270,7 @@ async def open_job(
         user_id=user_id,
         capability=capability,
         offering=offering,
-        mode=mode,
+        protocol=protocol,
         estimated_units=estimated_units,
         funded_value_wei=int(worst_case_value_wei),
         mint_latency_ms=int(mint_latency_ms),
@@ -298,7 +290,7 @@ async def open_job(
         request_id=broker_request_id,
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
-        mode=mode,
+        protocol=protocol,
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -322,7 +314,7 @@ async def settle_job(
     Livepeer-Work-Units header (or trailer for http-stream).
 
     Mirrors ``sessions.service.close_session`` — same accounting,
-    same encumbrance release, same settlement-event write. The mode
+    same encumbrance release, same settlement-event write. The protocol
     gate is enforced at open time, so settle works uniformly for any
     job-class session.
     """
@@ -345,7 +337,12 @@ async def settle_job(
         raise JobNotFound  # defensive
 
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    billed_value_wei = price_wei * Decimal(actual_units)
+    snapshot = job_row.route_snapshot or {}
+    billed_value_wei = sessions_service._bill_value_wei(
+        units=actual_units,
+        amount_wei=price_wei,
+        per_units=int(snapshot.get("units_per_price", 1)),
+    )
     refund_wei = job_row.funded_value_wei - billed_value_wei
 
     # Transition state

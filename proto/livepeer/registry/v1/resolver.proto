@@ -65,6 +65,11 @@ message SelectedRoute {
   bytes  constraint_fingerprint   = 11;
   bytes  route_fingerprint        = 12;
   uint64 units_per_price          = 13;
+
+  // Protocol tag from the signed manifest tuple ("paid-job/v1",
+  // "paid-session/v1"). The declared axes remain in extra_json so later
+  // protocol-minor additions pass through without a resolver schema change.
+  string protocol                 = 14;
 }
 
 message ListKnownRequest {}

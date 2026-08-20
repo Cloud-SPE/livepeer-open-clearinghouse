@@ -124,7 +124,8 @@ def _route(broker_url: str, mode: str = "http-reqresp@v0") -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": mode},
+        protocol="paid-job/v1",
+        extra={"job": {"transports": ["unary", "stream", "multipart"]}},
     )
 
 
@@ -180,7 +181,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
                 "Livepeer-Capability": "openai:chat-completions",
                 "Livepeer-Offering": "gpt-oss-20b",
                 "Livepeer-Payment": job.payment_envelope,
-                "Livepeer-Mode": job.mode,
+                "Livepeer-Mode": job.protocol,
                 "Livepeer-Spec-Version": "0.1",
                 "Livepeer-Request-Id": "req-test-1",
                 "Content-Type": "application/json",
@@ -196,7 +197,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
     broker_request = broker_app.state.requests[0]
     assert broker_request["had_payment_header"] is True
     assert broker_request["capability"] == "openai:chat-completions"
-    assert broker_request["mode"] == "http-reqresp@v0"
+    assert broker_request["mode"] == "paid-job/v1"
     # Decode the envelope and check the magic prefix from MockPaymentDaemonClient
     decoded = base64.b64decode(job.payment_envelope)
     assert decoded.startswith(b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT")
@@ -289,7 +290,7 @@ async def test_mock_broker_returns_configurable_actual_units(
             "/v1/cap",
             headers={
                 "Livepeer-Payment": job.payment_envelope,
-                "Livepeer-Mode": job.mode,
+                "Livepeer-Mode": job.protocol,
                 "X-Mock-Actual-Units": "100",
                 "Content-Type": "application/json",
             },

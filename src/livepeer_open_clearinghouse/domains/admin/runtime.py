@@ -536,7 +536,7 @@ async def list_recent_sessions_endpoint(
                 work_id=ps.work_id,
                 capability=ps.capability,
                 offering=ps.offering,
-                mode=ps.mode,
+                protocol=ps.protocol,
                 state=ps.state,
                 sdk_identity=ps.sdk_identity,
                 sdk_status=status_label,

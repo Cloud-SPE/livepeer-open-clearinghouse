@@ -2,7 +2,7 @@
 
 Models long-running payment sessions opened by `POST /v1/sessions`
 under exec-plan 002 (handoff mode). A `PaymentSession` row carries
-the full session lifecycle — mode, state, encumbered funded value,
+the full session lifecycle — protocol, state, encumbered funded value,
 final billed value, settlement outcome — and is the unit the
 reconciliation janitor operates on.
 

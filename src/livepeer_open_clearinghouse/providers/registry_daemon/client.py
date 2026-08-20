@@ -14,7 +14,9 @@ import json
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.registry.v1 import ...` resolves. Loading
@@ -25,58 +27,132 @@ from livepeer_open_clearinghouse import _gen  # noqa: F401
 _logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class SelectedRoute:
+class JobAxes(BaseModel):
+    """Known paid-job/v1 axes, preserving future minor-version additions."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    transports: frozenset[Literal["unary", "stream", "multipart"]] = Field(min_length=1)
+
+
+class SessionAxes(BaseModel):
+    """Known paid-session/v1 axes, preserving future minor-version additions."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    attachment: Literal["external", "inband-ws"] = "external"
+    metering: Literal["runner-reported", "broker-observed"]
+    refill: Literal["extensible", "bounded"] = "extensible"
+
+    @model_validator(mode="after")
+    def broker_metering_requires_inband_attachment(self) -> SessionAxes:
+        if self.metering == "broker-observed" and self.attachment != "inband-ws":
+            raise ValueError("broker-observed metering requires attachment='inband-ws'")
+        return self
+
+
+class SelectedRoute(BaseModel):
     """One concrete route — output of ``Select`` / ``SelectMany``.
 
-    ``extra`` carries the capability's opaque metadata block from the
-    upstream registry (proto field ``extra_json``, bytes). Decoded
-    once at the proto→dataclass boundary; consumers read keys like
-    ``extra.get("interaction_mode")`` to drive mode selection without
-    re-parsing JSON. Empty dict if the proto carries no extra blob
-    or the bytes don't parse as a JSON object.
+    The protocol is a typed field from the signed tuple. Declared axes remain
+    in ``extra`` and are parsed here, at the network boundary. Unknown axis
+    fields survive so a later compatible spec minor is not silently erased.
     """
 
-    worker_url: str
-    eth_address: str
-    capability: str
-    offering: str
-    price_per_work_unit_wei: Decimal
-    work_unit: str
-    units_per_price: int
+    model_config = ConfigDict(frozen=True)
+
+    worker_url: str = Field(min_length=1)
+    eth_address: str = Field(min_length=1)
+    capability: str = Field(min_length=1)
+    offering: str = Field(min_length=1)
+    price_per_work_unit_wei: Decimal = Field(ge=0)
+    work_unit: str = Field(min_length=1)
+    units_per_price: int = Field(ge=1)
     quote_id: str
     quote_version: int
     constraint_fingerprint: bytes
     route_fingerprint: bytes
-    extra: dict[str, Any] = field(default_factory=dict)
+    protocol: Literal["paid-job/v1", "paid-session/v1"]
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_protocol_axes(self) -> SelectedRoute:
+        expected = "job" if self.protocol == "paid-job/v1" else "session"
+        forbidden = "session" if expected == "job" else "job"
+        if expected not in self.extra:
+            raise ValueError(f"{self.protocol} route is missing extra.{expected}")
+        if forbidden in self.extra:
+            raise ValueError(f"{self.protocol} route must not declare extra.{forbidden}")
+        if expected == "job":
+            JobAxes.model_validate(self.extra[expected])
+        else:
+            SessionAxes.model_validate(self.extra[expected])
+        return self
 
     @property
-    def interaction_mode(self) -> str | None:
-        """Convenience accessor for the upstream mode string.
+    def job(self) -> JobAxes | None:
+        if self.protocol != "paid-job/v1":
+            return None
+        return JobAxes.model_validate(self.extra["job"])
 
-        Returns ``None`` if the offering doesn't declare a mode (only
-        legitimate for legacy capabilities; new offerings MUST set it
-        per the upstream coordinator manifest).
-        """
-        raw = self.extra.get("interaction_mode")
-        return raw if isinstance(raw, str) else None
+    @property
+    def session(self) -> SessionAxes | None:
+        if self.protocol != "paid-session/v1":
+            return None
+        return SessionAxes.model_validate(self.extra["session"])
+
+    def snapshot(self) -> dict[str, Any]:
+        """JSON-safe immutable route declaration persisted at issuance."""
+
+        return {
+            "worker_url": self.worker_url,
+            "eth_address": self.eth_address,
+            "capability": self.capability,
+            "offering": self.offering,
+            "protocol": self.protocol,
+            "work_unit": self.work_unit,
+            "price_per_work_unit_wei": str(self.price_per_work_unit_wei),
+            "units_per_price": self.units_per_price,
+            "quote_id": self.quote_id,
+            "quote_version": self.quote_version,
+            "constraint_fingerprint": self.constraint_fingerprint.hex(),
+            "route_fingerprint": self.route_fingerprint.hex(),
+            "axes": self.extra["job"] if self.job is not None else self.extra["session"],
+            "extra": self.extra,
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class OfferingInfo:
     """An advertised offering on an orchestrator.
 
-    ``extra`` is the merged node+capability ``extra_json`` metadata
-    block (capability keys win on conflict). Consumers read keys like
-    ``extra["openai"]["model"]`` — the runner-facing serving name — and
-    ``extra["interaction_mode"]``. Without it, gateways can't map an
-    offering id back to the model name the runner actually accepts.
+    ``extra`` is the verified capability metadata plus declared protocol axes.
+    Consumers read workload-specific keys such as ``extra["openai"]["model"]``
+    without treating them as protocol authority.
     """
 
     id: str
     price_per_work_unit_wei: Decimal | None
     work_unit: str | None
+    units_per_price: int
+    protocol: Literal["paid-job/v1", "paid-session/v1"]
+    job: JobAxes | None
+    session: SessionAxes | None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def _offering_from_route(route: SelectedRoute) -> OfferingInfo:
+    return OfferingInfo(
+        id=route.offering,
+        price_per_work_unit_wei=route.price_per_work_unit_wei,
+        work_unit=route.work_unit,
+        units_per_price=route.units_per_price,
+        protocol=route.protocol,
+        job=route.job,
+        session=route.session,
+        extra=dict(route.extra),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +207,8 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": "http-stream@v0"},
+        protocol="paid-job/v1",
+        extra={"job": {"transports": ["unary", "stream", "multipart"]}},
     ),
     SelectedRoute(
         worker_url="https://orch-2.example/livepeer",
@@ -145,7 +222,8 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x22" * 32,
-        extra={"interaction_mode": "http-reqresp@v0"},
+        protocol="paid-job/v1",
+        extra={"job": {"transports": ["unary"]}},
     ),
 ]
 
@@ -185,7 +263,7 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
     The proto stores price as a decimal big-int *string*; we parse to
     Decimal. ``extra_json`` (bytes, JSON object) is decoded into the
     ``extra`` dict so consumers (mint, session-open) can read
-    capability metadata like ``interaction_mode`` without re-parsing.
+    capability metadata and declared axes without re-parsing.
     """
     return SelectedRoute(
         worker_url=proto.worker_url,
@@ -199,6 +277,7 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
         quote_version=int(proto.quote_version),
         constraint_fingerprint=bytes(proto.constraint_fingerprint),
         route_fingerprint=bytes(proto.route_fingerprint),
+        protocol=proto.protocol,
         extra=_decode_extra_json(bytes(proto.extra_json)),
     )
 
@@ -291,7 +370,7 @@ class GrpcRegistryClient:
     async def list_capabilities(self) -> list[CapabilityInfo]:
         # Aggregate across every known address. O(N) RPCs.
         addresses = await self._list_known_addresses()
-        merged: dict[str, dict[str, OfferingInfo]] = {}
+        merged: dict[str, set[str]] = {}
         work_units: dict[str, str | None] = {}
         for addr in addresses:
             try:
@@ -303,33 +382,27 @@ class GrpcRegistryClient:
                 )
                 continue
             for node in resolved.nodes:
-                node_extra = _decode_extra_json(bytes(node.extra_json))
                 for cap in node.capabilities:
-                    offerings = merged.setdefault(cap.name, {})
+                    offerings = merged.setdefault(cap.name, set())
                     work_units[cap.name] = cap.work_unit or None
-                    cap_extra = {**node_extra, **_decode_extra_json(bytes(cap.extra_json))}
                     for off in cap.offerings:
-                        offerings.setdefault(
-                            off.id,
-                            OfferingInfo(
-                                id=off.id,
-                                price_per_work_unit_wei=(
-                                    Decimal(off.price_per_work_unit_wei)
-                                    if off.price_per_work_unit_wei
-                                    else None
-                                ),
-                                work_unit=cap.work_unit or None,
-                                extra=cap_extra,
-                            ),
-                        )
-        return [
-            CapabilityInfo(
-                name=name,
-                work_unit=work_units.get(name),
-                offerings=list(offerings.values()),
-            )
-            for name, offerings in merged.items()
-        ]
+                        offerings.add(off.id)
+        result: list[CapabilityInfo] = []
+        for name, offerings in merged.items():
+            enriched: list[OfferingInfo] = []
+            for offering_id in sorted(offerings):
+                route = await self.select(name, offering_id)
+                if route is not None:
+                    enriched.append(_offering_from_route(route))
+            if enriched:
+                result.append(
+                    CapabilityInfo(
+                        name=name,
+                        work_unit=work_units.get(name),
+                        offerings=enriched,
+                    )
+                )
+        return result
 
     async def list_orchestrators(self, *, capability: str | None = None) -> list[OrchestratorInfo]:
         addresses = await self._list_known_addresses()
@@ -344,29 +417,23 @@ class GrpcRegistryClient:
                 )
                 continue
             for node in resolved.nodes:
-                node_extra = _decode_extra_json(bytes(node.extra_json))
                 cap_views: list[CapabilityInfo] = []
                 for cap in node.capabilities:
                     if capability is not None and cap.name != capability:
                         continue
-                    cap_extra = {**node_extra, **_decode_extra_json(bytes(cap.extra_json))}
+                    offering_views: list[OfferingInfo] = []
+                    for off in cap.offerings:
+                        routes = await self.select_many(cap.name, off.id)
+                        route = next((r for r in routes if r.eth_address == addr), None)
+                        if route is not None:
+                            offering_views.append(_offering_from_route(route))
+                    if not offering_views:
+                        continue
                     cap_views.append(
                         CapabilityInfo(
                             name=cap.name,
                             work_unit=cap.work_unit or None,
-                            offerings=[
-                                OfferingInfo(
-                                    id=off.id,
-                                    price_per_work_unit_wei=(
-                                        Decimal(off.price_per_work_unit_wei)
-                                        if off.price_per_work_unit_wei
-                                        else None
-                                    ),
-                                    work_unit=cap.work_unit or None,
-                                    extra=cap_extra,
-                                )
-                                for off in cap.offerings
-                            ],
+                            offerings=offering_views,
                         )
                     )
                 if not cap_views:
@@ -487,12 +554,7 @@ class MockRegistryClient:
             offerings = by_name.setdefault(r.capability, {})
             offerings.setdefault(
                 r.offering,
-                OfferingInfo(
-                    id=r.offering,
-                    price_per_work_unit_wei=r.price_per_work_unit_wei,
-                    work_unit=r.work_unit,
-                    extra=dict(r.extra),
-                ),
+                _offering_from_route(r),
             )
             work_units[r.capability] = r.work_unit
         return [
@@ -513,14 +575,7 @@ class MockRegistryClient:
                 continue
             urls[r.eth_address] = r.worker_url
             caps = by_addr.setdefault(r.eth_address, {})
-            caps.setdefault(r.capability, []).append(
-                OfferingInfo(
-                    id=r.offering,
-                    price_per_work_unit_wei=r.price_per_work_unit_wei,
-                    work_unit=r.work_unit,
-                    extra=dict(r.extra),
-                )
-            )
+            caps.setdefault(r.capability, []).append(_offering_from_route(r))
             work_units[(r.eth_address, r.capability)] = r.work_unit
         return [
             OrchestratorInfo(

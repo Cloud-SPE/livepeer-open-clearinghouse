@@ -13,11 +13,8 @@ The `state` column on PaymentSession is the lifecycle string:
   - ``closed``    — final settlement written; encumbered value
                     released; row is read-only.
 
-`mode` is the upstream interaction-mode string
-(``ws-realtime@v0``, ``session-control-plus-media@v0``, etc.) —
-free-form on purpose so the service layer can map (d-bounded) vs
-(d-extensible) without a schema migration when new modes land
-upstream.
+`protocol` is the authoritative Modules protocol tag. `route_snapshot` is the
+immutable signed-route projection used for billing and lifecycle decisions.
 
 `outcome` follows the upstream `SettlementRecord.SettlementOutcome`
 enum (``EXACT``, ``UNDERFUNDED``, ``OVERFUNDED``,
@@ -61,7 +58,9 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)
-    mode: Mapped[str] = mapped_column(nullable=False)
+    protocol: Mapped[str] = mapped_column(nullable=False)
+    route_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    broker_request_id: Mapped[str | None] = mapped_column(nullable=True)
     state: Mapped[str] = mapped_column(nullable=False, index=True)
     estimated_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
     max_total_units: Mapped[int] = mapped_column(BigInteger, nullable=False)

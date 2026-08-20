@@ -119,7 +119,14 @@ def _route() -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": "session-control-plus-media@v0"},
+        protocol="paid-session/v1",
+        extra={
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": "extensible",
+            }
+        },
     )
 
 

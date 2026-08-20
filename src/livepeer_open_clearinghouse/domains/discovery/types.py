@@ -7,15 +7,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from livepeer_open_clearinghouse.providers.registry_daemon import JobAxes, SessionAxes
+
 
 class OfferingView(BaseModel):
     id: str
     price_per_work_unit_wei: Decimal | None
     work_unit: str | None
+    units_per_price: int
+    protocol: str
+    job: JobAxes | None
+    session: SessionAxes | None
     # Merged node+capability extra_json metadata from the upstream
     # registry (opaque JSON object). Gateways read e.g.
     # extra["openai"]["model"] (the runner-facing serving name) and
-    # extra["interaction_mode"] to route and rewrite request bodies.
+    # workload metadata to route and rewrite request bodies.
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -52,5 +58,8 @@ class RouteView(BaseModel):
     work_unit: str
     units_per_price: int
     quote_id: str
+    protocol: str
+    job: JobAxes | None
+    session: SessionAxes | None
     # Opaque registry metadata for this route (see OfferingView.extra).
     extra: dict[str, Any] = Field(default_factory=dict)

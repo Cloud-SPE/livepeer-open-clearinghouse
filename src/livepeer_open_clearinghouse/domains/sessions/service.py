@@ -98,29 +98,15 @@ class SessionNotFound(SessionsServiceError):
     code = "session_not_found"
 
 
-class ModeNotDeclared(OpenClearinghouseError):
-    """Offering didn't declare an interaction_mode in its registry extra."""
+class ProtocolNotSupportedForSession(OpenClearinghouseError):
+    """The selected route is not a paid-session/v1 offering."""
 
-    def __init__(self, *, capability: str, offering: str) -> None:
+    def __init__(self, *, protocol: str) -> None:
         super().__init__(
-            code="mode_not_declared",
+            code="protocol_not_supported_for_session",
             message=(
-                f"offering {capability}/{offering} does not declare an "
-                "interaction_mode; cannot open a session"
-            ),
-            status_code=400,
-        )
-
-
-class ModeNotSupportedForSession(OpenClearinghouseError):
-    """Mode is known upstream but isn't a session-open mode (case d)."""
-
-    def __init__(self, *, mode: str) -> None:
-        super().__init__(
-            code="mode_not_supported_for_session",
-            message=(
-                f"mode {mode!r} is not a long-running session mode; use "
-                "POST /v1/jobs for atomic / streaming / multipart workloads"
+                f"protocol {protocol!r} is not accepted by POST /v1/sessions; "
+                "paid jobs use POST /v1/jobs"
             ),
             status_code=400,
         )
@@ -137,16 +123,15 @@ class InvalidSessionRequest(OpenClearinghouseError):
         )
 
 
-class RefillNotSupportedForMode(OpenClearinghouseError):
-    """The session's mode is in the (d-bounded) set — no topup possible."""
+class RefillNotSupported(OpenClearinghouseError):
+    """The offering declared a bounded paid session."""
 
-    def __init__(self, *, mode: str) -> None:
+    def __init__(self) -> None:
         super().__init__(
-            code="refill_not_supported_for_mode",
+            code="refill_not_supported",
             message=(
-                f"mode {mode!r} does not support mid-session topup; "
-                "this session is bounded by its initial mint and will "
-                "end when the funded runway is exhausted"
+                "this offering declares session.refill='bounded'; the session "
+                "will end when its funded runway is exhausted"
             ),
             status_code=400,
         )
@@ -179,20 +164,19 @@ class SessionCapReached(OpenClearinghouseError):
         )
 
 
-# Modes that POST /v1/sessions accepts. The http-* modes are
-# single-shot and go through POST /v1/jobs (Phase 2 PR-N).
-SESSION_OPEN_MODES: frozenset[str] = frozenset(
-    {
-        "ws-realtime@v0",
-        "session-control-plus-media@v0",
-        "rtmp-ingress-hls-egress@v0",
-        "live-session-remote-runner@v0",
-        "live-session-gateway-ingest@v0",
-    }
-)
+PAID_SESSION_PROTOCOL = "paid-session/v1"
 
 
 _ETH_ADDRESS_HEX_LEN = 40  # 20 bytes hex-encoded
+
+
+def _bill_value_wei(*, units: int, amount_wei: Decimal, per_units: int) -> Decimal:
+    """Apply Modules v2 cumulative billing: ceil(units x amount / per_units)."""
+
+    if per_units < 1:
+        raise ValueError("per_units must be positive")
+    amount = int(amount_wei)
+    return Decimal((units * amount + per_units - 1) // per_units)
 
 
 def _eth_address_to_bytes(addr: str) -> bytes:
@@ -216,7 +200,9 @@ async def create_session(
     work_id: str,
     capability: str,
     offering: str,
-    mode: str,
+    protocol: str,
+    route_snapshot: dict[str, Any] | None = None,
+    broker_request_id: str | None = None,
     estimated_units: int,
     max_total_units: int,
     funded_value_wei: Decimal,
@@ -235,7 +221,9 @@ async def create_session(
         work_id=work_id,
         capability=capability,
         offering=offering,
-        mode=mode,
+        protocol=protocol,
+        route_snapshot=route_snapshot,
+        broker_request_id=broker_request_id,
         state=SESSION_STATE_OPEN,
         estimated_units=estimated_units,
         max_total_units=max_total_units,
@@ -388,9 +376,8 @@ async def open_session(
 
       1. Sanity-check the request shape (``max_total_units`` vs.
          ``estimated_runway_units``).
-      2. Route discovery via the registry; read the mode from
-         ``route.extra["interaction_mode"]``.
-      3. Validate the mode is one of :data:`SESSION_OPEN_MODES`.
+      2. Route discovery via the registry.
+      3. Require the authoritative ``paid-session/v1`` protocol.
       4. Compute ``worst_case_value_wei = max_total_units x price``.
       5. Mint the initial ticket via the payer-daemon sized to
          ``initial_runway_value_wei = estimated_runway_units x price``
@@ -419,18 +406,23 @@ async def open_session(
     if route is None:
         raise NoRouteAvailable(capability=capability, offering=offering)
 
-    # ---- 3. Mode declaration + validation
-    mode = route.interaction_mode
-    if mode is None:
-        raise ModeNotDeclared(capability=capability, offering=offering)
-    if mode not in SESSION_OPEN_MODES:
-        raise ModeNotSupportedForSession(mode=mode)
+    # ---- 3. Protocol declaration + validation
+    protocol = route.protocol
+    if protocol != PAID_SESSION_PROTOCOL:
+        raise ProtocolNotSupportedForSession(protocol=protocol)
 
     # ---- 4. Worst-case encumbrance + initial mint sizing
     price_wei = Decimal(route.price_per_work_unit_wei)
-    units_per_price = Decimal(route.units_per_price or 1)
-    worst_case_value_wei = price_wei * Decimal(max_total_units) / units_per_price
-    initial_runway_value_wei = price_wei * Decimal(estimated_runway_units) / units_per_price
+    worst_case_value_wei = _bill_value_wei(
+        units=max_total_units,
+        amount_wei=price_wei,
+        per_units=route.units_per_price,
+    )
+    initial_runway_value_wei = _bill_value_wei(
+        units=estimated_runway_units,
+        amount_wei=price_wei,
+        per_units=route.units_per_price,
+    )
 
     # Up-front balance check against the worst case so we fail fast
     # before paying the daemon. (The encumber call later will also
@@ -493,7 +485,9 @@ async def open_session(
         work_id=daemon_response.work_id,
         capability=route.capability,
         offering=route.offering,
-        mode=mode,
+        protocol=protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=broker_request_id,
         estimated_units=estimated_runway_units,
         max_total_units=max_total_units,
         funded_value_wei=worst_case_value_wei,
@@ -555,7 +549,7 @@ async def open_session(
         user_id=user_id,
         capability=capability,
         offering=offering,
-        mode=mode,
+        protocol=protocol,
         estimated_units=estimated_runway_units,
         funded_value_wei=int(worst_case_value_wei),
         mint_latency_ms=int(mint_latency_ms),
@@ -576,7 +570,7 @@ async def open_session(
         request_id=broker_request_id,
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
-        mode=mode,
+        protocol=protocol,
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -623,8 +617,7 @@ async def refill_session(
 
       1. Session exists, belongs to caller's user.
       2. Session is in ``open`` state.
-      3. Session's mode is in :data:`SESSION_OPEN_MODES` AND NOT
-         in the (d-bounded) set (currently just ``ws-realtime@v0``).
+      3. The persisted ``session.refill`` declaration is ``extensible``.
          Bounded sessions reject with 400.
       4. Cumulative minted EV + next mint EV <= session funded
          (worst-case). If not, refuse with ``cap_reached: session``.
@@ -662,8 +655,12 @@ async def refill_session(
         raise SessionNotOpen(current_state=session_row.state)
 
     # 3. Mode check — refill only works on (d-extensible)
-    if session_row.mode == "ws-realtime@v0":
-        raise RefillNotSupportedForMode(mode=session_row.mode)
+    snapshot = session_row.route_snapshot or {}
+    axes = snapshot.get("axes")
+    if not isinstance(axes, dict):
+        raise InvalidSessionRequest(message="session route declaration is unavailable")
+    if axes.get("refill", "extensible") == "bounded":
+        raise RefillNotSupported
 
     # Pull pricing context from the most recent Payment on this session
     # (the initial mint's price; all refills use the same price).
@@ -678,8 +675,15 @@ async def refill_session(
         raise SessionNotFound
 
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
+    per_units = int(snapshot.get("units_per_price", 0))
+    if per_units < 1:
+        raise InvalidSessionRequest(message="session price denominator is unavailable")
     next_mint_units = session_row.estimated_units  # refill chunk = runway size
-    next_mint_value_wei = price_wei * Decimal(next_mint_units)
+    next_mint_value_wei = _bill_value_wei(
+        units=next_mint_units,
+        amount_wei=price_wei,
+        per_units=per_units,
+    )
 
     # 4. Per-session cap check
     billed_so_far = await _session_billed_so_far_wei(db, session_id)
@@ -742,13 +746,15 @@ async def refill_session(
             capability=initial_payment_row.capability,
             offering=initial_payment_row.offering,
             price_per_unit_wei=price_wei,
-            units_per_price=1,
-            work_unit_name="",
+            units_per_price=per_units,
+            work_unit_name=str(snapshot.get("work_unit", "")),
             quote_ref=QuoteRef(
-                quote_id="",
-                quote_version=0,
-                constraint_fingerprint=b"\x00" * 32,
-                route_fingerprint=b"\x00" * 32,
+                quote_id=str(snapshot.get("quote_id", "")),
+                quote_version=int(snapshot.get("quote_version", 0)),
+                constraint_fingerprint=bytes.fromhex(
+                    str(snapshot.get("constraint_fingerprint", ""))
+                ),
+                route_fingerprint=bytes.fromhex(str(snapshot.get("route_fingerprint", ""))),
             ),
         ),
         funding=FundingIntent(
@@ -990,7 +996,12 @@ async def close_session(
         raise SessionNotFound  # defensive — open writes one
 
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    billed_value_wei = price_wei * Decimal(actual_units)
+    snapshot = session_row.route_snapshot or {}
+    billed_value_wei = _bill_value_wei(
+        units=actual_units,
+        amount_wei=price_wei,
+        per_units=int(snapshot.get("units_per_price", 1)),
+    )
     refund_wei = session_row.funded_value_wei - billed_value_wei
 
     # 3. Transition state (open or draining → closed)
@@ -1125,7 +1136,7 @@ async def get_session_status(
         work_id=session_row.work_id,
         capability=session_row.capability,
         offering=session_row.offering,
-        mode=session_row.mode,
+        protocol=session_row.protocol,
         state=session_row.state,
         estimated_units=session_row.estimated_units,
         max_total_units=session_row.max_total_units,

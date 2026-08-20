@@ -34,7 +34,7 @@ from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
 from livepeer_open_clearinghouse.domains.jobs.service import (
     JobAlreadySettled,
     JobNotFound,
-    ModeNotSupportedForJob,
+    ProtocolNotSupportedForJob,
 )
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
@@ -44,7 +44,6 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
-    ModeNotDeclared,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
@@ -112,7 +111,18 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**12) -> tuple[uuid.UU
 
 
 def _route(mode: str | None) -> SelectedRoute:
-    extra = {"interaction_mode": mode} if mode is not None else {}
+    is_job = mode in {"http-reqresp@v0", "http-stream@v0", "http-multipart@v0"}
+    protocol = "paid-job/v1" if is_job else "paid-session/v1"
+    extra = (
+        {"job": {"transports": ["unary", "stream", "multipart"]}}
+        if is_job
+        else {
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+            }
+        }
+    )
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -125,6 +135,7 @@ def _route(mode: str | None) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol=protocol,
         extra=extra,
     )
 
@@ -153,7 +164,7 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
         clock=_clock(),
         settings=_settings(),
     )
-    assert resp.mode == "http-reqresp@v0"
+    assert resp.protocol == "paid-job/v1"
     assert resp.settle_endpoint == f"/v1/jobs/{resp.job_id}/settle"
     # Worst case = 1000 x 100 = 100_000
     assert resp.funded_value_wei == 100_000
@@ -163,7 +174,15 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     ps = await db_session.get(PaymentSession, resp.job_id)
     assert ps is not None
     assert ps.state == SESSION_STATE_OPEN
-    assert ps.mode == "http-reqresp@v0"
+    assert ps.protocol == "paid-job/v1"
+    assert ps.broker_request_id == resp.request_id
+    assert ps.route_snapshot is not None
+    assert ps.route_snapshot["protocol"] == "paid-job/v1"
+    assert ps.route_snapshot["axes"]["transports"] == [
+        "unary",
+        "stream",
+        "multipart",
+    ]
     assert ps.max_total_units == 1000
 
     # Payment row tied to the session, funded for the full worst case.
@@ -172,6 +191,44 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     ).all()
     assert len(payments) == 1
     assert payments[0].funded_value_wei == Decimal(100_000)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route("http-reqresp@v0").model_copy(
+        update={"price_per_work_unit_wei": Decimal(1), "units_per_price": 3}
+    )
+    response = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_units=4,
+        max_total_units=4,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    assert response.funded_value_wei == 2  # ceil(4 x 1 / 3)
+
+    settled = await jobs_service.settle_job(
+        db_session,
+        job_id=response.job_id,
+        user_id=user_id,
+        actual_units=1,
+        outcome=None,
+        settlement=None,
+        clock=_clock(),
+        settings=_settings(),
+    )
+    assert settled.billed_value_wei == 1  # ceil(1 x 1 / 3)
 
 
 @pytest.mark.unit
@@ -210,7 +267,7 @@ async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
     registry = MockRegistryClient(routes=[_route("ws-realtime@v0")])
     daemon = MockPaymentDaemonClient()
-    with pytest.raises(ModeNotSupportedForJob):
+    with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
             db_session,
             user_id=user_id,
@@ -229,11 +286,11 @@ async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_job_rejects_mode_not_declared(db_session: AsyncSession) -> None:
+async def test_open_job_rejects_session_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
     registry = MockRegistryClient(routes=[_route(None)])
     daemon = MockPaymentDaemonClient()
-    with pytest.raises(ModeNotDeclared):
+    with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
             db_session,
             user_id=user_id,
@@ -455,4 +512,4 @@ async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> 
         clock=_clock(),
         settings=_settings(),
     )
-    assert resp.mode == "http-stream@v0"
+    assert resp.protocol == "paid-job/v1"

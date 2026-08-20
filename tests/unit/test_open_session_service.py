@@ -38,8 +38,7 @@ from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
-    ModeNotDeclared,
-    ModeNotSupportedForSession,
+    ProtocolNotSupportedForSession,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
@@ -107,7 +106,19 @@ async def _seed_user_key_and_balance(
 
 
 def _route_with_mode(mode: str | None) -> SelectedRoute:
-    extra = {"interaction_mode": mode} if mode is not None else {}
+    is_session = mode not in {"http-reqresp@v0", "http-stream@v0", "http-multipart@v0"}
+    protocol = "paid-session/v1" if is_session else "paid-job/v1"
+    extra = (
+        {
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": "bounded" if mode == "ws-realtime@v0" else "extensible",
+            }
+        }
+        if is_session
+        else {"job": {"transports": ["unary", "stream", "multipart"]}}
+    )
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -120,6 +131,7 @@ def _route_with_mode(mode: str | None) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol=protocol,
         extra=extra,
     )
 
@@ -153,7 +165,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     )
 
     # ---- response shape
-    assert response.mode == "ws-realtime@v0"
+    assert response.protocol == "paid-session/v1"
     assert response.broker_url == "https://broker.example/livepeer"
     assert response.refill_endpoint == f"/v1/sessions/{response.session_id}/refill"
     assert response.close_endpoint == f"/v1/sessions/{response.session_id}/close"
@@ -169,7 +181,13 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert len(sessions) == 1
     ps = sessions[0]
     assert ps.state == SESSION_STATE_OPEN
-    assert ps.mode == "ws-realtime@v0"
+    assert ps.protocol == "paid-session/v1"
+    assert ps.broker_request_id == response.request_id
+    assert ps.route_snapshot is not None
+    assert ps.route_snapshot["protocol"] == "paid-session/v1"
+    assert ps.route_snapshot["axes"]["refill"] == "bounded"
+    assert ps.route_snapshot["units_per_price"] == 1
+    assert ps.route_snapshot["quote_id"] == "q-1"
     assert ps.work_id == response.work_id
     assert ps.estimated_units == 3600
     assert ps.max_total_units == 7200
@@ -254,13 +272,13 @@ async def test_open_session_rejects_no_route(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_mode_not_declared(db_session: AsyncSession) -> None:
+async def test_open_session_rejects_job_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode(None)  # offering with no interaction_mode in extra
+    route = _route_with_mode("http-stream@v0")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotDeclared):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -287,7 +305,7 @@ async def test_open_session_rejects_http_modes(db_session: AsyncSession) -> None
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotSupportedForSession):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -363,4 +381,4 @@ async def test_open_session_accepts_session_control_plus_media(
         clock=_clock(),
         settings=_settings(),
     )
-    assert response.mode == "session-control-plus-media@v0"
+    assert response.protocol == "paid-session/v1"

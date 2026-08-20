@@ -71,10 +71,9 @@ class RefillSessionResponse(BaseModel):
     """Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
 
     Carries the newly-minted top-up envelope plus a fresh cap_status
-    snapshot. The SDK delivers ``payment_envelope`` to the broker
-    via the mode-specific channel (``session.topup`` JSON frame for
-    ``session-control-plus-media@v0``; HTTP ``POST {topup_url}`` for
-    the ``live-session-*`` modes).
+    snapshot. The SDK delivers ``payment_envelope`` through the authoritative
+    paid-session HTTP top-up URL; a control WebSocket is only an optional push
+    mirror.
     """
 
     work_id: str
@@ -103,7 +102,7 @@ class SessionStatusResponse(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     estimated_units: int
     max_total_units: int
@@ -174,7 +173,7 @@ class CreateSessionResponse(BaseModel):
     request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int

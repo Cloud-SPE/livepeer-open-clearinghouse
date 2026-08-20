@@ -177,8 +177,8 @@ async def refill_session_endpoint(
 ) -> RefillSessionResponse:
     """Mint a top-up envelope bound to an existing session.
 
-    Returns 400 ``refill_not_supported_for_mode`` for (d-bounded)
-    sessions (``ws-realtime@v0`` — no protocol topup). Returns 402
+    Returns 400 ``refill_not_supported`` when ``session.refill`` is
+    ``bounded``. Returns 402
     ``cap_reached`` when a session / spend-period cap is hit.
     Returns 409 ``session_not_open`` when the session is in
     ``draining`` or ``closed`` state.

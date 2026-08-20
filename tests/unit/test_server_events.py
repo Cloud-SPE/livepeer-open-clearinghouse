@@ -114,7 +114,14 @@ async def test_mint_refused_fires_on_insufficient_credit(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
-                extra={"interaction_mode": "session-control-plus-media@v0"},
+                protocol="paid-session/v1",
+                extra={
+                    "session": {
+                        "descriptor_schema": "test-runtime/v1",
+                        "metering": "runner-reported",
+                        "refill": "extensible",
+                    }
+                },
             )
         ]
     )
@@ -168,7 +175,14 @@ async def test_mint_served_fires_on_open_session_success(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
-                extra={"interaction_mode": "session-control-plus-media@v0"},
+                protocol="paid-session/v1",
+                extra={
+                    "session": {
+                        "descriptor_schema": "test-runtime/v1",
+                        "metering": "runner-reported",
+                        "refill": "extensible",
+                    }
+                },
             )
         ]
     )
@@ -200,7 +214,7 @@ async def test_mint_served_fires_on_open_session_success(
     payload = rows[0].payload
     assert payload["capability"] == "cap.x"
     assert payload["offering"] == "off.y"
-    assert payload["mode"] == "session-control-plus-media@v0"
+    assert payload["protocol"] == "paid-session/v1"
     assert payload["estimated_units"] == 10
     assert payload["funded_value_wei"] == 1000  # 100 * 10
     assert isinstance(payload["mint_latency_ms"], int)
@@ -226,7 +240,14 @@ async def test_sdk_sha_mismatch_fires_when_identity_unknown(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
-                extra={"interaction_mode": "session-control-plus-media@v0"},
+                protocol="paid-session/v1",
+                extra={
+                    "session": {
+                        "descriptor_schema": "test-runtime/v1",
+                        "metering": "runner-reported",
+                        "refill": "extensible",
+                    }
+                },
             )
         ]
     )
@@ -300,7 +321,14 @@ async def test_sdk_sha_mismatch_silent_when_identity_approved(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
-                extra={"interaction_mode": "session-control-plus-media@v0"},
+                protocol="paid-session/v1",
+                extra={
+                    "session": {
+                        "descriptor_schema": "test-runtime/v1",
+                        "metering": "runner-reported",
+                        "refill": "extensible",
+                    }
+                },
             )
         ]
     )
@@ -354,7 +382,7 @@ async def test_emit_helpers_swallow_failure(db_session: AsyncSession) -> None:
         user_id=user_id,
         capability="x",
         offering="y",
-        mode="m",
+        protocol="paid-job/v1",
         estimated_units=1,
         funded_value_wei=1,
         mint_latency_ms=1,

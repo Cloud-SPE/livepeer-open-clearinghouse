@@ -86,23 +86,15 @@ calculations changed. The encumbered value is released at close as
 
 ## 4. Refill policy (case d)
 
-For long-running sessions, LOC's refill behavior depends on the
-session's *mode* (declared by the offering's
-`interaction_mode` in the registry):
+For long-running sessions, LOC requires `paid-session/v1` and persists the
+offering's declared session axes at open. Refill behavior comes only from
+`session.refill`:
 
-- **`ws-realtime@v0`** — bounded. NO refill is possible. The
-  initial mint funds the whole session; broker closes when balance
-  hits zero. SDK fires `on_winddown_warning` when
-  `Livepeer-Balance-Low` arrives, but cannot extend. Size
-  `max_total_units` for the full session duration up front.
-- **`session-control-plus-media@v0`** — extensible. SDK delivers
-  the LOC-minted top-up via a `session.topup` JSON frame on the
-  control WS.
-- **`live-session-remote-runner@v0` / `live-session-gateway-ingest@v0`** —
-  extensible. SDK delivers via `POST {control.topup_url}` to the
-  broker (URL captured at session open).
-- **`rtmp-ingress-hls-egress@v0`** — extensible. SDK delivers via
-  the control WS (mirrors session-control-plus-media).
+- **`bounded`** — LOC never mints a refill. Size `max_total_units` for the
+  complete session and drain when the broker advertises exhaustion.
+- **`extensible`** — the SDK requests another envelope from LOC and submits it
+  to the broker's authoritative HTTP `topup_url`. A control WebSocket may
+  mirror state, but is not a separate delivery contract.
 
 The SDK's `SessionRunner` (per language) handles the refill loop
 automatically for extensible modes — see §5.
@@ -131,7 +123,7 @@ platform**. It's responsible for:
 1. **Refill loop** (case d-extensible): subscribing to
    `Livepeer-Balance-Low` from the broker, calling LOC's refill
    endpoint, delivering the returned envelope back to the broker
-   via the mode-specific channel.
+   through the session's authoritative HTTP top-up URL.
 2. **Settle reporting** (cases a/b/c): reading
    `Livepeer-Work-Units` from the broker response, posting to
    LOC's settle endpoint.
@@ -241,7 +233,7 @@ The customer-facing onboarding doc should make clear:
 > protocol — minting envelopes, calling brokers, reporting
 > settlements, refilling sessions — depends on SDK behavior that
 > custom clients are likely to get wrong (HTTP trailer reading,
-> mode-specific topup delivery, balance-low handling, graceful
+> protocol top-up delivery, balance handling, graceful
 > close).
 >
 > Custom clients are tolerated — the gateway's reconciliation

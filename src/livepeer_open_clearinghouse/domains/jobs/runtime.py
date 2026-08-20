@@ -59,7 +59,7 @@ async def open_job_endpoint(
     """Open a one-shot job. Returns broker_url + payment_envelope for
     the SDK to call the broker directly (handoff mode).
 
-    Modes accepted: http-reqresp@v0, http-stream@v0, http-multipart@v0.
+    Only routes declaring ``paid-job/v1`` are accepted.
     """
     api_key, user = pair
     operation = "jobs.create"

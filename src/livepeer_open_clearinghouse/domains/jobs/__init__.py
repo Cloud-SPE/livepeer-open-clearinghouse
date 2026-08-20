@@ -5,8 +5,7 @@ of exec-plan 002 — atomic, post-settled, and streaming workloads
 that route over the upstream ``http-*@v0`` interaction modes.
 
 Structurally identical to sessions: each job creates a
-``payment_session`` row under the hood with a job-class mode
-(``http-reqresp@v0`` / ``http-stream@v0`` / ``http-multipart@v0``).
+``payment_session`` row under the hood with the ``paid-job/v1`` protocol.
 The split exists at the endpoint surface because customers (and
 their SDKs) treat jobs and sessions as distinct concepts:
 
