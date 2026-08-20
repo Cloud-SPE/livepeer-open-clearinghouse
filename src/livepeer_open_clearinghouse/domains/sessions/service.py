@@ -380,6 +380,7 @@ async def open_session(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    request_id: str | None = None,
 ) -> CreateSessionResponse:
     """Open a long-running session (case d) under handoff mode.
 
@@ -407,6 +408,7 @@ async def open_session(
     Returns 4xx via typed exceptions on validation failures; 5xx via
     :class:`DaemonUnavailable` if the daemon call fails.
     """
+    broker_request_id = request_id or str(uuid.uuid4())
     if max_total_units < estimated_runway_units:
         raise InvalidSessionRequest(message="max_total_units must be >= estimated_runway_units")
 
@@ -571,6 +573,7 @@ async def open_session(
     # ---- 10. Return the typed response
     return CreateSessionResponse(
         session_id=session_row.id,
+        request_id=broker_request_id,
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
         mode=mode,

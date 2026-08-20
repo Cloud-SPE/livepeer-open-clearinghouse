@@ -41,6 +41,7 @@ class CreateJobResponse(BaseModel):
     """
 
     job_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
     mode: str

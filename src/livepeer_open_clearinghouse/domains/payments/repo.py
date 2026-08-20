@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, ForeignKey, PrimaryKeyConstraint
+from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, PrimaryKeyConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -59,20 +59,30 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
 
 
 class PaymentIdempotencyKey(Base, TimestampMixin, TableNameFromClassMixin):
-    """Idempotency-key ledger keyed by `(api_key_id, idempotency_key)`.
+    """Durable create-request ledger keyed by account, operation, and key.
 
-    `status` is 'in_flight' until the response is recorded, then 'completed'.
-    `response_payload` carries the prior response body so replays return the
-    same result. Stale 'in_flight' rows past `expires_at` may be reclaimed.
+    The claim is committed before calling the payer daemon.  The completed
+    outcome is committed atomically with the payment/session and balance
+    mutation, so an identical HTTP retry can replay without minting again.
     """
 
     __table_args__ = (
-        PrimaryKeyConstraint("api_key_id", "idempotency_key", name="pk_payment_idempotency_key"),
+        PrimaryKeyConstraint(
+            "user_id",
+            "operation",
+            "idempotency_key",
+            name="pk_payment_idempotency_key",
+        ),
     )
 
-    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_key.id", ondelete="CASCADE"))
-    idempotency_key: Mapped[str] = mapped_column()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"))
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_key.id", ondelete="RESTRICT"))
+    operation: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    broker_request_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     payment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("payment.id", ondelete="SET NULL"), nullable=True

@@ -120,6 +120,7 @@ async def open_job(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    request_id: str | None = None,
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
 
@@ -131,6 +132,7 @@ async def open_job(
     doesn't supply it — typical for case (a) where the SDK knows
     exactly what it needs.
     """
+    broker_request_id = request_id or str(uuid.uuid4())
     effective_max = max_total_units if max_total_units is not None else estimated_units
     if effective_max < estimated_units:
         raise sessions_service.InvalidSessionRequest(
@@ -293,6 +295,7 @@ async def open_job(
 
     return CreateJobResponse(
         job_id=job_row.id,
+        request_id=broker_request_id,
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
         mode=mode,

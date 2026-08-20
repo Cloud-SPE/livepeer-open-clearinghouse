@@ -84,6 +84,7 @@ class Settings(BaseSettings):
 
     # ---- ticket-mint reliability ----
     idempotency_inflight_timeout_seconds: int = Field(default=60, ge=5)
+    idempotency_retention_seconds: int = Field(default=86_400, ge=60)
 
     # ---- per-IP rate limits (in-process token bucket) ----
     rl_login_capacity: int = Field(default=10, ge=0)

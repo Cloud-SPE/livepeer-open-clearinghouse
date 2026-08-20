@@ -38,27 +38,30 @@ Required` with a structured error body:
 
 Other error codes: `SPEND_CAP_EXCEEDED`, `ACCOUNT_NOT_APPROVED`,
 `API_KEY_REVOKED`, `DAEMON_UNAVAILABLE`, `RESERVATION_NOT_FOUND`,
-`DUPLICATE_REQUEST` (for idempotency violations).
+`IDEMPOTENCY_KEY_REUSE`, `IDEMPOTENCY_IN_PROGRESS`, and
+`IDEMPOTENCY_OUTCOME_UNKNOWN`.
 
 ## Idempotency
 
-### Ticket-mint requests
+### Job and session creation
 
-`POST /v1/payments/mint` accepts an `Idempotency-Key` header. Livepeer Open Clearinghouse:
+`POST /v1/jobs` and `POST /v1/sessions` require an `Idempotency-Key` header.
+Keys are scoped by account and endpoint operation, not by API key, so changing
+credentials does not weaken replay protection. LOC stores a canonical request
+fingerprint; reusing a key with different content returns
+`IDEMPOTENCY_KEY_REUSE`.
 
-1. Looks up `(api_key_id, idempotency_key)` in a short-lived index.
-2. If present and the prior request completed: returns the prior response,
-   does not call `CreatePayment` again, does not decrement again.
-3. If present and the prior request is in-flight: returns `409` with
-   `IN_PROGRESS` so the client retries later.
-4. If absent: records the key with `status=in_flight`, processes the
-   request, then writes `status=completed` with the response payload.
+Before calling `CreatePayment`, LOC commits an `in_flight` claim with a stable
+`request_id`. A completed response or deterministic failure is retained for 24
+hours and replayed exactly without another mint or balance mutation. A concurrent
+identical request returns `IDEMPOTENCY_IN_PROGRESS`.
 
-The DB write is the source of truth. If the daemon call succeeds but the
-DB write of `status=completed` fails, the next replay of the same
-idempotency key blocks until the in-flight record times out (configurable;
-default 60s). This is a deliberate "fail closed" trade-off — better to
-delay than to double-charge.
+The payer daemon does not yet accept a request idempotency key. Therefore an
+in-flight claim whose payer outcome cannot be proven is marked `expired` after
+60 seconds but is never reclaimed: subsequent retries return
+`IDEMPOTENCY_OUTCOME_UNKNOWN`. This deliberately fails closed instead of risking
+a second ticket. Once payer `CreatePayment` is idempotent, LOC can safely resolve
+that crash window using the same stable `request_id`.
 
 ### Usage reports
 

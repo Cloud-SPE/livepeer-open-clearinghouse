@@ -111,6 +111,36 @@ class DuplicateRequest(OpenClearinghouseError):
         )
 
 
+class IdempotencyKeyReuse(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_KEY_REUSE",
+            message="This Idempotency-Key was already used with different content",
+        )
+
+
+class IdempotencyInProgress(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_IN_PROGRESS",
+            message="The request associated with this Idempotency-Key is still in flight",
+        )
+
+
+class IdempotencyOutcomeUnknown(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_OUTCOME_UNKNOWN",
+            message=(
+                "The prior request may have reached the payer daemon; retry is refused "
+                "until payer-mint idempotency is available"
+            ),
+        )
+
+
 async def _handle(_request: Request, exc: OpenClearinghouseError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
