@@ -1,8 +1,8 @@
 # SECURITY.md
 
 The security model for Livepeer Open Clearinghouse. This is the contract Livepeer Open Clearinghouse owes to
-its users and operator. Don't relax it without an explicit decision logged
-in an exec-plan.
+its users and operator. Don't relax it without an explicit Beads decision and
+the resulting durable design record.
 
 ## Trust boundaries
 

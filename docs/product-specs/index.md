@@ -4,8 +4,8 @@ Per-domain product specs. A product spec describes the user-visible
 behavior of a domain: the flows, the inputs/outputs, the failure modes,
 and the success criteria.
 
-A product spec is not an exec-plan. The spec says "this is what the system
-will do." The exec-plan says "this is how we will build it."
+A product spec is not a work item. The spec says "this is what the system will
+do." The Beads graph says what must happen to build or change it.
 
 ## How to add one
 

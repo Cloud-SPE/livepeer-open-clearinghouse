@@ -38,8 +38,9 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 6. **Boring tech, latest versions.** FastAPI, SQLAlchemy 2.0 async, Alembic,
    Postgres, Lit, vanilla CSS. No build steps in the frontend. No frameworks
    we'd have to explain.
-7. **Plans are first-class.** Anything more than a small change gets an
-   exec-plan in `docs/exec-plans/active/`. See
+7. **The work graph is first-class.** Anything more than a small change gets a
+   Beads issue before code; substantial work gets an epic with real dependency
+   edges. Markdown remains for durable design knowledge, not task tracking. See
    [`docs/PLANS.md`](docs/PLANS.md).
 
 ## Map of the repo
@@ -49,15 +50,16 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Domain + layer map, dependency direction rules |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Top-level design principles and load-bearing decisions |
 | [`docs/FRONTEND.md`](docs/FRONTEND.md) | Frontend conventions (Lit, esm.sh, vanilla CSS, light DOM) |
-| [`docs/PLANS.md`](docs/PLANS.md) | How plans work; lightweight vs exec-plan |
+| [`docs/PLANS.md`](docs/PLANS.md) | Beads planning, dependency, and handoff workflow |
 | [`docs/PRODUCT_SENSE.md`](docs/PRODUCT_SENSE.md) | Product mission, target users, scope guardrails |
 | [`docs/QUALITY_SCORE.md`](docs/QUALITY_SCORE.md) | Per-domain quality grading |
 | [`docs/RELIABILITY.md`](docs/RELIABILITY.md) | Fail-closed billing, idempotency, state machines |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Key custody, secrets, auth model |
 | [`docs/design-docs/`](docs/design-docs/) | Catalogued design docs; start at `index.md` |
-| [`docs/exec-plans/active/`](docs/exec-plans/active/) | Plans currently being executed |
-| [`docs/exec-plans/completed/`](docs/exec-plans/completed/) | Historical record of completed plans |
-| [`docs/exec-plans/tech-debt-tracker.md`](docs/exec-plans/tech-debt-tracker.md) | Known deferrals and debt |
+| [`.beads/`](.beads/) | Metadata for the durable work graph; issue data syncs through Dolt |
+| [`docs/exec-plans/active/`](docs/exec-plans/active/) | Reserved legacy directory; do not add new trackers |
+| [`docs/exec-plans/completed/`](docs/exec-plans/completed/) | Historical implementation narratives |
+| [`docs/exec-plans/tech-debt-tracker.md`](docs/exec-plans/tech-debt-tracker.md) | Legacy debt input being migrated under `loc-5vm.3` |
 | [`docs/product-specs/`](docs/product-specs/) | Per-domain product specs; start at `index.md` |
 | [`docs/references/`](docs/references/) | External references and daemon API cheatsheets |
 | [`docs/generated/`](docs/generated/) | Files generated from code (db-schema, openapi.json) — don't edit by hand |
@@ -90,6 +92,20 @@ make lint           # ruff check + mypy
 make test           # pytest
 make logs           # tail compose logs
 ```
+
+## Issue tracking (Beads)
+
+This project uses `bd` as its durable work tracker. The project-local skill at
+`.agents/skills/beads/SKILL.md` is the operating manual.
+
+- Run `bd prime` at session start and after context compaction.
+- Use `bd ready` to find work and `bd update <id> --claim` before starting it.
+- Create a bead with a real description before writing code.
+- Record discovered work with `--deps discovered-from:<current-id>`.
+- Close completed beads with a reason; do not leave finished work open.
+- Never use Markdown checklists, scratch plans, or chat lists as a second task
+  tracker, and never run `bd edit`.
+- Use `bd dolt push` only when the authority printed by `bd prime` permits it.
 
 ## When in doubt
 

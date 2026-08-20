@@ -66,3 +66,10 @@
 # - github.token    → use GITHUB_TOKEN env var instead
 
 sync.remote: "git+ssh://git@github.com/Cloud-SPE/livepeer-open-clearinghouse.git"
+create:
+    require-description: true
+validation:
+    on-create: warn
+    on-close: warn
+sync:
+    require_confirmation_on_mass_delete: true

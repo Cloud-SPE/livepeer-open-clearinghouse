@@ -5,7 +5,7 @@ sessions work in Livepeer Open Clearinghouse since the
 exec-plan-002 rewrite. Companion to:
 
 - The design doc:
-  [`docs/exec-plans/active/002-long-running-sessions.md`](exec-plans/active/002-long-running-sessions.md)
+  [`docs/exec-plans/completed/002-long-running-sessions.md`](exec-plans/completed/002-long-running-sessions.md)
 - The architecture overview: [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - The reliability + state machines: [`docs/RELIABILITY.md`](RELIABILITY.md)
 
@@ -309,7 +309,7 @@ case-(d) workloads.
 ## 10. Pointers + further reading
 
 - Design doc + decision log:
-  [`docs/exec-plans/active/002-long-running-sessions.md`](exec-plans/active/002-long-running-sessions.md)
+  [`docs/exec-plans/completed/002-long-running-sessions.md`](exec-plans/completed/002-long-running-sessions.md)
 - Mode reference (upstream): the four "Case (d) modes" sub-table
   in the design doc § Q#1
 - Upstream protocol repo:

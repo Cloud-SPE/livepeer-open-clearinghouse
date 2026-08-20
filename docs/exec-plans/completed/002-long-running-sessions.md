@@ -1,9 +1,14 @@
 # 002. Long-Running Sessions
 
-**Status:** ready for review (Q#1, Q#2, Q#3 all resolved)
+**Status:** superseded by Beads epic `loc-m7s`
 **Owner:** Codex
 **Opened:** 2026-05-23
-**Closed:** —
+**Closed:** 2026-08-20
+
+> Historical record: this plan describes the shipped v0 interaction-mode
+> implementation. Livepeer Modules v2 replaces that taxonomy with
+> `paid-job/v1` and `paid-session/v1`. All remaining work moved to Beads;
+> this file is not an active checklist.
 
 ## Intent
 
@@ -1990,9 +1995,8 @@ and adds SDK conformance as a first-class deliverable.
 - [x] Buffers settlement reports through transient LOC outages.
       All four SDKs retry settle POSTs on 5xx / 429 / transport
       errors with exponential backoff; 4xx fail-fast.
-- [ ] Unit, integration, conformance, and fuzz suites green.
-      (Unit + integration: green across all four SDKs. Conformance
-      + fuzz harness: deferred — see "Conformance" below.)
+- Migrated to `loc-m7s.10.1`: restore complete v2 unit, integration,
+  conformance, and fuzz suite health.
 - [x] ≥ 75% line coverage on core flows. (Python 90%, Go 81%,
       Rust 79% / 100% on telemetry. Original v1 target was 90%;
       lowered to 75% during the wave because the remaining gap on
@@ -2029,12 +2033,10 @@ and adds SDK conformance as a first-class deliverable.
       implementation (`conformance/runners/python/test_*.py`); TS /
       Go / Rust runners have README placeholders documenting the
       wire contract so they can be ported one-for-one.
-- [ ] Nightly conformance run against live LOC + upstream
-      `livepeer-network-modules` fixture broker. (Local conformance
-      against the in-tree mocks is green; the upstream nightly is a
-      CI wiring follow-up.)
-- [ ] CI gate: SDK releases blocked on conformance pass. (Pending
-      the nightly above + per-SDK runner ports.)
+- Migrated to `loc-m7s.10.2`: run nightly live LOC and Modules v2
+  conformance.
+- Migrated to `loc-m7s.10.3`: gate official SDK releases on v2
+  conformance.
 
 ## Changelog / decision log
 
