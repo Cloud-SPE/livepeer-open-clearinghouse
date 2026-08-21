@@ -27,3 +27,17 @@ The TypeScript, Go, and Rust shared-fixture runners are tracked by
 `loc-m7s.10.3`. Their native suites already prove the v2 wire contract and are
 mandatory here; the placeholder runner directories are not represented as
 passing tests.
+
+The first real-process nightly preflight is available locally when a
+`livepeer-network-modules` checkout exists beside this repository:
+
+```bash
+make test-live-registry
+```
+
+It builds the actual service-registry daemon, serves a freshly signed
+coordinator manifest, replaces only the chain's address-to-serviceURI lookup
+with Modules' `--chain-seed`, and verifies through the Unix-socket gRPC API that
+both paid-v2 protocol axes and the delegated settlement key reach `Select`.
+Logs and a machine-readable result are left under
+`.artifacts/live-conformance/registry-seed/`.

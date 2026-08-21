@@ -48,6 +48,7 @@ node_modules/
 Thumbs.db
 
 # Generated / build artifacts
+.artifacts/
 docs/generated/openapi.json
 docs/generated/db-schema.md
 !docs/generated/.gitkeep
