@@ -1,7 +1,7 @@
 """In-tree mock broker fixture for end-to-end SDK + LOC smoke tests.
 
 A tiny FastAPI app that pretends to be an orchestrator-side
-capability-broker. Accepts ``POST /v1/cap`` and returns:
+capability-broker. Accepts ``POST /v1/job`` and returns:
 
   - 200 OK with a stubbed JSON body
   - ``Livepeer-Work-Units`` header with whatever the caller asks for
@@ -58,13 +58,13 @@ def build_mock_broker_app(
     app = FastAPI(title="mock-broker")
     app.state.requests = []
 
-    @app.post("/v1/cap")
-    async def handle_cap(
+    @app.post("/v1/job")
+    async def handle_job(
         request: Request,
         livepeer_payment: Annotated[str | None, Header(alias="Livepeer-Payment")] = None,
         livepeer_capability: Annotated[str | None, Header(alias="Livepeer-Capability")] = None,
         livepeer_offering: Annotated[str | None, Header(alias="Livepeer-Offering")] = None,
-        livepeer_mode: Annotated[str | None, Header(alias="Livepeer-Mode")] = None,
+        livepeer_protocol: Annotated[str | None, Header(alias="Livepeer-Protocol")] = None,
         livepeer_request_id: Annotated[str | None, Header(alias="Livepeer-Request-Id")] = None,
         x_mock_actual_units: Annotated[str | None, Header(alias="X-Mock-Actual-Units")] = None,
     ) -> Any:
@@ -74,7 +74,7 @@ def build_mock_broker_app(
             "body_bytes": body_bytes,
             "capability": livepeer_capability,
             "offering": livepeer_offering,
-            "mode": livepeer_mode,
+            "protocol": livepeer_protocol,
             "request_id": livepeer_request_id,
             "had_payment_header": livepeer_payment is not None,
         }
@@ -83,7 +83,12 @@ def build_mock_broker_app(
         actual_units = int(x_mock_actual_units) if x_mock_actual_units else default_units
         from fastapi.responses import JSONResponse
 
-        headers: dict[str, str] = {"Livepeer-Work-Units": str(actual_units)}
+        broker_job_id = f"mock-{livepeer_request_id or 'no-req-id'}"
+        headers: dict[str, str] = {
+            "Livepeer-Work-Units": str(actual_units),
+            "Livepeer-Work-Unit": "token",
+            "Livepeer-Job-Id": broker_job_id,
+        }
         if return_settlement:
             # Stub base64 JSON: {"outcome":"OVERFUNDED","actual_units":<n>}
             import base64
@@ -96,7 +101,7 @@ def build_mock_broker_app(
 
         # Stub reply body — capability-shaped enough to round-trip.
         reply: dict[str, Any] = {
-            "id": f"mock-{livepeer_request_id or 'no-req-id'}",
+            "id": broker_job_id,
             "object": "mock.response",
             "model": livepeer_offering,
             "usage": {"actual_units": actual_units},

@@ -1,11 +1,5 @@
 export { OpenClearinghouseClient, SDK_IDENTITY } from "./client.js";
-export type {
-  ClientOptions,
-  CapStatus,
-  JobResult,
-  RouteView,
-  SessionHandle,
-} from "./client.js";
+export type { ClientOptions, CapStatus, JobResult, RouteView, SessionHandle } from "./client.js";
 export {
   BOUNDED_MODES,
   HTTP_TOPUP_MODES,
@@ -21,6 +15,7 @@ export type {
 } from "./session_runner.js";
 export {
   AccountNotApproved,
+  BrokerProtocolError,
   DaemonUnavailable,
   DuplicateRequest,
   EmailNotVerified,

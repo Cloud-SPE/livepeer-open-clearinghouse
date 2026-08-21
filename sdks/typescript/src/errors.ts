@@ -29,6 +29,28 @@ export class OpenClearinghouseError extends Error {
   }
 }
 
+/** The broker violated the paid-job/v1 response contract. */
+export class BrokerProtocolError extends Error {
+  readonly code: string;
+  readonly status: number | null;
+  readonly details: Record<string, unknown>;
+
+  constructor(
+    message: string,
+    args: {
+      code?: string;
+      status?: number;
+      details?: Record<string, unknown>;
+    } = {},
+  ) {
+    super(message);
+    this.name = "BrokerProtocolError";
+    this.code = args.code ?? "broker_protocol_error";
+    this.status = args.status ?? null;
+    this.details = args.details ?? {};
+  }
+}
+
 export class InsufficientCredit extends OpenClearinghouseError {
   constructor(body: ErrorBody) {
     super(body);

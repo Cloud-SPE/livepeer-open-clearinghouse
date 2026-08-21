@@ -73,6 +73,10 @@ class DaemonUnavailable(OpenClearinghouseError):
     """502/503 — payment-daemon or registry-daemon unreachable."""
 
 
+class BrokerProtocolError(OpenClearinghouseError):
+    """The broker returned a response that violates the paid protocol contract."""
+
+
 _CODE_MAP: dict[str, type[OpenClearinghouseError]] = {
     "INSUFFICIENT_CREDIT": InsufficientCredit,
     "SPEND_CAP_EXCEEDED": SpendCapExceeded,

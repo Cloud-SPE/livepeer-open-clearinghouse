@@ -482,6 +482,206 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/operators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Operators Endpoint
+         * @description Any operator can list. Mutations are owner-only.
+         */
+        get: operations["list_operators_endpoint_v1_admin_operators_get"];
+        put?: never;
+        /** Create Operator Endpoint */
+        post: operations["create_operator_endpoint_v1_admin_operators_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/operators/{operator_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Operator Endpoint */
+        patch: operations["update_operator_endpoint_v1_admin_operators__operator_id__patch"];
+        trace?: never;
+    };
+    "/v1/admin/operators/{operator_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke Operator Endpoint */
+        post: operations["revoke_operator_endpoint_v1_admin_operators__operator_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/operators/{operator_id}/rotate-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate Operator Token Endpoint
+         * @description Owners can rotate any operator's token. Members can only rotate their own.
+         */
+        post: operations["rotate_operator_token_endpoint_v1_admin_operators__operator_id__rotate_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/sdk-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sdk Approvals Endpoint */
+        get: operations["list_sdk_approvals_endpoint_v1_admin_sdk_approvals_get"];
+        put?: never;
+        /** Create Sdk Approval Endpoint */
+        post: operations["create_sdk_approval_endpoint_v1_admin_sdk_approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/sdk-approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Sdk Approval Endpoint */
+        delete: operations["delete_sdk_approval_endpoint_v1_admin_sdk_approvals__approval_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Sdk Approval Endpoint */
+        patch: operations["update_sdk_approval_endpoint_v1_admin_sdk_approvals__approval_id__patch"];
+        trace?: never;
+    };
+    "/v1/admin/sessions/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Recent Sessions Endpoint */
+        get: operations["list_recent_sessions_endpoint_v1_admin_sessions_recent_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/sdk-distribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sdk Distribution Endpoint */
+        get: operations["sdk_distribution_endpoint_v1_admin_sdk_distribution_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sdk/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sdk Manifest Endpoint
+         * @description Public list of operator-approved SDK versions.
+         *
+         *     Returns ``approved`` + ``deprecated`` rows only. Blocked rows are
+         *     operator-internal and never published. SDKs hit this at startup
+         *     to warn the customer if their pinned version has been deprecated;
+         *     the response is intentionally cacheable.
+         *
+         *     When the operator has configured ``SDK_MANIFEST_SIGNING_KEY``, the
+         *     payload is signed and the response carries ``signature`` +
+         *     ``key_fingerprint``. Unsigned otherwise (dev default).
+         */
+        get: operations["sdk_manifest_endpoint_v1_sdk_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sdk/manifest/pubkey": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sdk Manifest Pubkey Endpoint
+         * @description Operator's manifest-signing public key. SDKs fetch this once at
+         *     startup, cache it, and use it to verify subsequent
+         *     ``/v1/sdk/manifest`` responses offline.
+         *
+         *     503 when signing is not configured — SDKs treat that as "unsigned
+         *     mode, verification skipped" (acceptable for dev / single-operator
+         *     deployments where the SDK trusts LOC directly).
+         */
+        get: operations["sdk_manifest_pubkey_endpoint_v1_sdk_manifest_pubkey_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/capabilities": {
         parameters: {
             query?: never;
@@ -536,7 +736,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/payments/mint": {
+    "/v1/webhooks/resend": {
         parameters: {
             query?: never;
             header?: never;
@@ -545,8 +745,140 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Mint Payment Endpoint */
-        post: operations["mint_payment_endpoint_v1_payments_mint_post"];
+        /**
+         * Resend Webhook
+         * @description Accept and persist a Resend webhook callback.
+         *
+         *     Auth: HMAC-SHA256 over ``{webhook-id}.{webhook-timestamp}.{body}``
+         *     against ``RESEND_WEBHOOK_SECRET``. No other auth.
+         */
+        post: operations["resend_webhook_v1_webhooks_resend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/email/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Email Events */
+        get: operations["list_email_events_v1_admin_email_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Notification Prefs Endpoint */
+        get: operations["get_notification_prefs_endpoint_v1_notifications_config_get"];
+        /** Put Notification Pref Endpoint */
+        put: operations["put_notification_pref_endpoint_v1_notifications_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Portal Notifications Endpoint */
+        get: operations["list_portal_notifications_endpoint_v1_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/{notification_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dismiss Portal Notification Endpoint */
+        post: operations["dismiss_portal_notification_endpoint_v1_notifications__notification_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Webhook Config Endpoint
+         * @description Current webhook URL + last-test marker, or ``null`` when the
+         *     user hasn't configured one. Secret is never returned here — it's
+         *     shown exactly once at PUT time and derived deterministically on
+         *     every send.
+         */
+        get: operations["get_webhook_config_endpoint_v1_notifications_webhook_get"];
+        /**
+         * Put Webhook Config Endpoint
+         * @description Register or update the customer's webhook URL.
+         *
+         *     Response carries the derived Standard-Webhooks signing secret —
+         *     customers must store it; LOC never surfaces it again (it's
+         *     re-derived deterministically from the operator seed at send time).
+         */
+        put: operations["put_webhook_config_endpoint_v1_notifications_webhook_put"];
+        post?: never;
+        /**
+         * Delete Webhook Config Endpoint
+         * @description Remove the user's webhook config. Idempotent.
+         */
+        delete: operations["delete_webhook_config_endpoint_v1_notifications_webhook_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notifications/webhook/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Webhook Config Endpoint
+         * @description Fire a signed test ping at the configured URL. Updates
+         *     ``last_test_at`` regardless of outcome so the customer can see
+         *     when they last verified.
+         */
+        post: operations["test_webhook_config_endpoint_v1_notifications_webhook_test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -587,7 +919,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/usage/report": {
+    "/v1/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -596,8 +928,330 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Report Usage Endpoint */
-        post: operations["report_usage_endpoint_v1_usage_report_post"];
+        /**
+         * Open Job Endpoint
+         * @description Open a one-shot job. Returns broker_url + payment_envelope for
+         *     the SDK to call the broker directly (handoff mode).
+         *
+         *     Only routes declaring ``paid-job/v1`` are accepted.
+         */
+        post: operations["open_job_endpoint_v1_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/jobs/{job_id}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Settle Job Endpoint
+         * @description Settle a job after the SDK has called the broker.
+         *
+         *     Trusts the SDK-reported ``actual_units`` on this synchronous
+         *     path; the reconciliation janitor verifies against the daemon
+         *     ledger out of band.
+         *
+         *     Returns 404 ``job_not_found`` (unknown or wrong-owner) and 409
+         *     ``job_already_settled`` for a second settle.
+         */
+        post: operations["settle_job_endpoint_v1_jobs__job_id__settle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Session Endpoint
+         * @description Open a long-running session under handoff mode.
+         *
+         *     SDK identity (the ``Livepeer-Open-Clearinghouse-SDK`` header)
+         *     is recorded on the ``payment_session`` row for operator triage.
+         *     Optional in v1 — non-official clients can omit it. v2 will
+         *     enforce a min-version policy.
+         */
+        post: operations["open_session_endpoint_v1_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{session_id}/refill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refill Session Endpoint
+         * @description Mint a top-up envelope bound to an existing session.
+         *
+         *     Returns 400 ``refill_not_supported`` when ``session.refill`` is
+         *     ``bounded``. Returns 402
+         *     ``cap_reached`` when a session / spend-period cap is hit.
+         *     Returns 409 ``session_not_open`` when the session is in
+         *     ``draining`` or ``closed`` state.
+         */
+        post: operations["refill_session_endpoint_v1_sessions__session_id__refill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Session Status Endpoint
+         * @description Customer-facing snapshot of a session's state + accounting.
+         *
+         *     Returns 404 ``session_not_found`` for unknown sessions or
+         *     sessions owned by another user (uniform — does not disclose
+         *     existence).
+         */
+        get: operations["get_session_status_endpoint_v1_sessions__session_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{session_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close Session Endpoint
+         * @description Explicitly close a session and finalize accounting.
+         *
+         *     Trusts the SDK-reported ``actual_units`` on this synchronous
+         *     path. The reconciliation janitor (PR-8) does the daemon
+         *     cross-check via ``GetSessionDebits`` and corrects divergence.
+         *
+         *     Returns 409 ``session_not_open`` for an already-closed session
+         *     (idempotency note: a second close is rejected, not a no-op —
+         *     the SDK should treat the first 200 as authoritative).
+         */
+        post: operations["close_session_endpoint_v1_sessions__session_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Endpoint
+         * @description Ingest a batch of SDK-emitted telemetry events.
+         *
+         *     Rate-limited per API key. Batch size capped at
+         *     :data:`config.MAX_BATCH_SIZE`. Per-event validation failures are
+         *     returned in the response body, not raised — one bad event must
+         *     not sink the rest of the batch.
+         */
+        post: operations["ingest_endpoint_v1_telemetry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/telemetry/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Query Events Endpoint
+         * @description List the calling API key's telemetry events within ``[from, to]``.
+         *
+         *     Scoped strictly to the calling key — customers cannot see another
+         *     customer's events. ``from``/``to`` must fall within
+         *     ``TELEMETRY_RAW_RETENTION_DAYS``; older windows return 410.
+         *     ``format=ndjson`` streams one JSON object per line for large
+         *     downloads.
+         */
+        get: operations["query_events_endpoint_v1_telemetry_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/me/telemetry/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Portal Query Events Endpoint
+         * @description Customer-facing event listing — aggregates across every API key
+         *     the user owns. Session-cookie auth; the SDK uses the per-key
+         *     variant at ``/v1/telemetry/events``.
+         */
+        get: operations["portal_query_events_endpoint_v1_accounts_me_telemetry_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/me/telemetry/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Portal Download Endpoint
+         * @description 30-day NDJSON download — full event log for the user across
+         *     every API key. Streams to support large windows without buffering
+         *     in memory.
+         */
+        get: operations["portal_download_endpoint_v1_accounts_me_telemetry_download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/privacy/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Privacy Notice Endpoint
+         * @description Static privacy notice for the telemetry pipeline. Exposed
+         *     un-authed so customers (and their compliance teams) can read it
+         *     before signing up.
+         */
+        get: operations["privacy_notice_endpoint_v1_privacy_telemetry_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/telemetry/event-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Event Counts Endpoint
+         * @description Per-event-type counts over the last ``hours`` window.
+         *
+         *     Surfaces the operator-facing real-time roll-ups documented in
+         *     exec-plan 002 — server.refill_denied, server.mint_refused,
+         *     server.discrepancy_detected, server.sdk_sha_mismatch, *.error
+         *     rates.
+         */
+        get: operations["admin_event_counts_endpoint_v1_admin_telemetry_event_counts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/telemetry/users/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Admin Purge User Endpoint
+         * @description DSAR (data-subject access-rights) purge: hard-delete every
+         *     ``telemetry_event`` row for the given user. The operator writes
+         *     an operator_audit row alongside so we can answer "when was this
+         *     deletion performed and by whom" later. Idempotent.
+         */
+        delete: operations["admin_purge_user_endpoint_v1_admin_telemetry_users__user_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/telemetry/rate-limit-offenders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Rate Limit Offenders Endpoint
+         * @description Top ``limit`` API keys by event count in the last ``hours`` —
+         *     helps spot a misbehaving SDK or undertuned per-key cap.
+         */
+        get: operations["admin_rate_limit_offenders_endpoint_v1_admin_telemetry_rate_limit_offenders_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -787,6 +1441,38 @@ export interface components {
             /** Auto Replenish Threshold Wei */
             auto_replenish_threshold_wei: number | null;
         };
+        /**
+         * CapStatus
+         * @description Cap headroom snapshot returned with every successful refill.
+         *
+         *     All percentages are in ``[0.0, 1.0]``. ``None`` means the cap
+         *     isn't enabled / configured (e.g., user has no spend-period cap
+         *     set, or operator-pool cap is opt-in and disabled).
+         *
+         *     ``will_refuse_next_refill`` flips ``true`` when any enabled cap
+         *     is at or above the imminent-refusal threshold AND the projected
+         *     next-mint would push it over. SDK uses this to surface a
+         *     winddown warning to the customer one refill window early.
+         *
+         *     ``winddown_reason`` is a short machine-readable string when
+         *     ``will_refuse_next_refill=true``: ``"session_cap_imminent"``,
+         *     ``"spend_period_cap_imminent"``, ``"user_balance_imminent"``,
+         *     ``"operator_pool_cap_imminent"``. ``None`` otherwise.
+         */
+        CapStatus: {
+            /** Session Pct Used */
+            session_pct_used: number;
+            /** Spend Period Pct Used */
+            spend_period_pct_used?: number | null;
+            /** User Balance Pct Used */
+            user_balance_pct_used?: number | null;
+            /** Operator Pool Pct Used */
+            operator_pool_pct_used?: number | null;
+            /** Will Refuse Next Refill */
+            will_refuse_next_refill: boolean;
+            /** Winddown Reason */
+            winddown_reason?: string | null;
+        };
         /** CapabilityList */
         CapabilityList: {
             /** Items */
@@ -800,6 +1486,61 @@ export interface components {
             work_unit: string | null;
             /** Offerings */
             offerings: components["schemas"]["OfferingView"][];
+        };
+        /**
+         * CloseSessionRequest
+         * @description Inbound: ``POST /v1/sessions/{id}/close``.
+         *
+         *     SDK reports the final actual_units consumed (read from the
+         *     broker's ``Livepeer-Work-Units`` trailer or the equivalent
+         *     in-band signal) and optionally the parsed ``SettlementRecord``
+         *     from the broker if one was delivered.
+         *
+         *     Per the trust model in the design doc, the SDK report is
+         *     advisory; the payer-daemon's ``GetSessionDebits`` is the
+         *     authoritative source. v1 trusts the SDK report on the synchronous
+         *     close path; the reconciliation janitor (PR-8) does the daemon
+         *     cross-check and corrects any divergence.
+         */
+        CloseSessionRequest: {
+            /** Actual Units */
+            actual_units: number;
+            /** Outcome */
+            outcome?: string | null;
+            /** Settlement */
+            settlement?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * CloseSessionResponse
+         * @description Outbound: ``POST /v1/sessions/{id}/close``.
+         *
+         *     Carries the final accounting: how much the customer was billed
+         *     for the session, how much encumbered value is being refunded
+         *     back to their balance, and the settlement outcome string.
+         */
+        CloseSessionResponse: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Actual Units */
+            actual_units: number;
+            /** Billed Value Wei */
+            billed_value_wei: number;
+            /** Refund Wei */
+            refund_wei: number;
+            /** Outcome */
+            outcome: string;
+            /**
+             * Closed At
+             * Format: date-time
+             */
+            closed_at: string;
         };
         /**
          * ConfirmPasswordResetRequest
@@ -830,6 +1571,184 @@ export interface components {
              * @description Shown only at creation; Livepeer Open Clearinghouse cannot recover it later
              */
             raw_key: string;
+        };
+        /**
+         * CreateJobRequest
+         * @description Inbound: ``POST /v1/jobs``.
+         *
+         *     SDK declares its intent for an atomic / post-settled / streaming
+         *     job. ``max_total_units`` is the worst-case ceiling LOC encumbers
+         *     up front; if omitted, defaults to ``estimated_units`` (the SDK is
+         *     asserting "I know exactly what I need" — typical for case (a)).
+         *
+         *     For case (b)/(c) workloads where output_tokens are unknown,
+         *     customers should pass a generous ``max_total_units`` to give the
+         *     broker room. Refunds happen at ``/settle``.
+         */
+        CreateJobRequest: {
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /**
+             * Transport
+             * @enum {string}
+             */
+            transport: "unary" | "stream" | "multipart";
+            /** Estimated Units */
+            estimated_units: number;
+            /** Max Total Units */
+            max_total_units?: number | null;
+        };
+        /**
+         * CreateJobResponse
+         * @description Outbound: ``POST /v1/jobs``.
+         *
+         *     Carries the broker target + minted envelope so the SDK can issue
+         *     its one-shot call to the broker directly (handoff mode). The
+         *     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
+         *     the broker's response (``Livepeer-Work-Units`` header for
+         *     http-reqresp / http-multipart, HTTP trailer for http-stream).
+         */
+        CreateJobResponse: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Request Id */
+            request_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Broker Url */
+            broker_url: string;
+            /** Protocol */
+            protocol: string;
+            /**
+             * Transport
+             * @enum {string}
+             */
+            transport: "unary" | "stream" | "multipart";
+            /** Work Unit */
+            work_unit: string;
+            /** Payment Envelope */
+            payment_envelope: string;
+            /** Expected Value Wei */
+            expected_value_wei: number;
+            /** Funded Value Wei */
+            funded_value_wei: number;
+            /** Settle Endpoint */
+            settle_endpoint: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+        };
+        /**
+         * CreateOperatorRequest
+         * @description Inbound: ``POST /v1/admin/operators``.
+         */
+        CreateOperatorRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Name */
+            name: string;
+            /**
+             * Role
+             * @default member
+             */
+            role: string;
+        };
+        /**
+         * CreateSdkApprovalRequest
+         * @description Inbound: ``POST /v1/admin/sdk-approvals``.
+         */
+        CreateSdkApprovalRequest: {
+            /** Lang */
+            lang: string;
+            /** Version */
+            version: string;
+            /** Git Sha7 */
+            git_sha7: string;
+            /**
+             * Status
+             * @default approved
+             */
+            status: string;
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
+         * CreateSessionRequest
+         * @description Inbound: ``POST /v1/sessions``.
+         *
+         *     The SDK declares its intent for a long-lived session: the
+         *     capability + offering pair to bill against, the estimated runway
+         *     (best-guess of what the session is likely to consume), and the
+         *     absolute ceiling (``max_total_units``) that LOC will encumber up
+         *     front under handoff-mode's worst-case sizing rule.
+         *
+         *     ``max_total_units`` MUST be >= ``estimated_runway_units`` and > 0.
+         */
+        CreateSessionRequest: {
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Estimated Runway Units */
+            estimated_runway_units: number;
+            /** Max Total Units */
+            max_total_units: number;
+        };
+        /**
+         * CreateSessionResponse
+         * @description Outbound: ``POST /v1/sessions``.
+         *
+         *     Carries everything the SDK needs to open the broker-side session
+         *     and bookkeep the LOC-side lifecycle. The ``payment_envelope``
+         *     is base64-encoded wire-format Payment bytes — the SDK attaches
+         *     it as the ``Livepeer-Payment`` HTTP header (or upgrade header,
+         *     for WS modes) when connecting to ``broker_url``.
+         *
+         *     Per exec-plan 002 handoff design, LOC never sits in the data
+         *     path: ``broker_url`` is the orchestrator's HTTP/WS endpoint the
+         *     SDK talks to directly. The two ``*_endpoint`` fields are
+         *     LOC-relative paths the SDK calls when it needs to refill or
+         *     explicitly close the session.
+         */
+        CreateSessionResponse: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Request Id */
+            request_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Broker Url */
+            broker_url: string;
+            /** Protocol */
+            protocol: string;
+            /** Payment Envelope */
+            payment_envelope: string;
+            /** Expected Value Wei */
+            expected_value_wei: number;
+            /** Funded Value Wei */
+            funded_value_wei: number;
+            /** Refill Endpoint */
+            refill_endpoint: string;
+            /** Close Endpoint */
+            close_endpoint: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
         };
         /** DepositSnapshotList */
         DepositSnapshotList: {
@@ -872,10 +1791,139 @@ export interface components {
             /** Auto Replenish Threshold Wei */
             auto_replenish_threshold_wei: number;
         };
+        /** EmailEventList */
+        EmailEventList: {
+            /** Items */
+            items: components["schemas"]["EmailEventView"][];
+        };
+        /**
+         * EmailEventView
+         * @description Outbound: one row from `GET /v1/admin/email/events`.
+         */
+        EmailEventView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Provider Event Id */
+            provider_event_id: string;
+            /** Email Send Id */
+            email_send_id: string | null;
+            /** Provider Message Id */
+            provider_message_id: string | null;
+            /** Event Type */
+            event_type: string;
+            /** To Address */
+            to_address: string | null;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+        };
+        /**
+         * EventList
+         * @description Outbound: ``GET /v1/telemetry/events?format=json`` response.
+         *
+         *     ``next_cursor`` is ``None`` when the page exhausts the result set.
+         */
+        EventList: {
+            /** Items */
+            items: components["schemas"]["EventView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * EventView
+         * @description One row of telemetry_event as the customer sees it.
+         *
+         *     The four enrichment columns (geo_region, account_tier,
+         *     broker_operator_id, ingest_node_id) are deliberately NOT exposed —
+         *     they're operator-only context.
+         */
+        EventView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Event Type */
+            event_type: string;
+            /** Event Schema Version */
+            event_schema_version: number;
+            /** Correlation Id */
+            correlation_id: string | null;
+            /** Client Ts */
+            client_ts: string | null;
+            /**
+             * Received Ts
+             * Format: date-time
+             */
+            received_ts: string;
+            /** Source */
+            source: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IngestEventIn
+         * @description One inbound event in a batch.
+         */
+        IngestEventIn: {
+            /** Event Type */
+            event_type: string;
+            /** Event Schema Version */
+            event_schema_version: number;
+            /** Correlation Id */
+            correlation_id?: string | null;
+            /** Client Ts */
+            client_ts?: string | null;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * IngestRequest
+         * @description Inbound: ``POST /v1/telemetry``. A batch of events from one SDK
+         *     process.
+         */
+        IngestRequest: {
+            /** Events */
+            events: components["schemas"]["IngestEventIn"][];
+        };
+        /**
+         * IngestResponse
+         * @description Outbound: ``POST /v1/telemetry`` 202 response.
+         */
+        IngestResponse: {
+            /** Accepted */
+            accepted: number;
+            /**
+             * Rejected
+             * @default 0
+             */
+            rejected: number;
+            /** Rejections */
+            rejections?: string[];
+        };
+        /**
+         * JobAxes
+         * @description Known paid-job/v1 axes, preserving future minor-version additions.
+         */
+        JobAxes: {
+            /** Transports */
+            transports: ("unary" | "stream" | "multipart")[];
+        } & {
+            [key: string]: unknown;
         };
         /**
          * LedgerEntryView
@@ -929,46 +1977,26 @@ export interface components {
             user: components["schemas"]["UserResponse"];
         };
         /**
-         * MintPaymentRequest
-         * @description Inbound: ``POST /v1/payments/mint``.
+         * NotificationPrefView
+         * @description One cell of the (trigger x channel) matrix as the portal renders it.
          */
-        MintPaymentRequest: {
-            /** Capability */
-            capability: string;
-            /** Offering */
-            offering: string;
-            /** Work Units */
-            work_units: number;
+        NotificationPrefView: {
+            /** Trigger */
+            trigger: string;
+            /** Channel */
+            channel: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Is Default */
+            is_default: boolean;
         };
         /**
-         * MintPaymentResponse
-         * @description Outbound: ``POST /v1/payments/mint`` success.
+         * NotificationPrefsResponse
+         * @description Full resolved-preferences matrix for the calling user.
          */
-        MintPaymentResponse: {
-            /**
-             * Payment Id
-             * Format: uuid
-             */
-            payment_id: string;
-            /** Work Id */
-            work_id: string;
-            /**
-             * Payment Bytes
-             * @description Base64-encoded; goes in Livepeer-Payment header
-             */
-            payment_bytes: string;
-            /** Expected Value Wei */
-            expected_value_wei: string;
-            /** Funded Value Wei */
-            funded_value_wei: string;
-            /** Recipient Eth Address */
-            recipient_eth_address: string;
-            /** Capability */
-            capability: string;
-            /** Offering */
-            offering: string;
-            /** Work Units Requested */
-            work_units_requested: number;
+        NotificationPrefsResponse: {
+            /** Items */
+            items: components["schemas"]["NotificationPrefView"][];
         };
         /** OfferingView */
         OfferingView: {
@@ -978,6 +2006,57 @@ export interface components {
             price_per_work_unit_wei: string | null;
             /** Work Unit */
             work_unit: string | null;
+            /** Units Per Price */
+            units_per_price: number;
+            /** Protocol */
+            protocol: string;
+            job: components["schemas"]["JobAxes"] | null;
+            session: components["schemas"]["SessionAxes"] | null;
+            /** Extra */
+            extra?: {
+                [key: string]: unknown;
+            };
+        };
+        /** OperatorList */
+        OperatorList: {
+            /** Items */
+            items: components["schemas"]["OperatorView"][];
+        };
+        /**
+         * OperatorView
+         * @description Public-facing operator shape (no token material).
+         */
+        OperatorView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /** Name */
+            name: string;
+            /** Role */
+            role: string;
+            /** Last Login At */
+            last_login_at: string | null;
+            /** Revoked At */
+            revoked_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * OperatorWithToken
+         * @description Outbound from create + rotate-token. The ``raw_token`` field is
+         *     shown exactly once; the gateway only stores its hash.
+         */
+        OperatorWithToken: {
+            operator: components["schemas"]["OperatorView"];
+            /** Raw Token */
+            raw_token: string;
         };
         /** OrchestratorList */
         OrchestratorList: {
@@ -1068,20 +2147,71 @@ export interface components {
              */
             created_at: string;
         };
+        /** PortalNotificationList */
+        PortalNotificationList: {
+            /** Items */
+            items: components["schemas"]["PortalNotificationView"][];
+        };
         /**
-         * ReportUsageRequest
-         * @description Inbound: ``POST /v1/usage/report``.
-         *
-         *     App developer self-reports the actuals for a previously-minted
-         *     payment. The delta is refunded to their balance via the ledger.
+         * PortalNotificationView
+         * @description One row of the in-portal banner feed.
          */
-        ReportUsageRequest: {
+        PortalNotificationView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Trigger */
+            trigger: string;
+            /** Body */
+            body: {
+                [key: string]: unknown;
+            };
+            /**
+             * Fired At
+             * Format: date-time
+             */
+            fired_at: string;
+            /** Dismissed At */
+            dismissed_at: string | null;
+        };
+        /**
+         * RefillSessionRequest
+         * @description Inbound: ``POST /v1/sessions/{id}/refill``.
+         *
+         *     Body is mostly empty in v1 — the SDK signals "broker emitted
+         *     Livepeer-Balance-Low, please mint more." The optional
+         *     ``observed_consumed_units`` is an advisory hint from the SDK's
+         *     view of the broker's debit ledger; LOC cross-checks via
+         *     ``GetSessionDebits`` and uses the daemon's number as
+         *     authoritative (per the trust model).
+         */
+        RefillSessionRequest: {
+            /** Observed Consumed Units */
+            observed_consumed_units?: number | null;
+        };
+        /**
+         * RefillSessionResponse
+         * @description Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
+         *
+         *     Carries the newly-minted top-up envelope plus a fresh cap_status
+         *     snapshot. The SDK delivers ``payment_envelope`` through the authoritative
+         *     paid-session HTTP top-up URL; a control WebSocket is only an optional push
+         *     mirror.
+         */
+        RefillSessionResponse: {
             /** Work Id */
             work_id: string;
-            /** Actual Work Units */
-            actual_work_units: number;
-            /** Request Id */
-            request_id?: string | null;
+            /** Refill Seq */
+            refill_seq: number;
+            /** Payment Envelope */
+            payment_envelope: string;
+            /** Expected Value Wei */
+            expected_value_wei: number;
+            /** Funded Value Wei */
+            funded_value_wei: number;
+            cap_status: components["schemas"]["CapStatus"];
         };
         /**
          * RequestPasswordResetRequest
@@ -1126,6 +2256,305 @@ export interface components {
             units_per_price: number;
             /** Quote Id */
             quote_id: string;
+            /** Protocol */
+            protocol: string;
+            job: components["schemas"]["JobAxes"] | null;
+            session: components["schemas"]["SessionAxes"] | null;
+            /** Extra */
+            extra?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SdkApprovalList */
+        SdkApprovalList: {
+            /** Items */
+            items: components["schemas"]["SdkApprovalView"][];
+        };
+        /**
+         * SdkApprovalView
+         * @description One row of sdk_approval — operator view.
+         */
+        SdkApprovalView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Lang */
+            lang: string;
+            /** Version */
+            version: string;
+            /** Git Sha7 */
+            git_sha7: string;
+            /** Status */
+            status: string;
+            /** Notes */
+            notes: string | null;
+            /** Added By Operator Id */
+            added_by_operator_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SdkDistributionEntry */
+        SdkDistributionEntry: {
+            /** Sdk Identity */
+            sdk_identity: string;
+            /** Count */
+            count: number;
+            /** Status */
+            status: string;
+        };
+        /** SdkDistributionResponse */
+        SdkDistributionResponse: {
+            /** Items */
+            items: components["schemas"]["SdkDistributionEntry"][];
+        };
+        /**
+         * SdkManifest
+         * @description Public payload at ``GET /v1/sdk/manifest``.
+         *
+         *     When the operator has configured a signing key, the response also
+         *     carries ``signature`` (Ed25519 over the canonical JSON of
+         *     ``{items, generated_at}``) and ``key_fingerprint`` (first 16 hex
+         *     of SHA-256 of the public key). SDKs verify by fetching the
+         *     public key at ``/v1/sdk/manifest/pubkey`` and recomputing.
+         */
+        SdkManifest: {
+            /** Items */
+            items: components["schemas"]["SdkManifestEntry"][];
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Signature */
+            signature?: string | null;
+            /** Key Fingerprint */
+            key_fingerprint?: string | null;
+        };
+        /**
+         * SdkManifestEntry
+         * @description One row of the public SDK manifest.
+         */
+        SdkManifestEntry: {
+            /** Lang */
+            lang: string;
+            /** Version */
+            version: string;
+            /** Git Sha7 */
+            git_sha7: string;
+            /** Status */
+            status: string;
+        };
+        /**
+         * SdkManifestPubkey
+         * @description Public payload at ``GET /v1/sdk/manifest/pubkey``.
+         */
+        SdkManifestPubkey: {
+            /** Public Key */
+            public_key: string;
+            /** Key Fingerprint */
+            key_fingerprint: string;
+            /**
+             * Algorithm
+             * @default ed25519
+             */
+            algorithm: string;
+        };
+        /**
+         * SessionAxes
+         * @description Known paid-session/v1 axes, preserving future minor-version additions.
+         */
+        SessionAxes: {
+            /** Descriptor Schema */
+            descriptor_schema: string;
+            /**
+             * Attachment
+             * @default external
+             * @enum {string}
+             */
+            attachment: "external" | "inband-ws";
+            /**
+             * Metering
+             * @enum {string}
+             */
+            metering: "runner-reported" | "broker-observed";
+            /**
+             * Refill
+             * @default extensible
+             * @enum {string}
+             */
+            refill: "extensible" | "bounded";
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * SessionStatusResponse
+         * @description Outbound: ``GET /v1/sessions/{id}``.
+         *
+         *     Customer-facing read-only view of a session's current state +
+         *     running totals. Powers the SDK's ``session.status`` callback and
+         *     the portal's per-session detail page. Always-on; no auth beyond
+         *     the standard CurrentApiKey ownership check.
+         *
+         *     For active sessions, ``cap_status`` carries the same shape the
+         *     refill endpoint returns so portal UIs can show "how close to
+         *     cap" without forcing a refill. For closed sessions, ``cap_status``
+         *     is omitted (irrelevant) and the close fields are populated.
+         */
+        SessionStatusResponse: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Protocol */
+            protocol: string;
+            /** State */
+            state: string;
+            /** Estimated Units */
+            estimated_units: number;
+            /** Max Total Units */
+            max_total_units: number;
+            /** Funded Value Wei */
+            funded_value_wei: number;
+            /** Billed Value Wei */
+            billed_value_wei: number;
+            /** Refill Count */
+            refill_count: number;
+            cap_status: components["schemas"]["CapStatus"] | null;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Closed At */
+            closed_at: string | null;
+            /** Actual Units */
+            actual_units: number | null;
+            /** Outcome */
+            outcome: string | null;
+        };
+        /** SessionWithSdkList */
+        SessionWithSdkList: {
+            /** Items */
+            items: components["schemas"]["SessionWithSdkView"][];
+        };
+        /**
+         * SessionWithSdkView
+         * @description One row of the admin session-recent feed with the bucketed SDK
+         *     approval status attached.
+         */
+        SessionWithSdkView: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /**
+             * Api Key Id
+             * Format: uuid
+             */
+            api_key_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Protocol */
+            protocol: string;
+            /** State */
+            state: string;
+            /** Sdk Identity */
+            sdk_identity: string | null;
+            /** Sdk Status */
+            sdk_status: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Closed At */
+            closed_at: string | null;
+        };
+        /**
+         * SettleJobRequest
+         * @description Inbound: ``POST /v1/jobs/{id}/settle``.
+         *
+         *     SDK reports the final actual_units read from the broker's
+         *     ``Livepeer-Work-Units`` header/trailer. Optional outcome +
+         *     settlement (the parsed ``SettlementRecord`` if the broker emitted
+         *     one in the ``Livepeer-Settlement`` header).
+         */
+        SettleJobRequest: {
+            /** Actual Units */
+            actual_units: number;
+            /** Broker Job Id */
+            broker_job_id: string;
+            /** Work Unit */
+            work_unit: string;
+            /** Outcome */
+            outcome?: string | null;
+            /** Settlement */
+            settlement?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * SettleJobResponse
+         * @description Outbound: ``POST /v1/jobs/{id}/settle``.
+         *
+         *     Final accounting for the job: what the customer was billed and
+         *     how much encumbered value is being refunded, plus a fresh
+         *     ``cap_status`` snapshot. The cap_status here is informational —
+         *     jobs are one-shot so ``will_refuse_next_refill`` and
+         *     ``winddown_reason`` reflect whether the *next* mint of this
+         *     size would be refused (e.g., spend-period cap is nearly full
+         *     after this settlement). SDKs use it to surface "you're at N%
+         *     of your monthly cap" UX after each completed job.
+         */
+        SettleJobResponse: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Work Id */
+            work_id: string;
+            /** Actual Units */
+            actual_units: number;
+            /** Billed Value Wei */
+            billed_value_wei: number;
+            /** Refund Wei */
+            refund_wei: number;
+            /** Outcome */
+            outcome: string;
+            /**
+             * Closed At
+             * Format: date-time
+             */
+            closed_at: string;
+            cap_status: components["schemas"]["CapStatus"];
         };
         /**
          * SignupRequest
@@ -1184,44 +2613,36 @@ export interface components {
             created_at: string;
         };
         /**
-         * UsageRecordView
-         * @description The persisted, first-write-wins reconciliation row.
+         * UpdateNotificationPrefRequest
+         * @description Inbound: ``PUT /v1/notifications/config``. One row at a time.
          */
-        UsageRecordView: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Payment Id
-             * Format: uuid
-             */
-            payment_id: string;
-            /** Actual Work Units */
-            actual_work_units: number;
-            /** Actual Cost Wei */
-            actual_cost_wei: string;
-            /** Request Id */
-            request_id: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+        UpdateNotificationPrefRequest: {
+            /** Trigger */
+            trigger: string;
+            /** Channel */
+            channel: string;
+            /** Enabled */
+            enabled: boolean;
         };
         /**
-         * UsageReportResponse
-         * @description Outbound: ``POST /v1/usage/report``.
+         * UpdateOperatorRequest
+         * @description Inbound: ``PATCH /v1/admin/operators/{id}`` — at least one field.
          */
-        UsageReportResponse: {
-            usage: components["schemas"]["UsageRecordView"];
-            /** Refunded Wei */
-            refunded_wei: string;
-            /** Payment Status */
-            payment_status: string;
-            /** New Balance Wei */
-            new_balance_wei: string;
+        UpdateOperatorRequest: {
+            /** Name */
+            name?: string | null;
+            /** Role */
+            role?: string | null;
+        };
+        /**
+         * UpdateSdkApprovalRequest
+         * @description Inbound: ``PATCH /v1/admin/sdk-approvals/{id}`` — at least one field.
+         */
+        UpdateSdkApprovalRequest: {
+            /** Status */
+            status?: string | null;
+            /** Notes */
+            notes?: string | null;
         };
         /**
          * UserResponse
@@ -1268,6 +2689,66 @@ export interface components {
         VerifyEmailRequest: {
             /** Token */
             token: string;
+        };
+        /**
+         * WebhookAcceptedResponse
+         * @description The handler always returns 200 on accepted (or duplicate) events.
+         *
+         *     Standard Webhooks senders interpret any non-2xx as a delivery
+         *     failure and retry; we want explicit duplicate suppression to be
+         *     transparent at the HTTP layer.
+         */
+        WebhookAcceptedResponse: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            /**
+             * Duplicate
+             * @default false
+             */
+            duplicate: boolean;
+            /** Received Event Id */
+            received_event_id?: string | null;
+        };
+        /**
+         * WebhookConfigCreated
+         * @description Outbound when the customer first registers a webhook URL.
+         *     Carries the derived ``secret`` exactly once — the customer
+         *     must store it; LOC re-derives it on every send but never
+         *     surfaces it again.
+         */
+        WebhookConfigCreated: {
+            /** Url */
+            url: string;
+            /** Secret */
+            secret: string;
+        };
+        /**
+         * WebhookConfigRequest
+         * @description Inbound: ``PUT /v1/notifications/webhook``.
+         */
+        WebhookConfigRequest: {
+            /** Url */
+            url: string;
+        };
+        /**
+         * WebhookConfigView
+         * @description Public view of a user's webhook config — no secret material.
+         */
+        WebhookConfigView: {
+            /** Url */
+            url: string;
+            /** Last Test At */
+            last_test_at: string | null;
+        };
+        /** WebhookTestResult */
+        WebhookTestResult: {
+            /** Ok */
+            ok: boolean;
+            /** Detail */
+            detail?: string | null;
         };
     };
     responses: never;
@@ -2175,6 +3656,415 @@ export interface operations {
             };
         };
     };
+    list_operators_endpoint_v1_admin_operators_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_operator_endpoint_v1_admin_operators_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOperatorRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorWithToken"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_operator_endpoint_v1_admin_operators__operator_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                operator_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOperatorRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_operator_endpoint_v1_admin_operators__operator_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                operator_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_operator_token_endpoint_v1_admin_operators__operator_id__rotate_token_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                operator_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorWithToken"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sdk_approvals_endpoint_v1_admin_sdk_approvals_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkApprovalList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sdk_approval_endpoint_v1_admin_sdk_approvals_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSdkApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkApprovalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_sdk_approval_endpoint_v1_admin_sdk_approvals__approval_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_sdk_approval_endpoint_v1_admin_sdk_approvals__approval_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSdkApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkApprovalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_recent_sessions_endpoint_v1_admin_sessions_recent_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionWithSdkList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_distribution_endpoint_v1_admin_sdk_distribution_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkDistributionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_manifest_endpoint_v1_sdk_manifest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkManifest"];
+                };
+            };
+        };
+    };
+    sdk_manifest_pubkey_endpoint_v1_sdk_manifest_pubkey_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SdkManifestPubkey"];
+                };
+            };
+        };
+    };
     list_capabilities_endpoint_v1_capabilities_get: {
         parameters: {
             query?: never;
@@ -2279,30 +4169,333 @@ export interface operations {
             };
         };
     };
-    mint_payment_endpoint_v1_payments_mint_post: {
+    resend_webhook_v1_webhooks_resend_post: {
         parameters: {
             query?: never;
             header?: {
-                "Idempotency-Key"?: string | null;
-                "X-API-Key"?: string | null;
+                "webhook-id"?: string | null;
+                "webhook-timestamp"?: string | null;
+                "webhook-signature"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAcceptedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_email_events_v1_admin_email_events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
                 authorization?: string | null;
             };
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MintPaymentRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MintPaymentResponse"];
+                    "application/json": components["schemas"]["EmailEventList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_notification_prefs_endpoint_v1_notifications_config_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPrefsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_notification_pref_endpoint_v1_notifications_config_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNotificationPrefRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPrefView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_portal_notifications_endpoint_v1_notifications_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalNotificationList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_portal_notification_endpoint_v1_notifications__notification_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path: {
+                notification_id: string;
+            };
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalNotificationView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_webhook_config_endpoint_v1_notifications_webhook_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookConfigView"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_webhook_config_endpoint_v1_notifications_webhook_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookConfigCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_webhook_config_endpoint_v1_notifications_webhook_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_webhook_config_endpoint_v1_notifications_webhook_test_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResult"];
                 };
             };
             /** @description Validation Error */
@@ -2384,7 +4577,231 @@ export interface operations {
             };
         };
     };
-    report_usage_endpoint_v1_usage_report_post: {
+    open_job_endpoint_v1_jobs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "Livepeer-Open-Clearinghouse-SDK"?: string | null;
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    settle_job_endpoint_v1_jobs__job_id__settle_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettleJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettleJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_session_endpoint_v1_sessions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "Livepeer-Open-Clearinghouse-SDK"?: string | null;
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refill_session_endpoint_v1_sessions__session_id__refill_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefillSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefillSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_session_status_endpoint_v1_sessions__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_session_endpoint_v1_sessions__session_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloseSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloseSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_endpoint_v1_telemetry_post: {
         parameters: {
             query?: never;
             header?: {
@@ -2396,17 +4813,255 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ReportUsageRequest"];
+                "application/json": components["schemas"]["IngestRequest"];
             };
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UsageReportResponse"];
+                    "application/json": components["schemas"]["IngestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    query_events_endpoint_v1_telemetry_events_get: {
+        parameters: {
+            query: {
+                /** @description ISO-8601 lower bound on received_ts. */
+                from: string;
+                /** @description ISO-8601 upper bound on received_ts. */
+                to: string;
+                /** @description Glob over event_type. Only `*` is a wildcard. */
+                type?: string | null;
+                format?: "json" | "ndjson";
+                cursor?: string | null;
+                page_size?: number | null;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    portal_query_events_endpoint_v1_accounts_me_telemetry_events_get: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                type?: string | null;
+                cursor?: string | null;
+                page_size?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    portal_download_endpoint_v1_accounts_me_telemetry_download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    privacy_notice_endpoint_v1_privacy_telemetry_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    admin_event_counts_endpoint_v1_admin_telemetry_event_counts_get: {
+        parameters: {
+            query?: {
+                hours?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_purge_user_endpoint_v1_admin_telemetry_users__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_rate_limit_offenders_endpoint_v1_admin_telemetry_rate_limit_offenders_get: {
+        parameters: {
+            query?: {
+                hours?: number;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

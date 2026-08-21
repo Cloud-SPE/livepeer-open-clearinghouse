@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.registry.v1 import ...` resolves. Loading
@@ -52,6 +52,23 @@ class SessionAxes(BaseModel):
         return self
 
 
+class SettlementKey(BaseModel):
+    """Cold-key-authorized broker key accepted for settlement signatures."""
+
+    model_config = ConfigDict(frozen=True)
+
+    public_key: str = Field(pattern=r"^0x[0-9a-f]{130}$")
+    not_before: AwareDatetime
+    expires_at: AwareDatetime
+    introduced_in_publication_seq: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validity_window_is_ordered(self) -> SettlementKey:
+        if self.expires_at <= self.not_before:
+            raise ValueError("settlement key expires_at must be after not_before")
+        return self
+
+
 class SelectedRoute(BaseModel):
     """One concrete route — output of ``Select`` / ``SelectMany``.
 
@@ -74,6 +91,7 @@ class SelectedRoute(BaseModel):
     constraint_fingerprint: bytes
     route_fingerprint: bytes
     protocol: Literal["paid-job/v1", "paid-session/v1"]
+    settlement_keys: tuple[SettlementKey, ...] = ()
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -118,6 +136,7 @@ class SelectedRoute(BaseModel):
             "quote_version": self.quote_version,
             "constraint_fingerprint": self.constraint_fingerprint.hex(),
             "route_fingerprint": self.route_fingerprint.hex(),
+            "settlement_keys": [key.model_dump(mode="json") for key in self.settlement_keys],
             "axes": self.extra["job"] if self.job is not None else self.extra["session"],
             "extra": self.extra,
         }
@@ -278,6 +297,15 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
         constraint_fingerprint=bytes(proto.constraint_fingerprint),
         route_fingerprint=bytes(proto.route_fingerprint),
         protocol=proto.protocol,
+        settlement_keys=tuple(
+            SettlementKey(
+                public_key=key.public_key,
+                not_before=key.not_before,
+                expires_at=key.expires_at,
+                introduced_in_publication_seq=int(key.introduced_in_publication_seq),
+            )
+            for key in proto.settlement_keys
+        ),
         extra=_decode_extra_json(bytes(proto.extra_json)),
     )
 

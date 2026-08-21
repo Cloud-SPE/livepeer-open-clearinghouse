@@ -68,6 +68,56 @@ def test_selected_route_proto_to_dataclass_carries_every_field() -> None:
 
 
 @pytest.mark.unit
+def test_selected_route_preserves_overlapping_settlement_keys_in_snapshot() -> None:
+    newer = {
+        "public_key": "0x" + "04" + "11" * 64,
+        "not_before": "2026-08-20T12:00:00Z",
+        "expires_at": "2026-08-21T12:00:00Z",
+        "introduced_in_publication_seq": 8,
+    }
+    outgoing = {
+        "public_key": "0x" + "04" + "22" * 64,
+        "not_before": "2026-08-19T12:00:00Z",
+        "expires_at": "2026-08-20T18:00:00Z",
+        "introduced_in_publication_seq": 7,
+    }
+
+    route = _selected_route_proto_to_dataclass(_route_proto(settlement_keys=[newer, outgoing]))
+
+    assert [key.public_key for key in route.settlement_keys] == [
+        newer["public_key"],
+        outgoing["public_key"],
+    ]
+    assert route.snapshot()["settlement_keys"] == [newer, outgoing]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "key",
+    [
+        {
+            "public_key": "0x1234",
+            "not_before": "2026-08-20T12:00:00Z",
+            "expires_at": "2026-08-21T12:00:00Z",
+        },
+        {
+            "public_key": "0x" + "04" + "11" * 64,
+            "not_before": "not-a-time",
+            "expires_at": "2026-08-21T12:00:00Z",
+        },
+        {
+            "public_key": "0x" + "04" + "11" * 64,
+            "not_before": "2026-08-21T12:00:00Z",
+            "expires_at": "2026-08-20T12:00:00Z",
+        },
+    ],
+)
+def test_malformed_settlement_key_fails_at_boundary(key: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _selected_route_proto_to_dataclass(_route_proto(settlement_keys=[key]))
+
+
+@pytest.mark.unit
 def test_zero_denominator_fails_at_boundary() -> None:
     proto = _route_proto(
         worker_url="x",

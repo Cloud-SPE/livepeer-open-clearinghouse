@@ -15,7 +15,6 @@ class PaymentRejectionReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PAYMENT_REJECTION_REASON_NONCE_CAP_REACHED: _ClassVar[PaymentRejectionReason]
     PAYMENT_REJECTION_REASON_INVALID_SIGNATURE: _ClassVar[PaymentRejectionReason]
     PAYMENT_REJECTION_REASON_OTHER: _ClassVar[PaymentRejectionReason]
-
 PAYMENT_REJECTION_REASON_UNSPECIFIED: PaymentRejectionReason
 PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND: PaymentRejectionReason
 PAYMENT_REJECTION_REASON_NONCE_REPLAY: PaymentRejectionReason
@@ -33,24 +32,10 @@ class PriceInfo(_message.Message):
     pixels_per_unit: int
     capability: int
     constraint: str
-    def __init__(
-        self,
-        price_per_unit: _Optional[int] = ...,
-        pixels_per_unit: _Optional[int] = ...,
-        capability: _Optional[int] = ...,
-        constraint: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, price_per_unit: _Optional[int] = ..., pixels_per_unit: _Optional[int] = ..., capability: _Optional[int] = ..., constraint: _Optional[str] = ...) -> None: ...
 
 class TicketParams(_message.Message):
-    __slots__ = (
-        "recipient",
-        "face_value",
-        "win_prob",
-        "recipient_rand_hash",
-        "seed",
-        "expiration_block",
-        "expiration_params",
-    )
+    __slots__ = ("recipient", "face_value", "win_prob", "recipient_rand_hash", "seed", "expiration_block", "expiration_params")
     RECIPIENT_FIELD_NUMBER: _ClassVar[int]
     FACE_VALUE_FIELD_NUMBER: _ClassVar[int]
     WIN_PROB_FIELD_NUMBER: _ClassVar[int]
@@ -65,16 +50,7 @@ class TicketParams(_message.Message):
     seed: bytes
     expiration_block: bytes
     expiration_params: TicketExpirationParams
-    def __init__(
-        self,
-        recipient: _Optional[bytes] = ...,
-        face_value: _Optional[bytes] = ...,
-        win_prob: _Optional[bytes] = ...,
-        recipient_rand_hash: _Optional[bytes] = ...,
-        seed: _Optional[bytes] = ...,
-        expiration_block: _Optional[bytes] = ...,
-        expiration_params: _Optional[_Union[TicketExpirationParams, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, recipient: _Optional[bytes] = ..., face_value: _Optional[bytes] = ..., win_prob: _Optional[bytes] = ..., recipient_rand_hash: _Optional[bytes] = ..., seed: _Optional[bytes] = ..., expiration_block: _Optional[bytes] = ..., expiration_params: _Optional[_Union[TicketExpirationParams, _Mapping]] = ...) -> None: ...
 
 class TicketSenderParams(_message.Message):
     __slots__ = ("sender_nonce", "sig")
@@ -90,20 +66,10 @@ class TicketExpirationParams(_message.Message):
     CREATION_ROUND_BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
     creation_round: int
     creation_round_block_hash: bytes
-    def __init__(
-        self,
-        creation_round: _Optional[int] = ...,
-        creation_round_block_hash: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, creation_round: _Optional[int] = ..., creation_round_block_hash: _Optional[bytes] = ...) -> None: ...
 
 class Payment(_message.Message):
-    __slots__ = (
-        "ticket_params",
-        "sender",
-        "expiration_params",
-        "ticket_sender_params",
-        "expected_price",
-    )
+    __slots__ = ("ticket_params", "sender", "expiration_params", "ticket_sender_params", "expected_price")
     TICKET_PARAMS_FIELD_NUMBER: _ClassVar[int]
     SENDER_FIELD_NUMBER: _ClassVar[int]
     EXPIRATION_PARAMS_FIELD_NUMBER: _ClassVar[int]
@@ -114,14 +80,7 @@ class Payment(_message.Message):
     expiration_params: TicketExpirationParams
     ticket_sender_params: _containers.RepeatedCompositeFieldContainer[TicketSenderParams]
     expected_price: PriceInfo
-    def __init__(
-        self,
-        ticket_params: _Optional[_Union[TicketParams, _Mapping]] = ...,
-        sender: _Optional[bytes] = ...,
-        expiration_params: _Optional[_Union[TicketExpirationParams, _Mapping]] = ...,
-        ticket_sender_params: _Optional[_Iterable[_Union[TicketSenderParams, _Mapping]]] = ...,
-        expected_price: _Optional[_Union[PriceInfo, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, ticket_params: _Optional[_Union[TicketParams, _Mapping]] = ..., sender: _Optional[bytes] = ..., expiration_params: _Optional[_Union[TicketExpirationParams, _Mapping]] = ..., ticket_sender_params: _Optional[_Iterable[_Union[TicketSenderParams, _Mapping]]] = ..., expected_price: _Optional[_Union[PriceInfo, _Mapping]] = ...) -> None: ...
 
 class OfferingPrice(_message.Message):
     __slots__ = ("id", "price_info")
@@ -129,9 +88,7 @@ class OfferingPrice(_message.Message):
     PRICE_INFO_FIELD_NUMBER: _ClassVar[int]
     id: str
     price_info: PriceInfo
-    def __init__(
-        self, id: _Optional[str] = ..., price_info: _Optional[_Union[PriceInfo, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., price_info: _Optional[_Union[PriceInfo, _Mapping]] = ...) -> None: ...
 
 class CapabilityEntry(_message.Message):
     __slots__ = ("capability", "work_unit", "offerings")
@@ -141,12 +98,7 @@ class CapabilityEntry(_message.Message):
     capability: str
     work_unit: str
     offerings: _containers.RepeatedCompositeFieldContainer[OfferingPrice]
-    def __init__(
-        self,
-        capability: _Optional[str] = ...,
-        work_unit: _Optional[str] = ...,
-        offerings: _Optional[_Iterable[_Union[OfferingPrice, _Mapping]]] = ...,
-    ) -> None: ...
+    def __init__(self, capability: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[OfferingPrice, _Mapping]]] = ...) -> None: ...
 
 class HealthRequest(_message.Message):
     __slots__ = ()
@@ -174,23 +126,10 @@ class QuoteRef(_message.Message):
     quote_version: int
     constraint_fingerprint: bytes
     route_fingerprint: bytes
-    def __init__(
-        self,
-        quote_id: _Optional[str] = ...,
-        quote_version: _Optional[int] = ...,
-        constraint_fingerprint: _Optional[bytes] = ...,
-        route_fingerprint: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, quote_id: _Optional[str] = ..., quote_version: _Optional[int] = ..., constraint_fingerprint: _Optional[bytes] = ..., route_fingerprint: _Optional[bytes] = ...) -> None: ...
 
 class AcceptedPrice(_message.Message):
-    __slots__ = (
-        "price_per_unit_wei",
-        "units_per_price",
-        "work_unit_name",
-        "capability",
-        "offering",
-        "quote_ref",
-    )
+    __slots__ = ("price_per_unit_wei", "units_per_price", "work_unit_name", "capability", "offering", "quote_ref")
     PRICE_PER_UNIT_WEI_FIELD_NUMBER: _ClassVar[int]
     UNITS_PER_PRICE_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_NAME_FIELD_NUMBER: _ClassVar[int]
@@ -203,15 +142,7 @@ class AcceptedPrice(_message.Message):
     capability: str
     offering: str
     quote_ref: QuoteRef
-    def __init__(
-        self,
-        price_per_unit_wei: _Optional[_Union[BigUInt, _Mapping]] = ...,
-        units_per_price: _Optional[int] = ...,
-        work_unit_name: _Optional[str] = ...,
-        capability: _Optional[str] = ...,
-        offering: _Optional[str] = ...,
-        quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, price_per_unit_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., units_per_price: _Optional[int] = ..., work_unit_name: _Optional[str] = ..., capability: _Optional[str] = ..., offering: _Optional[str] = ..., quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ...) -> None: ...
 
 class FundingIntent(_message.Message):
     __slots__ = ("estimated_units", "funded_value_wei", "max_total_units", "top_up_allowed")
@@ -223,26 +154,10 @@ class FundingIntent(_message.Message):
     funded_value_wei: BigUInt
     max_total_units: int
     top_up_allowed: bool
-    def __init__(
-        self,
-        estimated_units: _Optional[int] = ...,
-        funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ...,
-        max_total_units: _Optional[int] = ...,
-        top_up_allowed: bool = ...,
-    ) -> None: ...
+    def __init__(self, estimated_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., top_up_allowed: bool = ...) -> None: ...
 
 class SettlementRecord(_message.Message):
-    __slots__ = (
-        "accepted_quote_ref",
-        "work_unit_name",
-        "estimated_units",
-        "actual_units",
-        "billed_units",
-        "funded_value_wei",
-        "billed_value_wei",
-        "outcome",
-        "breakdown",
-    )
+    __slots__ = ("accepted_quote_ref", "work_unit_name", "estimated_units", "actual_units", "billed_units", "funded_value_wei", "billed_value_wei", "outcome", "breakdown")
     class SettlementOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         SETTLEMENT_OUTCOME_UNSPECIFIED: _ClassVar[SettlementRecord.SettlementOutcome]
@@ -251,7 +166,6 @@ class SettlementRecord(_message.Message):
         OVERFUNDED: _ClassVar[SettlementRecord.SettlementOutcome]
         STOPPED_AT_BUDGET: _ClassVar[SettlementRecord.SettlementOutcome]
         TOPPED_UP: _ClassVar[SettlementRecord.SettlementOutcome]
-
     SETTLEMENT_OUTCOME_UNSPECIFIED: SettlementRecord.SettlementOutcome
     EXACT: SettlementRecord.SettlementOutcome
     UNDERFUNDED: SettlementRecord.SettlementOutcome
@@ -265,7 +179,6 @@ class SettlementRecord(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     ACCEPTED_QUOTE_REF_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_NAME_FIELD_NUMBER: _ClassVar[int]
     ESTIMATED_UNITS_FIELD_NUMBER: _ClassVar[int]
@@ -284,18 +197,7 @@ class SettlementRecord(_message.Message):
     billed_value_wei: BigUInt
     outcome: SettlementRecord.SettlementOutcome
     breakdown: _containers.ScalarMap[str, str]
-    def __init__(
-        self,
-        accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ...,
-        work_unit_name: _Optional[str] = ...,
-        estimated_units: _Optional[int] = ...,
-        actual_units: _Optional[int] = ...,
-        billed_units: _Optional[int] = ...,
-        funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ...,
-        billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ...,
-        outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ...,
-        breakdown: _Optional[_Mapping[str, str]] = ...,
-    ) -> None: ...
+    def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class TicketStatus(_message.Message):
     __slots__ = ("sender_nonce", "rejection_reason", "credited_ev", "was_winning")
@@ -307,13 +209,7 @@ class TicketStatus(_message.Message):
     rejection_reason: PaymentRejectionReason
     credited_ev: bytes
     was_winning: bool
-    def __init__(
-        self,
-        sender_nonce: _Optional[int] = ...,
-        rejection_reason: _Optional[_Union[PaymentRejectionReason, str]] = ...,
-        credited_ev: _Optional[bytes] = ...,
-        was_winning: bool = ...,
-    ) -> None: ...
+    def __init__(self, sender_nonce: _Optional[int] = ..., rejection_reason: _Optional[_Union[PaymentRejectionReason, str]] = ..., credited_ev: _Optional[bytes] = ..., was_winning: bool = ...) -> None: ...
 
 class PendingRedemption(_message.Message):
     __slots__ = ("ticket_hash", "sender", "face_value", "queued_at", "attempts")
@@ -327,11 +223,4 @@ class PendingRedemption(_message.Message):
     face_value: bytes
     queued_at: int
     attempts: int
-    def __init__(
-        self,
-        ticket_hash: _Optional[bytes] = ...,
-        sender: _Optional[bytes] = ...,
-        face_value: _Optional[bytes] = ...,
-        queued_at: _Optional[int] = ...,
-        attempts: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, ticket_hash: _Optional[bytes] = ..., sender: _Optional[bytes] = ..., face_value: _Optional[bytes] = ..., queued_at: _Optional[int] = ..., attempts: _Optional[int] = ...) -> None: ...

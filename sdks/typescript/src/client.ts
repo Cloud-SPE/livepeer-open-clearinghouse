@@ -1,4 +1,4 @@
-import { fromResponse } from "./errors.js";
+import { BrokerProtocolError, fromResponse } from "./errors.js";
 import { TelemetryEmitter } from "./telemetry.js";
 import type { components } from "./_generated/openapi.js";
 
@@ -31,6 +31,10 @@ export interface JobResult {
   status: number;
   jobId: string;
   workId: string;
+  brokerJobId: string;
+  protocol: string;
+  transport: "unary" | "stream" | "multipart";
+  workUnit: string;
   actualUnits: number;
   billedValueWei: bigint;
   refundWei: bigint;
@@ -138,9 +142,7 @@ export class OpenClearinghouseClient {
   }
 
   async listOrchestrators(opts?: { capability?: string }): Promise<Orchestrator[]> {
-    const qs = opts?.capability
-      ? `?capability=${encodeURIComponent(opts.capability)}`
-      : "";
+    const qs = opts?.capability ? `?capability=${encodeURIComponent(opts.capability)}` : "";
     const { items } = await this.request<{ items: Orchestrator[] }>(
       "GET",
       `/v1/orchestrators${qs}`,
@@ -153,7 +155,7 @@ export class OpenClearinghouseClient {
   /**
    * One-shot mint → broker call → settle for cases (a)/(b)/(c).
    *
-   * Composes `POST /v1/jobs` (mint), the broker's `POST /v1/cap` with the
+   * Composes `POST /v1/jobs` (mint), the broker's `POST /v1/job` with the
    * minted envelope, then `POST /v1/jobs/{id}/settle` reading
    * `Livepeer-Work-Units` from the broker's response.
    *
@@ -171,10 +173,21 @@ export class OpenClearinghouseClient {
     body: unknown;
     maxTotalUnits?: number;
     requestId?: string;
-    specVersion?: string;
+    transport?: "unary" | "stream" | "multipart";
+    contentType?: string;
     timeoutMs?: number;
   }): Promise<JobResult> {
     const requestId = args.requestId ?? crypto.randomUUID();
+    const requestedTransport = args.transport ?? "unary";
+    if (
+      requestedTransport === "multipart" &&
+      (!(args.body instanceof Uint8Array || typeof args.body === "string") ||
+        !args.contentType?.toLowerCase().startsWith("multipart/form-data"))
+    ) {
+      throw new TypeError(
+        "multipart transport requires a pre-encoded body and multipart/form-data contentType",
+      );
+    }
 
     this.emitSdkInitOnce();
     this._telemetry.emit({
@@ -191,9 +204,12 @@ export class OpenClearinghouseClient {
     // 1. Open the job
     let job: {
       job_id: string;
+      request_id: string;
       work_id: string;
       broker_url: string;
-      mode: string;
+      protocol: string;
+      transport: "unary" | "stream" | "multipart";
+      work_unit: string;
       payment_envelope: string;
       expected_value_wei: number;
       funded_value_wei: number;
@@ -201,12 +217,18 @@ export class OpenClearinghouseClient {
       opened_at: string;
     };
     try {
-      job = await this.request<typeof job>("POST", "/v1/jobs", {
-        capability: args.capability,
-        offering: args.offering,
-        estimated_units: args.estimatedUnits,
-        max_total_units: args.maxTotalUnits ?? null,
-      });
+      job = await this.request<typeof job>(
+        "POST",
+        "/v1/jobs",
+        {
+          capability: args.capability,
+          offering: args.offering,
+          transport: requestedTransport,
+          estimated_units: args.estimatedUnits,
+          max_total_units: args.maxTotalUnits ?? null,
+        },
+        { "Idempotency-Key": requestId },
+      );
     } catch (exc) {
       this._telemetry.emit({
         eventType: "request.error",
@@ -223,13 +245,27 @@ export class OpenClearinghouseClient {
       eventType: "request.mint_completed",
       correlationId: requestId,
       payload: {
-        latency_ms: Number(
-          (process.hrtime.bigint() - mintStartedNs) / 1_000_000n,
-        ),
+        latency_ms: Number((process.hrtime.bigint() - mintStartedNs) / 1_000_000n),
         funded_value_wei: job.funded_value_wei,
-        mode: job.mode,
+        protocol: job.protocol,
       },
     });
+
+    if (job.protocol !== "paid-job/v1") {
+      throw new BrokerProtocolError(`LOC returned unsupported job protocol ${job.protocol}`, {
+        code: "protocol_unsupported",
+        details: { protocol: job.protocol },
+      });
+    }
+    if (job.transport !== requestedTransport) {
+      throw new BrokerProtocolError(
+        `LOC returned transport ${job.transport}; requested ${requestedTransport}`,
+        {
+          code: "protocol_transport_mismatch",
+          details: { expected: requestedTransport, received: job.transport },
+        },
+      );
+    }
 
     // 2. Call the broker directly with the minted envelope
     let payload: string | Uint8Array;
@@ -237,52 +273,136 @@ export class OpenClearinghouseClient {
       "Livepeer-Capability": args.capability,
       "Livepeer-Offering": args.offering,
       "Livepeer-Payment": job.payment_envelope,
-      "Livepeer-Mode": job.mode,
-      "Livepeer-Spec-Version": args.specVersion ?? "0.1",
-      "Livepeer-Request-Id": requestId,
+      "Livepeer-Protocol": job.protocol,
+      "Livepeer-Request-Id": job.request_id,
     };
     if (args.body instanceof Uint8Array) {
       payload = args.body;
-      baseHeaders["Content-Type"] = "application/octet-stream";
+      baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
     } else if (typeof args.body === "string") {
       payload = args.body;
-      baseHeaders["Content-Type"] = "application/octet-stream";
+      baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
     } else {
       payload = JSON.stringify(args.body);
       baseHeaders["Content-Type"] = "application/json";
     }
+    if (requestedTransport === "stream") {
+      baseHeaders.Accept = "text/event-stream";
+    }
 
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      args.timeoutMs ?? 60_000,
-    );
+    const timeout = setTimeout(() => controller.abort(), args.timeoutMs ?? 60_000);
     let res: Response;
     let bodyText: string;
+    let terminalClaim: {
+      brokerJobId: string;
+      brokerWorkUnit: string;
+      settlementPayload: Record<string, unknown>;
+    };
     try {
-      res = await this.fetchImpl(`${job.broker_url.replace(/\/+$/, "")}/v1/cap`, {
+      const brokerBaseUrl = job.broker_url.replace(/\/+$/, "");
+      res = await this.fetchImpl(`${brokerBaseUrl}/v1/job`, {
         method: "POST",
         headers: baseHeaders,
         body: payload,
         signal: controller.signal,
       });
       bodyText = await res.text();
+
+      let claimRes = res;
+      if (requestedTransport === "stream") {
+        const initialJobId = res.headers.get("livepeer-job-id");
+        if (!initialJobId) {
+          throw new BrokerProtocolError("stream response missing Livepeer-Job-Id", {
+            status: res.status,
+            details: { missing_headers: ["Livepeer-Job-Id"] },
+          });
+        }
+        const settlementUrl = `${brokerBaseUrl}/v1/settlement/${encodeURIComponent(initialJobId)}`;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const query = await this.fetchImpl(settlementUrl, {
+            method: "GET",
+            signal: controller.signal,
+          });
+          if (query.status === 202 && attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
+            continue;
+          }
+          claimRes = query;
+          break;
+        }
+        if (claimRes.headers.get("livepeer-job-id") !== initialJobId) {
+          throw new BrokerProtocolError("settlement query returned a different job id", {
+            code: "broker_job_id_mismatch",
+            status: claimRes.status,
+            details: {
+              expected: initialJobId,
+              received: claimRes.headers.get("livepeer-job-id"),
+            },
+          });
+        }
+      }
+
+      const workUnitsStr = claimRes.headers.get("livepeer-work-units");
+      const brokerWorkUnit = claimRes.headers.get("livepeer-work-unit");
+      const brokerJobId = claimRes.headers.get("livepeer-job-id");
+      const missing: string[] = [];
+      if (workUnitsStr === null) missing.push("Livepeer-Work-Units");
+      if (brokerWorkUnit === null) missing.push("Livepeer-Work-Unit");
+      if (brokerJobId === null) missing.push("Livepeer-Job-Id");
+      if (missing.length > 0) {
+        throw new BrokerProtocolError(
+          `terminal broker response missing required headers: ${missing.join(", ")}`,
+          { status: claimRes.status, details: { missing_headers: missing } },
+        );
+      }
+      if (workUnitsStr === null || brokerWorkUnit === null || brokerJobId === null) {
+        throw new BrokerProtocolError("unreachable missing terminal broker headers");
+      }
+      if (brokerWorkUnit !== job.work_unit) {
+        throw new BrokerProtocolError(
+          `broker reported work unit ${brokerWorkUnit}; expected ${job.work_unit}`,
+          {
+            code: "work_unit_mismatch",
+            status: claimRes.status,
+            details: { expected: job.work_unit, received: brokerWorkUnit },
+          },
+        );
+      }
+      const actualUnits = Number.parseInt(workUnitsStr, 10);
+      if (!Number.isSafeInteger(actualUnits) || actualUnits < 0) {
+        throw new BrokerProtocolError(`invalid Livepeer-Work-Units: ${workUnitsStr}`, {
+          status: claimRes.status,
+        });
+      }
+
+      const settlementPayload: Record<string, unknown> = {
+        actual_units: actualUnits,
+        broker_job_id: brokerJobId,
+        work_unit: brokerWorkUnit,
+      };
+      const encodedSettlement = claimRes.headers.get("livepeer-settlement");
+      if (encodedSettlement) {
+        try {
+          const bytes = Uint8Array.from(atob(encodedSettlement), (char) => char.charCodeAt(0));
+          settlementPayload.settlement = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+        } catch {
+          // LOC will reconcile the absent envelope; malformed evidence is never trusted.
+        }
+      }
+
+      // 4. Settle. Retain these values outside the request block without
+      // weakening them to optional types.
+      terminalClaim = {
+        brokerJobId,
+        brokerWorkUnit,
+        settlementPayload,
+      };
     } finally {
       clearTimeout(timeout);
     }
 
-    // 3. Read Livepeer-Work-Units from the broker response.
-    // For http-reqresp / http-multipart this is a header. For
-    // http-stream it's an HTTP/1.1 chunked trailer; standard fetch
-    // (browser + Node) does not expose trailers via res.headers.
-    // Until WhatWG fetch grows trailer access, the http-stream
-    // wire falls back to header-only detection; missing trailer
-    // settles with actualUnits=0 and the LOC janitor reconciles
-    // via daemon GetSessionDebits.
-    const workUnitsStr = res.headers.get("livepeer-work-units");
-    const actualUnits = workUnitsStr ? Number.parseInt(workUnitsStr, 10) : 0;
-
-    // 4. Settle. Best-effort — if this fails, LOC's janitor catches it.
+    // 4. Settle.
     this._telemetry.emit({
       eventType: "request.settle_started",
       correlationId: requestId,
@@ -302,9 +422,7 @@ export class OpenClearinghouseClient {
       settled = await this.requestWithRetry<typeof settled>(
         "POST",
         `/v1/jobs/${job.job_id}/settle`,
-        {
-          actual_units: actualUnits,
-        },
+        terminalClaim.settlementPayload,
       );
     } catch (exc) {
       this._telemetry.emit({
@@ -322,9 +440,7 @@ export class OpenClearinghouseClient {
       eventType: "request.settle_completed",
       correlationId: requestId,
       payload: {
-        latency_ms: Number(
-          (process.hrtime.bigint() - settleStartedNs) / 1_000_000n,
-        ),
+        latency_ms: Number((process.hrtime.bigint() - settleStartedNs) / 1_000_000n),
         refund_wei: settled.refund_wei,
         billed_value_wei: settled.billed_value_wei,
         outcome: settled.outcome,
@@ -336,7 +452,10 @@ export class OpenClearinghouseClient {
       payload: {
         capability: args.capability,
         offering: args.offering,
-        mode: job.mode,
+        protocol: job.protocol,
+        transport: job.transport,
+        work_unit: job.work_unit,
+        broker_job_id: terminalClaim.brokerJobId,
         estimated_units: args.estimatedUnits,
         actual_units: settled.actual_units,
         billed_value_wei: settled.billed_value_wei,
@@ -366,12 +485,16 @@ export class OpenClearinghouseClient {
       status: res.status,
       jobId: settled.job_id,
       workId: settled.work_id,
+      brokerJobId: terminalClaim.brokerJobId,
+      protocol: job.protocol,
+      transport: job.transport,
+      workUnit: terminalClaim.brokerWorkUnit,
       actualUnits: settled.actual_units,
       billedValueWei: BigInt(settled.billed_value_wei),
       refundWei: BigInt(settled.refund_wei),
       outcome: settled.outcome,
       capStatus: settled.cap_status,
-      requestId,
+      requestId: job.request_id,
       rawHeaders: headerObj,
     };
   }
@@ -494,9 +617,7 @@ export class OpenClearinghouseClient {
       eventType: "session.refill_granted",
       correlationId: sessionId,
       payload: {
-        latency_ms: Number(
-          (process.hrtime.bigint() - refillStartedNs) / 1_000_000n,
-        ),
+        latency_ms: Number((process.hrtime.bigint() - refillStartedNs) / 1_000_000n),
         refill_seq: result["refill_seq"] ?? null,
         funded_value_wei: result["funded_value_wei"] ?? null,
         cap_status: result["cap_status"] ?? null,
@@ -582,6 +703,7 @@ export class OpenClearinghouseClient {
     method: "GET" | "POST",
     path: string,
     body?: unknown,
+    extraHeaders: Record<string, string> = {},
   ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -593,6 +715,7 @@ export class OpenClearinghouseClient {
           "X-API-Key": this.apiKey,
           "Livepeer-Open-Clearinghouse-SDK": this.sdkIdentity,
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...extraHeaders,
         },
         signal: controller.signal,
       };

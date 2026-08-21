@@ -24,7 +24,7 @@ import base64
 import time
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,18 @@ class ProtocolNotSupportedForJob(OpenClearinghouseError):
         )
 
 
+class TransportNotSupportedForJob(OpenClearinghouseError):
+    """The selected offering does not declare the requested transport."""
+
+    def __init__(self, *, transport: str, declared: frozenset[str]) -> None:
+        super().__init__(
+            code="protocol_transport_unsupported",
+            message=f"transport {transport!r} is not declared by the selected offering",
+            status_code=400,
+            details={"transport": transport, "declared_transports": sorted(declared)},
+        )
+
+
 class JobNotFound(OpenClearinghouseError):
     def __init__(self) -> None:
         super().__init__(
@@ -89,6 +101,18 @@ class JobAlreadySettled(OpenClearinghouseError):
             code="job_already_settled",
             message=f"job is in state {current_state!r}; settle requires 'open'",
             status_code=409,
+        )
+
+
+class WorkUnitMismatch(OpenClearinghouseError):
+    """The broker's terminal unit echo differs from the pinned route unit."""
+
+    def __init__(self, *, expected: str, received: str) -> None:
+        super().__init__(
+            code="work_unit_mismatch",
+            message=f"broker reported work unit {received!r}; expected {expected!r}",
+            status_code=409,
+            details={"expected": expected, "received": received},
         )
 
 
@@ -110,6 +134,7 @@ async def open_job(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    transport: Literal["unary", "stream", "multipart"] = "unary",
     request_id: str | None = None,
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
@@ -139,6 +164,14 @@ async def open_job(
     protocol = route.protocol
     if protocol != PAID_JOB_PROTOCOL:
         raise ProtocolNotSupportedForJob(protocol=protocol)
+    job_axes = route.job
+    if job_axes is None:  # pragma: no cover - enforced by SelectedRoute validation
+        raise RuntimeError("paid-job/v1 route has no job axes")
+    if transport not in job_axes.transports:
+        raise TransportNotSupportedForJob(
+            transport=transport,
+            declared=frozenset(job_axes.transports),
+        )
 
     # Worst case = full max_total_units (jobs have no refills, so the
     # initial mint funds the entire envelope).
@@ -294,6 +327,8 @@ async def open_job(
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
         protocol=protocol,
+        transport=transport,
+        work_unit=route.work_unit,
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -308,6 +343,8 @@ async def settle_job(
     job_id: uuid.UUID,
     user_id: uuid.UUID,
     actual_units: int,
+    broker_job_id: str,
+    work_unit: str,
     outcome: str | None,
     settlement: dict[str, Any] | None,
     clock: Clock,
@@ -341,6 +378,9 @@ async def settle_job(
 
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
     snapshot = job_row.route_snapshot or {}
+    expected_work_unit = str(snapshot.get("work_unit", ""))
+    if work_unit != expected_work_unit:
+        raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
     billed_value_wei = sessions_service._bill_value_wei(
         units=actual_units,
         amount_wei=price_wei,
@@ -373,6 +413,11 @@ async def settle_job(
     job_row.actual_units = actual_units
     job_row.billed_value_wei = billed_value_wei
     job_row.outcome = final_outcome
+    job_row.breakdown = {
+        **(job_row.breakdown or {}),
+        "broker_job_id": broker_job_id,
+        "work_unit": work_unit,
+    }
     await db.flush()
 
     # Settlement event
@@ -384,7 +429,11 @@ async def settle_job(
         actual_units=actual_units,
         billed_value_wei=billed_value_wei,
         outcome=final_outcome,
-        raw_record=settlement,
+        raw_record={
+            "broker_job_id": broker_job_id,
+            "work_unit": work_unit,
+            "settlement": settlement,
+        },
     )
 
     # Cap snapshot for the SDK to surface "you're at N% of your

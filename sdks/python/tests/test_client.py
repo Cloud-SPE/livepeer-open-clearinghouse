@@ -9,6 +9,7 @@ Stubs the LOC gateway + broker via respx. Covers:
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 
@@ -17,6 +18,7 @@ import pytest
 import respx
 
 from livepeer_open_clearinghouse_sdk import (
+    BrokerProtocolError,
     CapStatus,
     InsufficientCredit,
     JobResult,
@@ -32,17 +34,32 @@ BROKER = "https://broker.example/livepeer"
 KEY = "pymth_live_test_key_value"
 
 
-def _job_open(job_id: str = "00000000-0000-0000-0000-000000000001") -> dict:
+def _job_open(
+    job_id: str = "00000000-0000-0000-0000-000000000001",
+    *,
+    transport: str = "unary",
+) -> dict:
     return {
         "job_id": job_id,
+        "request_id": "broker-request-1",
         "work_id": "wid-abc",
         "broker_url": BROKER,
-        "mode": "http-reqresp@v0",
+        "protocol": "paid-job/v1",
+        "transport": transport,
+        "work_unit": "token",
         "payment_envelope": "BASE64ENVELOPE",
         "expected_value_wei": 100_000,
         "funded_value_wei": 100_000,
         "settle_endpoint": f"/v1/jobs/{job_id}/settle",
         "opened_at": "2026-05-24T12:00:00Z",
+    }
+
+
+def _broker_headers(units: int, *, job_id: str = "broker-job-1") -> dict[str, str]:
+    return {
+        "Livepeer-Work-Units": str(units),
+        "Livepeer-Work-Unit": "token",
+        "Livepeer-Job-Id": job_id,
     }
 
 
@@ -92,14 +109,14 @@ async def test_constructor_sets_sdk_identity_header() -> None:
 async def test_submit_job_happy_path() -> None:
     jid = "00000000-0000-0000-0000-000000000abc"
     respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
-    respx.post(f"{BROKER}/v1/cap").mock(
+    respx.post(f"{BROKER}/v1/job").mock(
         return_value=httpx.Response(
             200,
             json={"reply": "ok"},
-            headers={"Livepeer-Work-Units": "42"},
+            headers=_broker_headers(42),
         )
     )
-    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+    settle_call = respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
         return_value=httpx.Response(200, json=_job_settled(jid, actual=42))
     )
 
@@ -120,17 +137,29 @@ async def test_submit_job_happy_path() -> None:
     assert isinstance(result.cap_status, CapStatus)
     assert result.cap_status.session_pct_used == pytest.approx(0.42)
     assert result.body == {"reply": "ok"}
+    assert result.protocol == "paid-job/v1"
+    assert result.transport == "unary"
+    assert result.work_unit == "token"
+    assert result.broker_job_id == "broker-job-1"
+    assert result.request_id == "broker-request-1"
+    assert json.loads(settle_call.calls[0].request.content) == {
+        "actual_units": 42,
+        "broker_job_id": "broker-job-1",
+        "work_unit": "token",
+    }
 
 
 @respx.mock
 async def test_submit_job_forwards_livepeer_headers_to_broker() -> None:
     jid = "00000000-0000-0000-0000-000000000bcd"
-    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
-    broker_call = respx.post(f"{BROKER}/v1/cap").mock(
+    loc_call = respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open(jid))
+    )
+    broker_call = respx.post(f"{BROKER}/v1/job").mock(
         return_value=httpx.Response(
             200,
             json={"x": 1},
-            headers={"Livepeer-Work-Units": "10"},
+            headers=_broker_headers(10),
         )
     )
     respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
@@ -150,8 +179,12 @@ async def test_submit_job_forwards_livepeer_headers_to_broker() -> None:
     assert hdrs["livepeer-capability"] == "openai:chat-completions"
     assert hdrs["livepeer-offering"] == "gpt-oss-20b"
     assert hdrs["livepeer-payment"] == "BASE64ENVELOPE"
-    assert hdrs["livepeer-mode"] == "http-reqresp@v0"
-    assert hdrs["livepeer-request-id"] == "req-12345"
+    assert hdrs["livepeer-protocol"] == "paid-job/v1"
+    assert "livepeer-mode" not in hdrs
+    assert "livepeer-spec-version" not in hdrs
+    assert hdrs["livepeer-request-id"] == "broker-request-1"
+    assert loc_call.calls[0].request.headers["idempotency-key"] == "req-12345"
+    assert json.loads(loc_call.calls[0].request.content)["transport"] == "unary"
 
 
 @respx.mock
@@ -202,11 +235,11 @@ async def test_submit_job_passes_through_broker_4xx() -> None:
     """Broker-side non-2xx is reported in JobResult.status, not raised."""
     jid = "00000000-0000-0000-0000-000000000def"
     respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
-    respx.post(f"{BROKER}/v1/cap").mock(
+    respx.post(f"{BROKER}/v1/job").mock(
         return_value=httpx.Response(
             429,
             json={"error": "rate_limited"},
-            headers={"Livepeer-Work-Units": "0"},
+            headers=_broker_headers(0),
         )
     )
     respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
@@ -222,6 +255,110 @@ async def test_submit_job_passes_through_broker_4xx() -> None:
         )
     assert result.status == 429
     assert result.actual_units == 0
+
+
+@respx.mock
+async def test_submit_job_stream_selects_sse_and_settles_terminal_units() -> None:
+    jid = "00000000-0000-0000-0000-000000000eed"
+    respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open(jid, transport="stream"))
+    )
+    stream_headers = _broker_headers(7)
+    del stream_headers["Livepeer-Work-Units"]
+    stream_headers["Trailer"] = "Livepeer-Work-Units"
+    signed_settlement = {
+        "payload": {"work_id": "wid-abc", "debited_units": "7"},
+        "signature": {
+            "algorithm": "secp256k1",
+            "canonicalization": "jcs",
+            "value": "0xsigned",
+        },
+    }
+    encoded_settlement = base64.b64encode(json.dumps(signed_settlement).encode()).decode()
+    broker_call = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"data: hello\n\n",
+            headers={"Content-Type": "text/event-stream", **stream_headers},
+        )
+    )
+    settlement_query = respx.get(f"{BROKER}/v1/settlement/broker-job-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "job_id": "broker-job-1",
+                "state": "terminal",
+                "work_units": 7,
+                "unit": "tokens",
+            },
+            headers={**_broker_headers(7), "Livepeer-Settlement": encoded_settlement},
+        )
+    )
+    settle_call = respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=7))
+    )
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        result = await client.submit_job(
+            capability="x",
+            offering="x",
+            estimated_units=10,
+            body={"prompt": "hello"},
+            transport="stream",
+        )
+    assert len(broker_call.calls) == 1
+    first_request = broker_call.calls[0].request
+    assert first_request.headers["accept"] == "text/event-stream"
+    assert len(settlement_query.calls) == 1
+    assert result.body == "data: hello\n\n"
+    assert result.transport == "stream"
+    assert result.actual_units == 7
+    assert json.loads(settle_call.calls[0].request.content)["settlement"] == signed_settlement
+
+
+@respx.mock
+async def test_submit_job_multipart_forwards_preencoded_content_type() -> None:
+    jid = "00000000-0000-0000-0000-000000000eef"
+    respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open(jid, transport="multipart"))
+    )
+    broker_call = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(2))
+    )
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=2))
+    )
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await client.submit_job(
+            capability="x",
+            offering="x",
+            estimated_units=2,
+            body=b"--boundary--",
+            transport="multipart",
+            content_type="multipart/form-data; boundary=boundary",
+        )
+    assert broker_call.calls[0].request.headers["content-type"] == (
+        "multipart/form-data; boundary=boundary"
+    )
+
+
+@respx.mock
+async def test_submit_job_rejects_broker_work_unit_drift_without_settling() -> None:
+    jid = "00000000-0000-0000-0000-000000000efa"
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
+    headers = _broker_headers(3)
+    headers["Livepeer-Work-Unit"] = "frames"
+    respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=headers)
+    )
+    settle_call = respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(return_value=httpx.Response(500))
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        with pytest.raises(BrokerProtocolError) as exc_info:
+            await client.submit_job(capability="x", offering="x", estimated_units=3, body={})
+    assert exc_info.value.code == "work_unit_mismatch"
+    assert not settle_call.called
 
 
 # ----- discovery ---------------------------------------------------
@@ -344,8 +481,8 @@ async def test_submit_job_sends_bytes_body_as_octet_stream() -> None:
     """Bytes body uses application/octet-stream."""
     jid = "00000000-0000-0000-0000-0000000000ff"
     respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
-    broker_call = respx.post(f"{BROKER}/v1/cap").mock(
-        return_value=httpx.Response(200, json={"x": 1}, headers={"Livepeer-Work-Units": "5"})
+    broker_call = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"x": 1}, headers=_broker_headers(5))
     )
     respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
         return_value=httpx.Response(200, json=_job_settled(jid, actual=5))
@@ -364,11 +501,11 @@ async def test_submit_job_sends_bytes_body_as_octet_stream() -> None:
 async def test_submit_job_parses_text_body_when_not_json() -> None:
     jid = "00000000-0000-0000-0000-0000000000aa"
     respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
-    respx.post(f"{BROKER}/v1/cap").mock(
+    respx.post(f"{BROKER}/v1/job").mock(
         return_value=httpx.Response(
             200,
             content=b"plain text",
-            headers={"Content-Type": "text/plain", "Livepeer-Work-Units": "1"},
+            headers={"Content-Type": "text/plain", **_broker_headers(1)},
         )
     )
     respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(

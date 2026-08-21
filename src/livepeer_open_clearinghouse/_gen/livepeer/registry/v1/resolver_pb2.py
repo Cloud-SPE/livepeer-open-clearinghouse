@@ -4,15 +4,18 @@
 # source: livepeer/registry/v1/resolver.proto
 # Protobuf Python Version: 6.31.1
 """Generated protocol buffer code."""
-
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-
 _runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC, 6, 31, 1, "", "livepeer/registry/v1/resolver.proto"
+    _runtime_version.Domain.PUBLIC,
+    6,
+    31,
+    1,
+    '',
+    'livepeer/registry/v1/resolver.proto'
 )
 # @@protoc_insertion_point(imports)
 
@@ -24,46 +27,44 @@ from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__
 from livepeer.registry.v1 import types_pb2 as livepeer_dot_registry_dot_v1_dot_types__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n#livepeer/registry/v1/resolver.proto\x12\x14livepeer.registry.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a livepeer/registry/v1/types.proto"|\n\x17ResolveByAddressRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\x1d\n\x15\x61llow_legacy_fallback\x18\x02 \x01(\x08\x12\x16\n\x0e\x61llow_unsigned\x18\x03 \x01(\x08\x12\x15\n\rforce_refresh\x18\x04 \x01(\x08"\xce\x02\n\rResolveResult\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\x14\n\x0cresolved_uri\x18\x02 \x01(\t\x12/\n\x04mode\x18\x03 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12)\n\x05nodes\x18\x04 \x03(\x0b\x32\x1a.livepeer.registry.v1.Node\x12?\n\x10\x66reshness_status\x18\x05 \x01(\x0e\x32%.livepeer.registry.v1.FreshnessStatus\x12-\n\tcached_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nfetched_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x16\n\x0eschema_version\x18\x08 \x01(\t"W\n\rSelectRequest\x12\x12\n\ncapability\x18\x01 \x01(\t\x12\x10\n\x08offering\x18\x02 \x01(\t\x12\x0c\n\x04tier\x18\x03 \x01(\t\x12\x12\n\nmin_weight\x18\x04 \x01(\x05"B\n\x0cSelectResult\x12\x32\n\x05route\x18\x01 \x01(\x0b\x32#.livepeer.registry.v1.SelectedRoute"G\n\x10SelectManyResult\x12\x33\n\x06routes\x18\x01 \x03(\x0b\x32#.livepeer.registry.v1.SelectedRoute"\xcf\x02\n\rSelectedRoute\x12\x12\n\nworker_url\x18\x01 \x01(\t\x12\x13\n\x0b\x65th_address\x18\x02 \x01(\t\x12\x12\n\ncapability\x18\x03 \x01(\t\x12\x10\n\x08offering\x18\x04 \x01(\t\x12\x1f\n\x17price_per_work_unit_wei\x18\x05 \x01(\t\x12\x11\n\twork_unit\x18\x06 \x01(\t\x12\x12\n\nextra_json\x18\x07 \x01(\x0c\x12\x18\n\x10\x63onstraints_json\x18\x08 \x01(\x0c\x12\x10\n\x08quote_id\x18\t \x01(\t\x12\x15\n\rquote_version\x18\n \x01(\x04\x12\x1e\n\x16\x63onstraint_fingerprint\x18\x0b \x01(\x0c\x12\x19\n\x11route_fingerprint\x18\x0c \x01(\x0c\x12\x17\n\x0funits_per_price\x18\r \x01(\x04\x12\x10\n\x08protocol\x18\x0e \x01(\t"\x12\n\x10ListKnownRequest"D\n\x0fListKnownResult\x12\x31\n\x07\x65ntries\x18\x01 \x03(\x0b\x32 .livepeer.registry.v1.KnownEntry"\xc2\x01\n\nKnownEntry\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12/\n\x04mode\x18\x02 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12?\n\x10\x66reshness_status\x18\x03 \x01(\x0e\x32%.livepeer.registry.v1.FreshnessStatus\x12-\n\tcached_at\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"4\n\x0eRefreshRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\r\n\x05\x66orce\x18\x02 \x01(\x08"c\n\x12GetAuditLogRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12)\n\x05since\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\r\n\x05limit\x18\x03 \x01(\x05"B\n\x0e\x41uditLogResult\x12\x30\n\x06\x65vents\x18\x01 \x03(\x0b\x32 .livepeer.registry.v1.AuditEvent"\x98\x01\n\nAuditEvent\x12&\n\x02\x61t\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x13\n\x0b\x65th_address\x18\x02 \x01(\t\x12\x0c\n\x04kind\x18\x03 \x01(\t\x12/\n\x04mode\x18\x04 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12\x0e\n\x06\x64\x65tail\x18\x05 \x01(\t"\x97\x01\n\x0cHealthResult\x12\x0c\n\x04mode\x18\x01 \x01(\t\x12\x10\n\x08\x63hain_ok\x18\x02 \x01(\x08\x12\x1b\n\x13manifest_fetcher_ok\x18\x03 \x01(\x08\x12\x12\n\ncache_size\x18\x04 \x01(\x05\x12\x36\n\x12last_chain_success\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.Timestamp2\xea\x04\n\x08Resolver\x12\x66\n\x10ResolveByAddress\x12-.livepeer.registry.v1.ResolveByAddressRequest\x1a#.livepeer.registry.v1.ResolveResult\x12Q\n\x06Select\x12#.livepeer.registry.v1.SelectRequest\x1a".livepeer.registry.v1.SelectResult\x12Y\n\nSelectMany\x12#.livepeer.registry.v1.SelectRequest\x1a&.livepeer.registry.v1.SelectManyResult\x12Z\n\tListKnown\x12&.livepeer.registry.v1.ListKnownRequest\x1a%.livepeer.registry.v1.ListKnownResult\x12G\n\x07Refresh\x12$.livepeer.registry.v1.RefreshRequest\x1a\x16.google.protobuf.Empty\x12]\n\x0bGetAuditLog\x12(.livepeer.registry.v1.GetAuditLogRequest\x1a$.livepeer.registry.v1.AuditLogResult\x12\x44\n\x06Health\x12\x16.google.protobuf.Empty\x1a".livepeer.registry.v1.HealthResultB_Z]github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1b\x06proto3'
-)
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n#livepeer/registry/v1/resolver.proto\x12\x14livepeer.registry.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a livepeer/registry/v1/types.proto\"|\n\x17ResolveByAddressRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\x1d\n\x15\x61llow_legacy_fallback\x18\x02 \x01(\x08\x12\x16\n\x0e\x61llow_unsigned\x18\x03 \x01(\x08\x12\x15\n\rforce_refresh\x18\x04 \x01(\x08\"\xce\x02\n\rResolveResult\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\x14\n\x0cresolved_uri\x18\x02 \x01(\t\x12/\n\x04mode\x18\x03 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12)\n\x05nodes\x18\x04 \x03(\x0b\x32\x1a.livepeer.registry.v1.Node\x12?\n\x10\x66reshness_status\x18\x05 \x01(\x0e\x32%.livepeer.registry.v1.FreshnessStatus\x12-\n\tcached_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nfetched_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x16\n\x0eschema_version\x18\x08 \x01(\t\"W\n\rSelectRequest\x12\x12\n\ncapability\x18\x01 \x01(\t\x12\x10\n\x08offering\x18\x02 \x01(\t\x12\x0c\n\x04tier\x18\x03 \x01(\t\x12\x12\n\nmin_weight\x18\x04 \x01(\x05\"B\n\x0cSelectResult\x12\x32\n\x05route\x18\x01 \x01(\x0b\x32#.livepeer.registry.v1.SelectedRoute\"G\n\x10SelectManyResult\x12\x33\n\x06routes\x18\x01 \x03(\x0b\x32#.livepeer.registry.v1.SelectedRoute\"\x8d\x03\n\rSelectedRoute\x12\x12\n\nworker_url\x18\x01 \x01(\t\x12\x13\n\x0b\x65th_address\x18\x02 \x01(\t\x12\x12\n\ncapability\x18\x03 \x01(\t\x12\x10\n\x08offering\x18\x04 \x01(\t\x12\x1f\n\x17price_per_work_unit_wei\x18\x05 \x01(\t\x12\x11\n\twork_unit\x18\x06 \x01(\t\x12\x12\n\nextra_json\x18\x07 \x01(\x0c\x12\x18\n\x10\x63onstraints_json\x18\x08 \x01(\x0c\x12\x10\n\x08quote_id\x18\t \x01(\t\x12\x15\n\rquote_version\x18\n \x01(\x04\x12\x1e\n\x16\x63onstraint_fingerprint\x18\x0b \x01(\x0c\x12\x19\n\x11route_fingerprint\x18\x0c \x01(\x0c\x12\x17\n\x0funits_per_price\x18\r \x01(\x04\x12\x10\n\x08protocol\x18\x0e \x01(\t\x12<\n\x0fsettlement_keys\x18\x0f \x03(\x0b\x32#.livepeer.registry.v1.SettlementKey\"r\n\rSettlementKey\x12\x12\n\npublic_key\x18\x01 \x01(\t\x12\x12\n\nnot_before\x18\x02 \x01(\t\x12\x12\n\nexpires_at\x18\x03 \x01(\t\x12%\n\x1dintroduced_in_publication_seq\x18\x04 \x01(\x04\"\x12\n\x10ListKnownRequest\"D\n\x0fListKnownResult\x12\x31\n\x07\x65ntries\x18\x01 \x03(\x0b\x32 .livepeer.registry.v1.KnownEntry\"\xc2\x01\n\nKnownEntry\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12/\n\x04mode\x18\x02 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12?\n\x10\x66reshness_status\x18\x03 \x01(\x0e\x32%.livepeer.registry.v1.FreshnessStatus\x12-\n\tcached_at\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"4\n\x0eRefreshRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12\r\n\x05\x66orce\x18\x02 \x01(\x08\"c\n\x12GetAuditLogRequest\x12\x13\n\x0b\x65th_address\x18\x01 \x01(\t\x12)\n\x05since\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\r\n\x05limit\x18\x03 \x01(\x05\"B\n\x0e\x41uditLogResult\x12\x30\n\x06\x65vents\x18\x01 \x03(\x0b\x32 .livepeer.registry.v1.AuditEvent\"\x98\x01\n\nAuditEvent\x12&\n\x02\x61t\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x13\n\x0b\x65th_address\x18\x02 \x01(\t\x12\x0c\n\x04kind\x18\x03 \x01(\t\x12/\n\x04mode\x18\x04 \x01(\x0e\x32!.livepeer.registry.v1.ResolveMode\x12\x0e\n\x06\x64\x65tail\x18\x05 \x01(\t\"\x97\x01\n\x0cHealthResult\x12\x0c\n\x04mode\x18\x01 \x01(\t\x12\x10\n\x08\x63hain_ok\x18\x02 \x01(\x08\x12\x1b\n\x13manifest_fetcher_ok\x18\x03 \x01(\x08\x12\x12\n\ncache_size\x18\x04 \x01(\x05\x12\x36\n\x12last_chain_success\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.Timestamp2\xea\x04\n\x08Resolver\x12\x66\n\x10ResolveByAddress\x12-.livepeer.registry.v1.ResolveByAddressRequest\x1a#.livepeer.registry.v1.ResolveResult\x12Q\n\x06Select\x12#.livepeer.registry.v1.SelectRequest\x1a\".livepeer.registry.v1.SelectResult\x12Y\n\nSelectMany\x12#.livepeer.registry.v1.SelectRequest\x1a&.livepeer.registry.v1.SelectManyResult\x12Z\n\tListKnown\x12&.livepeer.registry.v1.ListKnownRequest\x1a%.livepeer.registry.v1.ListKnownResult\x12G\n\x07Refresh\x12$.livepeer.registry.v1.RefreshRequest\x1a\x16.google.protobuf.Empty\x12]\n\x0bGetAuditLog\x12(.livepeer.registry.v1.GetAuditLogRequest\x1a$.livepeer.registry.v1.AuditLogResult\x12\x44\n\x06Health\x12\x16.google.protobuf.Empty\x1a\".livepeer.registry.v1.HealthResultB_Z]github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "livepeer.registry.v1.resolver_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'livepeer.registry.v1.resolver_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-    _globals["DESCRIPTOR"]._loaded_options = None
-    _globals[
-        "DESCRIPTOR"
-    ]._serialized_options = b"Z]github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1"
-    _globals["_RESOLVEBYADDRESSREQUEST"]._serialized_start = 157
-    _globals["_RESOLVEBYADDRESSREQUEST"]._serialized_end = 281
-    _globals["_RESOLVERESULT"]._serialized_start = 284
-    _globals["_RESOLVERESULT"]._serialized_end = 618
-    _globals["_SELECTREQUEST"]._serialized_start = 620
-    _globals["_SELECTREQUEST"]._serialized_end = 707
-    _globals["_SELECTRESULT"]._serialized_start = 709
-    _globals["_SELECTRESULT"]._serialized_end = 775
-    _globals["_SELECTMANYRESULT"]._serialized_start = 777
-    _globals["_SELECTMANYRESULT"]._serialized_end = 848
-    _globals["_SELECTEDROUTE"]._serialized_start = 851
-    _globals["_SELECTEDROUTE"]._serialized_end = 1186
-    _globals["_LISTKNOWNREQUEST"]._serialized_start = 1188
-    _globals["_LISTKNOWNREQUEST"]._serialized_end = 1206
-    _globals["_LISTKNOWNRESULT"]._serialized_start = 1208
-    _globals["_LISTKNOWNRESULT"]._serialized_end = 1276
-    _globals["_KNOWNENTRY"]._serialized_start = 1279
-    _globals["_KNOWNENTRY"]._serialized_end = 1473
-    _globals["_REFRESHREQUEST"]._serialized_start = 1475
-    _globals["_REFRESHREQUEST"]._serialized_end = 1527
-    _globals["_GETAUDITLOGREQUEST"]._serialized_start = 1529
-    _globals["_GETAUDITLOGREQUEST"]._serialized_end = 1628
-    _globals["_AUDITLOGRESULT"]._serialized_start = 1630
-    _globals["_AUDITLOGRESULT"]._serialized_end = 1696
-    _globals["_AUDITEVENT"]._serialized_start = 1699
-    _globals["_AUDITEVENT"]._serialized_end = 1851
-    _globals["_HEALTHRESULT"]._serialized_start = 1854
-    _globals["_HEALTHRESULT"]._serialized_end = 2005
-    _globals["_RESOLVER"]._serialized_start = 2008
-    _globals["_RESOLVER"]._serialized_end = 2626
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'Z]github.com/Cloud-SPE/livepeer-network-modules/proto-contracts/livepeer/registry/v1;registryv1'
+  _globals['_RESOLVEBYADDRESSREQUEST']._serialized_start=157
+  _globals['_RESOLVEBYADDRESSREQUEST']._serialized_end=281
+  _globals['_RESOLVERESULT']._serialized_start=284
+  _globals['_RESOLVERESULT']._serialized_end=618
+  _globals['_SELECTREQUEST']._serialized_start=620
+  _globals['_SELECTREQUEST']._serialized_end=707
+  _globals['_SELECTRESULT']._serialized_start=709
+  _globals['_SELECTRESULT']._serialized_end=775
+  _globals['_SELECTMANYRESULT']._serialized_start=777
+  _globals['_SELECTMANYRESULT']._serialized_end=848
+  _globals['_SELECTEDROUTE']._serialized_start=851
+  _globals['_SELECTEDROUTE']._serialized_end=1248
+  _globals['_SETTLEMENTKEY']._serialized_start=1250
+  _globals['_SETTLEMENTKEY']._serialized_end=1364
+  _globals['_LISTKNOWNREQUEST']._serialized_start=1366
+  _globals['_LISTKNOWNREQUEST']._serialized_end=1384
+  _globals['_LISTKNOWNRESULT']._serialized_start=1386
+  _globals['_LISTKNOWNRESULT']._serialized_end=1454
+  _globals['_KNOWNENTRY']._serialized_start=1457
+  _globals['_KNOWNENTRY']._serialized_end=1651
+  _globals['_REFRESHREQUEST']._serialized_start=1653
+  _globals['_REFRESHREQUEST']._serialized_end=1705
+  _globals['_GETAUDITLOGREQUEST']._serialized_start=1707
+  _globals['_GETAUDITLOGREQUEST']._serialized_end=1806
+  _globals['_AUDITLOGRESULT']._serialized_start=1808
+  _globals['_AUDITLOGRESULT']._serialized_end=1874
+  _globals['_AUDITEVENT']._serialized_start=1877
+  _globals['_AUDITEVENT']._serialized_end=2029
+  _globals['_HEALTHRESULT']._serialized_start=2032
+  _globals['_HEALTHRESULT']._serialized_end=2183
+  _globals['_RESOLVER']._serialized_start=2186
+  _globals['_RESOLVER']._serialized_end=2804
 # @@protoc_insertion_point(module_scope)

@@ -38,6 +38,7 @@ from livepeer_open_clearinghouse_sdk.client import (
 )
 from livepeer_open_clearinghouse_sdk.errors import (
     AccountNotApproved,
+    BrokerProtocolError,
     DaemonUnavailable,
     DuplicateRequest,
     InsufficientCredit,
@@ -60,6 +61,7 @@ __all__ = [
     "SDK_IDENTITY",
     "WS_TOPUP_MODES",
     "AccountNotApproved",
+    "BrokerProtocolError",
     "CapStatus",
     "Capability",
     "DaemonUnavailable",

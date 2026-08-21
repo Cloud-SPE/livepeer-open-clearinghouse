@@ -1,7 +1,7 @@
 """Integration-style tests for jobs.service.open_job + settle_job.
 
-Mirrors the sessions tests but with the http-* mode set (cases
-a/b/c). Verifies parallel behavior: worst-case encumbrance,
+Mirrors the sessions tests for paid-job/v1 transports. Verifies
+parallel behavior: worst-case encumbrance,
 SDK-reported settlement, refund-unused on close.
 """
 
@@ -35,11 +35,12 @@ from livepeer_open_clearinghouse.domains.jobs.service import (
     JobAlreadySettled,
     JobNotFound,
     ProtocolNotSupportedForJob,
+    TransportNotSupportedForJob,
 )
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
@@ -110,9 +111,8 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**12) -> tuple[uuid.UU
     return user.id, key.id
 
 
-def _route(mode: str | None) -> SelectedRoute:
-    is_job = mode in {"http-reqresp@v0", "http-stream@v0", "http-multipart@v0"}
-    protocol = "paid-job/v1" if is_job else "paid-session/v1"
+def _route(protocol: str = "paid-job/v1") -> SelectedRoute:
+    is_job = protocol == "paid-job/v1"
     extra = (
         {"job": {"transports": ["unary", "stream", "multipart"]}}
         if is_job
@@ -147,7 +147,7 @@ def _route(mode: str | None) -> SelectedRoute:
 @pytest.mark.asyncio
 async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     resp = await jobs_service.open_job(
@@ -165,6 +165,8 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
         settings=_settings(),
     )
     assert resp.protocol == "paid-job/v1"
+    assert resp.transport == "unary"
+    assert resp.work_unit == "token"
     assert resp.settle_endpoint == f"/v1/jobs/{resp.job_id}/settle"
     # Worst case = 1000 x 100 = 100_000
     assert resp.funded_value_wei == 100_000
@@ -200,7 +202,7 @@ async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed(db_session)
-    route = _route("http-reqresp@v0").model_copy(
+    route = _route().model_copy(
         update={"price_per_work_unit_wei": Decimal(1), "units_per_price": 3}
     )
     response = await jobs_service.open_job(
@@ -224,6 +226,8 @@ async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
         job_id=response.job_id,
         user_id=user_id,
         actual_units=1,
+        broker_job_id="broker-job-denominator",
+        work_unit="token",
         outcome=None,
         settlement=None,
         clock=_clock(),
@@ -237,7 +241,7 @@ async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
 async def test_open_job_defaults_max_to_estimated(db_session: AsyncSession) -> None:
     """Case (a): SDK knows exactly what it needs; omits max_total_units."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     resp = await jobs_service.open_job(
@@ -266,7 +270,7 @@ async def test_open_job_defaults_max_to_estimated(db_session: AsyncSession) -> N
 async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
     """A ws-realtime offering can't be opened via /v1/jobs — use /v1/sessions."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("ws-realtime@v0")])
+    registry = MockRegistryClient(routes=[_route("paid-session/v1")])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
@@ -289,7 +293,7 @@ async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_open_job_rejects_session_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route(None)])
+    registry = MockRegistryClient(routes=[_route("paid-session/v1")])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
@@ -310,9 +314,39 @@ async def test_open_job_rejects_session_protocol(db_session: AsyncSession) -> No
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_open_job_rejects_undeclared_transport_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route().model_copy(update={"extra": {"job": {"transports": ["unary"]}}})
+    with pytest.raises(TransportNotSupportedForJob) as exc_info:
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            transport="stream",
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert exc_info.value.details == {
+        "transport": "stream",
+        "declared_transports": ["unary"],
+    }
+    assert (await db_session.scalars(select(Payment))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_open_job_rejects_max_below_estimated(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(InvalidSessionRequest):
         await jobs_service.open_job(
@@ -357,7 +391,7 @@ async def test_open_job_rejects_no_route(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_open_job_rejects_insufficient_balance(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session, balance_wei=50_000)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(InsufficientCredit):
         await jobs_service.open_job(
@@ -385,7 +419,7 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
     """SDK opened with max_total=1000 (funded 100_000); broker actually
     processed 600 units. Settle: billed 60_000, refund 40_000."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     open_resp = await jobs_service.open_job(
@@ -410,6 +444,8 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
         job_id=open_resp.job_id,
         user_id=user_id,
         actual_units=600,
+        broker_job_id="broker-job-overfunded",
+        work_unit="token",
         outcome=None,
         settlement={"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
         clock=_clock(),
@@ -427,9 +463,68 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
     ps = await db_session.get(PaymentSession, open_resp.job_id)
     assert ps is not None
     assert ps.state == SESSION_STATE_CLOSED
+    assert ps.breakdown == {
+        "broker_job_id": "broker-job-overfunded",
+        "work_unit": "token",
+    }
+    event = await db_session.scalar(
+        select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+    )
+    assert event is not None
+    assert event.raw_record == {
+        "broker_job_id": "broker-job-overfunded",
+        "work_unit": "token",
+        "settlement": {"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
+    }
 
     balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     assert balance_after - balance_before == Decimal(40_000)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_work_unit_drift_without_closing(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=10,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    with pytest.raises(jobs_service.WorkUnitMismatch):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=10,
+            broker_job_id="broker-job-drift",
+            work_unit="frames",
+            outcome=None,
+            settlement=None,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    job = await db_session.get(PaymentSession, open_resp.job_id)
+    assert job is not None
+    assert job.state == SESSION_STATE_OPEN
+    assert (
+        await db_session.scalar(
+            select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+        )
+        is None
+    )
 
 
 @pytest.mark.unit
@@ -442,6 +537,8 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
             job_id=uuid.uuid4(),
             user_id=user_id,
             actual_units=0,
+            broker_job_id="broker-job-missing",
+            work_unit="token",
             outcome=None,
             settlement=None,
             clock=_clock(),
@@ -453,7 +550,7 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     open_resp = await jobs_service.open_job(
         db_session,
@@ -474,6 +571,8 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
         job_id=open_resp.job_id,
         user_id=user_id,
         actual_units=10,
+        broker_job_id="broker-job-once",
+        work_unit="token",
         outcome=None,
         settlement=None,
         clock=_clock(),
@@ -485,6 +584,8 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
             job_id=open_resp.job_id,
             user_id=user_id,
             actual_units=10,
+            broker_job_id="broker-job-twice",
+            work_unit="token",
             outcome=None,
             settlement=None,
             clock=_clock(),
@@ -494,10 +595,10 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> None:
-    """Case (c): http-stream@v0 — same shape as http-reqresp."""
+async def test_settle_job_accepts_stream_transport(db_session: AsyncSession) -> None:
+    """A stream job uses the same settlement shape as a unary job."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-stream@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
     resp = await jobs_service.open_job(
         db_session,
@@ -505,6 +606,7 @@ async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> 
         api_key_id=key_id,
         capability="openai:chat-completions",
         offering="gpt-oss-20b",
+        transport="stream",
         estimated_units=100,
         max_total_units=200,
         sdk_identity=None,

@@ -1,8 +1,7 @@
 """Jobs domain.
 
-Handoff-mode equivalent of the sessions domain for cases (a)/(b)/(c)
-of exec-plan 002 — atomic, post-settled, and streaming workloads
-that route over the upstream ``http-*@v0`` interaction modes.
+Handoff-mode equivalent of the sessions domain for one-shot unary,
+multipart, and streaming workloads routed through ``paid-job/v1``.
 
 Structurally identical to sessions: each job creates a
 ``payment_session`` row under the hood with the ``paid-job/v1`` protocol.

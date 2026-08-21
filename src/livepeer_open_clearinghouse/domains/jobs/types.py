@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,7 @@ class CreateJobRequest(BaseModel):
 
     capability: str = Field(min_length=1)
     offering: str = Field(min_length=1)
+    transport: Literal["unary", "stream", "multipart"]
     estimated_units: int = Field(gt=0)
     max_total_units: int | None = Field(default=None, gt=0)
 
@@ -36,8 +37,8 @@ class CreateJobResponse(BaseModel):
     Carries the broker target + minted envelope so the SDK can issue
     its one-shot call to the broker directly (handoff mode). The
     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
-    the broker's response (``Livepeer-Work-Units`` header for
-    http-reqresp / http-multipart, HTTP trailer for http-stream).
+    the broker's response (terminal headers for unary/multipart, or a
+    terminal settlement lookup when stream trailers are inaccessible).
     """
 
     job_id: uuid.UUID
@@ -45,6 +46,8 @@ class CreateJobResponse(BaseModel):
     work_id: str
     broker_url: str
     protocol: str
+    transport: Literal["unary", "stream", "multipart"]
+    work_unit: str
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int
@@ -62,6 +65,8 @@ class SettleJobRequest(BaseModel):
     """
 
     actual_units: int = Field(ge=0)
+    broker_job_id: str = Field(min_length=1)
+    work_unit: str = Field(min_length=1)
     outcome: str | None = None
     settlement: dict[str, Any] | None = None
 

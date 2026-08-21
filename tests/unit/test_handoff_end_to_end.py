@@ -111,7 +111,7 @@ async def _seed(db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
     return user.id, key.id
 
 
-def _route(broker_url: str, mode: str = "http-reqresp@v0") -> SelectedRoute:
+def _route(broker_url: str) -> SelectedRoute:
     return SelectedRoute(
         worker_url=broker_url,
         eth_address="0x" + "11" * 20,
@@ -176,14 +176,13 @@ async def test_open_job_then_call_mock_broker_then_settle(
         base_url=broker_base,
     ) as broker_client:
         resp = await broker_client.post(
-            "/v1/cap",
+            "/v1/job",
             headers={
                 "Livepeer-Capability": "openai:chat-completions",
                 "Livepeer-Offering": "gpt-oss-20b",
                 "Livepeer-Payment": job.payment_envelope,
-                "Livepeer-Mode": job.protocol,
-                "Livepeer-Spec-Version": "0.1",
-                "Livepeer-Request-Id": "req-test-1",
+                "Livepeer-Protocol": job.protocol,
+                "Livepeer-Request-Id": job.request_id,
                 "Content-Type": "application/json",
             },
             json={"prompt": "hello"},
@@ -197,7 +196,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
     broker_request = broker_app.state.requests[0]
     assert broker_request["had_payment_header"] is True
     assert broker_request["capability"] == "openai:chat-completions"
-    assert broker_request["mode"] == "paid-job/v1"
+    assert broker_request["protocol"] == "paid-job/v1"
     # Decode the envelope and check the magic prefix from MockPaymentDaemonClient
     decoded = base64.b64decode(job.payment_envelope)
     assert decoded.startswith(b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT")
@@ -208,6 +207,8 @@ async def test_open_job_then_call_mock_broker_then_settle(
         job_id=job.job_id,
         user_id=user_id,
         actual_units=120,
+        broker_job_id="broker-job-handoff",
+        work_unit="token",
         outcome=None,
         settlement=None,
         clock=_clock(),
@@ -287,10 +288,11 @@ async def test_mock_broker_returns_configurable_actual_units(
     ) as broker_client:
         # Override default_units=50 with the EXACT-match value 100
         resp = await broker_client.post(
-            "/v1/cap",
+            "/v1/job",
             headers={
                 "Livepeer-Payment": job.payment_envelope,
-                "Livepeer-Mode": job.protocol,
+                "Livepeer-Protocol": job.protocol,
+                "Livepeer-Request-Id": job.request_id,
                 "X-Mock-Actual-Units": "100",
                 "Content-Type": "application/json",
             },
@@ -302,6 +304,8 @@ async def test_mock_broker_returns_configurable_actual_units(
         job_id=job.job_id,
         user_id=user_id,
         actual_units=100,
+        broker_job_id="broker-job-error",
+        work_unit="token",
         outcome=None,
         settlement=None,
         clock=_clock(),
