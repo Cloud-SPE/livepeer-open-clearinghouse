@@ -1,7 +1,7 @@
 """Integration-style tests for sessions.service.refill_session.
 
 Opens a session via open_session, then exercises refills across the
-happy path + each refusal branch (state, mode, session cap,
+happy path + each refusal branch (state, refill declaration, session cap,
 spend-period cap). Also covers the will_refuse_next_refill /
 winddown_reason fields on the cap_status block.
 """
@@ -127,7 +127,9 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**18) -> tuple[uuid.UU
     return user.id, key.id
 
 
-def _route(mode: str, *, price_wei: int = 1000, per_units: int = 1) -> SelectedRoute:
+def _route(
+    *, refill: str = "extensible", price_wei: int = 1000, per_units: int = 1
+) -> SelectedRoute:
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -146,7 +148,7 @@ def _route(mode: str, *, price_wei: int = 1000, per_units: int = 1) -> SelectedR
             "session": {
                 "descriptor_schema": "test-runtime/v1",
                 "metering": "runner-reported",
-                "refill": "bounded" if mode == "ws-realtime@v0" else "extensible",
+                "refill": refill,
             }
         },
     )
@@ -163,15 +165,7 @@ async def _open_extensible_session(
     daemon: MockPaymentDaemonClient | None = None,
 ):
     user_id, key_id = await _seed(db, balance_wei=balance_wei)
-    registry = MockRegistryClient(
-        routes=[
-            _route(
-                "session-control-plus-media@v0",
-                price_wei=price_wei,
-                per_units=per_units,
-            )
-        ]
-    )
+    registry = MockRegistryClient(routes=[_route(price_wei=price_wei, per_units=per_units)])
     daemon = daemon or MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
     open_resp = await sessions_service.open_session(
         db,
@@ -917,7 +911,7 @@ async def test_refill_rejects_closed_session(db_session: AsyncSession) -> None:
 async def test_refill_rejects_bounded_declaration(db_session: AsyncSession) -> None:
     """session.refill=bounded refuses top-up independently of runtime shape."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("ws-realtime@v0")])
+    registry = MockRegistryClient(routes=[_route(refill="bounded")])
     daemon = MockPaymentDaemonClient()
     open_resp = await sessions_service.open_session(
         db_session,

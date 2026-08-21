@@ -571,7 +571,7 @@ async def test_get_session_status_round_trip() -> None:
                 "work_id": "w",
                 "capability": "c",
                 "offering": "o",
-                "mode": "ws-realtime@v0",
+                "protocol": "paid-session/v1",
                 "state": "open",
                 "estimated_units": 100,
                 "max_total_units": 1000,

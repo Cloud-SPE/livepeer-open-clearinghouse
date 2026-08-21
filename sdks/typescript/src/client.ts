@@ -2,6 +2,16 @@ import { BrokerProtocolError, fromResponse } from "./errors.js";
 import { TelemetryEmitter } from "./telemetry.js";
 import type { components } from "./_generated/openapi.js";
 
+function errorClass(error: unknown): string {
+  return error instanceof Error ? error.name : "unknown";
+}
+
+function errorProperty(error: unknown, key: string): unknown {
+  return typeof error === "object" && error !== null && key in error
+    ? (error as Record<string, unknown>)[key]
+    : undefined;
+}
+
 // ---- Generated-from-OpenAPI types ----------------------------------------
 //
 // The gateway's OpenAPI document at /openapi.json is the source of truth
@@ -248,8 +258,8 @@ export class OpenClearinghouseClient {
         correlationId: requestId,
         payload: {
           phase: "mint",
-          error_class: (exc as Error)?.name ?? "unknown",
-          error_code: (exc as { code?: string })?.code ?? null,
+          error_class: errorClass(exc),
+          error_code: errorProperty(exc, "code") ?? null,
         },
       });
       throw exc;
@@ -452,8 +462,8 @@ export class OpenClearinghouseClient {
         correlationId: requestId,
         payload: {
           phase: "settle",
-          error_class: (exc as Error)?.name ?? "unknown",
-          error_code: (exc as { code?: string })?.code ?? null,
+          error_class: errorClass(exc),
+          error_code: errorProperty(exc, "code") ?? null,
         },
       });
       throw exc;
@@ -634,22 +644,26 @@ export class OpenClearinghouseClient {
     }
     let result: Record<string, unknown>;
     try {
-      result = (await this.request<Record<string, unknown>>(
+      result = await this.request<Record<string, unknown>>(
         "POST",
         `/v1/sessions/${sessionId}/refill`,
         body,
         { "Idempotency-Key": locRequestId },
-      )) as Record<string, unknown>;
+      );
     } catch (exc) {
-      const status = (exc as { status?: number })?.status;
+      const status = errorProperty(exc, "status");
       if (status === 402) {
-        const details = (exc as { details?: Record<string, unknown> })?.details ?? {};
+        const candidate = errorProperty(exc, "details");
+        const details =
+          typeof candidate === "object" && candidate !== null
+            ? (candidate as Record<string, unknown>)
+            : {};
         this._telemetry.emit({
           eventType: "session.refill_denied",
           correlationId: sessionId,
           payload: {
-            which: details["which"] ?? null,
-            remaining_wei: details["remaining_wei"] ?? null,
+            which: details.which ?? null,
+            remaining_wei: details.remaining_wei ?? null,
           },
         });
       } else {
@@ -658,8 +672,8 @@ export class OpenClearinghouseClient {
           correlationId: sessionId,
           payload: {
             phase: "refill",
-            error_class: (exc as Error)?.name ?? "unknown",
-            error_code: (exc as { code?: string })?.code ?? null,
+            error_class: errorClass(exc),
+            error_code: errorProperty(exc, "code") ?? null,
           },
         });
       }
@@ -670,9 +684,9 @@ export class OpenClearinghouseClient {
       correlationId: sessionId,
       payload: {
         latency_ms: Number((process.hrtime.bigint() - refillStartedNs) / 1_000_000n),
-        refill_seq: result["refill_seq"] ?? null,
-        funded_value_wei: result["funded_value_wei"] ?? null,
-        cap_status: result["cap_status"] ?? null,
+        refill_seq: result.refill_seq ?? null,
+        funded_value_wei: result.funded_value_wei ?? null,
+        cap_status: result.cap_status ?? null,
       },
     });
     return result;
@@ -687,19 +701,19 @@ export class OpenClearinghouseClient {
     body.settlement = args.settlement;
     let result: Record<string, unknown>;
     try {
-      result = (await this.request<Record<string, unknown>>(
+      result = await this.request<Record<string, unknown>>(
         "POST",
         `/v1/sessions/${sessionId}/close`,
         body,
-      )) as Record<string, unknown>;
+      );
     } catch (exc) {
       this._telemetry.emit({
         eventType: "session.error",
         correlationId: sessionId,
         payload: {
           phase: "close",
-          error_class: (exc as Error)?.name ?? "unknown",
-          error_code: (exc as { code?: string })?.code ?? null,
+          error_class: errorClass(exc),
+          error_code: errorProperty(exc, "code") ?? null,
         },
       });
       throw exc;
@@ -708,10 +722,10 @@ export class OpenClearinghouseClient {
       eventType: "session.closed",
       correlationId: sessionId,
       payload: {
-        actual_units: Number(result["actual_units"] ?? 0),
-        billed_value_wei: Number(result["billed_value_wei"] ?? 0),
-        refund_wei: Number(result["refund_wei"] ?? 0),
-        outcome: result["outcome"] ?? null,
+        actual_units: Number(result.actual_units ?? 0),
+        billed_value_wei: Number(result.billed_value_wei ?? 0),
+        refund_wei: Number(result.refund_wei ?? 0),
+        outcome: result.outcome ?? null,
         closed_by: "customer",
       },
     });
@@ -739,7 +753,8 @@ export class OpenClearinghouseClient {
         return await this.request<T>(method, path, body);
       } catch (e) {
         lastError = e;
-        const status = (e as { status?: number })?.status ?? 0;
+        const statusValue = errorProperty(e, "status");
+        const status = typeof statusValue === "number" ? statusValue : 0;
         if (status > 0 && status < 500 && status !== 429) {
           throw e; // client error — give up
         }

@@ -23,7 +23,9 @@ async function chat(prompt: string): Promise<void> {
   const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
   const apiKey = process.env.OPEN_CLEARINGHOUSE_API_KEY;
   if (!baseUrl || !apiKey) {
-    throw new Error("set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY");
+    throw new Error(
+      "set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY",
+    );
   }
 
   const client = new OpenClearinghouseClient({ baseUrl, apiKey });

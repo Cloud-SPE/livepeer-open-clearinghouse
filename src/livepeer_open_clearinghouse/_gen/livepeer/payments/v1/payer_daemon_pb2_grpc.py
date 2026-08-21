@@ -115,7 +115,7 @@ class PayerDaemonServicer(object):
 
     def GetSessionDebits(self, request, context):
         """Read the per-session debit ledger for a long-lived session
-        (`ws-realtime@v0`, `session-control-plus-media@v0`, etc.). Used by
+        (`paid-session/v1`). Used by
         gateway adapters at session-close time to surface a final
         `Livepeer-Work-Units` count to the gateway caller without adding a
         close-frame extension or a control-plane event. The daemon may

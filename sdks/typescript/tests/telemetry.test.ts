@@ -18,10 +18,10 @@ function makeFetch(status = 202): {
   calls: CapturedRequest[];
 } {
   const calls: CapturedRequest[] = [];
-  const fetchImpl: typeof fetch = async (input, init) => {
+  const fetchImpl: typeof fetch = (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     calls.push({ url, init });
-    return new Response(JSON.stringify({ accepted: 1 }), { status });
+    return Promise.resolve(new Response(JSON.stringify({ accepted: 1 }), { status }));
   };
   return { fetch: fetchImpl, calls };
 }
@@ -158,21 +158,21 @@ describe("TelemetryEmitter wire", () => {
     });
     await em.close();
     expect(calls.length).toBe(1);
-    const headers = calls[0]!.init?.headers as Record<string, string>;
+    const call = calls[0];
+    if (call === undefined) throw new Error("missing telemetry call");
+    const headers = call.init?.headers as Record<string, string>;
     expect(headers["Content-Encoding"]).toBe("gzip");
-    const decompressed = gunzipSync(Buffer.from(calls[0]!.init!.body as Uint8Array)).toString(
-      "utf8",
-    );
+    const decompressed = gunzipSync(Buffer.from(call.init?.body as Uint8Array)).toString("utf8");
     const parsed = JSON.parse(decompressed);
     expect(parsed.events[0].event_type).toBe("request.mint_started");
   });
 
   it("retries on 5xx then drops", async () => {
     const calls: CapturedRequest[] = [];
-    const fetchImpl: typeof fetch = async (input, init) => {
+    const fetchImpl: typeof fetch = (input, init) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       calls.push({ url, init });
-      return new Response("err", { status: 503 });
+      return Promise.resolve(new Response("err", { status: 503 }));
     };
     const em = new TelemetryEmitter({
       fetch: fetchImpl,
@@ -207,7 +207,9 @@ describe("TelemetryEmitter wire", () => {
     });
     await em.close();
     expect(calls.length).toBe(1);
-    const body = JSON.parse(calls[0]!.init!.body as string);
+    const call = calls[0];
+    if (call === undefined) throw new Error("missing telemetry call");
+    const body = JSON.parse(call.init?.body as string);
     const ev = body.events[0];
     expect(ev.event_type).toBe("request.mint_started");
     expect(ev.event_schema_version).toBe(1);

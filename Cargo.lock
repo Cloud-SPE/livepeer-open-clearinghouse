@@ -1191,6 +1191,7 @@ name = "streaming-http-example"
 version = "0.0.0"
 dependencies = [
  "livepeer-open-clearinghouse-sdk",
+ "serde_json",
  "tokio",
 ]
 
@@ -1199,6 +1200,7 @@ name = "streaming-ws-example"
 version = "0.0.0"
 dependencies = [
  "livepeer-open-clearinghouse-sdk",
+ "serde_json",
  "tokio",
 ]
 

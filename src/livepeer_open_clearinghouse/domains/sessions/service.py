@@ -848,7 +848,7 @@ async def refill_session(
     if session_row.state != SESSION_STATE_OPEN:
         raise SessionNotOpen(current_state=session_row.state)
 
-    # 3. Mode check — refill only works on (d-extensible)
+    # 3. Declared-axis check — only extensible sessions refill.
     snapshot = _refill_snapshot(session_row)
 
     # Pull pricing context from the initial Payment; price and route are

@@ -23,6 +23,7 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> Non
     handle = await sdk_client.open_session(
         capability="cap.live",
         offering="off.live",
+        descriptor_schema="livepeer.session.test/v1",
         estimated_runway_units=100,
         max_total_units=500,
     )
@@ -38,6 +39,7 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> Non
     close_result = await sdk_client.close_session(
         session_id=handle.session_id,
         actual_units=60,
+        settlement={"payload": {}, "signature": {}},
     )
     assert close_result["outcome"] == "OK"
     assert close_result["actual_units"] == 60
@@ -48,12 +50,10 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> Non
     loc, broker = call_logs()
     paths = [(c["method"], c["path"]) for c in loc]
     assert ("POST", "/v1/sessions") in paths, "open_session should call POST /v1/sessions"
-    assert any(
-        m == "POST" and "/refill" in p for m, p in paths
-    ), "refill_session should call /refill"
-    assert any(
-        m == "POST" and "/close" in p for m, p in paths
-    ), "close_session should call /close"
+    assert any(m == "POST" and "/refill" in p for m, p in paths), (
+        "refill_session should call /refill"
+    )
+    assert any(m == "POST" and "/close" in p for m, p in paths), "close_session should call /close"
 
     # SDK identity header on every LOC call.
     for c in loc:

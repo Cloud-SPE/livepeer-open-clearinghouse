@@ -54,6 +54,7 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 | [`docs/PRODUCT_SENSE.md`](docs/PRODUCT_SENSE.md) | Product mission, target users, scope guardrails |
 | [`docs/QUALITY_SCORE.md`](docs/QUALITY_SCORE.md) | Per-domain quality grading |
 | [`docs/RELIABILITY.md`](docs/RELIABILITY.md) | Fail-closed billing, idempotency, state machines |
+| [`docs/TESTING.md`](docs/TESTING.md) | Clean release, SDK, conformance, and fuzz commands |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Key custody, secrets, auth model |
 | [`docs/design-docs/`](docs/design-docs/) | Catalogued design docs; start at `index.md` |
 | [`.beads/`](.beads/) | Metadata for the durable work graph; issue data syncs through Dolt |

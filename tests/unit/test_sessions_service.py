@@ -107,7 +107,7 @@ async def test_create_session_writes_row_in_open_state(
         work_id="abc",
         capability="cap",
         offering="off",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=10,
         max_total_units=100,
         funded_value_wei=Decimal(1000),
@@ -116,7 +116,7 @@ async def test_create_session_writes_row_in_open_state(
     )
     assert row.state == SESSION_STATE_OPEN
     assert row.work_id == "abc"
-    assert row.protocol == "ws-realtime@v0"
+    assert row.protocol == "paid-session/v1"
     assert row.sdk_identity == "python/0.4.0/abc1234"
     assert row.opened_at is not None
     assert row.closed_at is None
@@ -148,7 +148,7 @@ async def test_get_session_by_work_id_returns_most_recent(
         work_id="shared",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -163,7 +163,7 @@ async def test_get_session_by_work_id_returns_most_recent(
         work_id="shared",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=2,
         max_total_units=2,
         funded_value_wei=Decimal(2),
@@ -194,7 +194,7 @@ async def test_transition_open_to_draining_to_closed(
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -239,7 +239,7 @@ async def test_transition_open_to_closed_is_allowed_fast_close(
         work_id="w",
         capability="c",
         offering="o",
-        protocol="http-reqresp@v0",
+        protocol="paid-job/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -268,7 +268,7 @@ async def test_transition_rejects_invalid_state_name(
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -298,7 +298,7 @@ async def test_transition_rejects_disallowed_move(
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -336,7 +336,7 @@ async def test_transition_rejects_when_actual_state_diverges(
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),
@@ -382,7 +382,7 @@ async def test_record_settlement_appends_event(db_session: AsyncSession) -> None
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1000),
@@ -426,7 +426,7 @@ async def test_mark_polled_updates_last_polled_at(db_session: AsyncSession) -> N
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         estimated_units=1,
         max_total_units=1,
         funded_value_wei=Decimal(1),

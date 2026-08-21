@@ -6,9 +6,9 @@ can inspect what the SDK sent.
 
 Endpoints implemented (mirror the real LOC API surface):
 
-  POST /v1/jobs/mint              — mint a one-shot job
+  POST /v1/jobs                   — mint a one-shot job
   POST /v1/jobs/{id}/settle       — settle a job (idempotent)
-  POST /v1/sessions/open          — open a session
+  POST /v1/sessions               — open a session
   POST /v1/sessions/{id}/refill   — refill a session
   POST /v1/sessions/{id}/close    — close a session
   POST /v1/telemetry              — telemetry ingest
@@ -139,14 +139,16 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
                 continue
             headers[lk] = v
 
-        state["calls"].append({
-            "ts": time.time(),
-            "method": method,
-            "path": path,
-            "query": dict(request.query_params),
-            "headers": headers,
-            "body": body_json,
-        })
+        state["calls"].append(
+            {
+                "ts": time.time(),
+                "method": method,
+                "path": path,
+                "query": dict(request.query_params),
+                "headers": headers,
+                "body": body_json,
+            }
+        )
 
         resp_spec = _match_response(method, path)
         if resp_spec is None:
@@ -180,15 +182,11 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
 
     @app.post("/v1/sessions/{session_id}/refill")
     async def sessions_refill(session_id: str, request: Request) -> JSONResponse:
-        return await _record_and_respond(
-            "POST", f"/v1/sessions/{session_id}/refill", request
-        )
+        return await _record_and_respond("POST", f"/v1/sessions/{session_id}/refill", request)
 
     @app.post("/v1/sessions/{session_id}/close")
     async def sessions_close(session_id: str, request: Request) -> JSONResponse:
-        return await _record_and_respond(
-            "POST", f"/v1/sessions/{session_id}/close", request
-        )
+        return await _record_and_respond("POST", f"/v1/sessions/{session_id}/close", request)
 
     @app.post("/v1/telemetry")
     async def telemetry_ingest(request: Request) -> JSONResponse:
@@ -206,7 +204,9 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
 
 
 @contextmanager
-def serve_in_background(scenario_path: str, *, host: str = "127.0.0.1", port: int = 0) -> Iterator[int]:
+def serve_in_background(
+    scenario_path: str, *, host: str = "127.0.0.1", port: int = 0
+) -> Iterator[int]:
     """Spawn the mock LOC in a thread and yield the chosen port.
 
     For pytest fixtures inside the Python runner. External (TS/Go/Rust)

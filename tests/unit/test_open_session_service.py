@@ -2,7 +2,7 @@
 
 Composes a mock payer-daemon + mock registry + in-memory aiosqlite
 DB to exercise the full session-open orchestration: route discovery,
-mode validation, worst-case encumbrance, mint, and the persisted
+protocol validation, worst-case encumbrance, mint, and the persisted
 payment_session + Payment rows.
 """
 
@@ -105,15 +105,14 @@ async def _seed_user_key_and_balance(
     return user.id, key.id
 
 
-def _route_with_mode(mode: str | None) -> SelectedRoute:
-    is_session = mode not in {"http-reqresp@v0", "http-stream@v0", "http-multipart@v0"}
-    protocol = "paid-session/v1" if is_session else "paid-job/v1"
+def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> SelectedRoute:
+    is_session = protocol == "paid-session/v1"
     extra = (
         {
             "session": {
                 "descriptor_schema": "test-runtime/v1",
                 "metering": "runner-reported",
-                "refill": "bounded" if mode == "ws-realtime@v0" else "extensible",
+                "refill": refill,
             }
         }
         if is_session
@@ -145,7 +144,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
@@ -226,7 +225,7 @@ async def test_open_session_rejects_max_below_estimated(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -275,7 +274,7 @@ async def test_open_session_rejects_no_route(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_open_session_rejects_job_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("http-stream@v0")
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -302,7 +301,7 @@ async def test_open_session_rejects_descriptor_schema_mismatch_before_mint(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    registry = MockRegistryClient(routes=[_route_with_mode("session-control-plus-media@v0")])
+    registry = MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")])
     daemon = MockPaymentDaemonClient()
 
     with pytest.raises(InvalidSessionRequest, match="descriptor schema"):
@@ -327,11 +326,10 @@ async def test_open_session_rejects_descriptor_schema_mismatch_before_mint(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_http_modes(db_session: AsyncSession) -> None:
-    """http-reqresp / http-stream / http-multipart go through POST /v1/jobs,
-    not POST /v1/sessions."""
+async def test_open_session_rejects_paid_job_protocol(db_session: AsyncSession) -> None:
+    """paid-job/v1 routes go through POST /v1/jobs, not sessions."""
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("http-reqresp@v0")
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -359,7 +357,7 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 ) -> None:
     """Worst case is 1000 wei x 100 units = 100_000 wei; balance has 50_000."""
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=50_000)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -388,12 +386,12 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_accepts_session_control_plus_media(
+async def test_open_session_accepts_extensible_session_declaration(
     db_session: AsyncSession,
 ) -> None:
-    """Smoke test for the d-extensible side of the mode set."""
+    """Smoke test for the extensible paid-session declaration."""
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("session-control-plus-media@v0")
+    route = _route_for_protocol("paid-session/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 

@@ -134,7 +134,9 @@ describe("SessionRunner paid-session/v1", () => {
 
     expect(result.outcome).toBe("EXACT");
     const closeCall = calls.find((call) => call.url.endsWith(`/sessions/${SID}/close`));
-    expect(JSON.parse(String(closeCall?.init?.body)).settlement).toEqual({
+    const closeBody = closeCall?.init?.body;
+    if (typeof closeBody !== "string") throw new Error("missing close body");
+    expect(JSON.parse(closeBody).settlement).toEqual({
       payload: {},
       signature: {},
     });

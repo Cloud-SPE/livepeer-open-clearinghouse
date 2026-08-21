@@ -220,7 +220,7 @@ def test_unknown_or_v0_protocol_fails_at_boundary() -> None:
             quote_version=0,
             constraint_fingerprint=b"",
             route_fingerprint=b"",
-            protocol="http-stream@v0",  # type: ignore[arg-type]
+            protocol="not-a-protocol",  # type: ignore[arg-type]
             extra={"job": {"transports": ["stream"]}},
         )
 

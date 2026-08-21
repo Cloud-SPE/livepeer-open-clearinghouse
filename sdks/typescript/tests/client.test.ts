@@ -45,7 +45,7 @@ function jsonResp(body: unknown, opts: ResponseInit = {}): Response {
     status: 200,
     headers: {
       "Content-Type": "application/json",
-      ...((opts.headers as Record<string, string>) ?? {}),
+      ...(opts.headers as Record<string, string>),
     },
     ...opts,
   });
@@ -459,7 +459,7 @@ describe("OpenClearinghouseClient", () => {
           work_id: "w",
           capability: "c",
           offering: "o",
-          mode: "ws-realtime@v0",
+          protocol: "paid-session/v1",
           state: "open",
           estimated_units: 100,
           max_total_units: 1000,

@@ -1,15 +1,18 @@
 {
-  "id": "case_a_job",
-  "description": "Case (a): one-shot job — mint, broker call, settle. Covers SDK identity header on every LOC call, settle round-trip, and the request.* telemetry sequence (mint_started/completed → settle_started/completed → completed).",
+  "id": "paid_job_v1_unary",
+  "description": "paid-job/v1 unary request and signed terminal settlement forwarding",
   "loc": {
     "responses": {
       "POST /v1/jobs": {
         "status": 200,
         "body": {
           "job_id": "11111111-aaaa-bbbb-cccc-222222222222",
+          "request_id": "loc-job-request",
           "work_id": "wid-conformance-a",
           "broker_url": "{BROKER_URL}",
-          "mode": "http-stream@v0",
+          "protocol": "paid-job/v1",
+          "transport": "unary",
+          "work_unit": "token",
           "payment_envelope": "BASE64ENV",
           "expected_value_wei": 10000,
           "funded_value_wei": 10000,
@@ -41,11 +44,14 @@
   },
   "broker": {
     "responses": {
-      "POST /v1/cap": {
+      "POST /v1/job": {
         "status": 200,
         "headers": {
-          "livepeer-work-units": "7",
-          "content-type": "application/json"
+          "Livepeer-Work-Units": "7",
+          "Livepeer-Work-Unit": "token",
+          "Livepeer-Job-Id": "broker-job-a",
+          "Livepeer-Settlement": "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0=",
+          "Content-Type": "application/json"
         },
         "body": { "ok": true, "result": "hello from broker" }
       }

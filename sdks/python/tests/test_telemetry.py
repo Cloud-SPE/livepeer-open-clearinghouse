@@ -8,7 +8,6 @@ import json
 import uuid
 
 import httpx
-import pytest
 import respx
 
 from livepeer_open_clearinghouse_sdk.telemetry import (
@@ -17,8 +16,6 @@ from livepeer_open_clearinghouse_sdk.telemetry import (
     TelemetryEmitter,
     _is_critical,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_is_critical_matches_documented_set() -> None:

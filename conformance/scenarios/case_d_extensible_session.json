@@ -1,27 +1,35 @@
 {
-  "id": "case_d_extensible_session",
-  "description": "Case (d-extensible): live-session-remote-runner@v0 — open, one auto-refill (HTTP topup), close. SDK must POST the refill envelope to the broker-issued control.topup_url.",
+  "id": "paid_session_v1_extensible",
+  "description": "paid-session/v1 extensible intent, refill, and signed close forwarding",
   "loc": {
     "responses": {
       "POST /v1/sessions": {
         "status": 200,
         "body": {
           "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+          "request_id": "loc-session-open",
           "work_id": "wid",
           "broker_url": "{BROKER_URL}",
-          "mode": "live-session-remote-runner@v0",
+          "protocol": "paid-session/v1",
+          "session": {
+            "descriptor_schema": "livepeer.session.test/v1",
+            "attachment": "external",
+            "metering": "runner-reported",
+            "refill": "extensible"
+          },
           "payment_envelope": "BASE64ENV",
           "expected_value_wei": 100000,
           "funded_value_wei": 200000,
           "refill_endpoint": "/v1/sessions/aaaaaaaa-1111-2222-3333-444444444444/refill",
           "close_endpoint": "/v1/sessions/aaaaaaaa-1111-2222-3333-444444444444/close",
-          "opened_at": "2026-05-25T12:00:00Z"
+          "opened_at": "2026-08-21T12:00:00Z"
         }
       },
       "POST /v1/sessions/{session_id}/refill": {
         "status": 200,
         "body": {
           "work_id": "wid",
+          "request_id": "loc-session-refill",
           "refill_seq": 1,
           "payment_envelope": "REFILL-ENV",
           "expected_value_wei": 50000,
@@ -33,7 +41,8 @@
             "operator_pool_pct_used": null,
             "will_refuse_next_refill": false,
             "winddown_reason": null
-          }
+          },
+          "rebind_from": null
         }
       },
       "POST /v1/sessions/{session_id}/close": {
@@ -45,7 +54,7 @@
           "billed_value_wei": 60000,
           "refund_wei": 190000,
           "outcome": "OK",
-          "closed_at": "2026-05-25T12:30:00Z"
+          "closed_at": "2026-08-21T12:30:00Z"
         }
       },
       "POST /v1/telemetry": {
@@ -54,19 +63,5 @@
       }
     }
   },
-  "broker": {
-    "responses": {
-      "POST /v1/cap": {
-        "status": 200,
-        "body": {
-          "session_id": "aaaaaaaa-1111-2222-3333-444444444444",
-          "control": { "topup_url": "{BROKER_URL}/topup" }
-        }
-      },
-      "POST /topup": {
-        "status": 200,
-        "body": { "ok": true }
-      }
-    }
-  }
+  "broker": { "responses": {} }
 }

@@ -55,9 +55,7 @@ async def test_case_a_job_end_to_end(sdk_client, call_logs) -> None:
     assert _calls_to(loc, "/v1/jobs") and any(
         c["path"] == "/v1/jobs" and c["method"] == "POST" for c in loc
     ), "missing POST /v1/jobs"
-    assert any(
-        c["method"] == "POST" and "/settle" in c["path"] for c in loc
-    ), "missing settle call"
+    assert any(c["method"] == "POST" and "/settle" in c["path"] for c in loc), "missing settle call"
 
     # At least one telemetry batch was delivered before close.
     telemetry_calls = [c for c in loc if c["path"] == "/v1/telemetry"]
@@ -80,4 +78,4 @@ async def test_case_a_job_end_to_end(sdk_client, call_logs) -> None:
     assert saw_request_event, "expected at least one request.* event in telemetry"
 
     # Broker received the mint envelope.
-    assert any(c["path"] == "/v1/cap" for c in broker), "broker should have been called"
+    assert any(c["path"] == "/v1/job" for c in broker), "broker should have been called"

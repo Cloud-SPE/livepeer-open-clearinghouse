@@ -75,9 +75,7 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
         state["calls"] = []
         return {"ok": True}
 
-    async def _record_and_respond(
-        method: str, path: str, request: Request
-    ) -> JSONResponse:
+    async def _record_and_respond(method: str, path: str, request: Request) -> JSONResponse:
         body_bytes = await request.body()
         body_json: Any
         if body_bytes:
@@ -99,17 +97,26 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
             k.lower(): v
             for k, v in request.headers.items()
             if k.lower()
-            not in {"host", "user-agent", "accept", "accept-encoding", "content-length", "connection"}
+            not in {
+                "host",
+                "user-agent",
+                "accept",
+                "accept-encoding",
+                "content-length",
+                "connection",
+            }
         }
 
-        state["calls"].append({
-            "ts": time.time(),
-            "method": method,
-            "path": path,
-            "query": dict(request.query_params),
-            "headers": headers,
-            "body": body_json,
-        })
+        state["calls"].append(
+            {
+                "ts": time.time(),
+                "method": method,
+                "path": path,
+                "query": dict(request.query_params),
+                "headers": headers,
+                "body": body_json,
+            }
+        )
 
         resp_spec = _match_response(method, path)
         if resp_spec is None:
@@ -127,9 +134,17 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
         out_headers = {str(k): str(v) for k, v in resp_spec.get("headers", {}).items()}
         return JSONResponse(status_code=status, content=body, headers=out_headers)
 
-    @app.post("/v1/cap")
-    async def cap_open(request: Request) -> JSONResponse:
-        return await _record_and_respond("POST", "/v1/cap", request)
+    @app.post("/v1/job")
+    async def job(request: Request) -> JSONResponse:
+        return await _record_and_respond("POST", "/v1/job", request)
+
+    @app.get("/v1/settlement/{identifier}")
+    async def settlement(identifier: str, request: Request) -> JSONResponse:
+        return await _record_and_respond("GET", f"/v1/settlement/{identifier}", request)
+
+    @app.post("/v1/session")
+    async def session_open(request: Request) -> JSONResponse:
+        return await _record_and_respond("POST", "/v1/session", request)
 
     @app.post("/v1/cap/{session_id}/topup")
     async def cap_topup(session_id: str, request: Request) -> JSONResponse:

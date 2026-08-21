@@ -110,9 +110,9 @@ export class TelemetryEmitter {
     if (this.buffer.length === this.bufferCap) {
       this.buffer.shift();
       this.droppedCount += 1;
-      // eslint-disable-next-line no-console
+
       console.warn(
-        `[telemetry] buffer full; dropped oldest event (total dropped=${this.droppedCount})`,
+        `[telemetry] buffer full; dropped oldest event (total dropped=${String(this.droppedCount)})`,
       );
     }
     this.buffer.push(event);
@@ -141,7 +141,7 @@ export class TelemetryEmitter {
       this.flushTimer = null;
     }
     if (this.inflightFlush) {
-      await this.inflightFlush.catch(() => {});
+      await this.inflightFlush.catch(() => undefined);
     }
     if (this.buffer.length > 0) {
       await this.flush();
@@ -156,8 +156,9 @@ export class TelemetryEmitter {
       this.flushTimer = null;
       void this.flush();
     }, this.flushIntervalMs);
-    if (typeof (this.flushTimer as { unref?: () => void }).unref === "function") {
-      (this.flushTimer as { unref?: () => void }).unref!();
+    const timer = this.flushTimer as { unref?: () => void };
+    if (typeof timer.unref === "function") {
+      timer.unref();
     }
   }
 
@@ -218,7 +219,7 @@ export class TelemetryEmitter {
         backoff *= 2;
       }
     }
-    // eslint-disable-next-line no-console
-    console.warn(`[telemetry] flush dropped ${eventCount} events after retries`);
+
+    console.warn(`[telemetry] flush dropped ${String(eventCount)} events after retries`);
   }
 }

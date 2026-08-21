@@ -248,7 +248,7 @@ def _make_session_row(*, user, api_key, sdk_identity: str | None) -> sessions_re
         work_id="wid-fake",
         capability="cap.x",
         offering="off.y",
-        protocol="session-control-plus-media@v0",
+        protocol="paid-session/v1",
         state="open",
         estimated_units=10,
         max_total_units=100,

@@ -179,7 +179,7 @@ async def test_payment_session_id_fk_round_trip(session: AsyncSession) -> None:
         work_id="w",
         capability="c",
         offering="o",
-        protocol="ws-realtime@v0",
+        protocol="paid-session/v1",
         state="open",
         estimated_units=1,
         max_total_units=1,

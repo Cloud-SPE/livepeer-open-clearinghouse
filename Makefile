@@ -1,4 +1,4 @@
-.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e \
+.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e test-conformance test-sdks test-release \
         run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc refresh-openapi
 
 UV ?= uv
@@ -54,6 +54,24 @@ test-integration: ## Run integration tests (requires services running)
 
 test-e2e: ## Run end-to-end tests (requires full compose stack)
 	$(UV) run pytest -m e2e
+
+test-conformance: ## Run the Modules v2 fixture harness
+	$(UV) run ruff check conformance
+	$(UV) run ruff format --check conformance
+	$(UV) run pytest -q conformance/runners/python
+
+test-sdks: ## Run quality checks and tests for all four official SDKs
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev ruff format --check sdks/python
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev pytest sdks/python -q
+	$(UV) run python -m py_compile examples/python/*/main.py
+	cd sdks/typescript && pnpm lint && pnpm test && pnpm build
+	for example in one-shot-job streaming-ws streaming-http; do pnpm --filter "@livepeer/example-$$example" exec tsc --noEmit -p tsconfig.json; done
+	cd sdks/go && go vet ./... && go test ./...
+	for example in examples/go/*; do (cd "$$example" && go build -o /dev/null ./...); done
+	cargo fmt --check && cargo test -p livepeer-open-clearinghouse-sdk && cargo check --workspace --all-targets
+
+test-release: check test test-conformance test-sdks ## Run the complete local release baseline
 
 # ---------------------------------------------------------------------------
 # application

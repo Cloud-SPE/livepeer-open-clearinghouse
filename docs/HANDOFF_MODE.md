@@ -325,8 +325,7 @@ case-(d) workloads.
 
 - Design doc + decision log:
   [`docs/exec-plans/completed/002-long-running-sessions.md`](exec-plans/completed/002-long-running-sessions.md)
-- Mode reference (upstream): the four "Case (d) modes" sub-table
-  in the design doc § Q#1
+- Protocol references: upstream `paid-job/v1` and `paid-session/v1`
 - Upstream protocol repo:
   [`livepeer-cloud-spe/livepeer-network-modules`](https://github.com/Cloud-SPE/livepeer-network-modules)
 - Per-SDK README: `sdks/{python,typescript,go,rust}/README.md`
