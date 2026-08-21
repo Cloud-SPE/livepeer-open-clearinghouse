@@ -24,6 +24,7 @@ export type Capability = components["schemas"]["CapabilityView"];
 export type Offering = components["schemas"]["OfferingView"];
 export type Orchestrator = components["schemas"]["OrchestratorView"];
 export type RouteView = components["schemas"]["RouteView"];
+export type JobStatus = components["schemas"]["JobStatusResponse"];
 
 // ---- Handoff-mode types --------------------------------------------------
 
@@ -734,6 +735,10 @@ export class OpenClearinghouseClient {
 
   async getSessionStatus(sessionId: string): Promise<unknown> {
     return this.request("GET", `/v1/sessions/${sessionId}`);
+  }
+
+  async getJobStatus(jobId: string): Promise<JobStatus> {
+    return this.request<JobStatus>("GET", `/v1/jobs/${jobId}`);
   }
 
   // ---- internals ----

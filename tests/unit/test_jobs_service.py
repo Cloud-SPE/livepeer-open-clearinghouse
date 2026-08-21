@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -965,3 +965,177 @@ async def test_reconcile_open_job_rejects_cross_request_signed_settlement(
     assert row is not None
     assert row.state == SESSION_STATE_OPEN
     assert row.billed_value_wei is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_finalizes_unresolved_job_as_distinct_full_charge(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(hours=1))
+    settings = _settings().model_copy(update={"job_conservative_charge_after_seconds": 3600})
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NO_RECORD,
+            detail="silence, not non-admission",
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=settings,
+    )
+
+    assert finalized == 1
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.outcome == "conservative_full_charge"
+    assert row.actual_units is None
+    assert row.billed_value_wei == row.funded_value_wei == Decimal(2000)
+    assert row.breakdown is not None
+    assert row.breakdown["terminal_kind"] == "conservative_full_charge"
+    assert row.breakdown["creation_round"] == 100
+    assert row.breakdown["expires_after_round"] == 102
+    assert row.breakdown["evidence"]["outcome"] == "NO_RECORD"
+    status = await jobs_service.get_job_status(
+        db_session, job_id=response.job_id, user_id=row.user_id
+    )
+    assert status.accounting_outcome == "conservative_full_charge"
+    assert status.actual_units is None
+    assert status.billed_value_wei == 2000
+
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "conservative_full_charge",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+    assert events[0].actual_units is None
+    assert events[0].billed_value_wei == Decimal(2000)
+
+    # Closed jobs are no longer selected; retries cannot double-finalize.
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 0
+    )
+    assert (
+        len(
+            list(
+                (
+                    await db_session.scalars(
+                        select(PaymentSettlement).where(
+                            PaymentSettlement.session_id == response.job_id,
+                            PaymentSettlement.event_type == "conservative_full_charge",
+                        )
+                    )
+                ).all()
+            )
+        )
+        == 1
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [BrokerExchangeOutcome.IN_FLIGHT, BrokerExchangeOutcome.ACCOUNTING_PENDING],
+)
+async def test_reconcile_never_full_charges_active_broker_outcome(
+    db_session: AsyncSession, outcome: BrokerExchangeOutcome
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(days=30))
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=outcome,
+            job_id="broker-active",
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=_settings().model_copy(update={"job_conservative_charge_after_seconds": 1}),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_status_exposes_non_admission_as_audit_only(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission={
+                "payload": {"request_id": response.request_id},
+                "signature": {
+                    "algorithm": "secp256k1",
+                    "canonicalization": "jcs",
+                    "value": "evidence-retained-but-not-accounting-authority",
+                },
+            },
+        )
+    )
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    status = await jobs_service.get_job_status(db_session, job_id=response.job_id, user_id=user_id)
+    assert status.accounting_outcome == "non_admission_audit"
+    assert status.broker_exchange_outcome == "NOT_ADMITTED"
+    assert status.state == SESSION_STATE_OPEN
+    assert status.billed_value_wei is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_conservative_full_charge_waits_for_operational_deadline(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(seconds=3599))
+
+    charged = await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+
+    assert charged is False
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN

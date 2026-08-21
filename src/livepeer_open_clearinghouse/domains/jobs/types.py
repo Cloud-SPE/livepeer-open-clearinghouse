@@ -107,3 +107,24 @@ class SettleJobResponse(BaseModel):
     outcome: str
     closed_at: datetime
     cap_status: CapStatus
+
+
+class JobStatusResponse(BaseModel):
+    """Customer-visible job state without conflating billing evidence."""
+
+    job_id: uuid.UUID
+    request_id: str
+    work_id: str
+    state: str
+    accounting_outcome: Literal[
+        "unresolved",
+        "non_admission_audit",
+        "broker_settled",
+        "conservative_full_charge",
+    ]
+    broker_exchange_outcome: str | None
+    actual_units: int | None
+    billed_value_wei: int | None
+    funded_value_wei: int
+    opened_at: datetime
+    closed_at: datetime | None

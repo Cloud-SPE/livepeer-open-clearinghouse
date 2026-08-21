@@ -930,6 +930,12 @@ impl Client {
         .await
     }
 
+    /// Read exact, conservative, unresolved, or audit-only job state.
+    pub async fn get_job_status(&self, job_id: &str) -> Result<Value, OpenClearinghouseError> {
+        self.request(Method::GET, &format!("/v1/jobs/{job_id}"), None::<&Value>)
+            .await
+    }
+
     // ---- internals ----
 
     /// Wrapper around :meth:`request` that retries transient failures

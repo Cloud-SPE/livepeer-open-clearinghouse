@@ -75,18 +75,42 @@ func (e JobAxesTransports) Valid() bool {
 	}
 }
 
+// Defines values for JobStatusResponseAccountingOutcome.
+const (
+	BrokerSettled          JobStatusResponseAccountingOutcome = "broker_settled"
+	ConservativeFullCharge JobStatusResponseAccountingOutcome = "conservative_full_charge"
+	NonAdmissionAudit      JobStatusResponseAccountingOutcome = "non_admission_audit"
+	Unresolved             JobStatusResponseAccountingOutcome = "unresolved"
+)
+
+// Valid indicates whether the value is a known member of the JobStatusResponseAccountingOutcome enum.
+func (e JobStatusResponseAccountingOutcome) Valid() bool {
+	switch e {
+	case BrokerSettled:
+		return true
+	case ConservativeFullCharge:
+		return true
+	case NonAdmissionAudit:
+		return true
+	case Unresolved:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionAxesAttachment.
 const (
-	External SessionAxesAttachment = "external"
-	InbandWs SessionAxesAttachment = "inband-ws"
+	SessionAxesAttachmentExternal SessionAxesAttachment = "external"
+	SessionAxesAttachmentInbandWs SessionAxesAttachment = "inband-ws"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesAttachment enum.
 func (e SessionAxesAttachment) Valid() bool {
 	switch e {
-	case External:
+	case SessionAxesAttachmentExternal:
 		return true
-	case InbandWs:
+	case SessionAxesAttachmentInbandWs:
 		return true
 	default:
 		return false
@@ -95,16 +119,16 @@ func (e SessionAxesAttachment) Valid() bool {
 
 // Defines values for SessionAxesMetering.
 const (
-	BrokerObserved SessionAxesMetering = "broker-observed"
-	RunnerReported SessionAxesMetering = "runner-reported"
+	SessionAxesMeteringBrokerObserved SessionAxesMetering = "broker-observed"
+	SessionAxesMeteringRunnerReported SessionAxesMetering = "runner-reported"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesMetering enum.
 func (e SessionAxesMetering) Valid() bool {
 	switch e {
-	case BrokerObserved:
+	case SessionAxesMeteringBrokerObserved:
 		return true
-	case RunnerReported:
+	case SessionAxesMeteringRunnerReported:
 		return true
 	default:
 		return false
@@ -113,16 +137,100 @@ func (e SessionAxesMetering) Valid() bool {
 
 // Defines values for SessionAxesRefill.
 const (
-	Bounded    SessionAxesRefill = "bounded"
-	Extensible SessionAxesRefill = "extensible"
+	SessionAxesRefillBounded    SessionAxesRefill = "bounded"
+	SessionAxesRefillExtensible SessionAxesRefill = "extensible"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesRefill enum.
 func (e SessionAxesRefill) Valid() bool {
 	switch e {
-	case Bounded:
+	case SessionAxesRefillBounded:
 		return true
-	case Extensible:
+	case SessionAxesRefillExtensible:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionAxesViewAttachment.
+const (
+	SessionAxesViewAttachmentExternal SessionAxesViewAttachment = "external"
+	SessionAxesViewAttachmentInbandWs SessionAxesViewAttachment = "inband-ws"
+)
+
+// Valid indicates whether the value is a known member of the SessionAxesViewAttachment enum.
+func (e SessionAxesViewAttachment) Valid() bool {
+	switch e {
+	case SessionAxesViewAttachmentExternal:
+		return true
+	case SessionAxesViewAttachmentInbandWs:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionAxesViewMetering.
+const (
+	SessionAxesViewMeteringBrokerObserved SessionAxesViewMetering = "broker-observed"
+	SessionAxesViewMeteringRunnerReported SessionAxesViewMetering = "runner-reported"
+)
+
+// Valid indicates whether the value is a known member of the SessionAxesViewMetering enum.
+func (e SessionAxesViewMetering) Valid() bool {
+	switch e {
+	case SessionAxesViewMeteringBrokerObserved:
+		return true
+	case SessionAxesViewMeteringRunnerReported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionAxesViewRefill.
+const (
+	SessionAxesViewRefillBounded    SessionAxesViewRefill = "bounded"
+	SessionAxesViewRefillExtensible SessionAxesViewRefill = "extensible"
+)
+
+// Valid indicates whether the value is a known member of the SessionAxesViewRefill enum.
+func (e SessionAxesViewRefill) Valid() bool {
+	switch e {
+	case SessionAxesViewRefillBounded:
+		return true
+	case SessionAxesViewRefillExtensible:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionSettlementSignatureAlgorithm.
+const (
+	SessionSettlementSignatureAlgorithmSecp256k1 SessionSettlementSignatureAlgorithm = "secp256k1"
+)
+
+// Valid indicates whether the value is a known member of the SessionSettlementSignatureAlgorithm enum.
+func (e SessionSettlementSignatureAlgorithm) Valid() bool {
+	switch e {
+	case SessionSettlementSignatureAlgorithmSecp256k1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionSettlementSignatureCanonicalization.
+const (
+	SessionSettlementSignatureCanonicalizationJcs SessionSettlementSignatureCanonicalization = "jcs"
+)
+
+// Valid indicates whether the value is a known member of the SessionSettlementSignatureCanonicalization enum.
+func (e SessionSettlementSignatureCanonicalization) Valid() bool {
+	switch e {
+	case SessionSettlementSignatureCanonicalizationJcs:
 		return true
 	default:
 		return false
@@ -131,13 +239,13 @@ func (e SessionAxesRefill) Valid() bool {
 
 // Defines values for SettlementSignatureAlgorithm.
 const (
-	Secp256k1 SettlementSignatureAlgorithm = "secp256k1"
+	SettlementSignatureAlgorithmSecp256k1 SettlementSignatureAlgorithm = "secp256k1"
 )
 
 // Valid indicates whether the value is a known member of the SettlementSignatureAlgorithm enum.
 func (e SettlementSignatureAlgorithm) Valid() bool {
 	switch e {
-	case Secp256k1:
+	case SettlementSignatureAlgorithmSecp256k1:
 		return true
 	default:
 		return false
@@ -146,13 +254,13 @@ func (e SettlementSignatureAlgorithm) Valid() bool {
 
 // Defines values for SettlementSignatureCanonicalization.
 const (
-	Jcs SettlementSignatureCanonicalization = "jcs"
+	SettlementSignatureCanonicalizationJcs SettlementSignatureCanonicalization = "jcs"
 )
 
 // Valid indicates whether the value is a known member of the SettlementSignatureCanonicalization enum.
 func (e SettlementSignatureCanonicalization) Valid() bool {
 	switch e {
-	case Jcs:
+	case SettlementSignatureCanonicalizationJcs:
 		return true
 	default:
 		return false
@@ -443,18 +551,20 @@ type CreateSessionRequest struct {
 // LOC-relative paths the SDK calls when it needs to refill or
 // explicitly close the session.
 type CreateSessionResponse struct {
-	BrokerUrl        string             `json:"broker_url"`
-	CloseEndpoint    string             `json:"close_endpoint"`
-	ExpectedValueWei int                `json:"expected_value_wei"`
-	FundedValueWei   int                `json:"funded_value_wei"`
-	OpenedAt         time.Time          `json:"opened_at"`
-	PaymentEnvelope  string             `json:"payment_envelope"`
-	Protocol         string             `json:"protocol"`
-	RefillEndpoint   string             `json:"refill_endpoint"`
-	RequestId        string             `json:"request_id"`
-	Session          SessionAxesView    `json:"session"`
-	SessionId        openapi_types.UUID `json:"session_id"`
-	WorkId           string             `json:"work_id"`
+	BrokerUrl        string    `json:"broker_url"`
+	CloseEndpoint    string    `json:"close_endpoint"`
+	ExpectedValueWei int       `json:"expected_value_wei"`
+	FundedValueWei   int       `json:"funded_value_wei"`
+	OpenedAt         time.Time `json:"opened_at"`
+	PaymentEnvelope  string    `json:"payment_envelope"`
+	Protocol         string    `json:"protocol"`
+	RefillEndpoint   string    `json:"refill_endpoint"`
+	RequestId        string    `json:"request_id"`
+
+	// Session Authoritative paid-session/v1 offering axes selected for the session.
+	Session   SessionAxesView    `json:"session"`
+	SessionId openapi_types.UUID `json:"session_id"`
+	WorkId    string             `json:"work_id"`
 }
 
 // DepositSnapshotList defines model for DepositSnapshotList.
@@ -554,6 +664,24 @@ type JobAxes struct {
 
 // JobAxesTransports defines model for JobAxes.Transports.
 type JobAxesTransports string
+
+// JobStatusResponse Customer-visible job state without conflating billing evidence.
+type JobStatusResponse struct {
+	AccountingOutcome     JobStatusResponseAccountingOutcome `json:"accounting_outcome"`
+	ActualUnits           *int                               `json:"actual_units"`
+	BilledValueWei        *int                               `json:"billed_value_wei"`
+	BrokerExchangeOutcome *string                            `json:"broker_exchange_outcome"`
+	ClosedAt              *time.Time                         `json:"closed_at"`
+	FundedValueWei        int                                `json:"funded_value_wei"`
+	JobId                 openapi_types.UUID                 `json:"job_id"`
+	OpenedAt              time.Time                          `json:"opened_at"`
+	RequestId             string                             `json:"request_id"`
+	State                 string                             `json:"state"`
+	WorkId                string                             `json:"work_id"`
+}
+
+// JobStatusResponseAccountingOutcome defines model for JobStatusResponse.AccountingOutcome.
+type JobStatusResponseAccountingOutcome string
 
 // LedgerEntryView One row of the credit ledger (audit history).
 type LedgerEntryView struct {
@@ -844,9 +972,42 @@ type SessionAxesMetering string
 // SessionAxesRefill defines model for SessionAxes.Refill.
 type SessionAxesRefill string
 
-// SessionAxesView is the authoritative paid-session/v1 offering axes selected
-// for a session.
-type SessionAxesView = SessionAxes
+// SessionAxesView Authoritative paid-session/v1 offering axes selected for the session.
+type SessionAxesView struct {
+	Attachment           *SessionAxesViewAttachment `json:"attachment,omitempty"`
+	DescriptorSchema     string                     `json:"descriptor_schema"`
+	Metering             SessionAxesViewMetering    `json:"metering"`
+	Refill               *SessionAxesViewRefill     `json:"refill,omitempty"`
+	AdditionalProperties map[string]interface{}     `json:"-"`
+}
+
+// SessionAxesViewAttachment defines model for SessionAxesView.Attachment.
+type SessionAxesViewAttachment string
+
+// SessionAxesViewMetering defines model for SessionAxesView.Metering.
+type SessionAxesViewMetering string
+
+// SessionAxesViewRefill defines model for SessionAxesView.Refill.
+type SessionAxesViewRefill string
+
+// SessionSettlementEnvelope defines model for SessionSettlementEnvelope.
+type SessionSettlementEnvelope struct {
+	Payload   map[string]interface{}     `json:"payload"`
+	Signature SessionSettlementSignature `json:"signature"`
+}
+
+// SessionSettlementSignature defines model for SessionSettlementSignature.
+type SessionSettlementSignature struct {
+	Algorithm        SessionSettlementSignatureAlgorithm        `json:"algorithm"`
+	Canonicalization SessionSettlementSignatureCanonicalization `json:"canonicalization"`
+	Value            string                                     `json:"value"`
+}
+
+// SessionSettlementSignatureAlgorithm defines model for SessionSettlementSignature.Algorithm.
+type SessionSettlementSignatureAlgorithm string
+
+// SessionSettlementSignatureCanonicalization defines model for SessionSettlementSignature.Canonicalization.
+type SessionSettlementSignatureCanonicalization string
 
 // SessionStatusResponse Outbound: “GET /v1/sessions/{id}“.
 //
@@ -969,19 +1130,6 @@ type SettlementSignatureAlgorithm string
 
 // SettlementSignatureCanonicalization defines model for SettlementSignature.Canonicalization.
 type SettlementSignatureCanonicalization string
-
-// SessionSettlementEnvelope defines model for SessionSettlementEnvelope.
-type SessionSettlementEnvelope struct {
-	Payload   map[string]interface{}     `json:"payload"`
-	Signature SessionSettlementSignature `json:"signature"`
-}
-
-// SessionSettlementSignature defines model for SessionSettlementSignature.
-type SessionSettlementSignature struct {
-	Algorithm        string `json:"algorithm"`
-	Canonicalization string `json:"canonicalization"`
-	Value            string `json:"value"`
-}
 
 // SignupRequest Inbound: “POST /v1/accounts/signup“.
 type SignupRequest struct {
@@ -1305,6 +1453,12 @@ type OpenJobEndpointV1JobsPostParams struct {
 	Authorization                *string `json:"authorization,omitempty"`
 }
 
+// GetJobEndpointV1JobsJobIdGetParams defines parameters for GetJobEndpointV1JobsJobIdGet.
+type GetJobEndpointV1JobsJobIdGetParams struct {
+	XAPIKey       *string `json:"X-API-Key,omitempty"`
+	Authorization *string `json:"authorization,omitempty"`
+}
+
 // SettleJobEndpointV1JobsJobIdSettlePostParams defines parameters for SettleJobEndpointV1JobsJobIdSettlePost.
 type SettleJobEndpointV1JobsJobIdSettlePostParams struct {
 	XAPIKey       *string `json:"X-API-Key,omitempty"`
@@ -1410,8 +1564,9 @@ type CloseSessionEndpointV1SessionsSessionIdClosePostParams struct {
 
 // RefillSessionEndpointV1SessionsSessionIdRefillPostParams defines parameters for RefillSessionEndpointV1SessionsSessionIdRefillPost.
 type RefillSessionEndpointV1SessionsSessionIdRefillPostParams struct {
-	XAPIKey       *string `json:"X-API-Key,omitempty"`
-	Authorization *string `json:"authorization,omitempty"`
+	IdempotencyKey string  `json:"Idempotency-Key"`
+	XAPIKey        *string `json:"X-API-Key,omitempty"`
+	Authorization  *string `json:"authorization,omitempty"`
 }
 
 // IngestEndpointV1TelemetryPostParams defines parameters for IngestEndpointV1TelemetryPost.
@@ -1651,6 +1806,115 @@ func (a *SessionAxes) UnmarshalJSON(b []byte) error {
 
 // Override default JSON handling for SessionAxes to handle AdditionalProperties
 func (a SessionAxes) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Attachment != nil {
+		object["attachment"], err = json.Marshal(a.Attachment)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'attachment': %w", err)
+		}
+	}
+
+	object["descriptor_schema"], err = json.Marshal(a.DescriptorSchema)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'descriptor_schema': %w", err)
+	}
+
+	object["metering"], err = json.Marshal(a.Metering)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'metering': %w", err)
+	}
+
+	if a.Refill != nil {
+		object["refill"], err = json.Marshal(a.Refill)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'refill': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for SessionAxesView. Returns the specified
+// element and whether it was found
+func (a SessionAxesView) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for SessionAxesView
+func (a *SessionAxesView) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for SessionAxesView to handle AdditionalProperties
+func (a *SessionAxesView) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["attachment"]; found {
+		err = json.Unmarshal(raw, &a.Attachment)
+		if err != nil {
+			return fmt.Errorf("error reading 'attachment': %w", err)
+		}
+		delete(object, "attachment")
+	}
+
+	if raw, found := object["descriptor_schema"]; found {
+		err = json.Unmarshal(raw, &a.DescriptorSchema)
+		if err != nil {
+			return fmt.Errorf("error reading 'descriptor_schema': %w", err)
+		}
+		delete(object, "descriptor_schema")
+	}
+
+	if raw, found := object["metering"]; found {
+		err = json.Unmarshal(raw, &a.Metering)
+		if err != nil {
+			return fmt.Errorf("error reading 'metering': %w", err)
+		}
+		delete(object, "metering")
+	}
+
+	if raw, found := object["refill"]; found {
+		err = json.Unmarshal(raw, &a.Refill)
+		if err != nil {
+			return fmt.Errorf("error reading 'refill': %w", err)
+		}
+		delete(object, "refill")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for SessionAxesView to handle AdditionalProperties
+func (a SessionAxesView) MarshalJSON() ([]byte, error) {
 	var err error
 	object := make(map[string]json.RawMessage)
 

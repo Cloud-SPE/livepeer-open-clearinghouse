@@ -54,6 +54,19 @@ auto_replenish_total = Counter(
     registry=REGISTRY,
 )
 
+job_reconciliation_observations_total = Counter(
+    "livepeer_open_clearinghouse_job_reconciliation_observations_total",
+    "Broker request-ID lookup results observed by LOC.",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+job_terminal_accounting_total = Counter(
+    "livepeer_open_clearinghouse_job_terminal_accounting_total",
+    "Paid jobs finalized by evidence-backed settlement or conservative policy.",
+    labelnames=("terminal_kind",),
+    registry=REGISTRY,
+)
+
 
 async def metrics_middleware(
     request: Request,

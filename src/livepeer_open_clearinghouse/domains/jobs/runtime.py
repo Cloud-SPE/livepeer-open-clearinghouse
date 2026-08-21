@@ -28,6 +28,7 @@ from livepeer_open_clearinghouse.domains.jobs import service
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobRequest,
     CreateJobResponse,
+    JobStatusResponse,
     SettleJobRequest,
     SettleJobResponse,
 )
@@ -190,3 +191,15 @@ async def settle_job_endpoint(
         clock=clock,
         settings=settings,
     )
+
+
+@router.get("/{job_id}", response_model=JobStatusResponse)
+async def get_job_endpoint(
+    job_id: uuid.UUID,
+    pair: CurrentApiKeyDep,
+    db: SessionDep,
+) -> JobStatusResponse:
+    """Return exact, conservative, unresolved, or audit-only job state."""
+
+    _api_key, user = pair
+    return await service.get_job_status(db, job_id=job_id, user_id=user.id)

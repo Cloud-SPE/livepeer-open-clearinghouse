@@ -130,6 +130,22 @@ type JobSettleResponse struct {
 	CapStatus      CapStatus `json:"cap_status"`
 }
 
+// JobStatusResponse preserves LOC's four accounting outcomes without
+// representing a conservative charge or non-admission as broker settlement.
+type JobStatusResponse struct {
+	JobID                 string  `json:"job_id"`
+	RequestID             string  `json:"request_id"`
+	WorkID                string  `json:"work_id"`
+	State                 string  `json:"state"`
+	AccountingOutcome     string  `json:"accounting_outcome"`
+	BrokerExchangeOutcome *string `json:"broker_exchange_outcome"`
+	ActualUnits           *int64  `json:"actual_units"`
+	BilledValueWei        *int64  `json:"billed_value_wei"`
+	FundedValueWei        int64   `json:"funded_value_wei"`
+	OpenedAt              string  `json:"opened_at"`
+	ClosedAt              *string `json:"closed_at"`
+}
+
 // JobResult is the end-to-end return of SubmitJob — the broker's
 // response wrapped with the LOC-side settlement record.
 type JobResult struct {
@@ -701,6 +717,15 @@ func (c *Client) GetSessionStatus(ctx context.Context, sessionID string) (map[st
 		return nil, err
 	}
 	return out, nil
+}
+
+// GetJobStatus returns exact, conservative, unresolved, or audit-only billing state.
+func (c *Client) GetJobStatus(ctx context.Context, jobID string) (*JobStatusResponse, error) {
+	var out JobStatusResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/jobs/"+jobID, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ---- internals ----

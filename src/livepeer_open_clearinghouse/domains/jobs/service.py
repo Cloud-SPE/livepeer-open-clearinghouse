@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobResponse,
+    JobStatusResponse,
     SettleJobResponse,
     SettlementEnvelope,
 )
@@ -68,6 +69,10 @@ from livepeer_open_clearinghouse.providers.settlement_verification import (
     JobSettlementExpectation,
     SettlementVerificationError,
     verify_job_settlement,
+)
+from livepeer_open_clearinghouse.providers.telemetry import (
+    job_reconciliation_observations_total,
+    job_terminal_accounting_total,
 )
 from livepeer_open_clearinghouse.settings import Settings
 
@@ -406,7 +411,12 @@ async def settle_job(
     job-class session.
     """
     # Lookup + ownership
-    job_row = await db.get(PaymentSession, job_id)
+    job_row = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if job_row is None or job_row.user_id != user_id:
         raise JobNotFound
 
@@ -586,41 +596,65 @@ async def reconcile_open_jobs(
         except BrokerSettlementQueryError:
             continue
 
+        job_reconciliation_observations_total.labels(outcome=exchange.outcome.value).inc()
         job_row.last_polled_at = clock.now()
         job_row.breakdown = {
             **(job_row.breakdown or {}),
             "broker_exchange": _exchange_audit_record(exchange),
         }
         await db.flush()
-        if exchange.outcome is not BrokerExchangeOutcome.SETTLED:
+        settled = False
+        if exchange.outcome is BrokerExchangeOutcome.SETTLED:
+            claims = _recovered_settlement_claims(exchange)
+            if claims is not None and exchange.settlement is not None:
+                try:
+                    await settle_job(
+                        db,
+                        job_id=job_row.id,
+                        user_id=job_row.user_id,
+                        actual_units=claims["actual_units"],
+                        broker_job_id=claims["job_id"],
+                        work_unit=claims["work_unit"],
+                        outcome=claims["outcome"],
+                        settlement=SettlementEnvelope.model_validate(exchange.settlement),
+                        clock=clock,
+                        settings=settings,
+                    )
+                    settled = True
+                except (
+                    JobAlreadySettled,
+                    SettlementVerificationFailed,
+                    WorkUnitMismatch,
+                    ValueError,
+                ):
+                    # Keep the encumbrance intact. The audit snapshot makes a bad
+                    # broker claim observable without granting it financial authority.
+                    pass
+        if settled:
+            job_terminal_accounting_total.labels(terminal_kind="broker_settled").inc()
+            finalized += 1
             continue
 
-        claims = _recovered_settlement_claims(exchange)
-        if claims is None or exchange.settlement is None:
-            continue
-        try:
-            await settle_job(
-                db,
-                job_id=job_row.id,
-                user_id=job_row.user_id,
-                actual_units=claims["actual_units"],
-                broker_job_id=claims["job_id"],
-                work_unit=claims["work_unit"],
-                outcome=claims["outcome"],
-                settlement=SettlementEnvelope.model_validate(exchange.settlement),
-                clock=clock,
-                settings=settings,
-            )
-        except (
-            JobAlreadySettled,
-            SettlementVerificationFailed,
-            WorkUnitMismatch,
-            ValueError,
+        # These outcomes are still moving and must outlive every operational
+        # deadline. Charging while delivery/accounting is active would turn a
+        # recoverable exact settlement into an avoidable full charge.
+        if exchange.outcome in (
+            BrokerExchangeOutcome.ACCOUNTING_PENDING,
+            BrokerExchangeOutcome.IN_FLIGHT,
         ):
-            # Keep the encumbrance intact. The audit snapshot makes a bad
-            # broker claim observable without granting it financial authority.
             continue
-        finalized += 1
+        if settings.job_conservative_charge_after_seconds <= 0:
+            continue
+        charged = await finalize_conservative_full_charge(
+            db,
+            job_id=job_row.id,
+            clock=clock,
+            deadline_seconds=settings.job_conservative_charge_after_seconds,
+            evidence=_exchange_audit_record(exchange),
+        )
+        if charged:
+            job_terminal_accounting_total.labels(terminal_kind="conservative_full_charge").inc()
+            finalized += 1
 
     return finalized
 
@@ -682,4 +716,141 @@ def _exchange_audit_record(exchange: BrokerExchangeResult) -> dict[str, object]:
             record[field] = value
     if exchange.non_admission is not None:
         record["non_admission"] = exchange.non_admission
+    if exchange.settlement is not None:
+        record["settlement"] = exchange.settlement
     return record
+
+
+async def finalize_conservative_full_charge(
+    db: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    clock: Clock,
+    deadline_seconds: int,
+    evidence: dict[str, object],
+) -> bool:
+    """Atomically close one unresolved job without claiming broker usage.
+
+    Returns ``True`` only for the transaction that wins the open-to-closed
+    transition. A concurrent verified settlement and this fallback serialize
+    on the same row lock, so exactly one terminal accounting record wins.
+    """
+
+    if deadline_seconds <= 0:
+        return False
+    job_row = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        job_row is None
+        or job_row.protocol != PAID_JOB_PROTOCOL
+        or job_row.state != sessions_service.SESSION_STATE_OPEN
+    ):
+        return False
+
+    opened_at = job_row.opened_at
+    if opened_at.tzinfo is None:
+        opened_at = opened_at.replace(tzinfo=clock.now().tzinfo)
+    operational_deadline = opened_at + timedelta(seconds=deadline_seconds)
+    if clock.now() < operational_deadline:
+        return False
+
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment is None:
+        return False
+
+    audit = {
+        "terminal_kind": "conservative_full_charge",
+        "reason": "operational_deadline_without_valid_settlement",
+        "job_issued_at": opened_at.isoformat(),
+        "operational_deadline": operational_deadline.isoformat(),
+        "finalized_at": clock.now().isoformat(),
+        "creation_round": initial_payment.creation_round,
+        "expires_after_round": initial_payment.expires_after_round,
+        "evidence": evidence,
+    }
+    await sessions_service.transition_state(
+        db,
+        job_id,
+        from_state=sessions_service.SESSION_STATE_OPEN,
+        to_state=sessions_service.SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+    job_row.actual_units = None
+    job_row.billed_value_wei = job_row.funded_value_wei
+    job_row.outcome = "conservative_full_charge"
+    job_row.breakdown = {**(job_row.breakdown or {}), **audit}
+    await db.flush()
+    await sessions_service.record_settlement(
+        db,
+        job_id,
+        event_type="conservative_full_charge",
+        clock=clock,
+        actual_units=None,
+        billed_value_wei=job_row.funded_value_wei,
+        outcome="conservative_full_charge",
+        raw_record=audit,
+    )
+    return True
+
+
+async def get_job_status(
+    db: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> JobStatusResponse:
+    """Return billing state while preserving evidence distinctions."""
+
+    job_row = await db.get(PaymentSession, job_id)
+    if (
+        job_row is None
+        or job_row.user_id != user_id
+        or job_row.protocol != PAID_JOB_PROTOCOL
+        or not job_row.broker_request_id
+    ):
+        raise JobNotFound
+    breakdown = job_row.breakdown or {}
+    exchange = breakdown.get("broker_exchange")
+    exchange_outcome = exchange.get("outcome") if isinstance(exchange, dict) else None
+    if not isinstance(exchange_outcome, str):
+        exchange_outcome = None
+
+    accounting_outcome: Literal[
+        "unresolved",
+        "non_admission_audit",
+        "broker_settled",
+        "conservative_full_charge",
+    ]
+    if job_row.outcome == "conservative_full_charge":
+        accounting_outcome = "conservative_full_charge"
+    elif job_row.state == sessions_service.SESSION_STATE_CLOSED:
+        accounting_outcome = "broker_settled"
+    elif exchange_outcome == BrokerExchangeOutcome.NOT_ADMITTED.value:
+        accounting_outcome = "non_admission_audit"
+    else:
+        accounting_outcome = "unresolved"
+
+    return JobStatusResponse(
+        job_id=job_row.id,
+        request_id=job_row.broker_request_id,
+        work_id=job_row.work_id,
+        state=job_row.state,
+        accounting_outcome=accounting_outcome,
+        broker_exchange_outcome=exchange_outcome,
+        actual_units=job_row.actual_units,
+        billed_value_wei=(
+            int(job_row.billed_value_wei) if job_row.billed_value_wei is not None else None
+        ),
+        funded_value_wei=int(job_row.funded_value_wei),
+        opened_at=job_row.opened_at,
+        closed_at=job_row.closed_at,
+    )

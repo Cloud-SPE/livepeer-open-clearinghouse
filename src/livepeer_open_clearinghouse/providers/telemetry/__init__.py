@@ -4,6 +4,8 @@ from livepeer_open_clearinghouse.providers.telemetry.logging import configure_lo
 from livepeer_open_clearinghouse.providers.telemetry.metrics import (
     REGISTRY,
     auto_replenish_total,
+    job_reconciliation_observations_total,
+    job_terminal_accounting_total,
     metrics_middleware,
     payment_daemon_deposit_wei,
     payment_daemon_reserve_wei,
@@ -17,6 +19,8 @@ __all__ = [
     "auto_replenish_total",
     "configure_logging",
     "get_logger",
+    "job_reconciliation_observations_total",
+    "job_terminal_accounting_total",
     "metrics_middleware",
     "payment_daemon_deposit_wei",
     "payment_daemon_reserve_wei",

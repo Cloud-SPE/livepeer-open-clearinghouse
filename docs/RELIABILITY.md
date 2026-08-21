@@ -109,7 +109,9 @@ If no valid signed settlement is recoverable by the configured operational
 deadline, LOC may finalize a distinct `conservative_full_charge`. That outcome
 must never be represented as broker-settled usage, a successful network debit,
 or fabricated work units. Signed non-admission remains attributable audit and
-dispute evidence, not refund authority.
+dispute evidence, not refund authority. The deadline is configured with
+`JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS`; its safe default is `0` (disabled), so
+operators must select and document a nonzero billing policy deliberately.
 
 There is deliberately no customer-authorized `abandon` endpoint. A broker
 refusal may improve telemetry but cannot release money because a broker that

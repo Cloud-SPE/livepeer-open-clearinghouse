@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     idempotency_inflight_timeout_seconds: int = Field(default=60, ge=5)
     idempotency_retention_seconds: int = Field(default=86_400, ge=60)
     job_reconciliation_interval_seconds: int = Field(default=60, ge=0)
+    # Operational billing policy, not ticket expiry. Zero keeps unresolved
+    # jobs encumbered indefinitely until an operator selects a deadline.
+    job_conservative_charge_after_seconds: int = Field(default=0, ge=0)
     session_reconciliation_interval_seconds: int = Field(default=60, ge=0)
 
     # ---- per-IP rate limits (in-process token bucket) ----

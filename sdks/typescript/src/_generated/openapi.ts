@@ -968,6 +968,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job Endpoint
+         * @description Return exact, conservative, unresolved, or audit-only job state.
+         */
+        get: operations["get_job_endpoint_v1_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -1199,8 +1219,7 @@ export interface paths {
          *
          *     Surfaces the operator-facing real-time roll-ups documented in
          *     exec-plan 002 — server.refill_denied, server.mint_refused,
-         *     server.discrepancy_detected, server.sdk_sha_mismatch, *.error
-         *     rates.
+         *     server.sdk_sha_mismatch, and *.error rates.
          */
         get: operations["admin_event_counts_endpoint_v1_admin_telemetry_event_counts_get"];
         put?: never;
@@ -1918,6 +1937,43 @@ export interface components {
             transports: ("unary" | "stream" | "multipart")[];
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * JobStatusResponse
+         * @description Customer-visible job state without conflating billing evidence.
+         */
+        JobStatusResponse: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Request Id */
+            request_id: string;
+            /** Work Id */
+            work_id: string;
+            /** State */
+            state: string;
+            /**
+             * Accounting Outcome
+             * @enum {string}
+             */
+            accounting_outcome: "unresolved" | "non_admission_audit" | "broker_settled" | "conservative_full_charge";
+            /** Broker Exchange Outcome */
+            broker_exchange_outcome: string | null;
+            /** Actual Units */
+            actual_units: number | null;
+            /** Billed Value Wei */
+            billed_value_wei: number | null;
+            /** Funded Value Wei */
+            funded_value_wei: number;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Closed At */
+            closed_at: string | null;
         };
         /**
          * LedgerEntryView
@@ -4711,6 +4767,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettleJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_endpoint_v1_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobStatusResponse"];
                 };
             };
             /** @description Validation Error */

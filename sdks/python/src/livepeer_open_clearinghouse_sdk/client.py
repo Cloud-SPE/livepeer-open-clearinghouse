@@ -764,6 +764,11 @@ class OpenClearinghouseClient:
         r = await self._http.get(f"/v1/sessions/{session_id}")
         return self._unwrap(r)
 
+    async def get_job_status(self, job_id: uuid.UUID | str) -> dict[str, Any]:
+        """Read exact, conservative, unresolved, or audit-only job state."""
+        r = await self._http.get(f"/v1/jobs/{job_id}")
+        return self._unwrap(r)
+
     # ---- internals ----
 
     _SETTLE_MAX_RETRIES = 3
