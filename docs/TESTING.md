@@ -41,3 +41,19 @@ with Modules' `--chain-seed`, and verifies through the Unix-socket gRPC API that
 both paid-v2 protocol axes and the delegated settlement key reach `Select`.
 Logs and a machine-readable result are left under
 `.artifacts/live-conformance/registry-seed/`.
+
+The complete real-process preflight is:
+
+```bash
+make test-live-stack
+```
+
+It source-builds and starts the payment daemon in payer and payee modes, the
+capability broker, and the service-registry daemon from the sibling Modules
+checkout. It also starts an isolated Postgres container, applies every LOC
+migration, and runs the LOC gateway with its real daemon clients. Only the
+chain lookup and a trivial workload backend are fakes. The command proves LOC
+health and performs signed route selection through LOC's production UDS gRPC
+client. Every process log, build log, migration log, and a machine-readable
+result is retained under `.artifacts/live-conformance/stack/`; processes and
+the Postgres container are removed on success or failure.

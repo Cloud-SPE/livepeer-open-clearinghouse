@@ -1,4 +1,4 @@
-.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e test-conformance test-live-registry test-sdks test-release \
+.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e test-conformance test-live-registry test-live-stack test-sdks test-release \
         run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc refresh-openapi
 
 UV ?= uv
@@ -62,6 +62,9 @@ test-conformance: ## Run the Modules v2 fixture harness
 
 test-live-registry: ## Prove the real registry signed chain-seed path (requires sibling Modules checkout)
 	$(UV) run python conformance/live/registry_seed_probe.py
+
+test-live-stack: ## Boot real LOC + Modules v2 processes (requires Docker and sibling Modules checkout)
+	$(UV) run python conformance/live/stack_harness.py
 
 test-sdks: ## Run quality checks and tests for all four official SDKs
 	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python
