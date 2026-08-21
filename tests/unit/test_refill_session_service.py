@@ -68,8 +68,10 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key, signed_session_settlement
 
 
 @pytest_asyncio.fixture()
@@ -139,6 +141,7 @@ def _route(mode: str, *, price_wei: int = 1000, per_units: int = 1) -> SelectedR
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol="paid-session/v1",
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra={
             "session": {
                 "descriptor_schema": "test-runtime/v1",
@@ -504,6 +507,82 @@ async def test_rotation_rejects_predecessor_and_remints_without_double_funding(
         )
         == 200
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rotation_chain_closes_with_exactly_once_signed_accounting(
+    db_session: AsyncSession,
+) -> None:
+    initial_balance = 10**12
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(
+        db_session, balance_wei=initial_balance
+    )
+    rejected = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=80,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        request_id="rejected-refill",
+    )
+    replacement = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=80,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        request_id="rotation-successor",
+        rebind_from=rejected.work_id,
+        replaces_request_id=rejected.request_id,
+    )
+    settlement = signed_session_settlement(
+        gateway_session_id=str(open_resp.session_id),
+        work_id=replacement.work_id,
+        predecessor_work_id=rejected.work_id,
+        rotation_generation=1,
+        debited_units=150,
+        generation_debited_units=50,
+        billed_value_wei=150_000,
+        generation_billed_value_wei=50_000,
+        funded_value_wei=1_000_000,
+        generation_funded_value_wei=100_000,
+        amount_wei=1000,
+        per_units=1,
+        work_unit="session_second",
+    )
+
+    closed = await sessions_service.close_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        actual_units=150,
+        outcome=None,
+        settlement=settlement,
+        clock=_clock(),
+    )
+
+    assert closed.billed_value_wei == 150_000
+    assert closed.refund_wei == 850_000
+    balance = await db_session.get(CreditBalance, user_id)
+    assert balance is not None
+    assert balance.amount_wei == Decimal(initial_balance - 150_000)
+    with pytest.raises(SessionNotOpen):
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=150,
+            outcome=None,
+            settlement=settlement,
+            clock=_clock(),
+        )
 
 
 @pytest.mark.unit

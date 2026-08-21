@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import time
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -43,6 +44,10 @@ from livepeer_open_clearinghouse.errors import (
     NoRouteAvailable,
     OpenClearinghouseError,
     SpendCapExceeded,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerSettlementClient,
+    BrokerSettlementQueryError,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -1171,8 +1176,9 @@ async def _verify_close_settlement(
     session_row: PaymentSession,
     initial_payment_row: Payment,
     settlement: dict[str, Any] | None,
+    require_terminal: bool = True,
 ) -> VerifiedSessionSettlement:
-    """Verify and bind the authoritative terminal broker settlement."""
+    """Verify and bind an authoritative broker settlement."""
 
     if settlement is None:
         raise SessionSettlementVerificationFailed(reason="missing_settlement")
@@ -1210,6 +1216,7 @@ async def _verify_close_settlement(
                 per_units=int(snapshot["units_per_price"]),
                 funded_value_wei=int(session_row.funded_value_wei),
                 last_settlement_seq=session_row.last_settlement_seq,
+                require_terminal=require_terminal,
             ),
         )
     except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
@@ -1339,6 +1346,115 @@ async def close_session(
         outcome=final_outcome,
         closed_at=session_row.closed_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation janitor (background task)
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_JANITOR_INTERVAL_SECONDS = 60
+
+
+async def reconcile_open_sessions(
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    clock: Clock,
+    interval_seconds: int = DEFAULT_JANITOR_INTERVAL_SECONDS,
+    batch_limit: int = 100,
+) -> int:
+    """Finalize silent sessions from broker-signed terminal settlements.
+
+    The lookup uses LOC's globally unique ``payment_session.id`` as the
+    Modules ``gateway_session_id``. ``work_id`` is intentionally never used:
+    several broker sessions may share the same payer ticket identity.
+    """
+    cutoff = clock.now() - timedelta(seconds=interval_seconds)
+    rows = list(
+        (
+            await db.scalars(
+                select(PaymentSession)
+                .where(
+                    PaymentSession.state.in_((SESSION_STATE_OPEN, SESSION_STATE_DRAINING)),
+                    (PaymentSession.last_polled_at.is_(None))
+                    | (PaymentSession.last_polled_at < cutoff),
+                )
+                .order_by(PaymentSession.last_polled_at.asc().nulls_first())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+
+    finalized = 0
+    for session_row in rows:
+        snapshot = session_row.route_snapshot or {}
+        broker_url = snapshot.get("worker_url")
+        if not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            settlement = await settlement_client.get_settlement(
+                broker_url=broker_url,
+                gateway_session_id=session_row.id,
+            )
+        except BrokerSettlementQueryError:
+            continue
+
+        await mark_polled(db, session_row.id, clock=clock)
+        if settlement is None:
+            continue
+
+        initial_payment = await db.scalar(
+            select(Payment)
+            .where(Payment.session_id == session_row.id)
+            .order_by(Payment.created_at.asc())
+            .limit(1)
+        )
+        if initial_payment is None:
+            continue
+        try:
+            verified = await _verify_close_settlement(
+                db,
+                session_row=session_row,
+                initial_payment_row=initial_payment,
+                settlement=settlement,
+                require_terminal=False,
+            )
+        except SessionSettlementVerificationFailed:
+            continue
+        if verified.state != "closed":
+            continue
+
+        try:
+            close_response = await close_session(
+                db,
+                session_id=session_row.id,
+                user_id=session_row.user_id,
+                actual_units=verified.debited_units,
+                outcome=None,
+                settlement=settlement,
+                clock=clock,
+            )
+        except SessionNotOpen:
+            continue
+        finalized += 1
+        opened_at = session_row.opened_at
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=clock.now().tzinfo)
+        await telemetry_events.emit_session_janitor_finalized(
+            db,
+            api_key_id=session_row.api_key_id,
+            user_id=session_row.user_id,
+            session_id=session_row.id,
+            actual_units=close_response.actual_units,
+            billed_value_wei=close_response.billed_value_wei,
+            refund_wei=close_response.refund_wei,
+            outcome=close_response.outcome,
+            silence_duration_seconds=max(int((clock.now() - opened_at).total_seconds()), 0),
+            clock=clock,
+        )
+
+    return finalized
 
 
 # ---------------------------------------------------------------------------

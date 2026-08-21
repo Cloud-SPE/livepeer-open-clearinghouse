@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,9 +29,13 @@ from livepeer_open_clearinghouse.domains.notifications import runtime as notific
 from livepeer_open_clearinghouse.domains.payments import runtime as payments_runtime
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.sessions import runtime as sessions_runtime
+from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.telemetry import runtime as telemetry_runtime
 from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
 from livepeer_open_clearinghouse.errors import register_handlers
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    HttpBrokerSettlementClient,
+)
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_scope
 from livepeer_open_clearinghouse.providers.http.gzip_request import (
@@ -101,6 +106,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
         except Exception as exc:
             log.warning("scheduler.auto_replenish.failed", error=str(exc))
 
+    async def _reconcile_open_sessions() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                settlement_client = HttpBrokerSettlementClient(http_client)
+                async with session_scope() as db:
+                    n = await sessions_service.reconcile_open_sessions(
+                        db,
+                        settlement_client=settlement_client,
+                        clock=clock,
+                        interval_seconds=cfg.session_reconciliation_interval_seconds,
+                    )
+                    if n:
+                        log.info("scheduler.reconcile_open_sessions.finalized", count=n)
+        except Exception as exc:
+            log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
+
     async def _purge_expired_telemetry() -> None:
         try:
             async with session_scope() as db:
@@ -129,6 +150,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             _auto_replenish,
             name="auto_replenish",
             seconds=cfg.auto_replenish_check_interval_seconds,
+        )
+    if cfg.session_reconciliation_interval_seconds > 0:
+        register_interval_job(
+            _reconcile_open_sessions,
+            name="reconcile_open_sessions",
+            seconds=cfg.session_reconciliation_interval_seconds,
         )
     if cfg.telemetry_raw_retention_days > 0:
         register_interval_job(

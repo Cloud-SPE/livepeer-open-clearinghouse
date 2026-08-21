@@ -116,7 +116,7 @@ work_id: string                    # an opaque session key from the daemon
 |---|---|
 | `ReportPaymentResult` | Caller reports payee rejection (`INVALID_RECIPIENT_RAND`); daemon evicts cached session. Returns `Aborted` with retry-once metadata. |
 | `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round for the hot wallet. Useful for admin/health surfaces. |
-| `GetSessionDebits` | Long-running session debit ledger. May be `UNIMPLEMENTED`. |
+| `GetSessionDebits` | Legacy long-running session debit ledger. LOC v2 does not call it; reconciliation uses broker-signed settlements. |
 | `Health` | Returns `"ok"`. |
 
 Receiver-side RPCs (`PayeeDaemon`) exist but are not on the sender socket;

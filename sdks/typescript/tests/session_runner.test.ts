@@ -181,6 +181,7 @@ describe("SessionRunner paid-session/v1", () => {
   });
 
   it("remints recipient rotation with a fresh id and declared predecessor", async () => {
+    const warnings: WinddownEvent[] = [];
     const calls: { url: string; init?: RequestInit }[] = [];
     let refillCount = 0;
     let topupCount = 0;
@@ -225,7 +226,14 @@ describe("SessionRunner paid-session/v1", () => {
       apiKey: "pymth_test",
       fetch: fetchImpl,
     });
-    const runner = new SessionRunner({ client, handle: handle(), fetch: fetchImpl });
+    const runner = new SessionRunner({
+      client,
+      handle: handle(),
+      fetch: fetchImpl,
+      onWinddownWarning: (event) => {
+        warnings.push(event);
+      },
+    });
     await runner.start();
     await runner.onBalance(balance({ status: "low" }));
 
@@ -248,6 +256,7 @@ describe("SessionRunner paid-session/v1", () => {
       "successor-request",
     );
     expect(runner.brokerSession?.workId).toBe("wid-successor");
+    expect(warnings).toEqual([]);
   });
 
   it("drains when the broker refuses a declared rebind", async () => {

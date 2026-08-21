@@ -178,6 +178,7 @@ async def test_bounded_and_refusal_warning_balances_drain_without_refill() -> No
 @pytest.mark.asyncio
 @respx.mock
 async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebind() -> None:
+    warnings: list[WinddownEvent] = []
     handle = _handle()
     respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))
     loc_refill = respx.post(f"{BASE}{handle.refill_endpoint}").mock(
@@ -218,7 +219,7 @@ async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebin
     )
 
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-        runner = SessionRunner(client=client, handle=handle)
+        runner = SessionRunner(client=client, handle=handle, on_winddown_warning=warnings.append)
         await runner.start()
         await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
 
@@ -236,6 +237,7 @@ async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebin
     assert broker_topup.calls[1].request.headers["Livepeer-Request-Id"] == "successor-request"
     assert runner.broker_session is not None
     assert runner.broker_session.work_id == "wid-successor"
+    assert warnings == []
 
 
 @pytest.mark.asyncio

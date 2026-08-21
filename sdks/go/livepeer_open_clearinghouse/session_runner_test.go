@@ -136,6 +136,7 @@ func TestSessionRunnerDrainsWithoutRefill(t *testing.T) {
 func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
 	var brokerURL string
 	var topupHeaders []http.Header
+	var warnings []string
 	topupCalls := 0
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -186,7 +187,10 @@ func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
 	}))
 	defer locServer.Close()
 	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{Client: client, Handle: sessionHandle(brokerURL, "extensible")})
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
+	})
 	ctx := context.Background()
 	if err := runner.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -204,6 +208,69 @@ func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
 	}
 	if runner.BrokerSession().WorkID != "successor" {
 		t.Fatalf("work id not advanced: %s", runner.BrokerSession().WorkID)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("successful rotation became customer-visible: %v", warnings)
+	}
+}
+
+func TestSessionRunnerDrainsWhenDeclaredRebindIsRefused(t *testing.T) {
+	var brokerURL string
+	topupCalls := 0
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/session" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "broker-session", "work_id": "wid", "state": "active",
+				"runtime":    map[string]any{"schema": "livepeer.session.test/v1", "public": map[string]any{}},
+				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+				"balance": balance("ok", false),
+				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
+			})
+			return
+		}
+		if r.URL.Path == "/topup" {
+			topupCalls++
+			w.Header().Set("Livepeer-Error", map[bool]string{true: "recipient_rotated", false: "rebind_refused"}[topupCalls == 1])
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	brokerURL = broker.URL
+	defer broker.Close()
+
+	sid := "11111111-1111-1111-1111-111111111111"
+	refillCalls := 0
+	locServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/"+sid+"/refill" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		refillCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if refillCalls == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "wid", "request_id": "rejected", "payment_envelope": "OLD"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "successor", "request_id": "replacement", "payment_envelope": "NEW", "rebind_from": "wid"})
+	}))
+	defer locServer.Close()
+	warnings := []string{}
+	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
+	})
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	if refillCalls != 2 || topupCalls != 2 {
+		t.Fatalf("unexpected retries: refill=%d topup=%d", refillCalls, topupCalls)
+	}
+	if len(warnings) != 1 || warnings[0] != "payment_unrecoverable" {
+		t.Fatalf("unexpected drain signal: %v", warnings)
 	}
 }
 

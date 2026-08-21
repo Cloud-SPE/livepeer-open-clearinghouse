@@ -18,6 +18,7 @@ The active ``server.*`` events are:
     server.mint_refused               — mint rejected by a cap or balance
     server.refill_served              — successful refill mint
     server.refill_denied              — refill rejected by a cap
+    server.session_janitor_finalized  — signed settlement closed a silent session
     server.sdk_sha_mismatch           — SDK identity not approved
 """
 
@@ -270,6 +271,9 @@ async def emit_mint_refused(
     await _maybe_notify_cap_reached(
         db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
     )
+    await _maybe_notify_cap_reached(
+        db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
+    )
 
 
 async def emit_refill_served(
@@ -344,8 +348,37 @@ async def emit_refill_denied(
         factory=independent_session_factory,
         bound_session=db,
     )
-    await _maybe_notify_cap_reached(
-        db, user_id=user_id, which_cap=which_cap, remaining_wei=remaining_wei, clock=clock
+
+
+async def emit_session_janitor_finalized(
+    db: AsyncSession,
+    *,
+    api_key_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    actual_units: int,
+    billed_value_wei: int,
+    refund_wei: int,
+    outcome: str,
+    silence_duration_seconds: int,
+    clock: Clock,
+) -> None:
+    """Record recovery based on a directly queried signed settlement."""
+    await _safe_emit(
+        db,
+        event_type="server.session_janitor_finalized",
+        payload={
+            "session_id": str(session_id),
+            "actual_units": actual_units,
+            "billed_value_wei": billed_value_wei,
+            "refund_wei": refund_wei,
+            "outcome": outcome,
+            "silence_duration_seconds": silence_duration_seconds,
+        },
+        api_key_id=api_key_id,
+        user_id=user_id,
+        correlation_id=session_id,
+        clock=clock,
     )
 
 

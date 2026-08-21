@@ -119,6 +119,26 @@ When LOC refuses a refill (cap_reached or daemon failure):
 - Session exits with `outcome: "cap_reached"` once the broker
   closes
 
+### Recipient rotation
+
+`recipient_rotated` is a single bounded recovery handshake, not a generic
+retry loop:
+
+1. The SDK preserves the rejected LOC `work_id` and request ID.
+2. LOC reports that exact rejection to the payer daemon and mints a successor
+   under a fresh LOC and payer request identity. The refused payment is marked
+   and cannot contribute a second charge.
+3. The SDK sends the successor to the same broker session with
+   `Livepeer-Rebind-From: <rejected-work-id>`.
+4. The broker's signed terminal settlement carries the predecessor,
+   generation, successor `work_id`, and cumulative session charge. LOC verifies
+   the whole chain before final accounting.
+
+A successful rotation is invisible to the customer; the settlement chain is
+the audit record. If the broker refuses the declared rebind, the SDK emits one
+`payment_unrecoverable` winddown warning and lets the funded session drain. It
+does not attempt another rotation.
+
 ---
 
 ## 5. SDK criticality
@@ -210,6 +230,14 @@ conformance".
 3. If the SDK omitted or malformed `Livepeer-Settlement`, require an
    SDK upgrade. If the signature or signed fields disagree, preserve
    the envelope and investigate the broker; do not finalize manually.
+
+If the SDK disappears before close, LOC's slow reconciliation job queries
+`GET /v1/settlement/{gateway_session_id}` at the pinned broker URL. It never
+queries by `work_id`, because multiple logical sessions may share that payment
+identity. A terminal envelope passes the same signature, identity, rotation,
+price, unit, cap, and sequence checks as an SDK-forwarded close before LOC
+releases any encumbrance. Missing, active, malformed, or mismatched records
+leave the session open and fail closed financially.
 
 **Self-protection**: per design Q#3, the LOC-side encumbrance is
 worst-case at session open. Customers can never be billed more

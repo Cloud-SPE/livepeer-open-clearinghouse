@@ -196,16 +196,76 @@ async fn recipient_rotation_uses_fresh_intent_and_declared_rebind() {
         .await;
 
     let client = Client::new(ClientOptions::new(loc.uri(), "pymth_test")).unwrap();
-    let runner = SessionRunner::start(SessionRunnerOptions::new(
-        client,
-        handle(&broker, "extensible"),
-    ))
-    .await
-    .unwrap();
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let captured = warnings.clone();
+    let mut options = SessionRunnerOptions::new(client, handle(&broker, "extensible"));
+    options.on_winddown_warning = Some(Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move { captured.lock().await.push(event.reason) })
+    }));
+    let runner = SessionRunner::start(options).await.unwrap();
     runner
         .on_balance(serde_json::from_value(balance("low", false)).unwrap())
         .await;
     assert_eq!(runner.broker_session().await.work_id, "successor");
+    assert!(warnings.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn declared_rebind_refusal_drains_once() {
+    let broker = MockServer::start().await;
+    mount_open(&broker, "livepeer.session.test/v1").await;
+    Mock::given(method("POST"))
+        .and(path("/topup"))
+        .and(header("Livepeer-Payment", "OLD"))
+        .respond_with(
+            ResponseTemplate::new(409).insert_header("Livepeer-Error", "recipient_rotated"),
+        )
+        .expect(1)
+        .mount(&broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/topup"))
+        .and(header("Livepeer-Payment", "NEW"))
+        .and(header("Livepeer-Rebind-From", "wid"))
+        .respond_with(ResponseTemplate::new(409).insert_header("Livepeer-Error", "rebind_refused"))
+        .expect(1)
+        .mount(&broker)
+        .await;
+
+    let loc = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/sessions/{SID}/refill")))
+        .and(body_partial_json(json!({"rebind_from": "wid"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "work_id": "successor", "request_id": "replacement",
+            "payment_envelope": "NEW", "rebind_from": "wid"
+        })))
+        .expect(1)
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/sessions/{SID}/refill")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "work_id": "wid", "request_id": "rejected", "payment_envelope": "OLD"
+        })))
+        .expect(1)
+        .mount(&loc)
+        .await;
+
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let captured = warnings.clone();
+    let client = Client::new(ClientOptions::new(loc.uri(), "pymth_test")).unwrap();
+    let mut options = SessionRunnerOptions::new(client, handle(&broker, "extensible"));
+    options.on_winddown_warning = Some(Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move { captured.lock().await.push(event.reason) })
+    }));
+    let runner = SessionRunner::start(options).await.unwrap();
+    runner
+        .on_balance(serde_json::from_value(balance("low", false)).unwrap())
+        .await;
+    assert_eq!(*warnings.lock().await, ["payment_unrecoverable"]);
 }
 
 #[tokio::test]

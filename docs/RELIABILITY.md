@@ -182,11 +182,17 @@ replenish job become the two hot spots that need attention.
 Return `503 SERVICE_UNAVAILABLE` to the caller. Do not charge. Do not record
 a payment row.
 
-### `payment-daemon.CreatePayment` returns an error
+### Broker rejects a session top-up
 
-If the error is `INVALID_RECIPIENT_RAND` (session rotation), retry once
-with a fresh `Select` call. If the second attempt also fails, return `503`
-to the caller. Do not charge.
+If a broker returns `recipient_rotated` for a session top-up, the SDK asks LOC
+for one fresh refill intent bound to the rejected `work_id` and request ID.
+LOC reports the rejection to the payer daemon, which rotates the recipient;
+the SDK then sends the successor payment with `Livepeer-Rebind-From`. A
+successful rotation is settlement-only infrastructure and produces no
+customer-visible event. A refused rebind drains with `payment_unrecoverable`.
+LOC never retries unbound and never charges the refused payment twice.
+
+### `payment-daemon.CreatePayment` returns an error
 
 If the error is sender-validation-related (deposit zero, withdraw round
 imminent), return `503 DAEMON_DEPOSIT_INSUFFICIENT` to the caller. This is
