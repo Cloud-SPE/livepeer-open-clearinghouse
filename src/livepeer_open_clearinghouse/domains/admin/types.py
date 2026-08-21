@@ -95,6 +95,9 @@ class DepositSnapshotView(BaseModel):
     deposit_wei: int
     reserve_wei: int
     withdraw_round: int
+    current_round: int | None
+    ticket_validity_period: int | None
+    ticket_validity_period_observed_at: datetime | None
 
 
 class DepositSnapshotList(BaseModel):

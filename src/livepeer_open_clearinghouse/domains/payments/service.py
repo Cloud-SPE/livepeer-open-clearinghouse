@@ -21,7 +21,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -35,6 +35,12 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     PaymentIdempotencyKey,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
+from livepeer_open_clearinghouse.providers.telemetry import (
+    payment_daemon_current_round,
+    payment_daemon_deposit_wei,
+    payment_daemon_reserve_wei,
+    payment_daemon_ticket_validity_period,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,14 +343,40 @@ async def snapshot_deposit(
     observability for the on-chain pool drawdown over time.
     """
     info = await daemon.get_deposit_info()  # type: ignore[attr-defined]
+    previous = await session.scalar(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(1)
+    )
+    if info.current_round <= 0 or info.ticket_validity_period <= 0:
+        raise ValueError("payment daemon returned invalid validity telemetry")
+    if previous is not None:
+        if previous.current_round is not None and info.current_round < previous.current_round:
+            raise ValueError("payment daemon current_round regressed")
+        previous_observed_at = previous.ticket_validity_period_observed_at
+        if previous_observed_at is not None:
+            # SQLite drops timezone metadata while Postgres preserves it. Normalize
+            # persisted UTC before comparing so the fail-closed regression check is
+            # identical in tests and production.
+            if previous_observed_at.tzinfo is None:
+                previous_observed_at = previous_observed_at.replace(tzinfo=UTC)
+            if info.ticket_validity_period_observed_at < previous_observed_at:
+                raise ValueError("payment daemon validity observation time regressed")
     row = PaymentDaemonDepositSnapshot(
         taken_at=clock.now(),
         deposit_wei=Decimal(info.deposit_wei),
         reserve_wei=Decimal(info.reserve_wei),
         withdraw_round=int(info.withdraw_round),
+        current_round=int(info.current_round),
+        ticket_validity_period=int(info.ticket_validity_period),
+        ticket_validity_period_observed_at=info.ticket_validity_period_observed_at,
     )
     session.add(row)
     await session.flush()
+    payment_daemon_deposit_wei.set(float(info.deposit_wei))
+    payment_daemon_reserve_wei.set(float(info.reserve_wei))
+    payment_daemon_current_round.set(info.current_round)
+    payment_daemon_ticket_validity_period.set(info.ticket_validity_period)
     return row
 
 

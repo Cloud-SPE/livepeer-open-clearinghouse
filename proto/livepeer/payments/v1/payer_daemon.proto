@@ -57,15 +57,22 @@ service PayerDaemon {
   // Read-only; the daemon does not fund escrow.
   rpc GetDepositInfo(GetDepositInfoRequest) returns (GetDepositInfoResponse);
 
-  // Read the per-session debit ledger for a long-lived session
-  // (`paid-session/v1`). Used by
-  // gateway adapters at session-close time to surface a final
-  // `Livepeer-Work-Units` count to the gateway caller without adding a
-  // close-frame extension or a control-plane event. The daemon may
-  // return UNIMPLEMENTED when long-lived debit tracking is not wired
-  // (the gateway-side adapter treats UNIMPLEMENTED as "0 work units,
-  // best effort"). The actual debit-pushdown from the broker-side
-  // ticker lands with plan 0015.
+  // Deprecated: NOT the reconciliation source, and not implemented.
+  //
+  // The payer daemon keeps no debit ledger. Debits happen payee-side —
+  // the broker debits its payee daemon as usage is claimed — so a payer
+  // has nothing to report and this RPC returns UNIMPLEMENTED.
+  //
+  // Session usage is reconciled from the payee side instead:
+  //
+  //   - the signed settlement record (`Livepeer-Settlement`), carrying
+  //     cumulative claimed and debited units, the billed value, and the
+  //     session's rotation chain; or
+  //   - a direct read of `GET {worker_url}/v1/settlement/{id}` when the
+  //     record should not cross a customer-controlled SDK at all.
+  //
+  // `debited_units` there is the authoritative billing quantity. Two
+  // ledgers is how two ledgers drift, so the payee's is the only one.
   rpc GetSessionDebits(GetSessionDebitsRequest) returns (GetSessionDebitsResponse);
 
   // Health returns "ok" if the daemon is ready to mint payments. The
@@ -91,8 +98,33 @@ message CreatePaymentRequest {
   // Funding scope the gateway is authorizing for this minted payment batch.
   FundingIntent funding = 4;
 
-  // Caller-supplied idempotency key for this mint intent. Required by
-  // payment-daemon v2; identical retries replay the original response.
+  // Caller-supplied idempotency key for this mint intent. REQUIRED.
+  //
+  // Minting signs tickets against real deposit, so a retry after an
+  // uncertain response must never mint a second batch. With this key the
+  // daemon replays the exact original response — same payment_bytes,
+  // same work_id, same values — and never re-signs.
+  //
+  // Namespace: the key is scoped to the daemon's own sender identity
+  // (its keystore address). Two callers sharing one daemon share one
+  // namespace, so ids MUST be globally unique within it — a UUIDv4, or a
+  // caller-prefixed form like "loc:<uuid>". Max 128 bytes. A key reused
+  // with different request content is refused (INVALID_ARGUMENT), never
+  // minted: the key is a promise about content.
+  //
+  // A recovery retry after `ReportPaymentResult` reported
+  // INVALID_RECIPIENT_RAND is a NEW intent and needs a NEW key: the old
+  // one would replay the very payment the payee rejected. The rotation
+  // mints against a fresh recipient rand, so it is a different payment
+  // by construction.
+  //
+  // Lifecycle: the daemon keeps the full response for a retention window
+  // (operator-configured, default 24h) and keeps a permanent tombstone of
+  // the key beyond it. A retry arriving after the window is REFUSED with
+  // FAILED_PRECONDITION, never treated as a fresh mint — an evicted key
+  // must not become mintable again, or a sufficiently delayed retry
+  // would double-pay. The tombstone is a hash, not the key, so retention
+  // costs ~80 bytes per mint forever.
   string mint_request_id = 5;
 }
 
@@ -118,12 +150,55 @@ message CreatePaymentResponse {
   // Work-id bound to this minted payment (hex recipient_rand_hash).
   string work_id = 6;
 
-  // The round these tickets were minted in and the last round in which
-  // any ticket in the envelope can still be redeemed. A signed envelope
-  // cannot be revoked, so chain-enforced expiry is the only unconditional
-  // release authority for an issued payment that never reaches admission.
+  // ---- encumbrance release ----
+
+  // The round these tickets were minted in, the last round in which they
+  // can currently still be redeemed, and the ticketValidityPeriod that
+  // figure was computed from.
+  //
+  // READ THE NEXT PARAGRAPH BEFORE TREATING expires_after_round AS A
+  // DEADLINE. It is a PREDICTION under the governance parameter observed
+  // at mint, not an immutable property of the envelope.
+  //
+  // The TicketBroker checks, at redemption:
+  //
+  //     require(creationRound + ticketValidityPeriod > currentRound)
+  //
+  // reading ticketValidityPeriod from CURRENT storage, and the round
+  // block hashes it also needs are kept in a permanent mapping. So
+  // raising the parameter extends tickets already issued, and can revive
+  // ones that had lapsed. A consumer that finalizes or refunds on
+  // expires_after_round alone can be wrong about an envelope it already
+  // acted on.
+  //
+  // ticket_validity_period is published so a consumer can DETECT that:
+  // compare it against the chain's current value and you can see that a
+  // deadline moved.
+  //
+  // Detect, not repair. Re-encumbering on an increase is not
+  // implementable — credit already finalized or returned may have been
+  // spent or withdrawn — so this is telemetry, and paid-job §5.3
+  // describes the terminal outcomes that actually govern.
+  //
+  // expires_after_round is the LAST round the envelope can still be
+  // redeemed in — creation_round + ticket_validity_period - 1 — so
+  // "no longer redeemable" is exactly current_round > expires_after_round,
+  // matching the contract's boundary rather than sitting a round beyond
+  // it.
   int64 creation_round = 7;
   int64 expires_after_round = 8;
+  int64 ticket_validity_period = 9;
+
+  // When ticket_validity_period was read from the chain, RFC3339 with
+  // nanoseconds.
+  //
+  // A payer may serve this from a short cache rather than reading the
+  // contract inside every signing path. That makes the value "the
+  // chain's, as of a moment", and the moment has to be stated or a
+  // consumer cannot tell a current value from one governance changed a
+  // second ago. Treat it as telemetry for detecting drift, not as
+  // authority over anything.
+  string ticket_validity_period_observed_at = 10;
 }
 
 message ReportPaymentResultRequest {
@@ -145,9 +220,13 @@ message GetSessionDebitsRequest {
   // Sender ETH address (20 raw bytes), echoed from the payment envelope.
   bytes sender = 1;
 
-  // Work-id of the long-lived session. Hex-encoded
-  // recipient_rand_hash, identical to the value the broker echoes in
-  // `Livepeer-Request-Id` when the session opens.
+  // Work-id of the long-lived session: the hex-encoded
+  // recipient_rand_hash the payee issued.
+  //
+  // An earlier comment here claimed this equals the value the broker
+  // echoes in `Livepeer-Request-Id` at session open. It does not, and
+  // never did — `Livepeer-Request-Id` is the caller's own idempotency
+  // key and has no relationship to a payment identity.
   string work_id = 2;
 }
 
@@ -178,6 +257,41 @@ message GetDepositInfoResponse {
   // If the payer has initiated an unlock, the round at which
   // withdrawal becomes possible. Zero when no unlock is pending.
   int64 withdraw_round = 3;
+
+  // The payer's current round, read from the SAME clock that stamps
+  // CreatePaymentResponse.creation_round.
+  //
+  // It is here so a consumer holding an encumbrance can evaluate
+  // release against one clock rather than correlating two. The rule the
+  // field exists for is
+  //
+  //     release iff current_round > expires_after_round
+  //
+  // with equality staying encumbered — a ticket minted in round R is
+  // redeemable through R+window inclusive, so releasing at equality
+  // releases while the envelope is still spendable.
+  //
+  // A consumer MUST also refuse to release on a missing, zero, or
+  // REGRESSING value. A round that goes backwards means the payer's
+  // clock lost state or is talking to a re-orged or lagging node, and a
+  // stale round can only make an expired envelope look live — never the
+  // reverse — so the safe reading of a suspect clock is "still
+  // encumbered".
+  int64 current_round = 4;
+
+  // The chain's CURRENT ticketValidityPeriod, read fresh.
+  //
+  // Paired with the value a mint recorded, this is how a consumer
+  // notices that governance moved the goalposts: an envelope minted when
+  // the period was 2 and evaluated when it is 4 is redeemable two rounds
+  // longer than its recorded deadline says.
+  int64 ticket_validity_period = 5;
+
+  // When that value was read. This RPC reads the contract fresh on every
+  // call — it is an administrative query, not a signing path, so there
+  // is no latency argument for caching and therefore no reason to make a
+  // consumer reason about staleness here.
+  string ticket_validity_period_observed_at = 6;
 }
 
 // HealthRequest / HealthResponse live in types.proto (shared with PayeeDaemon).

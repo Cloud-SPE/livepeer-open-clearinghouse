@@ -126,5 +126,12 @@ class JobStatusResponse(BaseModel):
     actual_units: int | None
     billed_value_wei: int | None
     funded_value_wei: int
+    creation_round: int | None
+    expires_after_round: int | None
+    mint_ticket_validity_period: int | None
+    mint_ticket_validity_period_observed_at: datetime | None
+    observed_current_round: int | None
+    current_ticket_validity_period: int | None
+    current_ticket_validity_period_observed_at: datetime | None
     opened_at: datetime
     closed_at: datetime | None

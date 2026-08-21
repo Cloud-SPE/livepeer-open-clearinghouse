@@ -1789,6 +1789,12 @@ export interface components {
             reserve_wei: number;
             /** Withdraw Round */
             withdraw_round: number;
+            /** Current Round */
+            current_round: number | null;
+            /** Ticket Validity Period */
+            ticket_validity_period: number | null;
+            /** Ticket Validity Period Observed At */
+            ticket_validity_period_observed_at: string | null;
         };
         /**
          * EffectiveBillingConfigView
@@ -1967,6 +1973,20 @@ export interface components {
             billed_value_wei: number | null;
             /** Funded Value Wei */
             funded_value_wei: number;
+            /** Creation Round */
+            creation_round: number | null;
+            /** Expires After Round */
+            expires_after_round: number | null;
+            /** Mint Ticket Validity Period */
+            mint_ticket_validity_period: number | null;
+            /** Mint Ticket Validity Period Observed At */
+            mint_ticket_validity_period_observed_at: string | null;
+            /** Observed Current Round */
+            observed_current_round: number | null;
+            /** Current Ticket Validity Period */
+            current_ticket_validity_period: number | null;
+            /** Current Ticket Validity Period Observed At */
+            current_ticket_validity_period_observed_at: string | null;
             /**
              * Opened At
              * Format: date-time

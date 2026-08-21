@@ -21,7 +21,7 @@ class CreatePaymentRequest(_message.Message):
     def __init__(self, recipient: _Optional[bytes] = ..., ticket_params_base_url: _Optional[str] = ..., accepted_price: _Optional[_Union[_types_pb2.AcceptedPrice, _Mapping]] = ..., funding: _Optional[_Union[_types_pb2.FundingIntent, _Mapping]] = ..., mint_request_id: _Optional[str] = ...) -> None: ...
 
 class CreatePaymentResponse(_message.Message):
-    __slots__ = ("payment_bytes", "tickets_created", "expected_value", "funded_value_wei", "accepted_quote_ref", "work_id", "creation_round", "expires_after_round")
+    __slots__ = ("payment_bytes", "tickets_created", "expected_value", "funded_value_wei", "accepted_quote_ref", "work_id", "creation_round", "expires_after_round", "ticket_validity_period", "ticket_validity_period_observed_at")
     PAYMENT_BYTES_FIELD_NUMBER: _ClassVar[int]
     TICKETS_CREATED_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_VALUE_FIELD_NUMBER: _ClassVar[int]
@@ -30,6 +30,8 @@ class CreatePaymentResponse(_message.Message):
     WORK_ID_FIELD_NUMBER: _ClassVar[int]
     CREATION_ROUND_FIELD_NUMBER: _ClassVar[int]
     EXPIRES_AFTER_ROUND_FIELD_NUMBER: _ClassVar[int]
+    TICKET_VALIDITY_PERIOD_FIELD_NUMBER: _ClassVar[int]
+    TICKET_VALIDITY_PERIOD_OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
     payment_bytes: bytes
     tickets_created: int
     expected_value: _types_pb2.BigUInt
@@ -38,7 +40,9 @@ class CreatePaymentResponse(_message.Message):
     work_id: str
     creation_round: int
     expires_after_round: int
-    def __init__(self, payment_bytes: _Optional[bytes] = ..., tickets_created: _Optional[int] = ..., expected_value: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., funded_value_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., accepted_quote_ref: _Optional[_Union[_types_pb2.QuoteRef, _Mapping]] = ..., work_id: _Optional[str] = ..., creation_round: _Optional[int] = ..., expires_after_round: _Optional[int] = ...) -> None: ...
+    ticket_validity_period: int
+    ticket_validity_period_observed_at: str
+    def __init__(self, payment_bytes: _Optional[bytes] = ..., tickets_created: _Optional[int] = ..., expected_value: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., funded_value_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., accepted_quote_ref: _Optional[_Union[_types_pb2.QuoteRef, _Mapping]] = ..., work_id: _Optional[str] = ..., creation_round: _Optional[int] = ..., expires_after_round: _Optional[int] = ..., ticket_validity_period: _Optional[int] = ..., ticket_validity_period_observed_at: _Optional[str] = ...) -> None: ...
 
 class ReportPaymentResultRequest(_message.Message):
     __slots__ = ("work_id", "capability", "offering", "rejection_reason")
@@ -79,11 +83,17 @@ class GetDepositInfoRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class GetDepositInfoResponse(_message.Message):
-    __slots__ = ("deposit", "reserve", "withdraw_round")
+    __slots__ = ("deposit", "reserve", "withdraw_round", "current_round", "ticket_validity_period", "ticket_validity_period_observed_at")
     DEPOSIT_FIELD_NUMBER: _ClassVar[int]
     RESERVE_FIELD_NUMBER: _ClassVar[int]
     WITHDRAW_ROUND_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_ROUND_FIELD_NUMBER: _ClassVar[int]
+    TICKET_VALIDITY_PERIOD_FIELD_NUMBER: _ClassVar[int]
+    TICKET_VALIDITY_PERIOD_OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
     deposit: bytes
     reserve: bytes
     withdraw_round: int
-    def __init__(self, deposit: _Optional[bytes] = ..., reserve: _Optional[bytes] = ..., withdraw_round: _Optional[int] = ...) -> None: ...
+    current_round: int
+    ticket_validity_period: int
+    ticket_validity_period_observed_at: str
+    def __init__(self, deposit: _Optional[bytes] = ..., reserve: _Optional[bytes] = ..., withdraw_round: _Optional[int] = ..., current_round: _Optional[int] = ..., ticket_validity_period: _Optional[int] = ..., ticket_validity_period_observed_at: _Optional[str] = ...) -> None: ...

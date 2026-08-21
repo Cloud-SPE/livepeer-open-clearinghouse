@@ -7,6 +7,7 @@ real daemon. The full gRPC integration is covered separately when
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -134,6 +135,8 @@ def test_proto_response_to_dataclass() -> None:
         work_id="deadbeef" * 8,
         creation_round=700,
         expires_after_round=702,
+        ticket_validity_period=3,
+        ticket_validity_period_observed_at="2026-08-21T12:00:00Z",
     )
 
     dc = proto_response_to_dataclass(proto)
@@ -146,8 +149,60 @@ def test_proto_response_to_dataclass() -> None:
     assert dc.work_id == "deadbeef" * 8
     assert dc.creation_round == 700
     assert dc.expires_after_round == 702
+    assert dc.ticket_validity_period == 3
+    assert dc.ticket_validity_period_observed_at == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
     # base64 form of payment_bytes is URL-safe; smoke-test the property
     assert isinstance(dc.payment_bytes_b64, str)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("expires_after_round", "observed_at"),
+    [(701, "2026-08-21T12:00:00Z"), (702, "")],
+)
+def test_proto_response_rejects_invalid_validity_telemetry(
+    expires_after_round: int, observed_at: str
+) -> None:
+    from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
+
+    proto = payer_daemon_pb2.CreatePaymentResponse(
+        expected_value=types_pb2.BigUInt(),
+        funded_value_wei=types_pb2.BigUInt(),
+        accepted_quote_ref=types_pb2.QuoteRef(),
+        creation_round=700,
+        expires_after_round=expires_after_round,
+        ticket_validity_period=3,
+        ticket_validity_period_observed_at=observed_at,
+    )
+    with pytest.raises(PaymentDaemonError):
+        proto_response_to_dataclass(proto)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_deposit_info_maps_validity_telemetry() -> None:
+    from livepeer.payments.v1 import payer_daemon_pb2
+
+    class Stub:
+        async def GetDepositInfo(self, _request: object) -> object:
+            return payer_daemon_pb2.GetDepositInfoResponse(
+                deposit=int_to_biguint_bytes(12_345),
+                reserve=int_to_biguint_bytes(6_789),
+                withdraw_round=4400,
+                current_round=4310,
+                ticket_validity_period=3,
+                ticket_validity_period_observed_at="2026-08-21T12:00:00Z",
+            )
+
+    client = GrpcPaymentDaemonClient("/unused")
+    client._stub = Stub()
+    info = await client.get_deposit_info()
+    assert info.deposit_wei == Decimal(12_345)
+    assert info.reserve_wei == Decimal(6_789)
+    assert info.withdraw_round == 4400
+    assert info.current_round == 4310
+    assert info.ticket_validity_period == 3
+    assert info.ticket_validity_period_observed_at == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.unit

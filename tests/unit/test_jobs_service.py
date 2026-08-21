@@ -249,7 +249,8 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     assert payments[0].funded_value_wei == Decimal(100_000)
     assert payments[0].mint_request_id == f"loc:{resp.request_id}"
     assert payments[0].creation_round == 100
-    assert payments[0].expires_after_round == 102
+    assert payments[0].expires_after_round == 101
+    assert payments[0].ticket_validity_period == 2
 
 
 @pytest.mark.unit
@@ -1001,7 +1002,8 @@ async def test_reconcile_finalizes_unresolved_job_as_distinct_full_charge(
     assert row.breakdown is not None
     assert row.breakdown["terminal_kind"] == "conservative_full_charge"
     assert row.breakdown["creation_round"] == 100
-    assert row.breakdown["expires_after_round"] == 102
+    assert row.breakdown["expires_after_round"] == 101
+    assert row.breakdown["mint_ticket_validity_period"] == 2
     assert row.breakdown["evidence"]["outcome"] == "NO_RECORD"
     status = await jobs_service.get_job_status(
         db_session, job_id=response.job_id, user_id=row.user_id

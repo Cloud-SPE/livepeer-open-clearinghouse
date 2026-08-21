@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -100,6 +101,9 @@ class DepositInfo:
     deposit_wei: Decimal
     reserve_wei: Decimal
     withdraw_round: int
+    current_round: int
+    ticket_validity_period: int
+    ticket_validity_period_observed_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,8 @@ class CreatePaymentResponse:
     work_id: str
     creation_round: int
     expires_after_round: int
+    ticket_validity_period: int
+    ticket_validity_period_observed_at: datetime
 
     @property
     def payment_bytes_b64(self) -> str:
@@ -165,6 +171,9 @@ class MockPaymentDaemonClient:
             deposit_wei=Decimal(10**18),
             reserve_wei=Decimal(0),
             withdraw_round=0,
+            current_round=100,
+            ticket_validity_period=2,
+            ticket_validity_period_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
     async def report_invalid_recipient_rand(
@@ -214,7 +223,9 @@ class MockPaymentDaemonClient:
             accepted_quote_ref=request.accepted_price.quote_ref,
             work_id=work_id,
             creation_round=100,
-            expires_after_round=102,
+            expires_after_round=101,
+            ticket_validity_period=2,
+            ticket_validity_period_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         self._mint_replays[request.mint_request_id] = (request, response)
         return response
@@ -245,6 +256,18 @@ def biguint_bytes_to_decimal(raw: bytes) -> Decimal:
     if not raw:
         return Decimal(0)
     return Decimal(int.from_bytes(raw, "big"))
+
+
+def _parse_observed_at(value: str) -> datetime:
+    """Parse a daemon RFC3339 timestamp and reject missing timezone data."""
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise PaymentDaemonError("daemon returned malformed validity observation time") from exc
+    if parsed.tzinfo is None:
+        raise PaymentDaemonError("daemon returned timezone-naive validity observation time")
+    return parsed
 
 
 def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[no-untyped-def]
@@ -285,7 +308,7 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
 
 def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore[no-untyped-def]
     """Map a generated CreatePaymentResponse back to our dataclass."""
-    return CreatePaymentResponse(
+    response = CreatePaymentResponse(
         payment_bytes=bytes(proto.payment_bytes),
         tickets_created=int(proto.tickets_created),
         expected_value=biguint_bytes_to_decimal(bytes(proto.expected_value.value)),
@@ -299,7 +322,19 @@ def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore
         work_id=proto.work_id,
         creation_round=int(proto.creation_round),
         expires_after_round=int(proto.expires_after_round),
+        ticket_validity_period=int(proto.ticket_validity_period),
+        ticket_validity_period_observed_at=_parse_observed_at(
+            proto.ticket_validity_period_observed_at
+        ),
     )
+    if (
+        response.creation_round <= 0
+        or response.ticket_validity_period <= 0
+        or response.expires_after_round
+        != response.creation_round + response.ticket_validity_period - 1
+    ):
+        raise PaymentDaemonError("daemon returned inconsistent ticket-validity telemetry")
+    return response
 
 
 class GrpcPaymentDaemonClient:
@@ -356,11 +391,19 @@ class GrpcPaymentDaemonClient:
 
         stub = await self._ensure_stub()
         resp = await stub.GetDepositInfo(payer_daemon_pb2.GetDepositInfoRequest())
-        return DepositInfo(
+        info = DepositInfo(
             deposit_wei=biguint_bytes_to_decimal(bytes(resp.deposit)),
             reserve_wei=biguint_bytes_to_decimal(bytes(resp.reserve)),
             withdraw_round=int(resp.withdraw_round),
+            current_round=int(resp.current_round),
+            ticket_validity_period=int(resp.ticket_validity_period),
+            ticket_validity_period_observed_at=_parse_observed_at(
+                resp.ticket_validity_period_observed_at
+            ),
         )
+        if info.current_round <= 0 or info.ticket_validity_period <= 0:
+            raise PaymentDaemonError("daemon returned invalid current validity telemetry")
+        return info
 
     async def report_invalid_recipient_rand(
         self, *, work_id: str, capability: str, offering: str

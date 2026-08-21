@@ -37,7 +37,10 @@ from livepeer_open_clearinghouse.domains.jobs.types import (
     SettleJobResponse,
     SettlementEnvelope,
 )
-from livepeer_open_clearinghouse.domains.payments.repo import Payment
+from livepeer_open_clearinghouse.domains.payments.repo import (
+    Payment,
+    PaymentDaemonDepositSnapshot,
+)
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
@@ -278,7 +281,9 @@ async def open_job(
         ) from exc
     if (
         daemon_response.creation_round <= 0
-        or daemon_response.expires_after_round <= daemon_response.creation_round
+        or daemon_response.ticket_validity_period <= 0
+        or daemon_response.expires_after_round
+        != daemon_response.creation_round + daemon_response.ticket_validity_period - 1
     ):
         raise DaemonUnavailable(
             daemon="payment-daemon",
@@ -319,6 +324,8 @@ async def open_job(
         expected_value_wei=daemon_response.expected_value,
         creation_round=daemon_response.creation_round,
         expires_after_round=daemon_response.expires_after_round,
+        ticket_validity_period=daemon_response.ticket_validity_period,
+        ticket_validity_period_observed_at=(daemon_response.ticket_validity_period_observed_at),
         reserved_wei=daemon_response.expected_value,
         refunded_wei=Decimal(0),
         status="issued",
@@ -766,6 +773,11 @@ async def finalize_conservative_full_charge(
     )
     if initial_payment is None:
         return False
+    validity_snapshot = await db.scalar(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(1)
+    )
 
     audit = {
         "terminal_kind": "conservative_full_charge",
@@ -775,6 +787,24 @@ async def finalize_conservative_full_charge(
         "finalized_at": clock.now().isoformat(),
         "creation_round": initial_payment.creation_round,
         "expires_after_round": initial_payment.expires_after_round,
+        "mint_ticket_validity_period": initial_payment.ticket_validity_period,
+        "mint_ticket_validity_period_observed_at": (
+            initial_payment.ticket_validity_period_observed_at.isoformat()
+            if initial_payment.ticket_validity_period_observed_at is not None
+            else None
+        ),
+        "observed_current_round": (
+            validity_snapshot.current_round if validity_snapshot is not None else None
+        ),
+        "current_ticket_validity_period": (
+            validity_snapshot.ticket_validity_period if validity_snapshot is not None else None
+        ),
+        "current_ticket_validity_period_observed_at": (
+            validity_snapshot.ticket_validity_period_observed_at.isoformat()
+            if validity_snapshot is not None
+            and validity_snapshot.ticket_validity_period_observed_at is not None
+            else None
+        ),
         "evidence": evidence,
     }
     await sessions_service.transition_state(
@@ -839,6 +869,18 @@ async def get_job_status(
     else:
         accounting_outcome = "unresolved"
 
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    validity_snapshot = await db.scalar(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(1)
+    )
+
     return JobStatusResponse(
         job_id=job_row.id,
         request_id=job_row.broker_request_id,
@@ -851,6 +893,29 @@ async def get_job_status(
             int(job_row.billed_value_wei) if job_row.billed_value_wei is not None else None
         ),
         funded_value_wei=int(job_row.funded_value_wei),
+        creation_round=(initial_payment.creation_round if initial_payment is not None else None),
+        expires_after_round=(
+            initial_payment.expires_after_round if initial_payment is not None else None
+        ),
+        mint_ticket_validity_period=(
+            initial_payment.ticket_validity_period if initial_payment is not None else None
+        ),
+        mint_ticket_validity_period_observed_at=(
+            initial_payment.ticket_validity_period_observed_at
+            if initial_payment is not None
+            else None
+        ),
+        observed_current_round=(
+            validity_snapshot.current_round if validity_snapshot is not None else None
+        ),
+        current_ticket_validity_period=(
+            validity_snapshot.ticket_validity_period if validity_snapshot is not None else None
+        ),
+        current_ticket_validity_period_observed_at=(
+            validity_snapshot.ticket_validity_period_observed_at
+            if validity_snapshot is not None
+            else None
+        ),
         opened_at=job_row.opened_at,
         closed_at=job_row.closed_at,
     )

@@ -53,10 +53,12 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     price_per_work_unit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     funded_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
     expected_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
-    # Chain-enforced lifetime of the signed payment envelope. Nullable only
-    # for rows minted before Modules c496fb4; absence never authorizes release.
+    # Mint-time validity telemetry. Governance can move or revive this
+    # deadline, so absence or drift never authorizes release.
     creation_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     expires_after_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period_observed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     reserved_wei: Mapped[Decimal] = mapped_column(nullable=False)
     refunded_wei: Mapped[Decimal] = mapped_column(nullable=False, default=Decimal(0))
     status: Mapped[str] = mapped_column(nullable=False)
@@ -109,3 +111,6 @@ class PaymentDaemonDepositSnapshot(Base, UuidPkMixin, TimestampMixin, TableNameF
     deposit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     reserve_wei: Mapped[Decimal] = mapped_column(nullable=False)
     withdraw_round: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    current_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period_observed_at: Mapped[datetime | None] = mapped_column(nullable=True)

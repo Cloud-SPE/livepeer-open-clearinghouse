@@ -133,17 +133,24 @@ type JobSettleResponse struct {
 // JobStatusResponse preserves LOC's four accounting outcomes without
 // representing a conservative charge or non-admission as broker settlement.
 type JobStatusResponse struct {
-	JobID                 string  `json:"job_id"`
-	RequestID             string  `json:"request_id"`
-	WorkID                string  `json:"work_id"`
-	State                 string  `json:"state"`
-	AccountingOutcome     string  `json:"accounting_outcome"`
-	BrokerExchangeOutcome *string `json:"broker_exchange_outcome"`
-	ActualUnits           *int64  `json:"actual_units"`
-	BilledValueWei        *int64  `json:"billed_value_wei"`
-	FundedValueWei        int64   `json:"funded_value_wei"`
-	OpenedAt              string  `json:"opened_at"`
-	ClosedAt              *string `json:"closed_at"`
+	JobID                                 string  `json:"job_id"`
+	RequestID                             string  `json:"request_id"`
+	WorkID                                string  `json:"work_id"`
+	State                                 string  `json:"state"`
+	AccountingOutcome                     string  `json:"accounting_outcome"`
+	BrokerExchangeOutcome                 *string `json:"broker_exchange_outcome"`
+	ActualUnits                           *int64  `json:"actual_units"`
+	BilledValueWei                        *int64  `json:"billed_value_wei"`
+	FundedValueWei                        int64   `json:"funded_value_wei"`
+	OpenedAt                              string  `json:"opened_at"`
+	ClosedAt                              *string `json:"closed_at"`
+	CreationRound                         *int64  `json:"creation_round"`
+	ExpiresAfterRound                     *int64  `json:"expires_after_round"`
+	MintTicketValidityPeriod              *int64  `json:"mint_ticket_validity_period"`
+	MintTicketValidityPeriodObservedAt    *string `json:"mint_ticket_validity_period_observed_at"`
+	ObservedCurrentRound                  *int64  `json:"observed_current_round"`
+	CurrentTicketValidityPeriod           *int64  `json:"current_ticket_validity_period"`
+	CurrentTicketValidityPeriodObservedAt *string `json:"current_ticket_validity_period_observed_at"`
 }
 
 // JobResult is the end-to-end return of SubmitJob — the broker's

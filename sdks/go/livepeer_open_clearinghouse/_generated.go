@@ -574,11 +574,14 @@ type DepositSnapshotList struct {
 
 // DepositSnapshotView One row from the periodic payment-daemon deposit poll.
 type DepositSnapshotView struct {
-	DepositWei    int                `json:"deposit_wei"`
-	Id            openapi_types.UUID `json:"id"`
-	ReserveWei    int                `json:"reserve_wei"`
-	TakenAt       time.Time          `json:"taken_at"`
-	WithdrawRound int                `json:"withdraw_round"`
+	CurrentRound                   *int               `json:"current_round"`
+	DepositWei                     int                `json:"deposit_wei"`
+	Id                             openapi_types.UUID `json:"id"`
+	ReserveWei                     int                `json:"reserve_wei"`
+	TakenAt                        time.Time          `json:"taken_at"`
+	TicketValidityPeriod           *int               `json:"ticket_validity_period"`
+	TicketValidityPeriodObservedAt *time.Time         `json:"ticket_validity_period_observed_at"`
+	WithdrawRound                  int                `json:"withdraw_round"`
 }
 
 // EffectiveBillingConfigView The values that would be applied right now (overrides + defaults).
@@ -667,17 +670,24 @@ type JobAxesTransports string
 
 // JobStatusResponse Customer-visible job state without conflating billing evidence.
 type JobStatusResponse struct {
-	AccountingOutcome     JobStatusResponseAccountingOutcome `json:"accounting_outcome"`
-	ActualUnits           *int                               `json:"actual_units"`
-	BilledValueWei        *int                               `json:"billed_value_wei"`
-	BrokerExchangeOutcome *string                            `json:"broker_exchange_outcome"`
-	ClosedAt              *time.Time                         `json:"closed_at"`
-	FundedValueWei        int                                `json:"funded_value_wei"`
-	JobId                 openapi_types.UUID                 `json:"job_id"`
-	OpenedAt              time.Time                          `json:"opened_at"`
-	RequestId             string                             `json:"request_id"`
-	State                 string                             `json:"state"`
-	WorkId                string                             `json:"work_id"`
+	AccountingOutcome                     JobStatusResponseAccountingOutcome `json:"accounting_outcome"`
+	ActualUnits                           *int                               `json:"actual_units"`
+	BilledValueWei                        *int                               `json:"billed_value_wei"`
+	BrokerExchangeOutcome                 *string                            `json:"broker_exchange_outcome"`
+	ClosedAt                              *time.Time                         `json:"closed_at"`
+	CreationRound                         *int                               `json:"creation_round"`
+	CurrentTicketValidityPeriod           *int                               `json:"current_ticket_validity_period"`
+	CurrentTicketValidityPeriodObservedAt *time.Time                         `json:"current_ticket_validity_period_observed_at"`
+	ExpiresAfterRound                     *int                               `json:"expires_after_round"`
+	FundedValueWei                        int                                `json:"funded_value_wei"`
+	JobId                                 openapi_types.UUID                 `json:"job_id"`
+	MintTicketValidityPeriod              *int                               `json:"mint_ticket_validity_period"`
+	MintTicketValidityPeriodObservedAt    *time.Time                         `json:"mint_ticket_validity_period_observed_at"`
+	ObservedCurrentRound                  *int                               `json:"observed_current_round"`
+	OpenedAt                              time.Time                          `json:"opened_at"`
+	RequestId                             string                             `json:"request_id"`
+	State                                 string                             `json:"state"`
+	WorkId                                string                             `json:"work_id"`
 }
 
 // JobStatusResponseAccountingOutcome defines model for JobStatusResponse.AccountingOutcome.

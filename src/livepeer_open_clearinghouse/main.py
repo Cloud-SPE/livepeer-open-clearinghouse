@@ -94,6 +94,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
                     "scheduler.deposit_snapshot.taken",
                     deposit_wei=str(row.deposit_wei),
                     reserve_wei=str(row.reserve_wei),
+                    current_round=row.current_round,
+                    ticket_validity_period=row.ticket_validity_period,
                 )
         except Exception as exc:
             log.warning("scheduler.deposit_snapshot.failed", error=str(exc))

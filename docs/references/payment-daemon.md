@@ -73,6 +73,8 @@ accepted_quote_ref: QuoteRef
 work_id: string                    # an opaque session key from the daemon
 creation_round: int64              # round in which the envelope was minted
 expires_after_round: int64         # last round in which it may be redeemed
+ticket_validity_period: int64      # contract value used for this mint observation
+ticket_validity_period_observed_at: string  # RFC3339 observation timestamp
 ```
 
 **Behavior:**
@@ -99,6 +101,11 @@ expires_after_round: int64         # last round in which it may be redeemed
 - `quote_ref.quote_id`, `constraint_fingerprint`, `route_fingerprint` are
   validated as non-empty. Livepeer Open Clearinghouse gets all three from
   `service-registry-daemon.Select()`.
+- `expires_after_round` is derived as
+  `creation_round + ticket_validity_period - 1`. The validity period is a
+  mutable contract parameter, so these fields are telemetry, not permanent
+  retirement or refund authority. Governance may extend previously minted
+  tickets; LOC never automatically refunds or re-encumbers from this data.
 
 **Errors Livepeer Open Clearinghouse must handle:**
 
@@ -117,7 +124,7 @@ expires_after_round: int64         # last round in which it may be redeemed
 | RPC | Use |
 |---|---|
 | `ReportPaymentResult` | Caller reports payee rejection (`INVALID_RECIPIENT_RAND`); daemon evicts cached session. Returns `Aborted` with retry-once metadata. |
-| `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round for the hot wallet. Useful for admin/health surfaces. |
+| `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round plus fresh `current_round`, `ticket_validity_period`, and its observation timestamp for the hot wallet. Useful for admin/health and governance-drift telemetry. |
 | `GetSessionDebits` | Legacy long-running session debit ledger. LOC v2 does not call it; reconciliation uses broker-signed settlements. |
 | `Health` | Returns `"ok"`. |
 
