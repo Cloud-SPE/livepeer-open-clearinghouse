@@ -86,32 +86,37 @@ refill intent gets a new key; transport retries of that intent do not.
 Once LOC returns a signed payment envelope, it cannot revoke it. The broker or
 another holder may submit a winning ticket at any point in its chain validity
 window, and neither a caller assertion, a broker refusal, nor a payee non-use
-attestation proves otherwise. A valid broker-signed terminal settlement is the
-only automatic authority for usage-based billing and refund.
+attestation proves otherwise. Ticket validity is governance mutable and the
+contract evaluates the current value at redemption, so a mint-time
+`expires_after_round` is telemetry rather than permanent retirement proof.
+Governance can extend or revive an issued envelope. LOC therefore never
+automatically refunds, releases on expiry, or attempts re-encumbrance.
 
-Chain expiry is still necessary evidence: once the payer-reported current
-round is strictly greater than the immutable `expires_after_round`, the
-envelope can no longer create a future payment liability. It is not sufficient
-evidence for an automatic refund, however. A customer may have submitted the
-envelope and received work before expiry while withholding the settlement from
-LOC. An on-chain non-redemption check cannot close that gap because a losing
-ticket can still have funded admitted work without creating an on-chain
-redemption record.
+Before applying a conservative full charge, LOC polls the snapshotted broker's
+`GET /v1/exchange/{request_id}` using the request ID LOC created. `IN_FLIGHT`
+and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence;
+`NOT_ADMITTED` is signed audit evidence only; `ADMITTED_OUTCOME_UNKNOWN` and
+`ADMITTED_EVIDENCE_EXPIRED` both prove admission without usable settlement
+evidence. None authorizes a refund or an accounting mutation.
 
-At equality the envelope remains potentially redeemable. Missing, malformed,
-stale, or regressing round data also leaves the job unresolved. Existing
-payments minted before the daemon supplied an expiry remain operator-
-reconciliation cases; LOC never invents their deadline. The automatic terminal
-policy for an expired job without a settlement must remain fail closed—for
-example, converting the encumbrance to a conservative full charge—unless the
-joint protocol adds independently retrievable broker evidence.
+Only `SETTLED` carrying an original signed settlement can close the job
+accurately. LOC ignores unsigned response hints and verifies the signed request
+ID, broker job ID, work ID, work unit, unit totals, quote identity, billing
+curve, signature, and snapshotted delegation before changing financial state.
+A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
+
+If no valid signed settlement is recoverable by the configured operational
+deadline, LOC may finalize a distinct `conservative_full_charge`. That outcome
+must never be represented as broker-settled usage, a successful network debit,
+or fabricated work units. Signed non-admission remains attributable audit and
+dispute evidence, not refund authority.
 
 There is deliberately no customer-authorized `abandon` endpoint. A broker
 refusal may improve telemetry but cannot release money because a broker that
-received the envelope could retain it and submit it later. Chain expiry makes
-late use impossible without trusting either party, but does not prove absence
-of earlier use. Any eventual expiry transition must be idempotent and record
-its deadline, observed round, evidence, and reason for audit.
+received the envelope could retain it and submit it later. Neither chain
+telemetry nor broker assertions retire the exact envelope under the current
+contract. Automatic refund requires immutable ticket validity or a
+per-envelope retirement mechanism.
 
 Refill funding follows the Modules cumulative ceiling curve. For cumulative
 target `U`, `bill(U) = ceil(U × amount_wei / per_units)`; a refill requests

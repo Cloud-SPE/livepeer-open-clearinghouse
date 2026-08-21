@@ -10,10 +10,11 @@ import httpx
 import pytest
 
 from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerExchangeOutcome,
     BrokerSettlementQueryError,
     HttpBrokerSettlementClient,
 )
-from tests.fixtures.signed_settlement import signed_session_settlement
+from tests.fixtures.signed_settlement import signed_job_settlement, signed_session_settlement
 
 
 @pytest.mark.unit
@@ -65,3 +66,124 @@ async def test_query_treats_not_found_as_no_record() -> None:
             gateway_session_id=uuid.uuid4(),
         )
     assert result is None
+
+
+def _encoded_job_settlement(*, request_id: str) -> tuple[str, dict[str, object]]:
+    envelope = signed_job_settlement(
+        request_id=request_id,
+        job_id="broker-job-1",
+        work_id="work-1",
+        actual_units=7,
+        amount_wei=100,
+        per_units=1000,
+    )
+    return base64.b64encode(json.dumps(envelope).encode()).decode(), envelope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected"),
+    [
+        (202, {"job_id": "j-1", "outcome": "IN_FLIGHT"}, "IN_FLIGHT"),
+        (
+            202,
+            {"job_id": "j-1", "outcome": "ACCOUNTING_PENDING", "debit_attempts": 2},
+            "ACCOUNTING_PENDING",
+        ),
+        (200, {"job_id": "j-1", "outcome": "ADMITTED_OUTCOME_UNKNOWN"}, "ADMITTED_OUTCOME_UNKNOWN"),
+        (
+            200,
+            {"job_id": "j-1", "outcome": "ADMITTED_EVIDENCE_EXPIRED"},
+            "ADMITTED_EVIDENCE_EXPIRED",
+        ),
+        (404, {"outcome": "NO_RECORD"}, "NO_RECORD"),
+    ],
+)
+async def test_job_exchange_parses_normative_outcomes(
+    status_code: int, body: dict[str, object], expected: str
+) -> None:
+    request_id = "loc/request 1"
+    body = {"request_id": request_id, **body}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.raw_path == b"/v1/exchange/loc%2Frequest%201"
+        return httpx.Response(status_code, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).get_job_exchange(
+            broker_url="https://broker.example", request_id=request_id
+        )
+
+    assert result.outcome is BrokerExchangeOutcome(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_exchange_decodes_signed_settlement() -> None:
+    encoded, envelope = _encoded_job_settlement(request_id="request-1")
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            headers={"Livepeer-Settlement": encoded},
+            json={
+                "request_id": "request-1",
+                "job_id": "broker-job-1",
+                "state": "terminal",
+                "outcome": "SETTLED",
+                "status": 200,
+                "work_units": 7,
+                "unit": "token",
+                "settlement": encoded,
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).get_job_exchange(
+            broker_url="https://broker.example", request_id="request-1"
+        )
+    assert result.settlement == envelope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_exchange_decodes_non_admission_as_audit_evidence() -> None:
+    encoded, envelope = _encoded_job_settlement(request_id="request-1")
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "request_id": "request-1",
+                "outcome": "NOT_ADMITTED",
+                "non_admission": encoded,
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).get_job_exchange(
+            broker_url="https://broker.example", request_id="request-1"
+        )
+    assert result.non_admission == envelope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (200, {"request_id": "other", "outcome": "ADMITTED_OUTCOME_UNKNOWN"}),
+        (200, {"request_id": "request-1", "outcome": "SETTLED"}),
+        (200, {"request_id": "request-1", "outcome": "NO_RECORD"}),
+        (404, {"request_id": "request-1", "outcome": "NOT_ADMITTED"}),
+        (202, {"request_id": "request-1", "outcome": "IN_FLIGHT", "surprise": True}),
+    ],
+)
+async def test_job_exchange_rejects_inconsistent_protocol_responses(
+    status_code: int, body: dict[str, object]
+) -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(status_code, json=body))
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        with pytest.raises(BrokerSettlementQueryError):
+            await HttpBrokerSettlementClient(http_client).get_job_exchange(
+                broker_url="https://broker.example", request_id="request-1"
+            )

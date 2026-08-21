@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -53,6 +54,10 @@ from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerExchangeOutcome,
+    BrokerExchangeResult,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -172,6 +177,21 @@ def _settlement(
             outcome=outcome,
         )
     )
+
+
+class _StaticExchangeClient:
+    def __init__(self, result: BrokerExchangeResult) -> None:
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+
+    async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
+        self.calls.append((broker_url, request_id))
+        return self.result
+
+    async def get_settlement(
+        self, *, broker_url: str, gateway_session_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        raise AssertionError("job reconciliation must not use the session lookup")
 
 
 # ---- open_job happy path ----
@@ -807,3 +827,141 @@ async def test_settle_job_accepts_stream_transport(db_session: AsyncSession) -> 
         settings=_settings(),
     )
     assert resp.protocol == "paid-job/v1"
+
+
+# ---- request-ID recovery ----
+
+
+async def _open_recoverable_job(
+    db: AsyncSession,
+) -> tuple[uuid.UUID, CreateJobResponse]:
+    user_id, key_id = await _seed(db)
+    response = await jobs_service.open_job(
+        db,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        transport="stream",
+        estimated_units=10,
+        max_total_units=20,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    return user_id, response
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_open_job_settles_only_embedded_signed_claim(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    settlement = _settlement(response, broker_job_id="broker-recovered", actual_units=7)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.SETTLED,
+            # Deliberately wrong unsigned hints: settlement payload is authoritative.
+            job_id="unsigned-wrong-job",
+            work_units=999,
+            unit="wrong-unit",
+            settlement=settlement.model_dump(mode="json"),
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 1
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.actual_units == 7
+    assert row.breakdown is not None
+    assert row.breakdown["broker_job_id"] == "broker-recovered"
+    assert client.calls == [("https://broker.example/livepeer", response.request_id)]
+    assert row.user_id == user_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        BrokerExchangeOutcome.ACCOUNTING_PENDING,
+        BrokerExchangeOutcome.IN_FLIGHT,
+        BrokerExchangeOutcome.ADMITTED_OUTCOME_UNKNOWN,
+        BrokerExchangeOutcome.ADMITTED_EVIDENCE_EXPIRED,
+        BrokerExchangeOutcome.NOT_ADMITTED,
+        BrokerExchangeOutcome.NO_RECORD,
+    ],
+)
+async def test_reconcile_open_job_keeps_nonsettlement_outcomes_encumbered(
+    db_session: AsyncSession, outcome: BrokerExchangeOutcome
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(request_id=response.request_id, outcome=outcome)
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.billed_value_wei is None
+    assert row.breakdown is not None
+    assert row.breakdown["broker_exchange"]["outcome"] == outcome.value
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_open_job_rejects_cross_request_signed_settlement(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    # Build a valid signature for a different request, not merely a tampered payload.
+    wrong_request = SettlementEnvelope.model_validate(
+        signed_job_settlement(
+            request_id="different-request",
+            job_id="broker-recovered",
+            work_id=response.work_id,
+            actual_units=7,
+            amount_wei=100,
+            per_units=1,
+        )
+    )
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.SETTLED,
+            settlement=wrong_request.model_dump(mode="json"),
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.billed_value_wei is None

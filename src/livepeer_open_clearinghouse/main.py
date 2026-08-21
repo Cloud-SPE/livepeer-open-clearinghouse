@@ -25,6 +25,7 @@ from livepeer_open_clearinghouse.domains.billing import runtime as billing_runti
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import runtime as discovery_runtime
 from livepeer_open_clearinghouse.domains.jobs import runtime as jobs_runtime
+from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
 from livepeer_open_clearinghouse.domains.notifications import runtime as notifications_runtime
 from livepeer_open_clearinghouse.domains.payments import runtime as payments_runtime
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
@@ -122,6 +123,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
         except Exception as exc:
             log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
 
+    async def _reconcile_open_jobs() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                settlement_client = HttpBrokerSettlementClient(http_client)
+                async with session_scope() as db:
+                    n = await jobs_service.reconcile_open_jobs(
+                        db,
+                        settlement_client=settlement_client,
+                        clock=clock,
+                        settings=cfg,
+                        interval_seconds=cfg.job_reconciliation_interval_seconds,
+                    )
+                    if n:
+                        log.info("scheduler.reconcile_open_jobs.finalized", count=n)
+        except Exception as exc:
+            log.warning("scheduler.reconcile_open_jobs.failed", error=str(exc))
+
     async def _purge_expired_telemetry() -> None:
         try:
             async with session_scope() as db:
@@ -156,6 +174,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             _reconcile_open_sessions,
             name="reconcile_open_sessions",
             seconds=cfg.session_reconciliation_interval_seconds,
+        )
+    if cfg.job_reconciliation_interval_seconds > 0:
+        register_interval_job(
+            _reconcile_open_jobs,
+            name="reconcile_open_jobs",
+            seconds=cfg.job_reconciliation_interval_seconds,
         )
     if cfg.telemetry_raw_retention_days > 0:
         register_interval_job(

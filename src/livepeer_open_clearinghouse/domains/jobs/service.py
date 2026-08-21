@@ -23,8 +23,9 @@ from __future__ import annotations
 import base64
 import time
 import uuid
+from datetime import timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,12 @@ from livepeer_open_clearinghouse.errors import (
     OpenClearinghouseError,
     SpendCapExceeded,
 )
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerExchangeOutcome,
+    BrokerExchangeResult,
+    BrokerSettlementClient,
+    BrokerSettlementQueryError,
+)
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
@@ -65,6 +72,14 @@ from livepeer_open_clearinghouse.providers.settlement_verification import (
 from livepeer_open_clearinghouse.settings import Settings
 
 PAID_JOB_PROTOCOL = "paid-job/v1"
+DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 60
+
+
+class _RecoveredSettlementClaims(TypedDict):
+    job_id: str
+    work_unit: str
+    actual_units: int
+    outcome: str
 
 
 class ProtocolNotSupportedForJob(OpenClearinghouseError):
@@ -521,3 +536,150 @@ async def settle_job(
         closed_at=job_row.closed_at,
         cap_status=cap_status,
     )
+
+
+async def reconcile_open_jobs(
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    clock: Clock,
+    settings: Settings,
+    interval_seconds: int = DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
+    batch_limit: int = 100,
+) -> int:
+    """Recover paid-job outcomes using only LOC's durable request ID.
+
+    Broker outcome fields are hints. Only the embedded settlement, after
+    normal signature/delegation/identity verification by ``settle_job``, may
+    close a job or release encumbrance.
+    """
+
+    cutoff = clock.now() - timedelta(seconds=interval_seconds)
+    rows = list(
+        (
+            await db.scalars(
+                select(PaymentSession)
+                .where(
+                    PaymentSession.protocol == PAID_JOB_PROTOCOL,
+                    PaymentSession.state == sessions_service.SESSION_STATE_OPEN,
+                    (PaymentSession.last_polled_at.is_(None))
+                    | (PaymentSession.last_polled_at < cutoff),
+                )
+                .order_by(PaymentSession.last_polled_at.asc().nulls_first())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+
+    finalized = 0
+    for job_row in rows:
+        request_id = job_row.broker_request_id
+        snapshot = job_row.route_snapshot or {}
+        broker_url = snapshot.get("worker_url")
+        if not request_id or not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            exchange = await settlement_client.get_job_exchange(
+                broker_url=broker_url,
+                request_id=request_id,
+            )
+        except BrokerSettlementQueryError:
+            continue
+
+        job_row.last_polled_at = clock.now()
+        job_row.breakdown = {
+            **(job_row.breakdown or {}),
+            "broker_exchange": _exchange_audit_record(exchange),
+        }
+        await db.flush()
+        if exchange.outcome is not BrokerExchangeOutcome.SETTLED:
+            continue
+
+        claims = _recovered_settlement_claims(exchange)
+        if claims is None or exchange.settlement is None:
+            continue
+        try:
+            await settle_job(
+                db,
+                job_id=job_row.id,
+                user_id=job_row.user_id,
+                actual_units=claims["actual_units"],
+                broker_job_id=claims["job_id"],
+                work_unit=claims["work_unit"],
+                outcome=claims["outcome"],
+                settlement=SettlementEnvelope.model_validate(exchange.settlement),
+                clock=clock,
+                settings=settings,
+            )
+        except (
+            JobAlreadySettled,
+            SettlementVerificationFailed,
+            WorkUnitMismatch,
+            ValueError,
+        ):
+            # Keep the encumbrance intact. The audit snapshot makes a bad
+            # broker claim observable without granting it financial authority.
+            continue
+        finalized += 1
+
+    return finalized
+
+
+def _recovered_settlement_claims(
+    exchange: BrokerExchangeResult,
+) -> _RecoveredSettlementClaims | None:
+    settlement = exchange.settlement
+    if settlement is None:
+        return None
+    payload = settlement.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        job_id = payload["job_id"]
+        work_unit = payload["work_unit_name"]
+        actual_units = int(payload["actual_units"])
+        outcome = payload["outcome"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(job_id, str)
+        or not job_id
+        or not isinstance(work_unit, str)
+        or not work_unit
+        or actual_units < 0
+        or not isinstance(outcome, str)
+        or not outcome
+    ):
+        return None
+    return {
+        "job_id": job_id,
+        "work_unit": work_unit,
+        "actual_units": actual_units,
+        "outcome": outcome,
+    }
+
+
+def _exchange_audit_record(exchange: BrokerExchangeResult) -> dict[str, object]:
+    """Persist distinctions without treating unsigned hints as accounting."""
+
+    record: dict[str, object] = {
+        "request_id": exchange.request_id,
+        "outcome": exchange.outcome.value,
+    }
+    for field in (
+        "job_id",
+        "state",
+        "status",
+        "work_units",
+        "unit",
+        "debit_attempts",
+        "deadline",
+        "ended_at",
+        "detail",
+    ):
+        value = getattr(exchange, field)
+        if value is not None:
+            record[field] = value
+    if exchange.non_admission is not None:
+        record["non_admission"] = exchange.non_admission
+    return record
