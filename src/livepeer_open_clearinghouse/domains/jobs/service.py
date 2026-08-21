@@ -256,6 +256,14 @@ async def open_job(
         raise DaemonUnavailable(
             daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
         ) from exc
+    if (
+        daemon_response.creation_round <= 0
+        or daemon_response.expires_after_round <= daemon_response.creation_round
+    ):
+        raise DaemonUnavailable(
+            daemon="payment-daemon",
+            reason="invalid payment envelope expiry",
+        )
 
     # Write payment_session (one row backs each job).
     job_row = await sessions_service.create_session(
@@ -289,6 +297,8 @@ async def open_job(
         price_per_work_unit_wei=price_wei,
         funded_value_wei=daemon_response.funded_value_wei,
         expected_value_wei=daemon_response.expected_value,
+        creation_round=daemon_response.creation_round,
+        expires_after_round=daemon_response.expires_after_round,
         reserved_wei=daemon_response.expected_value,
         refunded_wei=Decimal(0),
         status="issued",

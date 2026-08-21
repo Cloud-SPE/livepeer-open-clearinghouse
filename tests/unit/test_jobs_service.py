@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -48,7 +49,11 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     InvalidSessionRequest,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    InsufficientCredit,
+    NoRouteAvailable,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
@@ -223,6 +228,8 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     assert len(payments) == 1
     assert payments[0].funded_value_wei == Decimal(100_000)
     assert payments[0].mint_request_id == f"loc:{resp.request_id}"
+    assert payments[0].creation_round == 100
+    assert payments[0].expires_after_round == 102
 
 
 @pytest.mark.unit
@@ -398,6 +405,33 @@ async def test_open_job_rejects_max_below_estimated(db_session: AsyncSession) ->
             clock=_clock(),
             settings=_settings(),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_invalid_envelope_expiry(db_session: AsyncSession) -> None:
+    class InvalidExpiryDaemon(MockPaymentDaemonClient):
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            return replace(response, expires_after_round=response.creation_round)
+
+    user_id, key_id = await _seed(db_session)
+    with pytest.raises(DaemonUnavailable, match="invalid payment envelope expiry"):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route()]),
+            daemon=InvalidExpiryDaemon(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

@@ -132,6 +132,8 @@ def test_proto_response_to_dataclass() -> None:
             route_fingerprint=b"\x33" * 32,
         ),
         work_id="deadbeef" * 8,
+        creation_round=700,
+        expires_after_round=702,
     )
 
     dc = proto_response_to_dataclass(proto)
@@ -142,6 +144,8 @@ def test_proto_response_to_dataclass() -> None:
     assert dc.accepted_quote_ref.quote_id == "q-2"
     assert dc.accepted_quote_ref.quote_version == 3
     assert dc.work_id == "deadbeef" * 8
+    assert dc.creation_round == 700
+    assert dc.expires_after_round == 702
     # base64 form of payment_bytes is URL-safe; smoke-test the property
     assert isinstance(dc.payment_bytes_b64, str)
 

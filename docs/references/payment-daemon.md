@@ -71,6 +71,8 @@ expected_value: BigUInt            # EV in wei — what to charge the user
 funded_value_wei: BigUInt          # echoes the funding intent
 accepted_quote_ref: QuoteRef
 work_id: string                    # an opaque session key from the daemon
+creation_round: int64              # round in which the envelope was minted
+expires_after_round: int64         # last round in which it may be redeemed
 ```
 
 **Behavior:**

@@ -21,20 +21,24 @@ class CreatePaymentRequest(_message.Message):
     def __init__(self, recipient: _Optional[bytes] = ..., ticket_params_base_url: _Optional[str] = ..., accepted_price: _Optional[_Union[_types_pb2.AcceptedPrice, _Mapping]] = ..., funding: _Optional[_Union[_types_pb2.FundingIntent, _Mapping]] = ..., mint_request_id: _Optional[str] = ...) -> None: ...
 
 class CreatePaymentResponse(_message.Message):
-    __slots__ = ("payment_bytes", "tickets_created", "expected_value", "funded_value_wei", "accepted_quote_ref", "work_id")
+    __slots__ = ("payment_bytes", "tickets_created", "expected_value", "funded_value_wei", "accepted_quote_ref", "work_id", "creation_round", "expires_after_round")
     PAYMENT_BYTES_FIELD_NUMBER: _ClassVar[int]
     TICKETS_CREATED_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_VALUE_FIELD_NUMBER: _ClassVar[int]
     FUNDED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
     ACCEPTED_QUOTE_REF_FIELD_NUMBER: _ClassVar[int]
     WORK_ID_FIELD_NUMBER: _ClassVar[int]
+    CREATION_ROUND_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AFTER_ROUND_FIELD_NUMBER: _ClassVar[int]
     payment_bytes: bytes
     tickets_created: int
     expected_value: _types_pb2.BigUInt
     funded_value_wei: _types_pb2.BigUInt
     accepted_quote_ref: _types_pb2.QuoteRef
     work_id: str
-    def __init__(self, payment_bytes: _Optional[bytes] = ..., tickets_created: _Optional[int] = ..., expected_value: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., funded_value_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., accepted_quote_ref: _Optional[_Union[_types_pb2.QuoteRef, _Mapping]] = ..., work_id: _Optional[str] = ...) -> None: ...
+    creation_round: int
+    expires_after_round: int
+    def __init__(self, payment_bytes: _Optional[bytes] = ..., tickets_created: _Optional[int] = ..., expected_value: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., funded_value_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., accepted_quote_ref: _Optional[_Union[_types_pb2.QuoteRef, _Mapping]] = ..., work_id: _Optional[str] = ..., creation_round: _Optional[int] = ..., expires_after_round: _Optional[int] = ...) -> None: ...
 
 class ReportPaymentResultRequest(_message.Message):
     __slots__ = ("work_id", "capability", "offering", "rejection_reason")

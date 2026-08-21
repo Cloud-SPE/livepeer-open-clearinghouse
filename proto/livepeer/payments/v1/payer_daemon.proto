@@ -117,6 +117,13 @@ message CreatePaymentResponse {
 
   // Work-id bound to this minted payment (hex recipient_rand_hash).
   string work_id = 6;
+
+  // The round these tickets were minted in and the last round in which
+  // any ticket in the envelope can still be redeemed. A signed envelope
+  // cannot be revoked, so chain-enforced expiry is the only unconditional
+  // release authority for an issued payment that never reaches admission.
+  int64 creation_round = 7;
+  int64 expires_after_round = 8;
 }
 
 message ReportPaymentResultRequest {

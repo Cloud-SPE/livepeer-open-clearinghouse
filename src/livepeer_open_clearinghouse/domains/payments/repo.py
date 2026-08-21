@@ -53,6 +53,10 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     price_per_work_unit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     funded_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
     expected_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    # Chain-enforced lifetime of the signed payment envelope. Nullable only
+    # for rows minted before Modules c496fb4; absence never authorizes release.
+    creation_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    expires_after_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reserved_wei: Mapped[Decimal] = mapped_column(nullable=False)
     refunded_wei: Mapped[Decimal] = mapped_column(nullable=False, default=Decimal(0))
     status: Mapped[str] = mapped_column(nullable=False)

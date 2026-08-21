@@ -112,6 +112,8 @@ class CreatePaymentResponse:
     funded_value_wei: Decimal
     accepted_quote_ref: QuoteRef
     work_id: str
+    creation_round: int
+    expires_after_round: int
 
     @property
     def payment_bytes_b64(self) -> str:
@@ -211,6 +213,8 @@ class MockPaymentDaemonClient:
             funded_value_wei=funded,
             accepted_quote_ref=request.accepted_price.quote_ref,
             work_id=work_id,
+            creation_round=100,
+            expires_after_round=102,
         )
         self._mint_replays[request.mint_request_id] = (request, response)
         return response
@@ -293,6 +297,8 @@ def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore
             route_fingerprint=bytes(proto.accepted_quote_ref.route_fingerprint),
         ),
         work_id=proto.work_id,
+        creation_round=int(proto.creation_round),
+        expires_after_round=int(proto.expires_after_round),
     )
 
 

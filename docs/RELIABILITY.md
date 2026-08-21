@@ -81,6 +81,32 @@ broker's required `Livepeer-Request-Id`. An LOC retry therefore replays one
 payer mint, and a broker retry replays one credit and lease extension. A new
 refill intent gets a new key; transport retries of that intent do not.
 
+### Jobs that never reach broker admission
+
+Once LOC returns a signed payment envelope, it cannot revoke it. The broker or
+another holder may submit a winning ticket at any point in its chain validity
+window, and neither a caller assertion, a broker refusal, nor a payee non-use
+attestation proves otherwise. LOC therefore retains the complete job
+encumbrance until one of two authoritative outcomes exists:
+
+- a valid broker-signed terminal settlement, processed normally; or
+- the payer-reported current round is strictly greater than the immutable
+  `expires_after_round` returned with that envelope at mint.
+
+Expiry is the recovery path for an unreachable broker, pre-admission refusal,
+catalog drift, a lost admission response with no retrievable settlement, and
+any other outcome lacking signed evidence. At equality the envelope remains
+potentially redeemable and stays encumbered. Missing, malformed, stale, or
+regressing round data also retains the encumbrance. Existing payments minted
+before the daemon supplied an expiry remain operator-reconciliation cases;
+LOC never invents their deadline.
+
+There is deliberately no customer-authorized `abandon` endpoint. A broker
+refusal may improve telemetry but cannot release money because a broker that
+received the envelope could retain it and submit it later. Chain expiry makes
+late use impossible without trusting either party. The release operation is
+idempotent and records its deadline, observed round, and reason for audit.
+
 Refill funding follows the Modules cumulative ceiling curve. For cumulative
 target `U`, `bill(U) = ceil(U × amount_wei / per_units)`; a refill requests
 `bill(U_after) - bill(U_before)`. Rounding each increment independently is a
