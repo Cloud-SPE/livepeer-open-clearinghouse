@@ -236,6 +236,45 @@ message SettlementRecord {
 
   // Optional workload-specific metadata. Not part of canonical arithmetic.
   map<string, string> breakdown = 9;
+
+  // Stable broker-local session id. Empty for paid-job/v1.
+  string session_id = 10;
+
+  // Payment identity in force for this record and its predecessor.
+  string work_id = 11;
+  string predecessor_work_id = 12;
+  uint32 rotation_generation = 13;
+
+  // Cumulative logical-session accounting.
+  uint64 claimed_units = 14;
+  uint64 debited_units = 15;
+
+  // Accounting scoped to the current work_id generation.
+  uint64 generation_debited_units = 16;
+  BigUInt generation_billed_value_wei = 17;
+  BigUInt generation_funded_value_wei = 18;
+
+  // Price pinned at session open.
+  BigUInt amount_wei = 19;
+  uint64 per_units = 20;
+
+  // Monotonic per session_id, plus record time and state.
+  uint64 settlement_seq = 21;
+  string issued_at = 22;
+  string state = 23;
+
+  // Broker-assigned identity for one paid-job/v1 exchange. This matches
+  // Livepeer-Job-Id and is REQUIRED inside the signed job settlement.
+  string job_id = 24;
+
+  // Cumulative work units debited on this payment identity after this
+  // record's exchange. Distinct from logical job/session debited_units.
+  uint64 payment_cumulative_units = 25;
+
+  // Gateway-issued identity echoed from paid-session open. Required on
+  // session settlements so the consumer can bind broker evidence to its
+  // own durable session without trusting broker-local identifiers.
+  string gateway_session_id = 26;
 }
 
 // PaymentRejectionReason is the machine-readable reason a payee daemon

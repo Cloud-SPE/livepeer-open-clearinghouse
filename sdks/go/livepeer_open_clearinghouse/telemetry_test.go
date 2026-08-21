@@ -56,6 +56,7 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 		w.Header().Set("Livepeer-Work-Units", "42")
 		w.Header().Set("Livepeer-Work-Unit", "token")
 		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	t.Cleanup(brokerSrv.Close)

@@ -1,385 +1,297 @@
-"""Tests for SessionRunner.
-
-Uses an in-process aiohttp-free WS server stub (websockets-native) for
-the broker side and respx for the LOC HTTP surface. Covers:
-  - Happy path: balance-low → refill → session.topup frame delivery
-  - (d-bounded) ws-realtime: balance-low fires winddown, no refill
-  - Refill refusal (LOC returns 402) → on_refill_refused callback
-  - HTTP-topup mode: refill delivered via POST to topup_url
-"""
-
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import uuid
 
 import httpx
 import pytest
 import respx
-from websockets.asyncio.server import serve
 
 from livepeer_open_clearinghouse_sdk import (
     OpenClearinghouseClient,
-    RefillEvent,
+    SessionAxes,
+    SessionBalance,
     SessionHandle,
     SessionRunner,
     WinddownEvent,
 )
 
 BASE = "http://loc.test"
+BROKER = "http://broker.test"
 KEY = "pymth_live_test"
 
 
-def _handle(broker_url: str, mode: str, *, session_id: uuid.UUID | None = None) -> SessionHandle:
-    sid = session_id or uuid.uuid4()
+def _handle(*, refill: str = "extensible") -> SessionHandle:
+    sid = uuid.UUID("11111111-1111-1111-1111-111111111111")
     return SessionHandle(
         session_id=sid,
+        request_id="open-request",
         work_id="wid-sess",
-        broker_url=broker_url,
-        mode=mode,
-        payment_envelope="BASE64ENV",
+        broker_url=BROKER,
+        protocol="paid-session/v1",
+        capability="livepeer:test",
+        offering="default",
+        session=SessionAxes(
+            descriptor_schema="livepeer.session.test/v1",
+            attachment="external",
+            metering="broker-observed",
+            refill=refill,
+        ),
+        session_params={"room": "alpha"},
+        payment_envelope="OPEN-ENV",
         expected_value_wei=100_000,
-        funded_value_wei=200_000,
+        funded_value_wei=100_000,
         refill_endpoint=f"/v1/sessions/{sid}/refill",
         close_endpoint=f"/v1/sessions/{sid}/close",
     )
 
 
-def _close_response(sid: uuid.UUID, actual_units: int = 0) -> dict:
+def _balance(**overrides: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "status": "ok",
+        "claimed_units": 10,
+        "debited_units": 10,
+        "unit": "participant_minutes",
+        "runway_units": 90,
+        "runway_seconds_estimate": 5400,
+        "will_refuse_next_refill": False,
+    }
+    value.update(overrides)
+    return value
+
+
+def _open_response() -> dict[str, object]:
     return {
-        "session_id": str(sid),
+        "session_id": "broker-session",
         "work_id": "wid-sess",
-        "actual_units": actual_units,
-        "billed_value_wei": actual_units * 1000,
-        "refund_wei": 200_000 - actual_units * 1000,
-        "outcome": "OVERFUNDED",
-        "closed_at": "2026-05-24T12:30:00Z",
+        "state": "active",
+        "runtime": {
+            "schema": "livepeer.session.test/v1",
+            "public": {"url": "https://runtime.test"},
+            "grants": [],
+        },
+        "credential": "credential",
+        "lease": {"expires_at": "2026-08-21T00:00:00Z"},
+        "balance": _balance(),
+        "control": {
+            "status_url": f"{BROKER}/status",
+            "topup_url": f"{BROKER}/topup",
+            "end_url": f"{BROKER}/end",
+        },
     }
 
 
-async def _start_ws_broker(handler):
-    """Start a websockets server on an OS-assigned port; return (url, close)."""
-    server = await serve(handler, "127.0.0.1", 0)
-    host, port = next(iter(server.sockets)).getsockname()[:2]
-    url = f"ws://{host}:{port}"
-
-    async def close() -> None:
-        server.close()
-        await server.wait_closed()
-
-    return url, close
-
-
+@pytest.mark.asyncio
 @respx.mock
-async def test_session_runner_refill_on_balance_low_ws_topup() -> None:
-    """session-control-plus-media@v0 happy path: WS connects, broker
-    emits Livepeer-Balance-Low, runner calls LOC refill, sends back a
-    session.topup JSON frame on the same WS."""
-    received_frames: list[str] = []
-    refill_event_received = asyncio.Event()
-
-    async def broker_handler(ws):
-        # 1. Send a balance-low control frame
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "session.balance.low",
-                    "observed_consumed_units": 80,
-                }
-            )
+async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> None:
+    handle = _handle()
+    broker_open = respx.post(f"{BROKER}/v1/session").mock(
+        return_value=httpx.Response(200, json=_open_response())
+    )
+    loc_refill = respx.post(f"{BASE}{handle.refill_endpoint}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "request_id": "refill-request",
+                "refill_seq": 1,
+                "payment_envelope": "REFILL-ENV",
+                "expected_value_wei": 50_000,
+                "funded_value_wei": 50_000,
+                "cap_status": None,
+            },
         )
-        # 2. Wait for the session.topup frame
-        try:
-            msg = await asyncio.wait_for(ws.recv(), timeout=2.0)
-            received_frames.append(msg)
-        except TimeoutError:
-            pass
+    )
+    broker_status = respx.get(f"{BROKER}/status").mock(
+        return_value=httpx.Response(200, json={"state": "active", "balance": _balance()})
+    )
+    broker_topup = respx.post(f"{BROKER}/topup").mock(
+        side_effect=[
+            httpx.Response(503, json={"error": "retry"}),
+            httpx.Response(200, json={"balance": _balance(status="ok")}),
+        ]
+    )
+    broker_end = respx.post(f"{BROKER}/end").mock(
+        return_value=httpx.Response(
+            204,
+            headers={"Livepeer-Settlement": "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0="},
+        )
+    )
+    loc_close = respx.post(f"{BASE}{handle.close_endpoint}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"outcome": "EXACT", "billed_value_wei": 150_000, "refund_wei": 0},
+        )
+    )
 
-    broker_url, broker_close = await _start_ws_broker(broker_handler)
-    try:
-        sid = uuid.uuid4()
-        handle = _handle(broker_url, "session-control-plus-media@v0", session_id=sid)
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await SessionRunner(client=client, handle=handle).start()
+        runner = SessionRunner(client=client, handle=handle)
+        session = await runner.start()  # broker-open replay recovers credential/control
+        assert (await runner.status())["state"] == "active"
+        low = SessionBalance.from_dict(_balance(status="low", claimed_units=80))
+        with pytest.raises(httpx.HTTPStatusError):
+            await runner.on_balance(low)
+        await runner.on_balance(low)
+        result = await runner.close(actual_units=150)
 
-        respx.post(f"{BASE}/v1/sessions/{sid}/refill").mock(
-            return_value=httpx.Response(
+    assert session.runtime_schema == "livepeer.session.test/v1"
+    assert result["outcome"] == "EXACT"
+    assert broker_open.calls[0].request.headers["Livepeer-Protocol"] == "paid-session/v1"
+    assert len(broker_open.calls) == 2
+    assert broker_status.called
+    assert len(loc_refill.calls) == 1
+    assert loc_refill.calls[0].request.headers["Idempotency-Key"]
+    assert len(broker_topup.calls) == 2
+    assert {call.request.headers["Livepeer-Request-Id"] for call in broker_topup.calls} == {
+        "refill-request"
+    }
+    assert broker_topup.calls[0].request.headers["Livepeer-Request-Id"] == "refill-request"
+    assert broker_topup.calls[0].request.headers["Authorization"] == "Bearer credential"
+    assert broker_end.called and loc_close.called
+    assert json.loads(loc_close.calls[0].request.content)["settlement"] == {
+        "payload": {},
+        "signature": {},
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bounded_and_refusal_warning_balances_drain_without_refill() -> None:
+    warnings: list[WinddownEvent] = []
+    respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        runner = SessionRunner(
+            client=client,
+            handle=_handle(refill="bounded"),
+            on_winddown_warning=warnings.append,
+        )
+        await runner.start()
+        await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
+        await runner.on_balance(SessionBalance.from_dict(_balance(will_refuse_next_refill=True)))
+
+    assert [event.reason for event in warnings] == [
+        "bounded_runway_exhausting",
+        "broker_will_refuse_next_refill",
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebind() -> None:
+    handle = _handle()
+    respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))
+    loc_refill = respx.post(f"{BASE}{handle.refill_endpoint}").mock(
+        side_effect=[
+            httpx.Response(
                 200,
                 json={
                     "work_id": "wid-sess",
+                    "request_id": "rejected-request",
                     "refill_seq": 1,
-                    "payment_envelope": "REFILL-ENV",
+                    "payment_envelope": "REJECTED-ENV",
                     "expected_value_wei": 50_000,
                     "funded_value_wei": 50_000,
-                    "cap_status": {
-                        "session_pct_used": 0.4,
-                        "spend_period_pct_used": None,
-                        "user_balance_pct_used": None,
-                        "operator_pool_pct_used": None,
-                        "will_refuse_next_refill": False,
-                        "winddown_reason": None,
-                    },
+                    "cap_status": None,
+                    "rebind_from": None,
                 },
-            )
-        )
-        respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-            return_value=httpx.Response(200, json=_close_response(sid))
-        )
-
-        async def on_refill(_event: RefillEvent) -> None:
-            refill_event_received.set()
-
-        async with (
-            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
-            SessionRunner(
-                client=client,
-                handle=handle,
-                on_refill_succeeded=on_refill,
-            ) as runner,
-        ):
-            # Give the balance_low → refill → topup-frame round-trip
-            # time to run.
-            await asyncio.wait_for(refill_event_received.wait(), timeout=3.0)
-            await runner.close(actual_units=0)
-    finally:
-        await broker_close()
-
-    assert refill_event_received.is_set()
-    assert len(received_frames) == 1
-    frame = json.loads(received_frames[0])
-    assert frame["type"] == "session.topup"
-    assert frame["body"]["payment_header"] == "REFILL-ENV"
-
-
-@respx.mock
-async def test_session_runner_bounded_mode_no_refill() -> None:
-    """ws-realtime@v0 is bounded — balance-low fires winddown only;
-    no refill call to LOC, no topup frame to broker."""
-    winddown_event = asyncio.Event()
-
-    async def broker_handler(ws):
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "session.balance.low",
-                    "projected_end_at": "2026-05-24T12:15:00Z",
-                }
-            )
-        )
-        # Wait briefly to give the runner a chance to (incorrectly)
-        # send a refill frame — none should arrive.
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ws.recv(), timeout=0.5)
-
-    broker_url, broker_close = await _start_ws_broker(broker_handler)
-    try:
-        sid = uuid.uuid4()
-        handle = _handle(broker_url, "ws-realtime@v0", session_id=sid)
-        respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-            return_value=httpx.Response(200, json=_close_response(sid))
-        )
-
-        # If the runner incorrectly tried to refill, this mock would 404.
-        respx.post(f"{BASE}/v1/sessions/{sid}/refill").mock(
-            return_value=httpx.Response(400, json={"error": {"code": "should_not_call"}})
-        )
-
-        async def on_winddown(_event: WinddownEvent) -> None:
-            winddown_event.set()
-
-        async with (
-            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
-            SessionRunner(
-                client=client,
-                handle=handle,
-                on_winddown_warning=on_winddown,
-            ) as runner,
-        ):
-            await asyncio.wait_for(winddown_event.wait(), timeout=2.0)
-            await runner.close(actual_units=0)
-    finally:
-        await broker_close()
-
-    assert winddown_event.is_set()
-
-
-@respx.mock
-async def test_session_runner_refill_refused_fires_callback() -> None:
-    """When LOC returns 402 on refill, on_refill_refused gets the
-    typed error and the runner doesn't kill the WS — it lets the
-    broker close naturally."""
-    refused_event = asyncio.Event()
-    received: list[RefillEvent] = []
-
-    async def broker_handler(ws):
-        await ws.send(json.dumps({"type": "session.balance.low"}))
-        # Keep the WS open briefly; runner shouldn't close it itself.
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ws.recv(), timeout=0.5)
-
-    broker_url, broker_close = await _start_ws_broker(broker_handler)
-    try:
-        sid = uuid.uuid4()
-        handle = _handle(broker_url, "session-control-plus-media@v0", session_id=sid)
-
-        respx.post(f"{BASE}/v1/sessions/{sid}/refill").mock(
-            return_value=httpx.Response(
-                402,
+            ),
+            httpx.Response(
+                200,
                 json={
-                    "error": {
-                        "code": "cap_reached",
-                        "message": "period cap reached",
-                        "details": {"which": "spend_period", "remaining_wei": "0"},
-                    }
+                    "work_id": "wid-successor",
+                    "request_id": "successor-request",
+                    "refill_seq": 2,
+                    "payment_envelope": "SUCCESSOR-ENV",
+                    "expected_value_wei": 50_000,
+                    "funded_value_wei": 50_000,
+                    "cap_status": None,
+                    "rebind_from": "wid-sess",
                 },
-            )
-        )
-        respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-            return_value=httpx.Response(200, json=_close_response(sid))
-        )
-
-        async def on_refused(event: RefillEvent) -> None:
-            received.append(event)
-            refused_event.set()
-
-        async with (
-            OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
-            SessionRunner(
-                client=client,
-                handle=handle,
-                on_refill_refused=on_refused,
-            ) as runner,
-        ):
-            await asyncio.wait_for(refused_event.wait(), timeout=3.0)
-            await runner.close(actual_units=0)
-    finally:
-        await broker_close()
-
-    assert refused_event.is_set()
-    assert received[0].error is not None
-    assert received[0].error.code == "cap_reached"
-
-
-@respx.mock
-async def test_session_runner_http_topup_mode_delivers_via_post() -> None:
-    """live-session-remote-runner@v0: SessionRunner opens via POST
-    /v1/cap to broker, captures control.topup_url, then on a refill
-    POSTs the envelope back to that URL."""
-    fake_topup_url = "http://broker.live.test/v1/cap/bsess_abc/topup"
-    sid = uuid.uuid4()
-    # Use the FastAPI app via httpx ASGI transport — same pattern as
-    # the end-to-end test. Mock the LOC + broker via respx/transports.
-    handle = _handle(
-        broker_url="http://broker.live.test",
-        mode="live-session-remote-runner@v0",
-        session_id=sid,
+            ),
+        ]
     )
-
-    # Mock the broker via respx (covers both POSTs above)
-    respx.post("http://broker.live.test/v1/cap").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "broker_session_id": "bsess_abc",
-                "work_id": "wid",
-                "control": {"topup_url": fake_topup_url},
-            },
-        )
-    )
-    respx.post(fake_topup_url).mock(
-        return_value=httpx.Response(
-            200, json={"broker_session_id": "bsess_abc", "state": "publishing"}
-        )
-    )
-    respx.post(f"{BASE}/v1/sessions/{sid}/refill").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "work_id": "wid",
-                "refill_seq": 1,
-                "payment_envelope": "REFILL-HTTP",
-                "expected_value_wei": 10_000,
-                "funded_value_wei": 10_000,
-                "cap_status": {
-                    "session_pct_used": 0.2,
-                    "spend_period_pct_used": None,
-                    "user_balance_pct_used": None,
-                    "operator_pool_pct_used": None,
-                    "will_refuse_next_refill": False,
-                    "winddown_reason": None,
-                },
-            },
-        )
-    )
-    respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-        return_value=httpx.Response(200, json=_close_response(sid))
-    )
-
-    async with (
-        OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client,
-        SessionRunner(client=client, handle=handle) as runner,
-    ):
-        # No WS for live-session — drive a refill by directly invoking
-        # the runner's balance-low handler. This is what would
-        # happen if the customer's media-plane code observed
-        # balance-low and routed it to the runner.
-        await runner._on_balance_low({"observed_consumed_units": 50})
-        await runner.close(actual_units=0)
-
-    # The runner POSTed the refill envelope to control.topup_url
-    refill_call = next(call for call in respx.calls if str(call.request.url) == fake_topup_url)
-    body = json.loads(refill_call.request.content)
-    assert body["gateway_session_id"] == str(sid)
-    assert refill_call.request.headers["Livepeer-Payment"] == "REFILL-HTTP"
-
-
-@respx.mock
-async def test_session_runner_unsupported_mode_raises() -> None:
-    """If a customer somehow constructs a runner for a mode neither in
-    BOUNDED_MODES nor in WS/HTTP topup sets, SessionRunner raises."""
-    from livepeer_open_clearinghouse_sdk import OpenClearinghouseError
-
-    sid = uuid.uuid4()
-    handle = _handle(
-        broker_url="http://broker.test",
-        mode="http-reqresp@v0",  # job mode, not a session mode
-        session_id=sid,
-    )
-    respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-        return_value=httpx.Response(200, json=_close_response(sid))
+    broker_topup = respx.post(f"{BROKER}/topup").mock(
+        side_effect=[
+            httpx.Response(409, headers={"Livepeer-Error": "recipient_rotated"}),
+            httpx.Response(200, json={"balance": _balance()}),
+        ]
     )
 
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
         runner = SessionRunner(client=client, handle=handle)
-        with pytest.raises(OpenClearinghouseError):
-            await runner._start()
+        await runner.start()
+        await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
+
+    assert len(loc_refill.calls) == 2
+    replacement_body = loc_refill.calls[1].request.content.decode()
+    assert '"rebind_from":"wid-sess"' in replacement_body
+    assert '"replaces_request_id":"rejected-request"' in replacement_body
+    assert (
+        loc_refill.calls[0].request.headers["Idempotency-Key"]
+        != loc_refill.calls[1].request.headers["Idempotency-Key"]
+    )
+    assert len(broker_topup.calls) == 2
+    assert "Livepeer-Rebind-From" not in broker_topup.calls[0].request.headers
+    assert broker_topup.calls[1].request.headers["Livepeer-Rebind-From"] == "wid-sess"
+    assert broker_topup.calls[1].request.headers["Livepeer-Request-Id"] == "successor-request"
+    assert runner.broker_session is not None
+    assert runner.broker_session.work_id == "wid-successor"
 
 
-async def test_session_runner_close_sets_final_settle() -> None:
-    """After close, runner.outcome / billed_value_wei / refund_wei are
-    populated from the LOC close response."""
+@pytest.mark.asyncio
+@respx.mock
+async def test_rebind_refused_drains_without_a_second_rotation() -> None:
+    warnings: list[WinddownEvent] = []
+    handle = _handle()
+    respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))
+    loc_refill = respx.post(f"{BASE}{handle.refill_endpoint}").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "work_id": "wid-sess",
+                    "request_id": "rejected-request",
+                    "payment_envelope": "REJECTED-ENV",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "work_id": "wid-successor",
+                    "request_id": "successor-request",
+                    "payment_envelope": "SUCCESSOR-ENV",
+                    "rebind_from": "wid-sess",
+                },
+            ),
+        ]
+    )
+    broker_topup = respx.post(f"{BROKER}/topup").mock(
+        side_effect=[
+            httpx.Response(409, headers={"Livepeer-Error": "recipient_rotated"}),
+            httpx.Response(409, headers={"Livepeer-Error": "rebind_refused"}),
+        ]
+    )
 
-    async def broker_handler(ws):
-        # Idle until disconnect
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ws.recv(), timeout=2.0)
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        runner = SessionRunner(
+            client=client,
+            handle=handle,
+            on_winddown_warning=warnings.append,
+        )
+        await runner.start()
+        await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
 
-    broker_url, broker_close = await _start_ws_broker(broker_handler)
-    try:
-        sid = uuid.uuid4()
-        handle = _handle(broker_url, "session-control-plus-media@v0", session_id=sid)
+    assert len(loc_refill.calls) == 2
+    assert len(broker_topup.calls) == 2
+    assert [warning.reason for warning in warnings] == ["payment_unrecoverable"]
 
-        with respx.mock:
-            respx.post(f"{BASE}/v1/sessions/{sid}/close").mock(
-                return_value=httpx.Response(200, json=_close_response(sid, actual_units=80))
-            )
 
-            async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-                runner = SessionRunner(client=client, handle=handle)
-                async with runner:
-                    await runner.close(actual_units=80)
-                assert runner.outcome == "OVERFUNDED"
-                assert runner.billed_value_wei == 80_000
-                assert runner.refund_wei == 120_000
-    finally:
-        await broker_close()
+@pytest.mark.asyncio
+@respx.mock
+async def test_descriptor_mismatch_fails_closed() -> None:
+    response = _open_response()
+    response["runtime"] = {"schema": "wrong/v1", "public": {}, "grants": []}
+    respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=response))
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        with pytest.raises(Exception, match="descriptor"):
+            await SessionRunner(client=client, handle=_handle()).start()

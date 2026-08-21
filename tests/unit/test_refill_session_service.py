@@ -8,10 +8,12 @@ winddown_reason fields on the cap_status block.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -38,18 +40,31 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
 )
+from livepeer_open_clearinghouse.domains.sessions.runtime import refill_session_endpoint
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
+    InvalidSessionRequest,
     RefillNotSupported,
     SessionCapReached,
     SessionNotFound,
     SessionNotOpen,
 )
+from livepeer_open_clearinghouse.domains.sessions.types import RefillSessionRequest
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    OpenClearinghouseError,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
-from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
+from livepeer_open_clearinghouse.providers.payment_daemon import (
+    CreatePaymentRequest,
+    CreatePaymentResponse,
+    MintOutcomeUnknown,
+    MockPaymentDaemonClient,
+    PaymentDaemonError,
+)
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
@@ -110,7 +125,7 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**18) -> tuple[uuid.UU
     return user.id, key.id
 
 
-def _route(mode: str, *, price_wei: int = 1000) -> SelectedRoute:
+def _route(mode: str, *, price_wei: int = 1000, per_units: int = 1) -> SelectedRoute:
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -118,7 +133,7 @@ def _route(mode: str, *, price_wei: int = 1000) -> SelectedRoute:
         offering="vtuber-1080p30",
         price_per_work_unit_wei=Decimal(price_wei),
         work_unit="session_second",
-        units_per_price=1,
+        units_per_price=per_units,
         quote_id="q-1",
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
@@ -140,13 +155,21 @@ async def _open_extensible_session(
     estimated: int = 100,
     max_total: int = 1000,
     price_wei: int = 1000,
+    per_units: int = 1,
     balance_wei: int = 10**18,
+    daemon: MockPaymentDaemonClient | None = None,
 ):
     user_id, key_id = await _seed(db, balance_wei=balance_wei)
     registry = MockRegistryClient(
-        routes=[_route("session-control-plus-media@v0", price_wei=price_wei)]
+        routes=[
+            _route(
+                "session-control-plus-media@v0",
+                price_wei=price_wei,
+                per_units=per_units,
+            )
+        ]
     )
-    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+    daemon = daemon or MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
     open_resp = await sessions_service.open_session(
         db,
         user_id=user_id,
@@ -162,6 +185,35 @@ async def _open_extensible_session(
         settings=_settings(),
     )
     return user_id, key_id, open_resp, daemon
+
+
+class LoseNextCompletedResponseDaemon(MockPaymentDaemonClient):
+    def __init__(self) -> None:
+        super().__init__(ev_ratio=Decimal("1.0"))
+        self.lose_next = False
+        self.attempts = 0
+
+    async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
+        self.attempts += 1
+        response = await super().create_payment(request)
+        if self.lose_next:
+            self.lose_next = False
+            raise PaymentDaemonError("response lost after durable payer completion")
+        return response
+
+
+class IncompleteNextReservationDaemon(MockPaymentDaemonClient):
+    def __init__(self) -> None:
+        super().__init__(ev_ratio=Decimal("1.0"))
+        self.fail_next = False
+        self.attempts = 0
+
+    async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
+        self.attempts += 1
+        if self.fail_next:
+            self.fail_next = False
+            raise MintOutcomeUnknown("mint was reserved but never completed")
+        return await super().create_payment(request)
 
 
 # ---- happy path ----
@@ -207,10 +259,10 @@ async def test_refill_writes_new_payment_and_bumps_debit_seq(
     assert all(payment.mint_request_id for payment in payments)
     assert payments[0].mint_request_id != payments[1].mint_request_id
 
-    # Session's last_debit_seq bumped
+    # Session's LOC-side refill ordinal bumped
     ps = await db_session.get(PaymentSession, open_resp.session_id)
     assert ps is not None
-    assert ps.last_debit_seq == 1
+    assert ps.refill_seq == 1
 
     # Settlement event written
     events = (
@@ -219,6 +271,438 @@ async def test_refill_writes_new_payment_and_bumps_debit_seq(
         )
     ).all()
     assert any(e.event_type == "refill_granted" for e in events)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_funding_uses_cumulative_ceiling_delta(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(
+        db_session,
+        estimated=1,
+        max_total=3,
+        price_wei=1,
+        per_units=3,
+    )
+
+    first = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+    second = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    # bill(1)=bill(2)=bill(3)=1 wei. Independent rounding would fund
+    # three wei; cumulative deltas fund one wei over the whole session.
+    assert first.funded_value_wei == 0
+    assert second.funded_value_wei == 0
+    payments = (
+        await db_session.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
+    ).all()
+    assert sum(int(payment.funded_value_wei) for payment in payments) == 1
+    assert second.cap_status.will_refuse_next_refill is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_endpoint_replays_one_payer_mint_and_accounting_mutation(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(db_session)
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    body = RefillSessionRequest(observed_consumed_units=80)
+
+    first = await refill_session_endpoint(
+        session_id=open_resp.session_id,
+        body=body,
+        pair=(api_key, user),
+        db=db_session,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        idempotency_key="stable-refill-1",
+    )
+    await db_session.commit()
+    replay = await refill_session_endpoint(
+        session_id=open_resp.session_id,
+        body=body,
+        pair=(api_key, user),
+        db=db_session,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        idempotency_key="stable-refill-1",
+    )
+
+    assert replay == first
+    assert first.request_id
+    payments = (
+        await db_session.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
+    ).all()
+    assert len(payments) == 2
+    assert payments[-1].mint_request_id == f"loc:{first.request_id}"
+    session_row = await db_session.get(PaymentSession, open_resp.session_id)
+    assert session_row is not None
+    assert session_row.refill_seq == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_endpoint_rejects_changed_payload_under_same_key(
+    db_session: AsyncSession,
+) -> None:
+    from livepeer_open_clearinghouse.errors import IdempotencyKeyReuse
+
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(db_session)
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    arguments = {
+        "session_id": open_resp.session_id,
+        "pair": (api_key, user),
+        "db": db_session,
+        "daemon": daemon,
+        "clock": _clock(),
+        "settings": _settings(),
+        "idempotency_key": "stable-refill-2",
+    }
+
+    await refill_session_endpoint(
+        body=RefillSessionRequest(observed_consumed_units=80),
+        **arguments,
+    )
+    await db_session.commit()
+    with pytest.raises(IdempotencyKeyReuse):
+        await refill_session_endpoint(
+            body=RefillSessionRequest(observed_consumed_units=81),
+            **arguments,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_endpoint_recovers_lost_completed_payer_response_with_same_id(
+    db_session: AsyncSession,
+) -> None:
+    daemon = LoseNextCompletedResponseDaemon()
+    user_id, key_id, open_resp, _ = await _open_extensible_session(
+        db_session,
+        daemon=daemon,
+    )
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    clock = _clock()
+    settings = _settings()
+    arguments = {
+        "session_id": open_resp.session_id,
+        "body": RefillSessionRequest(observed_consumed_units=80),
+        "pair": (api_key, user),
+        "db": db_session,
+        "daemon": daemon,
+        "clock": clock,
+        "settings": settings,
+        "idempotency_key": "lost-refill-response",
+    }
+
+    daemon.lose_next = True
+    with pytest.raises(DaemonUnavailable):
+        await refill_session_endpoint(**arguments)
+    clock.advance(timedelta(seconds=settings.idempotency_inflight_timeout_seconds + 1))
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    arguments["pair"] = (api_key, user)
+    recovered = await refill_session_endpoint(**arguments)
+    await db_session.commit()
+
+    assert recovered.request_id
+    assert daemon.attempts == 3  # initial open + lost refill response + exact payer replay
+    assert len(daemon._mint_replays) == 2
+    payments = (
+        await db_session.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
+    ).all()
+    assert len(payments) == 2
+    assert payments[-1].mint_request_id == f"loc:{recovered.request_id}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rotation_rejects_predecessor_and_remints_without_double_funding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(db_session)
+    rejected = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=80,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        request_id="rejected-refill",
+    )
+
+    replacement = await sessions_service.refill_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=80,
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+        request_id="rotation-successor",
+        rebind_from=rejected.work_id,
+        replaces_request_id=rejected.request_id,
+    )
+
+    assert replacement.work_id != rejected.work_id
+    assert replacement.rebind_from == rejected.work_id
+    assert daemon.reported_invalid_recipient_rands == [
+        (rejected.work_id, "livepeer:vtuber-session", "vtuber-1080p30")
+    ]
+    session_row = await db_session.get(PaymentSession, open_resp.session_id)
+    assert session_row is not None
+    assert session_row.work_id == replacement.work_id
+    assert session_row.rotation_generation == 1
+    payments = (
+        await db_session.scalars(
+            select(Payment)
+            .where(Payment.session_id == open_resp.session_id)
+            .order_by(Payment.created_at)
+        )
+    ).all()
+    assert [payment.status for payment in payments] == ["issued", "refused", "issued"]
+    assert payments[1].refused_reason == "invalid_recipient_rand"
+    assert payments[1].refunded_wei == payments[1].expected_value_wei
+    assert (
+        sum(
+            int(payment.work_units_requested) for payment in payments if payment.status != "refused"
+        )
+        == 200
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rotation_requires_exact_issued_predecessor(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(db_session)
+
+    with pytest.raises(InvalidSessionRequest, match="predecessor"):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=None,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+            request_id="rotation-successor",
+            rebind_from="00" * 32,
+            replaces_request_id=open_resp.request_id,
+        )
+    assert daemon.reported_invalid_recipient_rands == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rotation_requires_fresh_loc_and_payer_request_identity(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id, open_resp, daemon = await _open_extensible_session(db_session)
+
+    with pytest.raises(InvalidSessionRequest, match="fresh request identity"):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=None,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+            request_id=open_resp.request_id,
+            rebind_from=open_resp.work_id,
+            replaces_request_id=open_resp.request_id,
+        )
+    assert daemon.reported_invalid_recipient_rands == []
+
+
+@pytest.mark.unit
+def test_rotation_request_requires_both_binding_fields() -> None:
+    with pytest.raises(ValueError, match="must be supplied together"):
+        RefillSessionRequest(rebind_from="ab" * 32)
+    with pytest.raises(ValueError, match="must be supplied together"):
+        RefillSessionRequest(replaces_request_id="prior-response")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rotation_recovery_replays_after_lost_payer_response(
+    db_session: AsyncSession,
+) -> None:
+    daemon = LoseNextCompletedResponseDaemon()
+    user_id, key_id, open_resp, _ = await _open_extensible_session(db_session, daemon=daemon)
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    clock = _clock()
+    settings = _settings()
+    body = RefillSessionRequest(
+        rebind_from=open_resp.work_id,
+        replaces_request_id=open_resp.request_id,
+    )
+    arguments = {
+        "session_id": open_resp.session_id,
+        "body": body,
+        "pair": (api_key, user),
+        "db": db_session,
+        "daemon": daemon,
+        "clock": clock,
+        "settings": settings,
+        "idempotency_key": "rotation-after-lost-response",
+    }
+
+    daemon.lose_next = True
+    with pytest.raises(DaemonUnavailable):
+        await refill_session_endpoint(**arguments)
+    clock.advance(timedelta(seconds=settings.idempotency_inflight_timeout_seconds + 1))
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    arguments["pair"] = (api_key, user)
+    recovered = await refill_session_endpoint(**arguments)
+
+    session_row = await db_session.get(PaymentSession, open_resp.session_id)
+    assert recovered.work_id != open_resp.work_id
+    assert session_row is not None
+    assert session_row.rotation_generation == 1
+    assert len(daemon.reported_invalid_recipient_rands) == 2
+    assert daemon.attempts == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_endpoint_keeps_incomplete_payer_reservation_as_tombstone(
+    db_session: AsyncSession,
+) -> None:
+    daemon = IncompleteNextReservationDaemon()
+    user_id, key_id, open_resp, _ = await _open_extensible_session(
+        db_session,
+        daemon=daemon,
+    )
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    arguments = {
+        "session_id": open_resp.session_id,
+        "body": RefillSessionRequest(observed_consumed_units=80),
+        "pair": (api_key, user),
+        "db": db_session,
+        "daemon": daemon,
+        "clock": _clock(),
+        "settings": _settings(),
+        "idempotency_key": "incomplete-refill",
+    }
+
+    daemon.fail_next = True
+    for attempt in range(2):
+        with pytest.raises(OpenClearinghouseError) as exc_info:
+            await refill_session_endpoint(**arguments)
+        assert exc_info.value.code == "IDEMPOTENCY_OUTCOME_UNKNOWN"
+        if attempt == 0:
+            user = await db_session.get(User, user_id)
+            api_key = await db_session.get(ApiKey, key_id)
+            assert user is not None
+            assert api_key is not None
+            arguments["pair"] = (api_key, user)
+
+    assert daemon.attempts == 2  # initial open + one incomplete refill reservation
+    payments = (
+        await db_session.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
+    ).all()
+    assert len(payments) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_concurrent_refill_requests_mint_and_account_once(tmp_path: Path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'refill-race.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    daemon = LoseNextCompletedResponseDaemon()
+    async with maker() as seed_db:
+        user_id, key_id, open_resp, _ = await _open_extensible_session(
+            seed_db,
+            daemon=daemon,
+        )
+        await seed_db.commit()
+
+    async def invoke() -> str:
+        async with maker() as db:
+            user = await db.get(User, user_id)
+            api_key = await db.get(ApiKey, key_id)
+            assert user is not None
+            assert api_key is not None
+            try:
+                await refill_session_endpoint(
+                    session_id=open_resp.session_id,
+                    body=RefillSessionRequest(observed_consumed_units=80),
+                    pair=(api_key, user),
+                    db=db,
+                    daemon=daemon,
+                    clock=_clock(),
+                    settings=_settings(),
+                    idempotency_key="concurrent-refill",
+                )
+                await db.commit()
+            except OpenClearinghouseError as exc:
+                return exc.code
+            return "ok"
+
+    results = await asyncio.gather(invoke(), invoke())
+    assert "ok" in results
+    assert set(results) <= {"ok", "IDEMPOTENCY_IN_PROGRESS"}
+    assert daemon.attempts == 2  # initial open + one refill mint
+    async with maker() as db:
+        payments = (
+            await db.scalars(select(Payment).where(Payment.session_id == open_resp.session_id))
+        ).all()
+        session_row = await db.get(PaymentSession, open_resp.session_id)
+        assert len(payments) == 2
+        assert session_row is not None
+        assert session_row.refill_seq == 1
+    await engine.dispose()
 
 
 @pytest.mark.unit

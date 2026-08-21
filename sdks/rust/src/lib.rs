@@ -11,14 +11,12 @@ mod telemetry;
 
 pub use client::{
     CapStatus, Capability, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
-    JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionHandle, SubmitJobInput,
-    SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
+    JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionAxes, SessionHandle,
+    SubmitJobInput, SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
 };
 pub use errors::{ErrorKind, OpenClearinghouseError};
 pub use session_runner::{
-    bounded_modes, http_topup_modes, ws_topup_modes, RefillCallback, RefillEvent, SessionOutcome,
+    BrokerControl, BrokerSession, RefillCallback, RefillEvent, SessionBalance, SessionOutcome,
     SessionRunner, SessionRunnerOptions, WinddownCallback, WinddownEvent,
-    MODE_LIVE_SESSION_GATEWAY_INGEST, MODE_LIVE_SESSION_REMOTE_RUNNER,
-    MODE_RTMP_INGRESS_HLS_EGRESS, MODE_SESSION_CONTROL_PLUS_MEDIA, MODE_WS_REALTIME,
 };
 pub use telemetry::{EmitOptions, EmitterConfig, TelemetryEmitter};

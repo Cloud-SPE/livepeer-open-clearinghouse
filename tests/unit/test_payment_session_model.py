@@ -118,7 +118,8 @@ async def test_payment_session_round_trip(session: AsyncSession) -> None:
     assert fetched.state == "open"
     assert fetched.billed_value_wei is None
     assert fetched.outcome is None
-    assert fetched.last_debit_seq == 0
+    assert fetched.refill_seq == 0
+    assert fetched.rotation_generation == 0
     assert fetched.sdk_identity == "python/0.4.0/abc1234"
 
 

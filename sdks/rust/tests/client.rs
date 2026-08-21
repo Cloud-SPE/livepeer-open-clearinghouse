@@ -10,6 +10,7 @@ use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const API_KEY: &str = "pymth_live_test";
+const ENCODED_SETTLEMENT: &str = "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0=";
 
 fn loc_client(loc: &MockServer) -> Client {
     Client::new(ClientOptions::new(loc.uri(), API_KEY)).unwrap()
@@ -87,7 +88,8 @@ async fn submit_job_happy_path() {
                 .set_body_json(json!({ "reply": "ok" }))
                 .insert_header("Livepeer-Work-Units", "42")
                 .insert_header("Livepeer-Work-Unit", "token")
-                .insert_header("Livepeer-Job-Id", "broker-job-1"),
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
         )
         .mount(&broker)
         .await;
@@ -97,7 +99,8 @@ async fn submit_job_happy_path() {
         .and(body_json(json!({
             "actual_units": 42,
             "broker_job_id": "broker-job-1",
-            "work_unit": "token"
+            "work_unit": "token",
+            "settlement": {"payload": {}, "signature": {}}
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(42)))
         .mount(&loc)
@@ -232,7 +235,8 @@ async fn submit_job_multipart_selects_declared_transport() {
                 .set_body_json(json!({"ok": true}))
                 .insert_header("Livepeer-Work-Units", "2")
                 .insert_header("Livepeer-Work-Unit", "token")
-                .insert_header("Livepeer-Job-Id", "broker-job-1"),
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
         )
         .mount(&broker)
         .await;
@@ -273,7 +277,8 @@ async fn submit_job_rejects_work_unit_drift() {
                 .set_body_json(json!({}))
                 .insert_header("Livepeer-Work-Units", "3")
                 .insert_header("Livepeer-Work-Unit", "frames")
-                .insert_header("Livepeer-Job-Id", "broker-job-1"),
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
         )
         .mount(&broker)
         .await;
@@ -313,7 +318,8 @@ async fn submit_job_terminal_error_settles_zero() {
                 .set_body_json(json!({"error": "rate_limited"}))
                 .insert_header("Livepeer-Work-Units", "0")
                 .insert_header("Livepeer-Work-Unit", "token")
-                .insert_header("Livepeer-Job-Id", "broker-job-1"),
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
         )
         .mount(&broker)
         .await;
@@ -322,7 +328,8 @@ async fn submit_job_terminal_error_settles_zero() {
         .and(body_json(json!({
             "actual_units": 0,
             "broker_job_id": "broker-job-1",
-            "work_unit": "token"
+            "work_unit": "token",
+            "settlement": {"payload": {}, "signature": {}}
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(0)))
         .mount(&loc)
@@ -386,7 +393,12 @@ async fn open_session_returns_handle() {
             "session_id": sid,
             "work_id": "wid-sess",
             "broker_url": "https://broker.example/livepeer",
-            "mode": "session-control-plus-media@v0",
+            "request_id": "req-session",
+            "protocol": "paid-session/v1",
+            "session": {
+                "descriptor_schema": "livepeer.session.test/v1",
+                "attachment": "direct", "metering": "broker", "refill": "extensible"
+            },
             "payment_envelope": "BASE64SESS",
             "expected_value_wei": 100_000u64,
             "funded_value_wei": 200_000u64,
@@ -402,12 +414,15 @@ async fn open_session_returns_handle() {
         .open_session(OpenSessionInput {
             capability: "livepeer:vtuber-session",
             offering: "vtuber-1080p30",
+            descriptor_schema: "livepeer.session.test/v1",
+            session_params: json!({}),
             estimated_runway_units: 100,
             max_total_units: 200,
+            request_id: None,
         })
         .await
         .expect("open_session");
-    assert_eq!(handle.mode, "session-control-plus-media@v0");
+    assert_eq!(handle.protocol, "paid-session/v1");
     assert_eq!(handle.funded_value_wei, 200_000);
 }
 
@@ -431,7 +446,12 @@ async fn close_session_threads_outcome() {
 
     let client = loc_client(&loc);
     let result = client
-        .close_session(sid, 100, Some("EXACT"), None)
+        .close_session(
+            sid,
+            100,
+            Some("EXACT"),
+            json!({"payload": {}, "signature": {}}),
+        )
         .await
         .expect("close_session");
     assert_eq!(

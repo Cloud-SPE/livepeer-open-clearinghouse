@@ -32,6 +32,7 @@ from livepeer_open_clearinghouse_sdk.client import (
     OpenClearinghouseClient,
     Orchestrator,
     RouteView,
+    SessionAxes,
     SessionHandle,
     is_open_clearinghouse_error,
     wei_to_eth,
@@ -47,21 +48,18 @@ from livepeer_open_clearinghouse_sdk.errors import (
     RateLimited,
 )
 from livepeer_open_clearinghouse_sdk.session_runner import (
-    BOUNDED_MODES,
-    HTTP_TOPUP_MODES,
-    WS_TOPUP_MODES,
+    BrokerSession,
     RefillEvent,
+    SessionBalance,
     SessionRunner,
     WinddownEvent,
 )
 
 __all__ = [
-    "BOUNDED_MODES",
-    "HTTP_TOPUP_MODES",
     "SDK_IDENTITY",
-    "WS_TOPUP_MODES",
     "AccountNotApproved",
     "BrokerProtocolError",
+    "BrokerSession",
     "CapStatus",
     "Capability",
     "DaemonUnavailable",
@@ -76,6 +74,8 @@ __all__ = [
     "RateLimited",
     "RefillEvent",
     "RouteView",
+    "SessionAxes",
+    "SessionBalance",
     "SessionHandle",
     "SessionRunner",
     "WinddownEvent",

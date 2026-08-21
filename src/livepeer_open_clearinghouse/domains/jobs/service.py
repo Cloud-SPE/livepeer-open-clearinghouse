@@ -24,7 +24,7 @@ import base64
 import time
 import uuid
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from livepeer_open_clearinghouse.domains.billing import service as billing_servi
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobResponse,
     SettleJobResponse,
+    SettlementEnvelope,
 )
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
@@ -50,11 +51,17 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     FundingIntent,
+    MintOutcomeUnknown,
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.settlement_verification import (
+    JobSettlementExpectation,
+    SettlementVerificationError,
+    verify_job_settlement,
+)
 from livepeer_open_clearinghouse.settings import Settings
 
 PAID_JOB_PROTOCOL = "paid-job/v1"
@@ -113,6 +120,18 @@ class WorkUnitMismatch(OpenClearinghouseError):
             message=f"broker reported work unit {received!r}; expected {expected!r}",
             status_code=409,
             details={"expected": expected, "received": received},
+        )
+
+
+class SettlementVerificationFailed(OpenClearinghouseError):
+    """A broker claim cannot authorize a financial state change."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            code="settlement_verification_failed",
+            message="broker settlement verification failed",
+            status_code=409,
+            details={"reason": reason},
         )
 
 
@@ -229,6 +248,10 @@ async def open_job(
     )
     try:
         daemon_response = await daemon.create_payment(daemon_request)
+    except MintOutcomeUnknown as exc:
+        from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
+
+        raise IdempotencyOutcomeUnknown from exc
     except PaymentDaemonError as exc:
         raise DaemonUnavailable(
             daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
@@ -346,12 +369,11 @@ async def settle_job(
     broker_job_id: str,
     work_unit: str,
     outcome: str | None,
-    settlement: dict[str, Any] | None,
+    settlement: SettlementEnvelope,
     clock: Clock,
     settings: Settings,
 ) -> SettleJobResponse:
-    """Settle a job after the SDK has called the broker and read the
-    Livepeer-Work-Units header (or trailer for http-stream).
+    """Settle a job from the broker's signed terminal claim.
 
     Mirrors ``sessions.service.close_session`` — same accounting,
     same encumbrance release, same settlement-event write. The protocol
@@ -381,11 +403,34 @@ async def settle_job(
     expected_work_unit = str(snapshot.get("work_unit", ""))
     if work_unit != expected_work_unit:
         raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
-    billed_value_wei = sessions_service._bill_value_wei(
-        units=actual_units,
-        amount_wei=price_wei,
-        per_units=int(snapshot.get("units_per_price", 1)),
-    )
+    try:
+        settlement_keys = snapshot["settlement_keys"]
+        if not isinstance(settlement_keys, list) or not settlement_keys:
+            raise SettlementVerificationError(
+                "missing_delegation", "route snapshot has no settlement keys"
+            )
+        verified = verify_job_settlement(
+            settlement.model_dump(mode="python"),
+            settlement_keys=settlement_keys,
+            expected=JobSettlementExpectation(
+                job_id=broker_job_id,
+                work_id=job_row.work_id,
+                work_unit=expected_work_unit,
+                actual_units=actual_units,
+                amount_wei=int(price_wei),
+                per_units=int(snapshot["units_per_price"]),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        reason = exc.code if isinstance(exc, SettlementVerificationError) else "invalid_snapshot"
+        raise SettlementVerificationFailed(reason=reason) from exc
+    if outcome is not None and outcome != verified.outcome:
+        raise SettlementVerificationFailed(reason="outcome_mismatch")
+    billed_value_wei = Decimal(verified.billed_value_wei)
     refund_wei = job_row.funded_value_wei - billed_value_wei
 
     # Transition state
@@ -407,9 +452,7 @@ async def settle_job(
         )
 
     # Finalize fields
-    final_outcome = outcome or sessions_service._infer_close_outcome(
-        funded=job_row.funded_value_wei, billed=billed_value_wei
-    )
+    final_outcome = verified.outcome
     job_row.actual_units = actual_units
     job_row.billed_value_wei = billed_value_wei
     job_row.outcome = final_outcome
@@ -432,7 +475,7 @@ async def settle_job(
         raw_record={
             "broker_job_id": broker_job_id,
             "work_unit": work_unit,
-            "settlement": settlement,
+            "settlement": settlement.model_dump(mode="json"),
         },
     )
 

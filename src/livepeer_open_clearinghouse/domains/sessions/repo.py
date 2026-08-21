@@ -72,7 +72,12 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     sdk_identity: Mapped[str | None] = mapped_column(nullable=True)
     opened_at: Mapped[datetime] = mapped_column(nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_debit_seq: Mapped[int] = mapped_column(nullable=False, default=0)
+    # LOC-side refill ordinal. This is deliberately not named debit_seq:
+    # the payee uses debit_seq for a different, money-authoritative key.
+    refill_seq: Mapped[int] = mapped_column(nullable=False, default=0)
+    rotation_generation: Mapped[int] = mapped_column(nullable=False, default=0)
+    broker_session_id: Mapped[str | None] = mapped_column(nullable=True)
+    last_settlement_seq: Mapped[int] = mapped_column(nullable=False, default=0)
     last_polled_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
@@ -85,7 +90,6 @@ class PaymentSettlement(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMix
       - ``refill_denied``     — cap blocked a refill
       - ``balance_low``       — broker emitted Livepeer-Balance-Low
       - ``close``             — session ended; final reconcile
-      - ``reconcile``         — janitor finalized a silent session
 
     Append-only by convention; rows are never updated.
     """

@@ -38,8 +38,10 @@ from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaem
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key, signed_session_settlement
 
 
 @pytest_asyncio.fixture()
@@ -109,6 +111,7 @@ def _route() -> SelectedRoute:
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol="paid-session/v1",
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra={
             "session": {
                 "descriptor_schema": "test-runtime/v1",
@@ -204,7 +207,17 @@ async def test_status_for_closed_session_no_cap_status(db_session: AsyncSession)
         user_id=user_id,
         actual_units=400,
         outcome=None,
-        settlement=None,
+        settlement=signed_session_settlement(
+            gateway_session_id=str(open_resp.session_id),
+            work_id=open_resp.work_id,
+            debited_units=400,
+            billed_value_wei=400_000,
+            funded_value_wei=1_000_000,
+            generation_funded_value_wei=1_000_000,
+            amount_wei=1000,
+            per_units=1,
+            work_unit="session_second",
+        ),
         clock=_clock(),
     )
     status = await sessions_service.get_session_status(

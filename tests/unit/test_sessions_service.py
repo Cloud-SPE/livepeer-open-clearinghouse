@@ -120,7 +120,7 @@ async def test_create_session_writes_row_in_open_state(
     assert row.sdk_identity == "python/0.4.0/abc1234"
     assert row.opened_at is not None
     assert row.closed_at is None
-    assert row.last_debit_seq == 0
+    assert row.refill_seq == 0
 
 
 # ---- get_session(_by_work_id) ----

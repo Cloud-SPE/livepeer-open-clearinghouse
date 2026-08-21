@@ -7,12 +7,8 @@ PR-3 of exec-plan 002 ships the building blocks:
   - ``get_session`` / ``get_session_by_work_id`` retrieve.
   - ``transition_state`` enforces the lifecycle state machine.
   - ``record_settlement`` appends a ``payment_settlement`` event.
-  - ``mark_polled`` updates ``last_polled_at`` for the janitor.
-
-The actual ``POST /v1/sessions`` handler, refill mint flow, and
-janitor task land in subsequent PRs. These helpers are written so
-those callers can compose them without re-implementing the state
-machine or repo queries.
+The HTTP handlers compose these operations without re-implementing
+the state machine or repo queries.
 """
 
 from __future__ import annotations
@@ -20,7 +16,6 @@ from __future__ import annotations
 import base64
 import time
 import uuid
-from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -38,6 +33,7 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     CloseSessionResponse,
     CreateSessionResponse,
     RefillSessionResponse,
+    SessionAxesView,
     SessionStatusResponse,
 )
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
@@ -52,12 +48,20 @@ from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
+    CreatePaymentResponse,
     FundingIntent,
+    MintOutcomeUnknown,
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.settlement_verification import (
+    SessionSettlementExpectation,
+    SettlementVerificationError,
+    VerifiedSessionSettlement,
+    verify_session_settlement,
+)
 from livepeer_open_clearinghouse.settings import Settings
 
 # Valid session lifecycle states. Mirrors the docstring on
@@ -120,6 +124,18 @@ class InvalidSessionRequest(OpenClearinghouseError):
             code="invalid_session_request",
             message=message,
             status_code=400,
+        )
+
+
+class SessionSettlementVerificationFailed(OpenClearinghouseError):
+    """A broker claim cannot authorize session accounting."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            code="settlement_verification_failed",
+            message="the signed session settlement could not be verified",
+            status_code=400,
+            details={"reason": reason},
         )
 
 
@@ -368,6 +384,7 @@ async def open_session(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    descriptor_schema: str | None = None,
     request_id: str | None = None,
 ) -> CreateSessionResponse:
     """Open a long-running session (case d) under handoff mode.
@@ -410,6 +427,16 @@ async def open_session(
     protocol = route.protocol
     if protocol != PAID_SESSION_PROTOCOL:
         raise ProtocolNotSupportedForSession(protocol=protocol)
+    session_axes = route.session
+    if session_axes is None:  # pragma: no cover - SelectedRoute validates this
+        raise InvalidSessionRequest(message="session route declaration is unavailable")
+    if descriptor_schema is not None and session_axes.descriptor_schema != descriptor_schema:
+        raise InvalidSessionRequest(
+            message=(
+                f"offering declares descriptor schema {session_axes.descriptor_schema!r}; "
+                f"the client requested {descriptor_schema!r}"
+            )
+        )
 
     # ---- 4. Worst-case encumbrance + initial mint sizing
     price_wei = Decimal(route.price_per_work_unit_wei)
@@ -474,6 +501,10 @@ async def open_session(
     )
     try:
         daemon_response = await daemon.create_payment(daemon_request)
+    except MintOutcomeUnknown as exc:
+        from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
+
+        raise IdempotencyOutcomeUnknown from exc
     except PaymentDaemonError as exc:
         raise DaemonUnavailable(
             daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
@@ -574,6 +605,7 @@ async def open_session(
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
         protocol=protocol,
+        session=SessionAxesView.model_validate(session_axes.model_dump(mode="json")),
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -596,11 +628,161 @@ _CAP_IMMINENT_THRESHOLD = 0.95
 
 
 async def _session_billed_so_far_wei(db: AsyncSession, session_id: uuid.UUID) -> Decimal:
-    """Sum ``expected_value_wei`` across all Payment rows tied to this session."""
+    """Sum accepted issued value, excluding rotation-rejected envelopes."""
     result = await db.scalars(
-        select(Payment.expected_value_wei).where(Payment.session_id == session_id)
+        select(Payment.expected_value_wei).where(
+            Payment.session_id == session_id,
+            Payment.status != "refused",
+        )
     )
     return Decimal(sum((Decimal(v) for v in result.all()), Decimal(0)))
+
+
+async def _session_funded_units(db: AsyncSession, session_id: uuid.UUID) -> int:
+    """Return the cumulative unit target funded across every session mint."""
+
+    result = await db.scalars(
+        select(Payment.work_units_requested).where(
+            Payment.session_id == session_id,
+            Payment.status != "refused",
+        )
+    )
+    return sum(int(units) for units in result.all())
+
+
+async def _next_refill_funding(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    price_wei: Decimal,
+    per_units: int,
+) -> tuple[int, Decimal]:
+    """Size the next refill as a delta on the cumulative billing curve."""
+
+    funded_units = await _session_funded_units(db, session_row.id)
+    remaining_units = session_row.max_total_units - funded_units
+    if remaining_units <= 0:
+        return 0, Decimal(0)
+    next_units = min(session_row.estimated_units, remaining_units)
+    before = _bill_value_wei(units=funded_units, amount_wei=price_wei, per_units=per_units)
+    after = _bill_value_wei(
+        units=funded_units + next_units,
+        amount_wei=price_wei,
+        per_units=per_units,
+    )
+    return next_units, after - before
+
+
+def _refill_snapshot(session_row: PaymentSession) -> dict[str, Any]:
+    """Return a usable v1 route snapshot or refuse the refill."""
+
+    snapshot = session_row.route_snapshot or {}
+    axes = snapshot.get("axes")
+    if not isinstance(axes, dict):
+        raise InvalidSessionRequest(message="session route declaration is unavailable")
+    if axes.get("refill", "extensible") == "bounded":
+        raise RefillNotSupported
+    return snapshot
+
+
+async def _prepare_rotation(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    initial_payment_row: Payment,
+    rebind_from: str | None,
+    replaces_request_id: str | None,
+    broker_request_id: str,
+    daemon: PaymentDaemonClient,
+) -> Payment | None:
+    """Bind payee rejection feedback to one issued predecessor payment."""
+
+    if (rebind_from is None) != (replaces_request_id is None):
+        raise InvalidSessionRequest(
+            message="rebind_from and replaces_request_id must be supplied together"
+        )
+    if rebind_from is None:
+        return None
+    if rebind_from != session_row.work_id:
+        raise InvalidSessionRequest(message="rotation predecessor does not match session")
+    if broker_request_id == replaces_request_id:
+        raise InvalidSessionRequest(message="rotation requires a fresh request identity")
+
+    replaced_payment = await db.scalar(
+        select(Payment).where(
+            Payment.session_id == session_row.id,
+            Payment.mint_request_id == f"loc:{replaces_request_id}",
+            Payment.work_id == rebind_from,
+            Payment.status == "issued",
+        )
+    )
+    if replaced_payment is None:
+        raise InvalidSessionRequest(message="rejected rotation payment is unavailable")
+
+    replaced_payment.status = "refused"
+    replaced_payment.refused_reason = "invalid_recipient_rand"
+    replaced_payment.refunded_wei = replaced_payment.expected_value_wei
+    try:
+        await daemon.report_invalid_recipient_rand(
+            work_id=rebind_from,
+            capability=initial_payment_row.capability,
+            offering=initial_payment_row.offering,
+        )
+    except PaymentDaemonError as exc:
+        raise DaemonUnavailable(
+            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
+        ) from exc
+    return replaced_payment
+
+
+async def _mint_refill(
+    *,
+    initial_payment_row: Payment,
+    snapshot: dict[str, Any],
+    next_mint_units: int,
+    next_mint_value_wei: Decimal,
+    per_units: int,
+    broker_request_id: str,
+    is_rotation: bool,
+    daemon: PaymentDaemonClient,
+) -> CreatePaymentResponse:
+    """Mint one ordinary top-up or fresh rotation successor."""
+
+    daemon_request = CreatePaymentRequest(
+        mint_request_id=f"loc:{broker_request_id}",
+        recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
+        ticket_params_base_url=str(snapshot.get("worker_url", "")) if is_rotation else "",
+        accepted_price=AcceptedPrice(
+            capability=initial_payment_row.capability,
+            offering=initial_payment_row.offering,
+            price_per_unit_wei=Decimal(initial_payment_row.price_per_work_unit_wei),
+            units_per_price=per_units,
+            work_unit_name=str(snapshot.get("work_unit", "")),
+            quote_ref=QuoteRef(
+                quote_id=str(snapshot.get("quote_id", "")),
+                quote_version=int(snapshot.get("quote_version", 0)),
+                constraint_fingerprint=bytes.fromhex(
+                    str(snapshot.get("constraint_fingerprint", ""))
+                ),
+                route_fingerprint=bytes.fromhex(str(snapshot.get("route_fingerprint", ""))),
+            ),
+        ),
+        funding=FundingIntent(
+            funded_value_wei=next_mint_value_wei,
+            estimated_units=next_mint_units,
+            max_total_units=next_mint_units,
+        ),
+    )
+    try:
+        return await daemon.create_payment(daemon_request)
+    except MintOutcomeUnknown as exc:
+        from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
+
+        raise IdempotencyOutcomeUnknown from exc
+    except PaymentDaemonError as exc:
+        raise DaemonUnavailable(
+            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
+        ) from exc
 
 
 async def refill_session(
@@ -613,6 +795,9 @@ async def refill_session(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    request_id: str | None = None,
+    rebind_from: str | None = None,
+    replaces_request_id: str | None = None,
 ) -> RefillSessionResponse:
     """Mint a top-up bound to an existing session's work_id.
 
@@ -635,21 +820,22 @@ async def refill_session(
     broker_url)`` session-cache key per the daemon's convention so
     the new ticket attaches to the same ``work_id``), writes a new
     Payment row tied to the session via ``session_id``, increments
-    ``last_debit_seq``, and returns the envelope plus a fresh
+    ``refill_seq``, and returns the envelope plus a fresh
     ``cap_status``.
 
     Notes:
       - Worst-case encumbrance was done at open; no additional
         balance debit at refill (the funded value is already
         reserved).
-      - ``observed_consumed_units`` is advisory only — the daemon's
-        ledger is authoritative; the SDK's hint is logged for
+      - ``observed_consumed_units`` is advisory only. It is logged for
         triage but not used to size the mint.
     """
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # 1. Session exists + ownership
-    session_row = await db.get(PaymentSession, session_id)
+    session_row = await db.scalar(
+        select(PaymentSession).where(PaymentSession.id == session_id).with_for_update()
+    )
     if session_row is None or session_row.user_id != user_id:
         raise SessionNotFound
 
@@ -658,14 +844,10 @@ async def refill_session(
         raise SessionNotOpen(current_state=session_row.state)
 
     # 3. Mode check — refill only works on (d-extensible)
-    snapshot = session_row.route_snapshot or {}
-    axes = snapshot.get("axes")
-    if not isinstance(axes, dict):
-        raise InvalidSessionRequest(message="session route declaration is unavailable")
-    if axes.get("refill", "extensible") == "bounded":
-        raise RefillNotSupported
+    snapshot = _refill_snapshot(session_row)
 
-    # Pull pricing context from the most recent Payment on this session
+    # Pull pricing context from the initial Payment; price and route are
+    # pinned for the logical session across recipient rotation.
     # (the initial mint's price; all refills use the same price).
     initial_payment_row = await db.scalar(
         select(Payment)
@@ -677,16 +859,50 @@ async def refill_session(
         # Should never happen — open_session writes one. Defensive.
         raise SessionNotFound
 
+    broker_request_id = request_id or str(uuid.uuid4())
+    replaced_payment = await _prepare_rotation(
+        db,
+        session_row=session_row,
+        initial_payment_row=initial_payment_row,
+        rebind_from=rebind_from,
+        replaces_request_id=replaces_request_id,
+        broker_request_id=broker_request_id,
+        daemon=daemon,
+    )
+
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
     per_units = int(snapshot.get("units_per_price", 0))
     if per_units < 1:
         raise InvalidSessionRequest(message="session price denominator is unavailable")
-    next_mint_units = session_row.estimated_units  # refill chunk = runway size
-    next_mint_value_wei = _bill_value_wei(
-        units=next_mint_units,
-        amount_wei=price_wei,
-        per_units=per_units,
-    )
+    if replaced_payment is None:
+        next_mint_units, next_mint_value_wei = await _next_refill_funding(
+            db,
+            session_row=session_row,
+            price_wei=price_wei,
+            per_units=per_units,
+        )
+    else:
+        next_mint_units = int(replaced_payment.work_units_requested)
+        next_mint_value_wei = Decimal(replaced_payment.funded_value_wei)
+    if next_mint_units == 0:
+        await telemetry_events.emit_refill_denied(
+            db,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            session_id=session_id,
+            refill_seq=session_row.refill_seq + 1,
+            which_cap="session",
+            remaining_wei=0,
+            clock=clock,
+        )
+        raise SessionCapReached(
+            which="session",
+            remaining_wei=0,
+            advice=(
+                "session reached max_total_units; "
+                "open a new session with a higher max_total_units to continue"
+            ),
+        )
 
     # 4. Per-session cap check
     billed_so_far = await _session_billed_so_far_wei(db, session_id)
@@ -697,7 +913,7 @@ async def refill_session(
             api_key_id=api_key_id,
             user_id=user_id,
             session_id=session_id,
-            refill_seq=session_row.last_debit_seq + 1,
+            refill_seq=session_row.refill_seq + 1,
             which_cap="session",
             remaining_wei=int(session_remaining),
             clock=clock,
@@ -726,7 +942,7 @@ async def refill_session(
             api_key_id=api_key_id,
             user_id=user_id,
             session_id=session_id,
-            refill_seq=session_row.last_debit_seq + 1,
+            refill_seq=session_row.refill_seq + 1,
             which_cap="spend_period",
             remaining_wei=period_remaining_int,
             clock=clock,
@@ -742,45 +958,35 @@ async def refill_session(
 
     # ---- Daemon call. Same session-cache key as the initial mint so
     # the daemon reuses recipient_rand_hash and increments nonce.
-    mint_request_id = f"loc:{uuid.uuid4()}"
-    daemon_request = CreatePaymentRequest(
-        mint_request_id=mint_request_id,
-        recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
-        ticket_params_base_url="",  # daemon uses its cached value
-        accepted_price=AcceptedPrice(
-            capability=initial_payment_row.capability,
-            offering=initial_payment_row.offering,
-            price_per_unit_wei=price_wei,
-            units_per_price=per_units,
-            work_unit_name=str(snapshot.get("work_unit", "")),
-            quote_ref=QuoteRef(
-                quote_id=str(snapshot.get("quote_id", "")),
-                quote_version=int(snapshot.get("quote_version", 0)),
-                constraint_fingerprint=bytes.fromhex(
-                    str(snapshot.get("constraint_fingerprint", ""))
-                ),
-                route_fingerprint=bytes.fromhex(str(snapshot.get("route_fingerprint", ""))),
-            ),
-        ),
-        funding=FundingIntent(
-            funded_value_wei=next_mint_value_wei,
-            estimated_units=next_mint_units,
-            max_total_units=next_mint_units,
-        ),
+    mint_request_id = f"loc:{broker_request_id}"
+    daemon_response = await _mint_refill(
+        initial_payment_row=initial_payment_row,
+        snapshot=snapshot,
+        next_mint_units=next_mint_units,
+        next_mint_value_wei=next_mint_value_wei,
+        per_units=per_units,
+        broker_request_id=broker_request_id,
+        is_rotation=replaced_payment is not None,
+        daemon=daemon,
     )
-    try:
-        daemon_response = await daemon.create_payment(daemon_request)
-    except PaymentDaemonError as exc:
-        raise DaemonUnavailable(
-            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
-        ) from exc
 
-    # ---- Persist the top-up Payment row + bump last_debit_seq
+    if replaced_payment is not None and daemon_response.work_id == rebind_from:
+        raise DaemonUnavailable(
+            daemon="payment-daemon", reason="rotation mint reused the rejected work_id"
+        )
+
+    # Ordinary refills remain attached to the logical session work ID.
+    # Only the explicit rotation path adopts the daemon's fresh recipient.
+    current_work_id = (
+        daemon_response.work_id if replaced_payment is not None else session_row.work_id
+    )
+
+    # ---- Persist the top-up Payment row + bump the LOC refill ordinal
     refill_payment = Payment(
         user_id=user_id,
         api_key_id=api_key_id,
         session_id=session_id,
-        work_id=session_row.work_id,
+        work_id=current_work_id,
         mint_request_id=mint_request_id,
         recipient_eth_address=initial_payment_row.recipient_eth_address,
         capability=initial_payment_row.capability,
@@ -794,7 +1000,10 @@ async def refill_session(
         status="issued",
     )
     db.add(refill_payment)
-    session_row.last_debit_seq = session_row.last_debit_seq + 1
+    session_row.refill_seq = session_row.refill_seq + 1
+    if replaced_payment is not None:
+        session_row.work_id = current_work_id
+        session_row.rotation_generation += 1
     await db.flush()
 
     # ---- Record a payment_settlement event
@@ -805,8 +1014,10 @@ async def refill_session(
         clock=clock,
         billed_value_wei=daemon_response.expected_value,
         raw_record={
-            "refill_seq": session_row.last_debit_seq,
+            "refill_seq": session_row.refill_seq,
             "observed_consumed_units": observed_consumed_units,
+            "rebind_from": rebind_from,
+            "rotation_generation": session_row.rotation_generation,
         },
     )
 
@@ -816,6 +1027,9 @@ async def refill_session(
         session_row=session_row,
         user_id=user_id,
         next_mint_value_wei=next_mint_value_wei,
+        session_units_exhausted=(
+            await _session_funded_units(db, session_id) >= session_row.max_total_units
+        ),
         cfg=cfg,
         clock=clock,
     )
@@ -825,19 +1039,21 @@ async def refill_session(
         api_key_id=api_key_id,
         user_id=user_id,
         session_id=session_id,
-        refill_seq=session_row.last_debit_seq,
+        refill_seq=session_row.refill_seq,
         funded_value_wei=int(daemon_response.funded_value_wei),
         cap_status=cap_status.model_dump(),
         clock=clock,
     )
 
     return RefillSessionResponse(
-        work_id=session_row.work_id,
-        refill_seq=session_row.last_debit_seq,
+        work_id=current_work_id,
+        request_id=broker_request_id,
+        refill_seq=session_row.refill_seq,
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(daemon_response.funded_value_wei),
         cap_status=cap_status,
+        rebind_from=rebind_from,
     )
 
 
@@ -847,6 +1063,7 @@ async def _compute_cap_status(
     session_row: PaymentSession,
     user_id: uuid.UUID,
     next_mint_value_wei: Decimal,
+    session_units_exhausted: bool = False,
     cfg: billing_service.ResolvedBillingConfig,
     clock: Clock,
 ) -> CapStatus:
@@ -893,6 +1110,7 @@ async def _compute_cap_status(
         session_remaining_wei=session_row.funded_value_wei - session_billed,
         next_mint_value_wei=next_mint_value_wei,
         spend_period_pct=spend_period_pct,
+        session_units_exhausted=session_units_exhausted,
     )
 
     return CapStatus(
@@ -911,8 +1129,11 @@ def _project_next_refusal(
     session_remaining_wei: Decimal,
     next_mint_value_wei: Decimal,
     spend_period_pct: float | None,
+    session_units_exhausted: bool = False,
 ) -> tuple[bool, str | None]:
     """Predict whether the *next* refill request will be refused."""
+    if session_units_exhausted:
+        return True, "session_cap_imminent"
     if session_pct >= _CAP_IMMINENT_THRESHOLD and next_mint_value_wei > session_remaining_wei:
         return True, "session_cap_imminent"
     if spend_period_pct is not None and spend_period_pct >= _CAP_IMMINENT_THRESHOLD:
@@ -944,6 +1165,58 @@ def _infer_close_outcome(*, funded: Decimal, billed: Decimal) -> str:
     return "EXACT"
 
 
+async def _verify_close_settlement(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    initial_payment_row: Payment,
+    settlement: dict[str, Any] | None,
+) -> VerifiedSessionSettlement:
+    """Verify and bind the authoritative terminal broker settlement."""
+
+    if settlement is None:
+        raise SessionSettlementVerificationFailed(reason="missing_settlement")
+    snapshot = session_row.route_snapshot or {}
+    settlement_keys = snapshot.get("settlement_keys")
+    if not isinstance(settlement_keys, list) or not settlement_keys:
+        raise SessionSettlementVerificationFailed(reason="missing_delegation")
+    predecessor_work_id = ""
+    if session_row.rotation_generation > 0:
+        predecessor = await db.scalar(
+            select(Payment)
+            .where(
+                Payment.session_id == session_row.id,
+                Payment.status == "refused",
+                Payment.refused_reason == "invalid_recipient_rand",
+            )
+            .order_by(Payment.created_at.desc())
+            .limit(1)
+        )
+        if predecessor is None:
+            raise SessionSettlementVerificationFailed(reason="missing_rotation_predecessor")
+        predecessor_work_id = predecessor.work_id
+    try:
+        return verify_session_settlement(
+            settlement,
+            settlement_keys=settlement_keys,
+            expected=SessionSettlementExpectation(
+                gateway_session_id=str(session_row.id),
+                broker_session_id=session_row.broker_session_id,
+                work_id=session_row.work_id,
+                predecessor_work_id=predecessor_work_id,
+                rotation_generation=session_row.rotation_generation,
+                work_unit=str(snapshot["work_unit"]),
+                amount_wei=int(initial_payment_row.price_per_work_unit_wei),
+                per_units=int(snapshot["units_per_price"]),
+                funded_value_wei=int(session_row.funded_value_wei),
+                last_settlement_seq=session_row.last_settlement_seq,
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        reason = exc.code if isinstance(exc, SettlementVerificationError) else "invalid_snapshot"
+        raise SessionSettlementVerificationFailed(reason=reason) from exc
+
+
 async def close_session(
     db: AsyncSession,
     *,
@@ -953,7 +1226,6 @@ async def close_session(
     outcome: str | None,
     settlement: dict[str, Any] | None,
     clock: Clock,
-    daemon: PaymentDaemonClient | None = None,
 ) -> CloseSessionResponse:
     """Explicitly close a session and finalize accounting.
 
@@ -964,8 +1236,8 @@ async def close_session(
 
     Performs (in order):
       1. transition_state to ``closed``.
-      2. Compute ``billed_value_wei = actual_units x price`` (price
-         read from the initial mint's Payment row).
+      2. Verify the broker-signed terminal settlement against the pinned
+         route keys, gateway session identity, rotation chain, and price.
       3. Compute ``refund_wei = funded_value_wei - billed_value_wei``
          (the worst-case encumbrance minus what was actually used).
       4. ``release_session_encumbrance(refund_wei)`` — credits the
@@ -977,11 +1249,8 @@ async def close_session(
          numbers and any raw SettlementRecord from the SDK.
       7. Return the typed response.
 
-    Per the trust model: ``actual_units`` is SDK-reported and trusted
-    on this synchronous path. The reconciliation janitor (PR-8) does
-    the daemon cross-check via ``GetSessionDebits`` and corrects any
-    divergence. v1 daemon client does not yet expose GetSessionDebits;
-    once it does, this function will also verify inline.
+    The signed broker record is authoritative. SDK-reported units and outcome
+    are accepted only when they agree with that record.
     """
     # 1. Lookup + ownership
     session_row = await db.get(PaymentSession, session_id)
@@ -1001,13 +1270,15 @@ async def close_session(
     if initial_payment_row is None:
         raise SessionNotFound  # defensive — open writes one
 
-    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    snapshot = session_row.route_snapshot or {}
-    billed_value_wei = _bill_value_wei(
-        units=actual_units,
-        amount_wei=price_wei,
-        per_units=int(snapshot.get("units_per_price", 1)),
+    verified = await _verify_close_settlement(
+        db,
+        session_row=session_row,
+        initial_payment_row=initial_payment_row,
+        settlement=settlement,
     )
+    if actual_units != verified.debited_units:
+        raise SessionSettlementVerificationFailed(reason="work_units_mismatch")
+    billed_value_wei = Decimal(verified.billed_value_wei)
     refund_wei = session_row.funded_value_wei - billed_value_wei
 
     # 3. Transition state (open or draining → closed)
@@ -1030,12 +1301,19 @@ async def close_session(
         )
 
     # 5. Finalize payment_session fields
-    final_outcome = outcome or _infer_close_outcome(
-        funded=session_row.funded_value_wei, billed=billed_value_wei
-    )
-    session_row.actual_units = actual_units
+    signed_outcome = verified.outcome
+    if signed_outcome == "SETTLEMENT_OUTCOME_UNSPECIFIED":
+        signed_outcome = _infer_close_outcome(
+            funded=session_row.funded_value_wei, billed=billed_value_wei
+        )
+    if outcome is not None and outcome != signed_outcome:
+        raise SessionSettlementVerificationFailed(reason="outcome_mismatch")
+    final_outcome = signed_outcome
+    session_row.actual_units = verified.debited_units
     session_row.billed_value_wei = billed_value_wei
     session_row.outcome = final_outcome
+    session_row.broker_session_id = verified.broker_session_id
+    session_row.last_settlement_seq = verified.settlement_seq
     await db.flush()
 
     # 6. Append close settlement event
@@ -1044,31 +1322,18 @@ async def close_session(
         session_id,
         event_type="close",
         clock=clock,
-        actual_units=actual_units,
+        actual_units=verified.debited_units,
         billed_value_wei=billed_value_wei,
         outcome=final_outcome,
         raw_record=settlement,
     )
-
-    # 6b. Inline daemon cross-check: SDK report vs payer-daemon
-    # ledger. Best-effort — never breaks the close path. Tolerance
-    # is the smaller of 1% or 5 units to suppress benign rounding
-    # noise; anything bigger is operator signal.
-    if daemon is not None:
-        await _emit_discrepancy_if_diverged(
-            db,
-            session_row=session_row,
-            sdk_units=actual_units,
-            daemon=daemon,
-            clock=clock,
-        )
 
     # 7. Response
     assert session_row.closed_at is not None  # transition_state set it
     return CloseSessionResponse(
         session_id=session_row.id,
         work_id=session_row.work_id,
-        actual_units=actual_units,
+        actual_units=verified.debited_units,
         billed_value_wei=int(billed_value_wei),
         refund_wei=int(max(refund_wei, Decimal(0))),
         outcome=final_outcome,
@@ -1126,6 +1391,9 @@ async def get_session_status(
             session_row=session_row,
             user_id=user_id,
             next_mint_value_wei=Decimal(0),
+            session_units_exhausted=(
+                await _session_funded_units(db, session_id) >= session_row.max_total_units
+            ),
             cfg=cfg,
             clock=clock,
         )
@@ -1148,7 +1416,7 @@ async def get_session_status(
         max_total_units=session_row.max_total_units,
         funded_value_wei=int(session_row.funded_value_wei),
         billed_value_wei=billed_wei,
-        refill_count=session_row.last_debit_seq,
+        refill_count=session_row.refill_seq,
         cap_status=cap_status,
         opened_at=session_row.opened_at,
         closed_at=session_row.closed_at,
@@ -1158,175 +1426,3 @@ async def get_session_status(
 
 
 # ---------------------------------------------------------------------------
-# Reconciliation janitor (background task)
-# ---------------------------------------------------------------------------
-
-
-# Default cadence for the per-session daemon poll (overridable via the
-# scheduler-job registration call site in main.py). The doc proposed 60s
-# as the safety-net interval; we expose it here as the public default.
-DEFAULT_JANITOR_INTERVAL_SECONDS = 60
-
-
-async def reconcile_open_sessions(
-    db: AsyncSession,
-    *,
-    daemon: PaymentDaemonClient,
-    clock: Clock,
-    interval_seconds: int = DEFAULT_JANITOR_INTERVAL_SECONDS,
-    batch_limit: int = 100,
-) -> int:
-    """Walk open sessions and reconcile against the daemon's ledger.
-
-    For each open ``payment_session`` whose ``last_polled_at`` is
-    older than ``interval_seconds`` (or NULL):
-
-      1. Look up the most-recent Payment on the session to get the
-         sender address (already encoded into work_id at mint).
-      2. Call ``daemon.get_session_debits(sender, work_id)``.
-      3. ``mark_polled`` to update ``last_polled_at`` regardless of
-         outcome (so we don't tight-loop on flaky polls).
-      4. If ``closed=True`` and our row is still open: finalize via
-         :func:`close_session` with the daemon's
-         ``total_work_units`` as authoritative. This is the
-         silent-SDK / crashed-customer recovery path.
-      5. If still open and the SDK has reported nothing recently,
-         just log; no action — the session continues until either
-         the SDK closes it OR the broker does and we observe
-         ``closed=True``.
-
-    Returns the number of sessions reconciled to ``closed`` state
-    this pass. Batches at ``batch_limit`` so a backlog doesn't
-    block the scheduler tick.
-    """
-    # Build the candidates query: open sessions whose last_polled_at
-    # is older than (now - interval) OR NULL. We use the composite
-    # index ix_payment_session_state_last_polled_at.
-    now = clock.now()
-    cutoff = now - timedelta(seconds=interval_seconds)
-
-    rows_result = await db.scalars(
-        select(PaymentSession)
-        .where(
-            PaymentSession.state == SESSION_STATE_OPEN,
-            (PaymentSession.last_polled_at.is_(None)) | (PaymentSession.last_polled_at < cutoff),
-        )
-        .order_by(PaymentSession.last_polled_at.asc().nulls_first())
-        .limit(batch_limit)
-    )
-    rows = list(rows_result.all())
-
-    finalized = 0
-    for ps in rows:
-        # Find the initial Payment to get the recipient + sender address.
-        # We use sender = bytes from the payer-daemon side; today our
-        # daemon client doesn't expose the sender (it's the daemon's own
-        # signing key), so we pass empty bytes and rely on the daemon
-        # to match by work_id alone. When the real daemon needs the
-        # sender for lookup, we'll thread it through here.
-        try:
-            debits = await daemon.get_session_debits(sender=b"", work_id=ps.work_id)
-        except Exception:  # noqa: S112 — transient daemon failure; retry next tick
-            # The scheduler's outer wrapper logs the failure for the
-            # whole pass; per-session detail goes into telemetry once
-            # PR-N wires it up.
-            continue
-
-        # Update last_polled_at unconditionally.
-        await mark_polled(db, ps.id, clock=clock)
-
-        # The daemon ledger reported the session is closed. We have to
-        # finalize on our side. Use the daemon's authoritative
-        # total_work_units, no outcome (close_session will infer one).
-        if debits.closed:
-            try:
-                close_response = await close_session(
-                    db,
-                    session_id=ps.id,
-                    user_id=ps.user_id,
-                    actual_units=int(debits.total_work_units),
-                    outcome=None,
-                    settlement={"reconciled_by": "janitor"},
-                    clock=clock,
-                )
-            except SessionNotOpen:
-                # Raced with an explicit SDK close between the poll and
-                # the finalize. That's fine.
-                continue
-            finalized += 1
-            # Best-effort: how long was the session silent before the
-            # janitor finalized it? Bound by opened_at since the SDK
-            # never sent a close; precise idle measurement needs the
-            # last-debit-observed timestamp from the daemon (not yet
-            # exposed).
-            # opened_at may come back tz-naive from some drivers (SQLite);
-            # normalize both sides before subtracting.
-            opened_at_aware = (
-                ps.opened_at
-                if ps.opened_at.tzinfo is not None
-                else ps.opened_at.replace(tzinfo=now.tzinfo)
-            )
-            silence_seconds = max(
-                int((now - opened_at_aware).total_seconds()),
-                0,
-            )
-            await telemetry_events.emit_session_janitor_finalized(
-                db,
-                api_key_id=ps.api_key_id,
-                user_id=ps.user_id,
-                session_id=ps.id,
-                actual_units=close_response.actual_units,
-                billed_value_wei=int(close_response.billed_value_wei),
-                refund_wei=int(close_response.refund_wei),
-                outcome=close_response.outcome,
-                silence_duration_seconds=silence_seconds,
-                clock=clock,
-            )
-
-    return finalized
-
-
-# ---------------------------------------------------------------------------
-# Discrepancy detection — settle-time SDK-vs-daemon cross-check
-# ---------------------------------------------------------------------------
-
-
-# Tolerance below which a SDK/daemon delta is benign rounding noise.
-# Anything larger fires server.discrepancy_detected so operators can
-# investigate the API key.
-_DISCREPANCY_MIN_ABS_UNITS = 5
-_DISCREPANCY_MIN_RELATIVE = 0.01  # 1 %
-
-
-async def _emit_discrepancy_if_diverged(
-    db: AsyncSession,
-    *,
-    session_row: PaymentSession,
-    sdk_units: int,
-    daemon: PaymentDaemonClient,
-    clock: Clock,
-) -> None:
-    """Compare the SDK-reported ``actual_units`` against the daemon's
-    ``GetSessionDebits.total_work_units``. Emit
-    ``server.discrepancy_detected`` if the delta exceeds the noise
-    floor. Best-effort: any failure (daemon unreachable, parse error)
-    is swallowed."""
-    try:
-        debits = await daemon.get_session_debits(sender=b"", work_id=session_row.work_id)
-    except Exception:
-        return
-    daemon_units = int(debits.total_work_units)
-    delta = abs(sdk_units - daemon_units)
-    if delta < _DISCREPANCY_MIN_ABS_UNITS:
-        return
-    if daemon_units > 0 and (delta / daemon_units) < _DISCREPANCY_MIN_RELATIVE:
-        return
-    await telemetry_events.emit_discrepancy_detected(
-        db,
-        api_key_id=session_row.api_key_id,
-        user_id=session_row.user_id,
-        job_or_session_id=session_row.id,
-        sdk_reported_units=sdk_units,
-        daemon_units=daemon_units,
-        clock=clock,
-    )

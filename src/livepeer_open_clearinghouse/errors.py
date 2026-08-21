@@ -135,8 +135,8 @@ class IdempotencyOutcomeUnknown(OpenClearinghouseError):
             status_code=409,
             code="IDEMPOTENCY_OUTCOME_UNKNOWN",
             message=(
-                "The prior request may have reached the payer daemon; retry is refused "
-                "until payer-mint idempotency is available"
+                "The payer reserved this mint request but has no completed result to replay; "
+                "retry with a new Idempotency-Key"
             ),
         )
 

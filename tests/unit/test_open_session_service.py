@@ -298,6 +298,35 @@ async def test_open_session_rejects_job_protocol(db_session: AsyncSession) -> No
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_open_session_rejects_descriptor_schema_mismatch_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    registry = MockRegistryClient(routes=[_route_with_mode("session-control-plus-media@v0")])
+    daemon = MockPaymentDaemonClient()
+
+    with pytest.raises(InvalidSessionRequest, match="descriptor schema"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            descriptor_schema="different-runtime/v1",
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=registry,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_open_session_rejects_http_modes(db_session: AsyncSession) -> None:
     """http-reqresp / http-stream / http-multipart go through POST /v1/jobs,
     not POST /v1/sessions."""

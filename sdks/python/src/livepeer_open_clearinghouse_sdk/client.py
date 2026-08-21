@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import os
 import platform
@@ -139,27 +138,49 @@ class JobResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionAxes:
+    """Paid-session/v1 axes that determine SDK compatibility and refill policy."""
+
+    descriptor_schema: str
+    attachment: Literal["external", "inband-ws"]
+    metering: Literal["runner-reported", "broker-observed"]
+    refill: Literal["extensible", "bounded"]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SessionAxes:
+        attachment = value.get("attachment", "external")
+        metering = value.get("metering")
+        refill = value.get("refill", "extensible")
+        if attachment not in {"external", "inband-ws"}:
+            raise BrokerProtocolError(f"invalid session.attachment: {attachment!r}")
+        if metering not in {"runner-reported", "broker-observed"}:
+            raise BrokerProtocolError(f"invalid session.metering: {metering!r}")
+        if refill not in {"extensible", "bounded"}:
+            raise BrokerProtocolError(f"invalid session.refill: {refill!r}")
+        descriptor_schema = value.get("descriptor_schema")
+        if not isinstance(descriptor_schema, str) or not descriptor_schema:
+            raise BrokerProtocolError("session.descriptor_schema is required")
+        return cls(
+            descriptor_schema=descriptor_schema,
+            attachment=cast(Literal["external", "inband-ws"], attachment),
+            metering=cast(Literal["runner-reported", "broker-observed"], metering),
+            refill=cast(Literal["extensible", "bounded"], refill),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SessionHandle:
-    """Outbound from ``open_session`` (case d).
-
-    Holds everything the consumer needs to drive the broker-side WS /
-    RTMP wire themselves. The full automatic driver (refill loop,
-    in-band balance-low handling, graceful close) is being built
-    per-mode and will land as a richer ``SessionRunner`` wrapper in a
-    later release.
-
-    For now: ``payment_envelope`` is base64-encoded payment bytes;
-    customer puts it in the ``Livepeer-Payment`` upgrade header.
-    ``refill_endpoint`` / ``close_endpoint`` are LOC-relative paths
-    the SDK uses to mint top-ups or finalize the session — call
-    ``client.refill_session(session_id)`` / ``client.close_session(...)``
-    helpers.
-    """
+    """LOC payment intent plus the inputs needed to open paid-session/v1."""
 
     session_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
+    capability: str
+    offering: str
+    session: SessionAxes
+    session_params: dict[str, Any]
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int
@@ -481,9 +502,23 @@ class OpenClearinghouseClient:
         livepeer_settlement = claim_resp.headers.get("livepeer-settlement") or resp.headers.get(
             "livepeer-settlement"
         )
-        if livepeer_settlement:
-            with contextlib.suppress(ValueError, KeyError):
-                settlement_payload["settlement"] = json.loads(base64.b64decode(livepeer_settlement))
+        if not livepeer_settlement:
+            raise BrokerProtocolError(
+                "terminal broker response missing Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+                details={"missing_headers": ["Livepeer-Settlement"]},
+            )
+        try:
+            settlement_payload["settlement"] = json.loads(
+                base64.b64decode(livepeer_settlement, validate=True)
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise BrokerProtocolError(
+                "terminal broker response has malformed Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+            ) from exc
         self._telemetry.emit(
             event_type="request.settle_started",
             correlation_id=req_id,
@@ -558,55 +593,47 @@ class OpenClearinghouseClient:
         *,
         capability: str,
         offering: str,
+        descriptor_schema: str,
+        session_params: dict[str, Any] | None = None,
         estimated_runway_units: int,
         max_total_units: int,
+        request_id: str | None = None,
     ) -> SessionHandle:
-        """Open a long-running session and return a SessionHandle.
-
-        ``max_total_units`` is the same input across all case-(d)
-        modes, but its operational guarantee differs by mode class:
-
-        For **(d-bounded) modes** (``ws-realtime@v0``):
-            Your session will spend AT MOST ``max_total_units``.
-            It may end earlier; it will end no later than when this
-            much is consumed. The session **cannot be extended**
-            mid-flight — refills are not supported in these modes.
-
-        For **(d-extensible) modes** (``session-control-plus-media@v0``,
-        ``rtmp-ingress-hls-egress@v0``, ``live-session-remote-runner@v0``,
-        ``live-session-gateway-ingest@v0``):
-            Your session will spend AT MOST ``max_total_units``.
-            Refills happen automatically within this ceiling. Refills
-            stop and the session drains if a higher-tier cap
-            (spend-period, operator-pool) is reached before
-            ``max_total_units`` is exhausted.
-
-        ``estimated_runway_units`` is the initial chunk LOC mints
-        toward (a smaller fraction of ``max_total_units``). The
-        SessionRunner refill loop tops up automatically as the broker
-        signals balance-low.
-
-        Returns a :class:`SessionHandle` carrying the broker URL +
-        minted envelope. Use :class:`SessionRunner` for the automatic
-        refill loop, or call :meth:`refill_session` /
-        :meth:`close_session` directly for manual control.
-        """
+        """Create the LOC payment intent for one paid-session/v1 open."""
         self._ensure_telemetry_started()
+        loc_request_id = request_id or str(uuid.uuid4())
+        params = dict(session_params or {})
         r = await self._http.post(
             "/v1/sessions",
+            headers={"Idempotency-Key": loc_request_id},
             json={
                 "capability": capability,
                 "offering": offering,
+                "descriptor_schema": descriptor_schema,
+                "session_params": params,
                 "estimated_runway_units": estimated_runway_units,
                 "max_total_units": max_total_units,
             },
         )
         data = self._unwrap(r)
+        protocol = data.get("protocol")
+        if protocol != "paid-session/v1":
+            raise BrokerProtocolError(f"LOC returned unsupported protocol {protocol!r}")
+        session_axes = SessionAxes.from_dict(data.get("session", {}))
+        if session_axes.descriptor_schema != descriptor_schema:
+            raise BrokerProtocolError(
+                "LOC response descriptor_schema does not match the requested adapter"
+            )
         handle = SessionHandle(
             session_id=uuid.UUID(data["session_id"]),
+            request_id=data["request_id"],
             work_id=data["work_id"],
             broker_url=data["broker_url"],
-            mode=data["mode"],
+            protocol=protocol,
+            capability=capability,
+            offering=offering,
+            session=session_axes,
+            session_params=params,
             payment_envelope=data["payment_envelope"],
             expected_value_wei=int(data["expected_value_wei"]),
             funded_value_wei=int(data["funded_value_wei"]),
@@ -619,7 +646,9 @@ class OpenClearinghouseClient:
             payload={
                 "capability": capability,
                 "offering": offering,
-                "mode": handle.mode,
+                "protocol": handle.protocol,
+                "descriptor_schema": handle.session.descriptor_schema,
+                "refill": handle.session.refill,
                 "max_total_units": max_total_units,
                 "initial_runway_units": estimated_runway_units,
             },
@@ -631,23 +660,26 @@ class OpenClearinghouseClient:
         session_id: uuid.UUID | str,
         *,
         observed_consumed_units: int | None = None,
+        request_id: str | None = None,
+        rebind_from: str | None = None,
+        replaces_request_id: str | None = None,
     ) -> dict[str, Any]:
-        """Mint a top-up bound to an existing session. Returns the new
-        payment_envelope + cap_status. SDK consumer is responsible for
-        delivering the envelope to the broker via the mode-specific
-        channel (``session.topup`` JSON frame for
-        ``session-control-plus-media@v0``, HTTP POST to
-        ``control.topup_url`` for the ``live-session-*`` modes).
-        """
+        """Mint or replay one LOC top-up intent for a paid session."""
         self._telemetry.emit(
             event_type="session.refill_requested",
             correlation_id=str(session_id),
         )
         refill_started_ns = time.monotonic_ns()
+        loc_request_id = request_id or str(uuid.uuid4())
+        body: dict[str, Any] = {"observed_consumed_units": observed_consumed_units}
+        if rebind_from is not None:
+            body["rebind_from"] = rebind_from
+            body["replaces_request_id"] = replaces_request_id
         try:
             r = await self._http.post(
                 f"/v1/sessions/{session_id}/refill",
-                json={"observed_consumed_units": observed_consumed_units},
+                headers={"Idempotency-Key": loc_request_id},
+                json=body,
             )
             result = self._unwrap(r)
         except OpenClearinghouseError as exc:
@@ -691,15 +723,14 @@ class OpenClearinghouseClient:
         session_id: uuid.UUID | str,
         *,
         actual_units: int,
+        settlement: dict[str, Any],
         outcome: str | None = None,
-        settlement: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Explicitly close a session and finalize accounting."""
         body: dict[str, Any] = {"actual_units": actual_units}
         if outcome is not None:
             body["outcome"] = outcome
-        if settlement is not None:
-            body["settlement"] = settlement
+        body["settlement"] = settlement
         try:
             r = await self._http.post(f"/v1/sessions/{session_id}/close", json=body)
             result = self._unwrap(r)
@@ -749,9 +780,8 @@ class OpenClearinghouseClient:
         change on retry. Exponential backoff 0.5s / 1s / 2s ...
 
         Used by the settle path so a transient LOC blip doesn't
-        leave a session unsettled; the reconciliation janitor would
-        catch it eventually, but a synchronous retry buys low
-        latency for the common case.
+        leave a job unsettled. A synchronous retry preserves the
+        broker-signed terminal claim across that failure window.
         """
         backoff = 0.5
         last_resp: httpx.Response | None = None

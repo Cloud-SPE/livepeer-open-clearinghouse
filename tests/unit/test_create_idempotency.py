@@ -29,7 +29,6 @@ from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F4
 from livepeer_open_clearinghouse.errors import (
     IdempotencyInProgress,
     IdempotencyKeyReuse,
-    IdempotencyOutcomeUnknown,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -179,7 +178,53 @@ async def test_concurrent_claims_create_one_durable_winner(tmp_path: Path) -> No
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_expired_unknown_claim_is_never_reclaimed(db: AsyncSession) -> None:
+async def test_concurrent_stale_recovery_has_one_winner_and_stable_id(tmp_path: Path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'recovery.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with maker() as seed_session:
+        user_id, api_key_id = await _identity(seed_session)
+        clock = FrozenClock(datetime(2026, 8, 20, tzinfo=UTC))
+        first = await service.claim_create_request(
+            seed_session,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            operation="jobs.create",
+            idempotency_key="stale-job",
+            request_fingerprint=_fingerprint(),
+            clock=clock,
+            inflight_timeout_seconds=60,
+        )
+    clock.advance(timedelta(seconds=61))
+
+    async def reclaim() -> tuple[str, str | None]:
+        async with maker() as session:
+            try:
+                claim = await service.claim_create_request(
+                    session,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    operation="jobs.create",
+                    idempotency_key="stale-job",
+                    request_fingerprint=_fingerprint(),
+                    clock=clock,
+                    inflight_timeout_seconds=60,
+                )
+            except IdempotencyInProgress:
+                return "in_progress", None
+            return "claimed", claim.broker_request_id
+
+    results = await asyncio.gather(reclaim(), reclaim())
+    assert sorted(result[0] for result in results) == ["claimed", "in_progress"]
+    winner_id = next(result[1] for result in results if result[0] == "claimed")
+    assert winner_id == first.broker_request_id
+    await engine.dispose()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_expired_claim_is_reclaimed_with_stable_request_id(db: AsyncSession) -> None:
     user_id, api_key_id = await _identity(db)
     clock = FrozenClock(datetime(2026, 8, 20, tzinfo=UTC))
     arguments = {
@@ -191,12 +236,16 @@ async def test_expired_unknown_claim_is_never_reclaimed(db: AsyncSession) -> Non
         "clock": clock,
         "inflight_timeout_seconds": 60,
     }
-    await service.claim_create_request(db, **arguments)
+    first = await service.claim_create_request(db, **arguments)
     clock.advance(timedelta(seconds=61))
     assert await service.expire_stale_idempotency_keys(db, clock=clock) == 1
     await db.commit()
 
-    with pytest.raises(IdempotencyOutcomeUnknown):
+    recovered = await service.claim_create_request(db, **arguments)
+    assert recovered.broker_request_id == first.broker_request_id
+    assert not recovered.is_replay
+
+    with pytest.raises(IdempotencyInProgress):
         await service.claim_create_request(db, **arguments)
 
 

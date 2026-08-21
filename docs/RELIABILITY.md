@@ -43,9 +43,10 @@ Other error codes: `SPEND_CAP_EXCEEDED`, `ACCOUNT_NOT_APPROVED`,
 
 ## Idempotency
 
-### Job and session creation
+### Job creation, session creation, and session refills
 
-`POST /v1/jobs` and `POST /v1/sessions` require an `Idempotency-Key` header.
+`POST /v1/jobs`, `POST /v1/sessions`, and
+`POST /v1/sessions/{id}/refill` require an `Idempotency-Key` header.
 Keys are scoped by account and endpoint operation, not by API key, so changing
 credentials does not weaken replay protection. LOC stores a canonical request
 fingerprint; reusing a key with different content returns
@@ -57,13 +58,33 @@ hours and replayed exactly without another mint or balance mutation. A concurren
 identical request returns `IDEMPOTENCY_IN_PROGRESS`.
 
 LOC derives a stable payer `mint_request_id` from the durable request claim, so
-an ordinary lost response can replay the daemon's recorded result. The daemon's
-current implementation nevertheless signs before writing its replay record and
-does not serialize concurrent calls for one mint id. An in-flight LOC claim
-whose payer outcome cannot be proven is therefore still marked `expired` after
-60 seconds and never reclaimed: subsequent retries return
-`IDEMPOTENCY_OUTCOME_UNKNOWN`. This remains fail-closed until payer minting makes
-the signature/nonce reservation and replay outcome atomic.
+an ordinary lost response can replay the daemon's recorded result. After the
+in-flight timeout, LOC atomically reclaims the existing claim and retries only
+that same mint ID; it never invents a replacement mint identity during
+recovery. Concurrent recovery attempts therefore still have one winner.
+
+The payer reserves a mint ID durably before signing and serializes calls sharing
+that ID. A completed mint replays its exact response, allowing LOC to finish
+the original business transaction once after a crash or lost daemon response.
+If the payer crashed after reservation but before recording a response, it
+returns `FAILED_PRECONDITION` instead of signing again. LOC records that as the
+stable terminal `IDEMPOTENCY_OUTCOME_UNKNOWN` result and tells the customer to
+start a new intent with a new `Idempotency-Key`. This is deliberately
+fail-closed: an unavailable response costs a new intent; guessing on a possibly
+signed ticket risks paying twice. LOC retains outcome-unknown claims as
+permanent tombstones rather than deleting them with ordinary terminal replay
+records, so the old customer key can never silently become a fresh mint.
+
+A refill uses the same durable key across both mutable hops. LOC returns its
+stable `request_id` with the payment envelope; the SDK sends that value as the
+broker's required `Livepeer-Request-Id`. An LOC retry therefore replays one
+payer mint, and a broker retry replays one credit and lease extension. A new
+refill intent gets a new key; transport retries of that intent do not.
+
+Refill funding follows the Modules cumulative ceiling curve. For cumulative
+target `U`, `bill(U) = ceil(U × amount_wei / per_units)`; a refill requests
+`bill(U_after) - bill(U_before)`. Rounding each increment independently is a
+billing error because it can overfund by up to one wei per refill.
 
 ### Usage reports
 

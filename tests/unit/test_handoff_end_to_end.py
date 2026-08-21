@@ -38,6 +38,7 @@ from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
 from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
+from livepeer_open_clearinghouse.domains.jobs.types import SettlementEnvelope
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
@@ -56,6 +57,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
 )
 from livepeer_open_clearinghouse.settings import Settings
 from tests.fixtures.mock_broker import build_mock_broker_app
+from tests.fixtures.signed_settlement import delegated_key, signed_job_settlement
 
 
 @pytest_asyncio.fixture()
@@ -125,6 +127,7 @@ def _route(broker_url: str) -> SelectedRoute:
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol="paid-job/v1",
+        settlement_keys=(delegated_key(),),
         extra={"job": {"transports": ["unary", "stream", "multipart"]}},
     )
 
@@ -210,7 +213,15 @@ async def test_open_job_then_call_mock_broker_then_settle(
         broker_job_id="broker-job-handoff",
         work_unit="token",
         outcome=None,
-        settlement=None,
+        settlement=SettlementEnvelope.model_validate(
+            signed_job_settlement(
+                job_id="broker-job-handoff",
+                work_id=job.work_id,
+                actual_units=120,
+                amount_wei=1000,
+                per_units=1,
+            )
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -307,7 +318,16 @@ async def test_mock_broker_returns_configurable_actual_units(
         broker_job_id="broker-job-error",
         work_unit="token",
         outcome=None,
-        settlement=None,
+        settlement=SettlementEnvelope.model_validate(
+            signed_job_settlement(
+                job_id="broker-job-error",
+                work_id=job.work_id,
+                actual_units=100,
+                amount_wei=1000,
+                per_units=1,
+                outcome="EXACT",
+            )
+        ),
         clock=_clock(),
         settings=_settings(),
     )

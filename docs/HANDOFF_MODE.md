@@ -97,7 +97,13 @@ offering's declared session axes at open. Refill behavior comes only from
   mirror state, but is not a separate delivery contract.
 
 The SDK's `SessionRunner` (per language) handles the refill loop
-automatically for extensible modes — see §5.
+automatically for extensible offerings — see §5.
+
+The broker's open operation is idempotent. After an SDK process restart, the
+runner repeats the same `POST /v1/session` with the original
+`Livepeer-Request-Id`; the recorded response supplies a usable credential and
+the current status, top-up, and end URLs. LOC does not persist broker
+credentials or enter the broker control path.
 
 ### Refill refusal
 
@@ -120,30 +126,31 @@ When LOC refuses a refill (cap_reached or daemon failure):
 Because LOC isn't in the data path, the SDK is **part of the
 platform**. It's responsible for:
 
-1. **Refill loop** (case d-extensible): subscribing to
-   `Livepeer-Balance-Low` from the broker, calling LOC's refill
-   endpoint, delivering the returned envelope back to the broker
-   through the session's authoritative HTTP top-up URL.
+1. **Refill loop** (an offering with `session.refill=extensible`): consuming
+   the normative `balance` object from broker status/top-up responses or the
+   optional events WebSocket, calling LOC's refill endpoint, and delivering
+   the returned envelope through the authoritative HTTP top-up URL. The SDK
+   reuses the same request ID across both hops until delivery succeeds.
 2. **Settle reporting** (cases a/b/c): reading
    `Livepeer-Work-Units` from the broker response, posting to
    LOC's settle endpoint.
-3. **Graceful close** on disconnect / shutdown / cap-refusal.
+3. **Graceful close** on shutdown or cap-refusal. An optional events WebSocket
+   disconnect is not, by itself, authoritative session termination.
 4. **Identity reporting** via the
    `Livepeer-Open-Clearinghouse-SDK: <lang>/<semver>/<git_sha7>`
    header on every LOC request.
 
 The official SDKs (`sdks/python`, `sdks/typescript`,
 `sdks/go`, `sdks/rust`) implement all of this. Custom
-SDKs are tolerated for languages we don't ship but unsupported —
-LOC's reconciliation janitor + daemon ledger compensate for
-buggy/missing SDK behavior so the operator isn't left with
-incorrect bills, but SLA / support tickets only honor official
-SDK use.
+SDKs are tolerated for languages we don't ship but unsupported.
+Every SDK must forward the broker-signed terminal settlement; LOC
+fails closed if the envelope is missing, invalid, replayed, forked,
+or inconsistent with its pinned route and session state.
 
-The trust model (see design doc § "Trust model"): payer-daemon
-`GetSessionDebits` is authoritative. SDK self-reports are
-convenience for the synchronous path; the janitor cross-checks
-out-of-band and corrects discrepancies.
+The trust model (see design doc § "Trust model"): the broker-signed
+`paid-session/v1` settlement chain is authoritative. SDK fields are
+only consistency assertions. LOC does not use payer-daemon debit
+polling for final accounting.
 
 ---
 
@@ -190,31 +197,19 @@ conformance".
 
 ## 7. Operator incident playbook: SDK discrepancy spike
 
-**Symptom**: admin SPA's discrepancy-leaderboard view shows a
-single API key (or a small cluster) with rising
-`discrepancy_count` over the last hour.
+**Symptom**: session close returns
+`settlement_verification_failed`.
 
 **Triage steps**:
 
-1. Pull the recent `server.discrepancy_detected` events for that
-   API key:
-   ```
-   SELECT * FROM payment_settlement
-   WHERE raw_record->>'reconciled_by' = 'janitor'
-     AND created_at > now() - interval '1 hour'
-     AND session_id IN (
-       SELECT id FROM payment_session WHERE api_key_id = '<key>'
-     );
-   ```
-2. Check the SDK identity for the API key (admin SPA → user
-   detail → recent sessions). If it's a known-good version, the
-   issue is likely upstream (broker debiting more than the SDK
-   expected).
-3. If SDK version is stale, contact the customer to upgrade.
-4. If SDK version is current AND discrepancies are consistent,
-   investigate the broker — call `GetSessionDebits` directly to
-   confirm the daemon ledger is the right number, then check
-   payee-side `payment-daemon` logs for the affected work_ids.
+1. Inspect the failure reason and the stored route snapshot's
+   delegated settlement keys.
+2. Compare the signed `gateway_session_id`, `session_id`, current and
+   predecessor `work_id`, rotation generation, price, unit, and
+   `settlement_seq` with the durable LOC session.
+3. If the SDK omitted or malformed `Livepeer-Settlement`, require an
+   SDK upgrade. If the signature or signed fields disagree, preserve
+   the envelope and investigate the broker; do not finalize manually.
 
 **Self-protection**: per design Q#3, the LOC-side encumbrance is
 worst-case at session open. Customers can never be billed more
@@ -236,9 +231,9 @@ The customer-facing onboarding doc should make clear:
 > protocol top-up delivery, balance handling, graceful
 > close).
 >
-> Custom clients are tolerated — the gateway's reconciliation
-> janitor + daemon ledger ensure you'll never be billed
-> incorrectly — but you forfeit SLA-grade support: incident
+> Custom clients are tolerated, but every close must forward the
+> broker-signed terminal settlement and invalid evidence fails closed.
+> You also forfeit SLA-grade support: incident
 > response, latency guarantees, and the published broker quality
 > scores all assume an official SDK is in use.
 >

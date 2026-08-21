@@ -157,16 +157,28 @@ type JobResult struct {
 // broker URL + minted envelope; the caller drives the broker WS/RTMP
 // wire today.
 type SessionHandle struct {
-	SessionID        string `json:"session_id"`
-	WorkID           string `json:"work_id"`
-	BrokerURL        string `json:"broker_url"`
-	Mode             string `json:"mode"`
-	PaymentEnvelope  string `json:"payment_envelope"`
-	ExpectedValueWei int64  `json:"expected_value_wei"`
-	FundedValueWei   int64  `json:"funded_value_wei"`
-	RefillEndpoint   string `json:"refill_endpoint"`
-	CloseEndpoint    string `json:"close_endpoint"`
-	OpenedAt         string `json:"opened_at"`
+	SessionID        string         `json:"session_id"`
+	RequestID        string         `json:"request_id"`
+	WorkID           string         `json:"work_id"`
+	BrokerURL        string         `json:"broker_url"`
+	Protocol         string         `json:"protocol"`
+	Capability       string         `json:"-"`
+	Offering         string         `json:"-"`
+	Session          SessionAxes    `json:"session"`
+	SessionParams    map[string]any `json:"-"`
+	PaymentEnvelope  string         `json:"payment_envelope"`
+	ExpectedValueWei int64          `json:"expected_value_wei"`
+	FundedValueWei   int64          `json:"funded_value_wei"`
+	RefillEndpoint   string         `json:"refill_endpoint"`
+	CloseEndpoint    string         `json:"close_endpoint"`
+	OpenedAt         string         `json:"opened_at"`
+}
+
+type SessionAxes struct {
+	DescriptorSchema string `json:"descriptor_schema"`
+	Attachment       string `json:"attachment"`
+	Metering         string `json:"metering"`
+	Refill           string `json:"refill"`
 }
 
 // Client is the async HTTP client.
@@ -437,14 +449,19 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		"broker_job_id": brokerJobID,
 		"work_unit":     brokerWorkUnit,
 	}
-	if encoded := header.Get("Livepeer-Settlement"); encoded != "" {
-		if raw, decodeErr := base64.StdEncoding.DecodeString(encoded); decodeErr == nil {
-			var settlement map[string]any
-			if json.Unmarshal(raw, &settlement) == nil {
-				settleBody["settlement"] = settlement
-			}
-		}
+	encoded := header.Get("Livepeer-Settlement")
+	if encoded == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response missing Livepeer-Settlement", Status: status}
 	}
+	raw, decodeErr := base64.StdEncoding.DecodeString(encoded)
+	if decodeErr != nil {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+	}
+	var settlement map[string]any
+	if jsonErr := json.Unmarshal(raw, &settlement); jsonErr != nil {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+	}
+	settleBody["settlement"] = settlement
 	var settled JobSettleResponse
 	if err := c.doWithRetry(ctx, http.MethodPost, job.SettleEndpoint, settleBody, &settled, 3); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
@@ -516,53 +533,62 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 type OpenSessionInput struct {
 	Capability           string
 	Offering             string
+	DescriptorSchema     string
+	SessionParams        map[string]any
 	EstimatedRunwayUnits int64
 	MaxTotalUnits        int64
+	RequestID            string
 }
 
 // OpenSession opens a long-running session and returns the SessionHandle.
 //
-// in.MaxTotalUnits is the same input across all case-(d) modes, but
-// the operational guarantee differs by mode class:
-//
-//	(d-bounded) modes (ws-realtime@v0):
-//	  The session spends AT MOST MaxTotalUnits. It may end earlier;
-//	  it ends no later than when this much is consumed. It cannot be
-//	  extended — refills are not supported in these modes.
-//
-//	(d-extensible) modes (session-control-plus-media@v0,
-//	rtmp-ingress-hls-egress@v0, live-session-remote-runner@v0,
-//	live-session-gateway-ingest@v0):
-//	  The session spends AT MOST MaxTotalUnits. Refills happen
-//	  automatically within this ceiling; the session drains if a
-//	  higher-tier cap (spend-period, operator-pool) is reached
-//	  before MaxTotalUnits is exhausted.
+// MaxTotalUnits is a hard spend ceiling. Whether the session can extend
+// within that ceiling comes from the offering's session.refill axis:
+// bounded drains without refilling; extensible uses the broker's
+// authoritative HTTP top-up contract.
 //
 // in.EstimatedRunwayUnits is the initial chunk LOC mints toward;
-// SessionRunner tops up automatically as the broker signals
-// balance-low.
+// SessionRunner tops up automatically as the broker reports a normative
+// low balance.
 //
 // The caller is responsible for the broker-side WS / RTMP wire today
 // (or use SessionRunner to drive it).
 func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*SessionHandle, error) {
 	c.emitSdkInitOnce()
+	if in.RequestID == "" {
+		in.RequestID = newUUIDv4()
+	}
 	body := map[string]any{
 		"capability":             in.Capability,
 		"offering":               in.Offering,
+		"descriptor_schema":      in.DescriptorSchema,
+		"session_params":         in.SessionParams,
 		"estimated_runway_units": in.EstimatedRunwayUnits,
 		"max_total_units":        in.MaxTotalUnits,
 	}
 	var out SessionHandle
-	if err := c.do(ctx, http.MethodPost, "/v1/sessions", body, &out); err != nil {
+	headers := http.Header{"Idempotency-Key": []string{in.RequestID}}
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions", body, &out, headers); err != nil {
 		return nil, err
 	}
+	if out.Protocol != "paid-session/v1" {
+		return nil, fmt.Errorf("openclearinghouse: unsupported session protocol %q", out.Protocol)
+	}
+	if out.Session.DescriptorSchema != in.DescriptorSchema {
+		return nil, fmt.Errorf("openclearinghouse: descriptor schema mismatch")
+	}
+	out.Capability = in.Capability
+	out.Offering = in.Offering
+	out.SessionParams = in.SessionParams
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.opened",
 		CorrelationID: out.SessionID,
 		Payload: map[string]interface{}{
 			"capability":           in.Capability,
 			"offering":             in.Offering,
-			"mode":                 out.Mode,
+			"protocol":             out.Protocol,
+			"descriptor_schema":    out.Session.DescriptorSchema,
+			"refill":               out.Session.Refill,
 			"max_total_units":      in.MaxTotalUnits,
 			"initial_runway_units": in.EstimatedRunwayUnits,
 		},
@@ -573,7 +599,7 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 // RefillSession mints a top-up bound to an existing session. The caller
 // is responsible for delivering the returned envelope to the broker via
 // the mode-specific channel (control-WS frame or HTTP POST to topup_url).
-func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64) (map[string]any, error) {
+func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64, requestID, rebindFrom, replacesRequestID string) (map[string]any, error) {
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.refill_requested",
 		CorrelationID: sessionID,
@@ -585,8 +611,16 @@ func (c *Client) RefillSession(ctx context.Context, sessionID string, observedCo
 	} else {
 		body["observed_consumed_units"] = nil
 	}
+	if rebindFrom != "" {
+		body["rebind_from"] = rebindFrom
+		body["replaces_request_id"] = replacesRequestID
+	}
 	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out); err != nil {
+	if requestID == "" {
+		requestID = newUUIDv4()
+	}
+	headers := http.Header{"Idempotency-Key": []string{requestID}}
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out, headers); err != nil {
 		var locErr *Error
 		if errors.As(err, &locErr) && locErr.Status == 402 {
 			c.telemetry.Emit(EmitTelemetryOptions{
@@ -629,9 +663,10 @@ func (c *Client) CloseSession(ctx context.Context, sessionID string, actualUnits
 	if outcome != "" {
 		body["outcome"] = outcome
 	}
-	if settlement != nil {
-		body["settlement"] = settlement
+	if settlement == nil {
+		return nil, fmt.Errorf("openclearinghouse: settlement is required")
 	}
+	body["settlement"] = settlement
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/close", body, &out); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
@@ -761,9 +796,8 @@ func (c *Client) doWithHeaders(
 
 // doWithRetry wraps `do` with exponential backoff on transient
 // failures. 5xx and 429 retry; 4xx surface immediately. Used by the
-// settle path so a transient LOC blip doesn't leave a session
-// unsettled — the janitor would catch it eventually, but synchronous
-// retry buys low latency for the common case.
+// settle path so a transient LOC blip doesn't leave a job unsettled.
+// The retry preserves the broker-signed terminal claim across that window.
 func (c *Client) doWithRetry(
 	ctx context.Context,
 	method, path string,

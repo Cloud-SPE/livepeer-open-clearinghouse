@@ -32,7 +32,11 @@ from livepeer_open_clearinghouse.domains.jobs.types import (
     SettleJobResponse,
 )
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
-from livepeer_open_clearinghouse.errors import DaemonUnavailable, OpenClearinghouseError
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    IdempotencyOutcomeUnknown,
+    OpenClearinghouseError,
+)
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 
@@ -62,6 +66,8 @@ async def open_job_endpoint(
     Only routes declaring ``paid-job/v1`` are accepted.
     """
     api_key, user = pair
+    api_key_id = api_key.id
+    user_id = user.id
     operation = "jobs.create"
     fingerprint = payments_service.create_request_fingerprint(
         operation=operation,
@@ -69,8 +75,8 @@ async def open_job_endpoint(
     )
     claim = await payments_service.claim_create_request(
         db,
-        user_id=user.id,
-        api_key_id=api_key.id,
+        user_id=user_id,
+        api_key_id=api_key_id,
         operation=operation,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
@@ -83,8 +89,8 @@ async def open_job_endpoint(
     try:
         response = await service.open_job(
             db,
-            user_id=user.id,
-            api_key_id=api_key.id,
+            user_id=user_id,
+            api_key_id=api_key_id,
             capability=body.capability,
             offering=body.offering,
             transport=body.transport,
@@ -102,19 +108,20 @@ async def open_job_endpoint(
         if not isinstance(exc, DaemonUnavailable):
             await payments_service.fail_create_request(
                 db,
-                user_id=user.id,
+                user_id=user_id,
                 operation=operation,
                 idempotency_key=idempotency_key,
                 http_status=exc.status_code,
                 response_payload=_error_payload(exc),
                 clock=clock,
                 retention_seconds=settings.idempotency_retention_seconds,
+                retain_tombstone=isinstance(exc, IdempotencyOutcomeUnknown),
             )
         raise
 
     await payments_service.complete_create_request(
         db,
-        user_id=user.id,
+        user_id=user_id,
         operation=operation,
         idempotency_key=idempotency_key,
         http_status=status.HTTP_201_CREATED,
@@ -164,9 +171,8 @@ async def settle_job_endpoint(
 ) -> SettleJobResponse:
     """Settle a job after the SDK has called the broker.
 
-    Trusts the SDK-reported ``actual_units`` on this synchronous
-    path; the reconciliation janitor verifies against the daemon
-    ledger out of band.
+    Verifies the broker-signed settlement against the route's pinned
+    delegation and quote before changing financial state.
 
     Returns 404 ``job_not_found`` (unknown or wrong-owner) and 409
     ``job_already_settled`` for a second settle.

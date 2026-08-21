@@ -955,9 +955,8 @@ export interface paths {
          * Settle Job Endpoint
          * @description Settle a job after the SDK has called the broker.
          *
-         *     Trusts the SDK-reported ``actual_units`` on this synchronous
-         *     path; the reconciliation janitor verifies against the daemon
-         *     ledger out of band.
+         *     Verifies the broker-signed settlement against the route's pinned
+         *     delegation and quote before changing financial state.
          *
          *     Returns 404 ``job_not_found`` (unknown or wrong-owner) and 409
          *     ``job_already_settled`` for a second settle.
@@ -1057,9 +1056,7 @@ export interface paths {
          * Close Session Endpoint
          * @description Explicitly close a session and finalize accounting.
          *
-         *     Trusts the SDK-reported ``actual_units`` on this synchronous
-         *     path. The reconciliation janitor (PR-8) does the daemon
-         *     cross-check via ``GetSessionDebits`` and corrects divergence.
+         *     Verifies the broker-signed settlement before finalizing accounting.
          *
          *     Returns 409 ``session_not_open`` for an already-closed session
          *     (idempotency note: a second close is rejected, not a no-op —
@@ -1491,26 +1488,16 @@ export interface components {
          * CloseSessionRequest
          * @description Inbound: ``POST /v1/sessions/{id}/close``.
          *
-         *     SDK reports the final actual_units consumed (read from the
-         *     broker's ``Livepeer-Work-Units`` trailer or the equivalent
-         *     in-band signal) and optionally the parsed ``SettlementRecord``
-         *     from the broker if one was delivered.
-         *
-         *     Per the trust model in the design doc, the SDK report is
-         *     advisory; the payer-daemon's ``GetSessionDebits`` is the
-         *     authoritative source. v1 trusts the SDK report on the synchronous
-         *     close path; the reconciliation janitor (PR-8) does the daemon
-         *     cross-check and corrects any divergence.
+         *     SDK forwards the required broker-signed terminal settlement. The
+         *     reported units and optional outcome are consistency assertions;
+         *     signed settlement fields are authoritative for accounting.
          */
         CloseSessionRequest: {
             /** Actual Units */
             actual_units: number;
             /** Outcome */
             outcome?: string | null;
-            /** Settlement */
-            settlement?: {
-                [key: string]: unknown;
-            } | null;
+            settlement: components["schemas"]["SessionSettlementEnvelope"];
         };
         /**
          * CloseSessionResponse
@@ -1607,8 +1594,8 @@ export interface components {
          *     Carries the broker target + minted envelope so the SDK can issue
          *     its one-shot call to the broker directly (handoff mode). The
          *     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
-         *     the broker's response (``Livepeer-Work-Units`` header for
-         *     http-reqresp / http-multipart, HTTP trailer for http-stream).
+         *     the broker's response (terminal headers for unary/multipart, or a
+         *     terminal settlement lookup when stream trailers are inaccessible).
          */
         CreateJobResponse: {
             /**
@@ -1699,6 +1686,12 @@ export interface components {
             capability: string;
             /** Offering */
             offering: string;
+            /** Descriptor Schema */
+            descriptor_schema: string;
+            /** Session Params */
+            session_params?: {
+                [key: string]: unknown;
+            };
             /** Estimated Runway Units */
             estimated_runway_units: number;
             /** Max Total Units */
@@ -1711,8 +1704,8 @@ export interface components {
          *     Carries everything the SDK needs to open the broker-side session
          *     and bookkeep the LOC-side lifecycle. The ``payment_envelope``
          *     is base64-encoded wire-format Payment bytes — the SDK attaches
-         *     it as the ``Livepeer-Payment`` HTTP header (or upgrade header,
-         *     for WS modes) when connecting to ``broker_url``.
+         *     it as the ``Livepeer-Payment`` HTTP header when opening the broker's
+         *     paid-session/v1 control resource.
          *
          *     Per exec-plan 002 handoff design, LOC never sits in the data
          *     path: ``broker_url`` is the orchestrator's HTTP/WS endpoint the
@@ -1734,6 +1727,7 @@ export interface components {
             broker_url: string;
             /** Protocol */
             protocol: string;
+            session: components["schemas"]["SessionAxesView"];
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
@@ -2183,13 +2177,16 @@ export interface components {
          *     Body is mostly empty in v1 — the SDK signals "broker emitted
          *     Livepeer-Balance-Low, please mint more." The optional
          *     ``observed_consumed_units`` is an advisory hint from the SDK's
-         *     view of the broker's debit ledger; LOC cross-checks via
-         *     ``GetSessionDebits`` and uses the daemon's number as
-         *     authoritative (per the trust model).
+         *     view of broker progress. Signed broker settlements, supplied on
+         *     close/reconciliation, are authoritative for delivered work.
          */
         RefillSessionRequest: {
             /** Observed Consumed Units */
             observed_consumed_units?: number | null;
+            /** Rebind From */
+            rebind_from?: string | null;
+            /** Replaces Request Id */
+            replaces_request_id?: string | null;
         };
         /**
          * RefillSessionResponse
@@ -2203,6 +2200,8 @@ export interface components {
         RefillSessionResponse: {
             /** Work Id */
             work_id: string;
+            /** Request Id */
+            request_id: string;
             /** Refill Seq */
             refill_seq: number;
             /** Payment Envelope */
@@ -2212,6 +2211,8 @@ export interface components {
             /** Funded Value Wei */
             funded_value_wei: number;
             cap_status: components["schemas"]["CapStatus"];
+            /** Rebind From */
+            rebind_from?: string | null;
         };
         /**
          * RequestPasswordResetRequest
@@ -2397,6 +2398,56 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * SessionAxesView
+         * @description Authoritative paid-session/v1 offering axes selected for the session.
+         */
+        SessionAxesView: {
+            /** Descriptor Schema */
+            descriptor_schema: string;
+            /**
+             * Attachment
+             * @default external
+             * @enum {string}
+             */
+            attachment: "external" | "inband-ws";
+            /**
+             * Metering
+             * @enum {string}
+             */
+            metering: "runner-reported" | "broker-observed";
+            /**
+             * Refill
+             * @default extensible
+             * @enum {string}
+             */
+            refill: "extensible" | "bounded";
+        } & {
+            [key: string]: unknown;
+        };
+        /** SessionSettlementEnvelope */
+        SessionSettlementEnvelope: {
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            signature: components["schemas"]["SessionSettlementSignature"];
+        };
+        /** SessionSettlementSignature */
+        SessionSettlementSignature: {
+            /**
+             * Algorithm
+             * @constant
+             */
+            algorithm: "secp256k1";
+            /**
+             * Canonicalization
+             * @constant
+             */
+            canonicalization: "jcs";
+            /** Value */
+            value: string;
+        };
+        /**
          * SessionStatusResponse
          * @description Outbound: ``GET /v1/sessions/{id}``.
          *
@@ -2501,10 +2552,10 @@ export interface components {
          * SettleJobRequest
          * @description Inbound: ``POST /v1/jobs/{id}/settle``.
          *
-         *     SDK reports the final actual_units read from the broker's
-         *     ``Livepeer-Work-Units`` header/trailer. Optional outcome +
-         *     settlement (the parsed ``SettlementRecord`` if the broker emitted
-         *     one in the ``Livepeer-Settlement`` header).
+         *     SDK reports the broker's terminal claim and the required signed
+         *     ``SettlementRecord`` from ``Livepeer-Settlement``. ``outcome`` is
+         *     only an optional consistency assertion; signed settlement is
+         *     authoritative for accounting.
          */
         SettleJobRequest: {
             /** Actual Units */
@@ -2515,10 +2566,7 @@ export interface components {
             work_unit: string;
             /** Outcome */
             outcome?: string | null;
-            /** Settlement */
-            settlement?: {
-                [key: string]: unknown;
-            } | null;
+            settlement: components["schemas"]["SettlementEnvelope"];
         };
         /**
          * SettleJobResponse
@@ -2555,6 +2603,29 @@ export interface components {
              */
             closed_at: string;
             cap_status: components["schemas"]["CapStatus"];
+        };
+        /** SettlementEnvelope */
+        SettlementEnvelope: {
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            signature: components["schemas"]["SettlementSignature"];
+        };
+        /** SettlementSignature */
+        SettlementSignature: {
+            /**
+             * Algorithm
+             * @constant
+             */
+            algorithm: "secp256k1";
+            /**
+             * Canonicalization
+             * @constant
+             */
+            canonicalization: "jcs";
+            /** Value */
+            value: string;
         };
         /**
          * SignupRequest
@@ -4694,7 +4765,8 @@ export interface operations {
     refill_session_endpoint_v1_sessions__session_id__refill_post: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
+                "Idempotency-Key": string;
                 "X-API-Key"?: string | null;
                 authorization?: string | null;
             };

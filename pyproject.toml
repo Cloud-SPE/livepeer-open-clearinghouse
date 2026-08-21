@@ -37,6 +37,9 @@ dependencies = [
     "prometheus-client>=0.21",
     "structlog>=24.4",
     "resend>=2.4",
+    "rfc8785>=0.1.4",
+    "eth-keys>=0.7",
+    "eth-hash>=0.7",
 ]
 
 [project.urls]

@@ -6,20 +6,14 @@
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
-import {
-  CRITICAL_EVENT_TYPES,
-  TelemetryEmitter,
-  isCriticalEvent,
-} from "../src/telemetry.js";
+import { CRITICAL_EVENT_TYPES, TelemetryEmitter, isCriticalEvent } from "../src/telemetry.js";
 
 interface CapturedRequest {
   url: string;
   init: RequestInit | undefined;
 }
 
-function makeFetch(
-  status = 202,
-): {
+function makeFetch(status = 202): {
   fetch: typeof fetch;
   calls: CapturedRequest[];
 } {
@@ -166,9 +160,9 @@ describe("TelemetryEmitter wire", () => {
     expect(calls.length).toBe(1);
     const headers = calls[0]!.init?.headers as Record<string, string>;
     expect(headers["Content-Encoding"]).toBe("gzip");
-    const decompressed = gunzipSync(
-      Buffer.from(calls[0]!.init!.body as Uint8Array),
-    ).toString("utf8");
+    const decompressed = gunzipSync(Buffer.from(calls[0]!.init!.body as Uint8Array)).toString(
+      "utf8",
+    );
     const parsed = JSON.parse(decompressed);
     expect(parsed.events[0].event_type).toBe("request.mint_started");
   });

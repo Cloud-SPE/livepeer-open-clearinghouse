@@ -37,6 +37,7 @@ from livepeer_open_clearinghouse.domains.jobs.service import (
     ProtocolNotSupportedForJob,
     TransportNotSupportedForJob,
 )
+from livepeer_open_clearinghouse.domains.jobs.types import CreateJobResponse, SettlementEnvelope
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
@@ -56,6 +57,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SelectedRoute,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key, signed_job_settlement
 
 
 @pytest_asyncio.fixture()
@@ -136,7 +138,31 @@ def _route(protocol: str = "paid-job/v1") -> SelectedRoute:
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol=protocol,
+        settlement_keys=(delegated_key(),),
         extra=extra,
+    )
+
+
+def _settlement(
+    response: CreateJobResponse,
+    *,
+    broker_job_id: str,
+    actual_units: int,
+    amount_wei: int = 100,
+    per_units: int = 1,
+    work_unit: str = "token",
+    outcome: str = "OVERFUNDED",
+) -> SettlementEnvelope:
+    return SettlementEnvelope.model_validate(
+        signed_job_settlement(
+            job_id=broker_job_id,
+            work_id=response.work_id,
+            actual_units=actual_units,
+            amount_wei=amount_wei,
+            per_units=per_units,
+            work_unit=work_unit,
+            outcome=outcome,
+        )
     )
 
 
@@ -229,7 +255,13 @@ async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
         broker_job_id="broker-job-denominator",
         work_unit="token",
         outcome=None,
-        settlement=None,
+        settlement=_settlement(
+            response,
+            broker_job_id="broker-job-denominator",
+            actual_units=1,
+            amount_wei=1,
+            per_units=3,
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -447,7 +479,11 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
         broker_job_id="broker-job-overfunded",
         work_unit="token",
         outcome=None,
-        settlement={"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
+        settlement=_settlement(
+            open_resp,
+            broker_job_id="broker-job-overfunded",
+            actual_units=600,
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -471,11 +507,9 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
         select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
     )
     assert event is not None
-    assert event.raw_record == {
-        "broker_job_id": "broker-job-overfunded",
-        "work_unit": "token",
-        "settlement": {"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
-    }
+    assert event.raw_record["broker_job_id"] == "broker-job-overfunded"
+    assert event.raw_record["work_unit"] == "token"
+    assert event.raw_record["settlement"]["payload"]["job_id"] == "broker-job-overfunded"
 
     balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     assert balance_after - balance_before == Decimal(40_000)
@@ -511,7 +545,59 @@ async def test_settle_job_rejects_work_unit_drift_without_closing(
             broker_job_id="broker-job-drift",
             work_unit="frames",
             outcome=None,
-            settlement=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-drift",
+                actual_units=10,
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    job = await db_session.get(PaymentSession, open_resp.job_id)
+    assert job is not None
+    assert job.state == SESSION_STATE_OPEN
+    assert (
+        await db_session.scalar(
+            select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_tampered_signature_before_mutation(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=10,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    settlement = _settlement(open_resp, broker_job_id="broker-job-tampered", actual_units=10)
+    settlement.payload["actual_units"] = "9"
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=10,
+            broker_job_id="broker-job-tampered",
+            work_unit="token",
+            outcome=None,
+            settlement=settlement,
             clock=_clock(),
             settings=_settings(),
         )
@@ -540,7 +626,15 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
             broker_job_id="broker-job-missing",
             work_unit="token",
             outcome=None,
-            settlement=None,
+            settlement=SettlementEnvelope.model_validate(
+                signed_job_settlement(
+                    job_id="broker-job-missing",
+                    work_id="missing",
+                    actual_units=0,
+                    amount_wei=100,
+                    per_units=1,
+                )
+            ),
             clock=_clock(),
             settings=_settings(),
         )
@@ -574,7 +668,12 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
         broker_job_id="broker-job-once",
         work_unit="token",
         outcome=None,
-        settlement=None,
+        settlement=_settlement(
+            open_resp,
+            broker_job_id="broker-job-once",
+            actual_units=10,
+            outcome="EXACT",
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -587,7 +686,12 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
             broker_job_id="broker-job-twice",
             work_unit="token",
             outcome=None,
-            settlement=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-twice",
+                actual_units=10,
+                outcome="EXACT",
+            ),
             clock=_clock(),
             settings=_settings(),
         )

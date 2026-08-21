@@ -15,6 +15,9 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     FundingIntent,
+    GrpcPaymentDaemonClient,
+    MintOutcomeUnknown,
+    PaymentDaemonError,
     QuoteRef,
 )
 from livepeer_open_clearinghouse.providers.payment_daemon.client import (
@@ -141,3 +144,79 @@ def test_proto_response_to_dataclass() -> None:
     assert dc.work_id == "deadbeef" * 8
     # base64 form of payment_bytes is URL-safe; smoke-test the property
     assert isinstance(dc.payment_bytes_b64, str)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_incomplete_mint_reservation_maps_to_outcome_unknown() -> None:
+    import grpc
+
+    class Stub:
+        async def CreatePayment(self, _request: object) -> object:
+            raise grpc.aio.AioRpcError(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                grpc.aio.Metadata(),
+                grpc.aio.Metadata(),
+                details="mint_request_id was reserved but never completed; use a new id",
+            )
+
+    client = GrpcPaymentDaemonClient("/unused")
+    client._stub = Stub()
+    with pytest.raises(MintOutcomeUnknown):
+        await client.create_payment(_sample_request())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalid_recipient_feedback_treats_aborted_as_acknowledgement() -> None:
+    import grpc
+
+    class Stub:
+        request: object | None = None
+
+        async def ReportPaymentResult(self, request: object) -> object:
+            self.request = request
+            raise grpc.aio.AioRpcError(
+                grpc.StatusCode.ABORTED,
+                grpc.aio.Metadata(),
+                grpc.aio.Metadata(),
+                details="payment session rotated; retry exactly once",
+            )
+
+    stub = Stub()
+    client = GrpcPaymentDaemonClient("/unused")
+    client._stub = stub
+    await client.report_invalid_recipient_rand(
+        work_id="ab" * 32,
+        capability="video:transcode.abr",
+        offering="default",
+    )
+
+    assert stub.request is not None
+    assert stub.request.work_id == "ab" * 32  # type: ignore[attr-defined]
+    assert stub.request.capability == "video:transcode.abr"  # type: ignore[attr-defined]
+    assert stub.request.offering == "default"  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalid_recipient_feedback_rejects_non_aborted_failure() -> None:
+    import grpc
+
+    class Stub:
+        async def ReportPaymentResult(self, _request: object) -> object:
+            raise grpc.aio.AioRpcError(
+                grpc.StatusCode.UNAVAILABLE,
+                grpc.aio.Metadata(),
+                grpc.aio.Metadata(),
+                details="payer unavailable",
+            )
+
+    client = GrpcPaymentDaemonClient("/unused")
+    client._stub = Stub()
+    with pytest.raises(PaymentDaemonError, match="UNAVAILABLE"):
+        await client.report_invalid_recipient_rand(
+            work_id="ab" * 32,
+            capability="video:transcode.abr",
+            offering="default",
+        )

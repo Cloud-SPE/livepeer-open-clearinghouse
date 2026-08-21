@@ -13,7 +13,7 @@ their SDKs) treat jobs and sessions as distinct concepts:
   - Sessions are long-running. They mint, refill on broker-emitted
     balance-low, and close on customer/operator signal.
 
-Both share the underlying ``payment_session`` table, the
-reconciliation janitor, and the trust model (daemon ledger
-authoritative).
+Both share the underlying ``payment_session`` table. Job accounting is
+authorized by the broker's signed settlement and checked against the
+pinned route and quote before the encumbrance is released.
 """

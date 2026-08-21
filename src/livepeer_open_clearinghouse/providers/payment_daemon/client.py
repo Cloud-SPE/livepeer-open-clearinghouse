@@ -33,6 +33,12 @@ class PaymentDaemonError(Exception):
     code = "daemon_error"
 
 
+class MintOutcomeUnknown(PaymentDaemonError):
+    """The payer reserved this mint ID but cannot replay a completed result."""
+
+    code = "mint_outcome_unknown"
+
+
 class DaemonDepositInsufficient(PaymentDaemonError):
     """Sender deposit/reserve is zero or withdraw round is imminent."""
 
@@ -88,27 +94,6 @@ class CreatePaymentRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionDebits:
-    """Mirror of `livepeer.payments.v1.GetSessionDebitsResponse`.
-
-    Returned by ``PaymentDaemonClient.get_session_debits``. Used by
-    the reconciliation janitor and by close_session as the
-    authoritative source of how much work the broker actually
-    debited against a session.
-
-    ``closed`` flips True once the broker has called ``CloseSession``
-    on the payee daemon (typically because the SDK disconnected, a
-    ws-realtime session exhausted, or an explicit close was issued).
-    The janitor finalizes any LOC-side payment_session whose daemon
-    record shows closed=True without an explicit close from the SDK.
-    """
-
-    total_work_units: int
-    debit_count: int
-    closed: bool
-
-
-@dataclass(frozen=True, slots=True)
 class DepositInfo:
     """Snapshot of the daemon's TicketBroker deposit/reserve state."""
 
@@ -139,9 +124,11 @@ class PaymentDaemonClient(Protocol):
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse: ...
 
-    async def get_deposit_info(self) -> DepositInfo: ...
+    async def report_invalid_recipient_rand(
+        self, *, work_id: str, capability: str, offering: str
+    ) -> None: ...
 
-    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits: ...
+    async def get_deposit_info(self) -> DepositInfo: ...
 
     async def health(self) -> bool: ...
 
@@ -164,27 +151,8 @@ class MockPaymentDaemonClient:
         # EV = funded_value * ev_ratio. In a real daemon this is determined
         # by the receiver's faceValue/winProb choice.
         self._ev_ratio = ev_ratio
-        # In-memory session-debits ledger, keyed by (sender, work_id).
-        # Tests can set entries here via `set_session_debits` to control
-        # what `get_session_debits` returns. Defaults to all-zero / open.
-        self._session_debits: dict[tuple[bytes, str], SessionDebits] = {}
         self._mint_replays: dict[str, tuple[CreatePaymentRequest, CreatePaymentResponse]] = {}
-
-    def set_session_debits(
-        self,
-        *,
-        sender: bytes,
-        work_id: str,
-        total_work_units: int,
-        debit_count: int,
-        closed: bool,
-    ) -> None:
-        """Test helper: pre-load a SessionDebits row the mock will return."""
-        self._session_debits[(sender, work_id)] = SessionDebits(
-            total_work_units=total_work_units,
-            debit_count=debit_count,
-            closed=closed,
-        )
+        self.reported_invalid_recipient_rands: list[tuple[str, str, str]] = []
 
     async def health(self) -> bool:
         return True
@@ -197,15 +165,11 @@ class MockPaymentDaemonClient:
             withdraw_round=0,
         )
 
-    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits:
-        """Return whatever was pre-loaded via `set_session_debits`, or
-        the empty default (0 units, 0 debits, not closed). Mirrors the
-        real daemon's behavior of returning the empty default when it
-        has no record of the (sender, work_id) pair."""
-        return self._session_debits.get(
-            (sender, work_id),
-            SessionDebits(total_work_units=0, debit_count=0, closed=False),
-        )
+    async def report_invalid_recipient_rand(
+        self, *, work_id: str, capability: str, offering: str
+    ) -> None:
+        """Record the expected payer-cache eviction in the test double."""
+        self.reported_invalid_recipient_rands.append((work_id, capability, offering))
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
         if not request.mint_request_id:
@@ -392,31 +356,30 @@ class GrpcPaymentDaemonClient:
             withdraw_round=int(resp.withdraw_round),
         )
 
-    async def get_session_debits(self, *, sender: bytes, work_id: str) -> SessionDebits:
-        """Read the per-session debit ledger for a long-lived session.
-
-        Per the proto docstring: the daemon may return UNIMPLEMENTED
-        when long-lived debit tracking isn't wired. We treat that as
-        "no record" (zero-default) matching the gateway-adapter
-        convention.
-        """
+    async def report_invalid_recipient_rand(
+        self, *, work_id: str, capability: str, offering: str
+    ) -> None:
+        """Evict the stale payer session; ABORTED is the expected acknowledgement."""
         import grpc  # noqa: PLC0415
-        from livepeer.payments.v1 import payer_daemon_pb2  # noqa: PLC0415
+        from livepeer.payments.v1 import payer_daemon_pb2, types_pb2  # noqa: PLC0415
 
         stub = await self._ensure_stub()
         try:
-            resp = await stub.GetSessionDebits(
-                payer_daemon_pb2.GetSessionDebitsRequest(sender=sender, work_id=work_id)
+            await stub.ReportPaymentResult(
+                payer_daemon_pb2.ReportPaymentResultRequest(
+                    work_id=work_id,
+                    capability=capability,
+                    offering=offering,
+                    rejection_reason=(types_pb2.PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND),
+                )
             )
         except grpc.aio.AioRpcError as exc:
-            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
-                return SessionDebits(total_work_units=0, debit_count=0, closed=False)
-            raise
-        return SessionDebits(
-            total_work_units=int(resp.total_work_units),
-            debit_count=int(resp.debit_count),
-            closed=bool(resp.closed),
-        )
+            if exc.code() == grpc.StatusCode.ABORTED:
+                return
+            raise PaymentDaemonError(
+                f"ReportPaymentResult {exc.code().name}: {exc.details() or ''}"
+            ) from exc
+        raise PaymentDaemonError("ReportPaymentResult did not acknowledge recipient rotation")
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
         import grpc  # noqa: PLC0415
@@ -430,6 +393,10 @@ class GrpcPaymentDaemonClient:
             # The daemon uses Aborted for "session rotated, retry once."
             if exc.code() == grpc.StatusCode.ABORTED:
                 raise InvalidRecipientRand(exc.details() or "session rotated") from exc
+            if exc.code() == grpc.StatusCode.FAILED_PRECONDITION and (
+                "reserved but never completed" in details or "replay record has expired" in details
+            ):
+                raise MintOutcomeUnknown(exc.details() or "mint outcome unknown") from exc
             if (
                 "deposit" in details
                 or "reserve" in details

@@ -32,6 +32,8 @@ from livepeer_open_clearinghouse_sdk import (
 BASE = "http://loc.test"
 BROKER = "https://broker.example/livepeer"
 KEY = "pymth_live_test_key_value"
+SIGNED_SETTLEMENT = {"payload": {}, "signature": {}}
+ENCODED_SETTLEMENT = base64.b64encode(json.dumps(SIGNED_SETTLEMENT).encode()).decode()
 
 
 def _job_open(
@@ -60,6 +62,7 @@ def _broker_headers(units: int, *, job_id: str = "broker-job-1") -> dict[str, st
         "Livepeer-Work-Units": str(units),
         "Livepeer-Work-Unit": "token",
         "Livepeer-Job-Id": job_id,
+        "Livepeer-Settlement": ENCODED_SETTLEMENT,
     }
 
 
@@ -146,6 +149,7 @@ async def test_submit_job_happy_path() -> None:
         "actual_units": 42,
         "broker_job_id": "broker-job-1",
         "work_unit": "token",
+        "settlement": SIGNED_SETTLEMENT,
     }
 
 
@@ -400,7 +404,14 @@ async def test_open_session_returns_handle() -> None:
                 "session_id": sid,
                 "work_id": "wid-sess",
                 "broker_url": BROKER,
-                "mode": "session-control-plus-media@v0",
+                "request_id": "open-request",
+                "protocol": "paid-session/v1",
+                "session": {
+                    "descriptor_schema": "livepeer.session.test/v1",
+                    "attachment": "external",
+                    "metering": "broker-observed",
+                    "refill": "extensible",
+                },
                 "payment_envelope": "BASE64SESSION",
                 "expected_value_wei": 100_000,
                 "funded_value_wei": 200_000,
@@ -414,12 +425,13 @@ async def test_open_session_returns_handle() -> None:
         handle = await client.open_session(
             capability="livepeer:vtuber-session",
             offering="vtuber-1080p30",
+            descriptor_schema="livepeer.session.test/v1",
             estimated_runway_units=100,
             max_total_units=200,
         )
     assert isinstance(handle, SessionHandle)
     assert handle.broker_url == BROKER
-    assert handle.mode == "session-control-plus-media@v0"
+    assert handle.protocol == "paid-session/v1"
     assert handle.funded_value_wei == 200_000
 
 
@@ -470,10 +482,19 @@ async def test_close_session_threads_outcome() -> None:
         )
     )
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
-        result = await client.close_session(sid, actual_units=100, outcome="EXACT")
+        result = await client.close_session(
+            sid,
+            actual_units=100,
+            outcome="EXACT",
+            settlement={"payload": {}, "signature": {}},
+        )
     assert result["outcome"] == "EXACT"
     body = json.loads(route.calls[0].request.content)
-    assert body == {"actual_units": 100, "outcome": "EXACT"}
+    assert body == {
+        "actual_units": 100,
+        "outcome": "EXACT",
+        "settlement": {"payload": {}, "signature": {}},
+    }
 
 
 @respx.mock

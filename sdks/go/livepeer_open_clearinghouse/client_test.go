@@ -16,6 +16,7 @@ import (
 )
 
 const apiKey = "pymth_live_test"
+const encodedTestSettlement = "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0="
 
 func locOpenJob(t *testing.T, brokerURL, transport string) *httptest.Server {
 	t.Helper()
@@ -58,10 +59,8 @@ func locOpenJob(t *testing.T, brokerURL, transport string) *httptest.Server {
 		if body["broker_job_id"] != "broker-job-1" || body["work_unit"] != "token" {
 			t.Errorf("settle audit fields: %v", body)
 		}
-		if transport == "stream" {
-			if _, ok := body["settlement"].(map[string]any); !ok {
-				t.Errorf("stream settle missing decoded signed settlement: %v", body)
-			}
+		if _, ok := body["settlement"].(map[string]any); !ok {
+			t.Errorf("settle missing decoded signed settlement: %v", body)
 		}
 		au, _ := body["actual_units"].(float64)
 		w.Header().Set("Content-Type", "application/json")
@@ -105,6 +104,7 @@ func brokerServer(t *testing.T, status int) *httptest.Server {
 		w.Header().Set("Livepeer-Work-Units", "42")
 		w.Header().Set("Livepeer-Work-Unit", "token")
 		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"reply":"ok"}`))
 	}))
@@ -212,6 +212,7 @@ func TestSubmitJobMultipartAndTerminalError(t *testing.T) {
 			w.Header().Set("Livepeer-Work-Units", "2")
 			w.Header().Set("Livepeer-Work-Unit", "token")
 			w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+			w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		}))
 		defer broker.Close()
@@ -234,6 +235,7 @@ func TestSubmitJobMultipartAndTerminalError(t *testing.T) {
 			w.Header().Set("Livepeer-Work-Units", "0")
 			w.Header().Set("Livepeer-Work-Unit", "token")
 			w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+			w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
 		}))
@@ -256,6 +258,7 @@ func TestSubmitJobRejectsWorkUnitDrift(t *testing.T) {
 		w.Header().Set("Livepeer-Work-Units", "3")
 		w.Header().Set("Livepeer-Work-Unit", "frames")
 		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer broker.Close()
@@ -312,10 +315,15 @@ func TestOpenSession(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":         "11111111-1111-1111-1111-111111111111",
-			"work_id":            "wid-sess",
-			"broker_url":         "https://broker.example/livepeer",
-			"mode":               "session-control-plus-media@v0",
+			"session_id": "11111111-1111-1111-1111-111111111111",
+			"work_id":    "wid-sess",
+			"broker_url": "https://broker.example/livepeer",
+			"request_id": "req-session",
+			"protocol":   "paid-session/v1",
+			"session": map[string]any{
+				"descriptor_schema": "livepeer.session.test/v1", "attachment": "direct",
+				"metering": "broker", "refill": "extensible",
+			},
 			"payment_envelope":   "BASE64SESS",
 			"expected_value_wei": 100000,
 			"funded_value_wei":   200000,
@@ -330,14 +338,15 @@ func TestOpenSession(t *testing.T) {
 	handle, err := client.OpenSession(context.Background(), loc.OpenSessionInput{
 		Capability:           "livepeer:vtuber-session",
 		Offering:             "vtuber-1080p30",
+		DescriptorSchema:     "livepeer.session.test/v1",
 		EstimatedRunwayUnits: 100,
 		MaxTotalUnits:        200,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handle.Mode != "session-control-plus-media@v0" {
-		t.Errorf("mode: got %q", handle.Mode)
+	if handle.Protocol != "paid-session/v1" {
+		t.Errorf("protocol: got %q", handle.Protocol)
 	}
 	if handle.FundedValueWei != 200000 {
 		t.Errorf("funded: got %d", handle.FundedValueWei)
@@ -362,7 +371,7 @@ func TestCloseSessionThreadsOutcome(t *testing.T) {
 	defer loca.Close()
 
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	_, err := client.CloseSession(context.Background(), "22222222-2222-2222-2222-222222222222", 100, "EXACT", nil)
+	_, err := client.CloseSession(context.Background(), "22222222-2222-2222-2222-222222222222", 100, "EXACT", map[string]any{"payload": map[string]any{}, "signature": map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}

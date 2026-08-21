@@ -114,15 +114,31 @@ pub struct JobResult {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionHandle {
     pub session_id: String,
+    pub request_id: String,
     pub work_id: String,
     pub broker_url: String,
-    pub mode: String,
+    pub protocol: String,
+    #[serde(skip)]
+    pub capability: String,
+    #[serde(skip)]
+    pub offering: String,
+    pub session: SessionAxes,
+    #[serde(skip)]
+    pub session_params: Value,
     pub payment_envelope: String,
     pub expected_value_wei: u64,
     pub funded_value_wei: u64,
     pub refill_endpoint: String,
     pub close_endpoint: String,
     pub opened_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionAxes {
+    pub descriptor_schema: String,
+    pub attachment: String,
+    pub metering: String,
+    pub refill: String,
 }
 
 #[derive(Debug, Clone)]
@@ -195,8 +211,12 @@ pub enum JobBody<'a> {
 pub struct OpenSessionInput<'a> {
     pub capability: &'a str,
     pub offering: &'a str,
+    pub descriptor_schema: &'a str,
+    pub session_params: Value,
     pub estimated_runway_units: u64,
     pub max_total_units: u64,
+    #[serde(skip)]
+    pub request_id: Option<String>,
 }
 
 impl Client {
@@ -574,16 +594,30 @@ impl Client {
             "broker_job_id": broker_job_id,
             "work_unit": broker_work_unit,
         });
-        if let Some(encoded) = claim_headers
+        let encoded = claim_headers
             .get("livepeer-settlement")
             .and_then(|v| v.to_str().ok())
-        {
-            if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                if let Ok(settlement) = serde_json::from_slice::<Value>(&raw) {
-                    settle_body["settlement"] = settlement;
-                }
-            }
-        }
+            .ok_or_else(|| {
+                OpenClearinghouseError::broker_protocol(
+                    "broker_protocol_error",
+                    "terminal response missing Livepeer-Settlement",
+                )
+            })?;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| {
+                OpenClearinghouseError::broker_protocol(
+                    "broker_protocol_error",
+                    "terminal response has malformed Livepeer-Settlement",
+                )
+            })?;
+        let settlement = serde_json::from_slice::<Value>(&raw).map_err(|_| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "terminal response has malformed Livepeer-Settlement",
+            )
+        })?;
+        settle_body["settlement"] = settlement;
         let settled: JobSettleResponse = match self
             .request_with_retry(Method::POST, &job.settle_endpoint, Some(&settle_body), 3)
             .await
@@ -670,34 +704,46 @@ impl Client {
 
     /// Open a long-running session and return a [`SessionHandle`].
     ///
-    /// `max_total_units` is the same input across all case-(d) modes,
-    /// but its operational guarantee differs by mode class:
-    ///
-    /// **(d-bounded) modes** (`ws-realtime@v0`):
-    /// The session spends AT MOST `max_total_units`. It may end
-    /// earlier; it ends no later than when this much is consumed.
-    /// It cannot be extended — refills are not supported in these
-    /// modes.
-    ///
-    /// **(d-extensible) modes** (`session-control-plus-media@v0`,
-    /// `rtmp-ingress-hls-egress@v0`, `live-session-remote-runner@v0`,
-    /// `live-session-gateway-ingest@v0`):
-    /// The session spends AT MOST `max_total_units`. Refills happen
-    /// automatically within this ceiling; the session drains if a
-    /// higher-tier cap (spend-period, operator-pool) is reached
-    /// before `max_total_units` is exhausted.
+    /// `max_total_units` is a hard spend ceiling. Whether the session can
+    /// extend within that ceiling comes from the offering's
+    /// `session.refill` axis: `bounded` drains without refilling, while
+    /// `extensible` uses the broker's authoritative HTTP top-up contract.
     ///
     /// `estimated_runway_units` is the initial chunk LOC mints
     /// toward; [`SessionRunner`] tops up automatically as the broker
-    /// signals balance-low.
+    /// reports a normative low balance.
     pub async fn open_session(
         &self,
         in_: OpenSessionInput<'_>,
     ) -> Result<SessionHandle, OpenClearinghouseError> {
         self.emit_sdk_init_once().await;
-        let handle: SessionHandle = self
-            .request(Method::POST, "/v1/sessions", Some(&in_))
+        let request_id = in_
+            .request_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut handle: SessionHandle = self
+            .request_with_headers(
+                Method::POST,
+                "/v1/sessions",
+                Some(&in_),
+                &[("Idempotency-Key", request_id.as_str())],
+            )
             .await?;
+        if handle.protocol != "paid-session/v1" {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "protocol_unsupported",
+                format!("unsupported session protocol {}", handle.protocol),
+            ));
+        }
+        if handle.session.descriptor_schema != in_.descriptor_schema {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "descriptor_schema_mismatch",
+                "session descriptor schema mismatch",
+            ));
+        }
+        handle.capability = in_.capability.to_string();
+        handle.offering = in_.offering.to_string();
+        handle.session_params = in_.session_params.clone();
         self.telemetry
             .emit(
                 "session.opened",
@@ -706,7 +752,9 @@ impl Client {
                     payload: Some(serde_json::json!({
                         "capability": in_.capability,
                         "offering": in_.offering,
-                        "mode": handle.mode,
+                        "protocol": handle.protocol,
+                        "descriptor_schema": handle.session.descriptor_schema,
+                        "refill": handle.session.refill,
                         "max_total_units": in_.max_total_units,
                         "initial_runway_units": in_.estimated_runway_units,
                     })),
@@ -721,6 +769,9 @@ impl Client {
         &self,
         session_id: &str,
         observed_consumed_units: Option<u64>,
+        request_id: Option<&str>,
+        rebind_from: Option<&str>,
+        replaces_request_id: Option<&str>,
     ) -> Result<Value, OpenClearinghouseError> {
         self.telemetry
             .emit(
@@ -732,14 +783,22 @@ impl Client {
             )
             .await;
         let started = std::time::Instant::now();
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "observed_consumed_units": observed_consumed_units,
         });
+        if let Some(rebind_from) = rebind_from {
+            body["rebind_from"] = Value::String(rebind_from.to_string());
+            body["replaces_request_id"] =
+                replaces_request_id.map_or(Value::Null, |value| Value::String(value.to_string()));
+        }
+        let idempotency_key =
+            request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToString::to_string);
         let result: Value = match self
-            .request(
+            .request_with_headers(
                 Method::POST,
                 &format!("/v1/sessions/{session_id}/refill"),
                 Some(&body),
+                &[("Idempotency-Key", idempotency_key.as_str())],
             )
             .await
         {
@@ -807,15 +866,13 @@ impl Client {
         session_id: &str,
         actual_units: u64,
         outcome: Option<&str>,
-        settlement: Option<Value>,
+        settlement: Value,
     ) -> Result<Value, OpenClearinghouseError> {
         let mut body = serde_json::json!({ "actual_units": actual_units });
         if let Some(o) = outcome {
             body["outcome"] = Value::String(o.to_string());
         }
-        if let Some(s) = settlement {
-            body["settlement"] = s;
-        }
+        body["settlement"] = settlement;
         let result: Value = match self
             .request(
                 Method::POST,

@@ -1,14 +1,18 @@
 export { OpenClearinghouseClient, SDK_IDENTITY } from "./client.js";
-export type { ClientOptions, CapStatus, JobResult, RouteView, SessionHandle } from "./client.js";
-export {
-  BOUNDED_MODES,
-  HTTP_TOPUP_MODES,
-  SessionRunner,
-  WS_TOPUP_MODES,
-} from "./session_runner.js";
 export type {
+  ClientOptions,
+  CapStatus,
+  JobResult,
+  RouteView,
+  SessionAxes,
+  SessionHandle,
+} from "./client.js";
+export { SessionRunner } from "./session_runner.js";
+export type {
+  BrokerSession,
   RefillCallback,
   RefillEvent,
+  SessionBalance,
   SessionRunnerOptions,
   WinddownCallback,
   WinddownEvent,

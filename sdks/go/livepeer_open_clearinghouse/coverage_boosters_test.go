@@ -97,6 +97,7 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 		w.Header().Set("Livepeer-Work-Units", "42")
 		w.Header().Set("Livepeer-Work-Unit", "token")
 		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{"reply":"ok"}`))
 	}))
 	defer broker.Close()
@@ -157,6 +158,7 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 		w.Header().Set("Livepeer-Work-Units", "5")
 		w.Header().Set("Livepeer-Work-Unit", "token")
 		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer broker.Close()
@@ -216,38 +218,6 @@ func TestParseErrorHandlesDetailString(t *testing.T) {
 	if locErr.Code != "not_found" {
 		t.Fatalf("code: %q", locErr.Code)
 	}
-}
-
-func TestSessionRunnerOpenLiveSessionHttpTopup(t *testing.T) {
-	// Drive openLiveSession by using a live-session-* mode. The mock
-	// broker returns {control: {topup_url: ...}} per the LOC
-	// SessionHandle contract.
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"control": map[string]any{"topup_url": "http://broker.test/topup"},
-		})
-	}))
-	defer broker.Close()
-	// LOC side — no telemetry/refill needed; just need a Client.
-	loca := httptest.NewServer(http.NewServeMux())
-	defer loca.Close()
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: "pymth_live_t"})
-	handle := &loc.SessionHandle{
-		SessionID:       "44444444-4444-4444-4444-444444444444",
-		BrokerURL:       broker.URL,
-		Mode:            "live-session-remote-runner@v0",
-		PaymentEnvelope: "BASE64",
-	}
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: handle,
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	// No assertion beyond "didn't fail" — purpose is coverage of
-	// the openLiveSession + HTTP-topup path.
 }
 
 // errorAs is a tiny helper because errors.As isn't imported widely

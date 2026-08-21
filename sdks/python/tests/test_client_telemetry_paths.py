@@ -92,7 +92,9 @@ async def test_close_session_emits_session_closed() -> None:
         )
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
         client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
-        await client.close_session(sid, actual_units=10)
+        await client.close_session(
+            sid, actual_units=10, settlement={"payload": {}, "signature": {}}
+        )
         await client.aclose()
     assert "session.closed" in _captured_event_types(captured)
 
@@ -184,7 +186,9 @@ async def test_close_session_failure_emits_session_error() -> None:
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
         client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
-            await client.close_session(sid, actual_units=10)
+            await client.close_session(
+                sid, actual_units=10, settlement={"payload": {}, "signature": {}}
+            )
         await client.aclose()
     assert "session.error" in _captured_event_types(captured)
 
@@ -201,7 +205,14 @@ async def test_open_session_emits_session_opened() -> None:
         "session_id": str(sid),
         "work_id": "wid",
         "broker_url": "http://broker.test",
-        "mode": "session-control-plus-media@v0",
+        "request_id": "open-request",
+        "protocol": "paid-session/v1",
+        "session": {
+            "descriptor_schema": "livepeer.session.test/v1",
+            "attachment": "external",
+            "metering": "broker-observed",
+            "refill": "extensible",
+        },
         "payment_envelope": "BASE64",
         "expected_value_wei": 1000,
         "funded_value_wei": 2000,
@@ -216,6 +227,7 @@ async def test_open_session_emits_session_opened() -> None:
         await client.open_session(
             capability="x",
             offering="y",
+            descriptor_schema="livepeer.session.test/v1",
             estimated_runway_units=10,
             max_total_units=100,
         )

@@ -129,6 +129,36 @@ func (e SessionAxesRefill) Valid() bool {
 	}
 }
 
+// Defines values for SettlementSignatureAlgorithm.
+const (
+	Secp256k1 SettlementSignatureAlgorithm = "secp256k1"
+)
+
+// Valid indicates whether the value is a known member of the SettlementSignatureAlgorithm enum.
+func (e SettlementSignatureAlgorithm) Valid() bool {
+	switch e {
+	case Secp256k1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettlementSignatureCanonicalization.
+const (
+	Jcs SettlementSignatureCanonicalization = "jcs"
+)
+
+// Valid indicates whether the value is a known member of the SettlementSignatureCanonicalization enum.
+func (e SettlementSignatureCanonicalization) Valid() bool {
+	switch e {
+	case Jcs:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryEventsEndpointV1TelemetryEventsGetParamsFormat.
 const (
 	Json   QueryEventsEndpointV1TelemetryEventsGetParamsFormat = "json"
@@ -275,20 +305,13 @@ type CapabilityView struct {
 
 // CloseSessionRequest Inbound: “POST /v1/sessions/{id}/close“.
 //
-// SDK reports the final actual_units consumed (read from the
-// broker's “Livepeer-Work-Units“ trailer or the equivalent
-// in-band signal) and optionally the parsed “SettlementRecord“
-// from the broker if one was delivered.
-//
-// Per the trust model in the design doc, the SDK report is
-// advisory; the payer-daemon's “GetSessionDebits“ is the
-// authoritative source. v1 trusts the SDK report on the synchronous
-// close path; the reconciliation janitor (PR-8) does the daemon
-// cross-check and corrects any divergence.
+// SDK forwards the required broker-signed terminal settlement. The
+// reported units and optional outcome are consistency assertions;
+// signed settlement fields are authoritative for accounting.
 type CloseSessionRequest struct {
-	ActualUnits int                     `json:"actual_units"`
-	Outcome     *string                 `json:"outcome,omitempty"`
-	Settlement  *map[string]interface{} `json:"settlement,omitempty"`
+	ActualUnits int                       `json:"actual_units"`
+	Outcome     *string                   `json:"outcome,omitempty"`
+	Settlement  SessionSettlementEnvelope `json:"settlement"`
 }
 
 // CloseSessionResponse Outbound: “POST /v1/sessions/{id}/close“.
@@ -352,8 +375,8 @@ type CreateJobRequestTransport string
 // Carries the broker target + minted envelope so the SDK can issue
 // its one-shot call to the broker directly (handoff mode). The
 // “settle_endpoint“ is the LOC URL the SDK posts to after reading
-// the broker's response (“Livepeer-Work-Units“ header for
-// http-reqresp / http-multipart, HTTP trailer for http-stream).
+// the broker's response (terminal headers for unary/multipart, or a
+// terminal settlement lookup when stream trailers are inaccessible).
 type CreateJobResponse struct {
 	BrokerUrl        string                     `json:"broker_url"`
 	ExpectedValueWei int                        `json:"expected_value_wei"`
@@ -398,10 +421,12 @@ type CreateSdkApprovalRequest struct {
 //
 // “max_total_units“ MUST be >= “estimated_runway_units“ and > 0.
 type CreateSessionRequest struct {
-	Capability           string `json:"capability"`
-	EstimatedRunwayUnits int    `json:"estimated_runway_units"`
-	MaxTotalUnits        int    `json:"max_total_units"`
-	Offering             string `json:"offering"`
+	Capability           string                  `json:"capability"`
+	DescriptorSchema     string                  `json:"descriptor_schema"`
+	EstimatedRunwayUnits int                     `json:"estimated_runway_units"`
+	MaxTotalUnits        int                     `json:"max_total_units"`
+	Offering             string                  `json:"offering"`
+	SessionParams        *map[string]interface{} `json:"session_params,omitempty"`
 }
 
 // CreateSessionResponse Outbound: “POST /v1/sessions“.
@@ -409,8 +434,8 @@ type CreateSessionRequest struct {
 // Carries everything the SDK needs to open the broker-side session
 // and bookkeep the LOC-side lifecycle. The “payment_envelope“
 // is base64-encoded wire-format Payment bytes — the SDK attaches
-// it as the “Livepeer-Payment“ HTTP header (or upgrade header,
-// for WS modes) when connecting to “broker_url“.
+// it as the “Livepeer-Payment“ HTTP header when opening the broker's
+// paid-session/v1 control resource.
 //
 // Per exec-plan 002 handoff design, LOC never sits in the data
 // path: “broker_url“ is the orchestrator's HTTP/WS endpoint the
@@ -427,6 +452,7 @@ type CreateSessionResponse struct {
 	Protocol         string             `json:"protocol"`
 	RefillEndpoint   string             `json:"refill_endpoint"`
 	RequestId        string             `json:"request_id"`
+	Session          SessionAxesView    `json:"session"`
 	SessionId        openapi_types.UUID `json:"session_id"`
 	WorkId           string             `json:"work_id"`
 }
@@ -675,11 +701,12 @@ type PortalNotificationView struct {
 // Body is mostly empty in v1 — the SDK signals "broker emitted
 // Livepeer-Balance-Low, please mint more." The optional
 // “observed_consumed_units“ is an advisory hint from the SDK's
-// view of the broker's debit ledger; LOC cross-checks via
-// “GetSessionDebits“ and uses the daemon's number as
-// authoritative (per the trust model).
+// view of broker progress. Signed broker settlements, supplied on
+// close/reconciliation, are authoritative for delivered work.
 type RefillSessionRequest struct {
-	ObservedConsumedUnits *int `json:"observed_consumed_units,omitempty"`
+	ObservedConsumedUnits *int    `json:"observed_consumed_units,omitempty"`
+	RebindFrom            *string `json:"rebind_from,omitempty"`
+	ReplacesRequestId     *string `json:"replaces_request_id,omitempty"`
 }
 
 // RefillSessionResponse Outbound: “POST /v1/sessions/{id}/refill“ success (200).
@@ -708,7 +735,9 @@ type RefillSessionResponse struct {
 	ExpectedValueWei int       `json:"expected_value_wei"`
 	FundedValueWei   int       `json:"funded_value_wei"`
 	PaymentEnvelope  string    `json:"payment_envelope"`
+	RebindFrom       *string   `json:"rebind_from,omitempty"`
 	RefillSeq        int       `json:"refill_seq"`
+	RequestId        string    `json:"request_id"`
 	WorkId           string    `json:"work_id"`
 }
 
@@ -815,6 +844,10 @@ type SessionAxesMetering string
 // SessionAxesRefill defines model for SessionAxes.Refill.
 type SessionAxesRefill string
 
+// SessionAxesView is the authoritative paid-session/v1 offering axes selected
+// for a session.
+type SessionAxesView = SessionAxes
+
 // SessionStatusResponse Outbound: “GET /v1/sessions/{id}“.
 //
 // Customer-facing read-only view of a session's current state +
@@ -869,16 +902,16 @@ type SessionWithSdkView struct {
 
 // SettleJobRequest Inbound: “POST /v1/jobs/{id}/settle“.
 //
-// SDK reports the final actual_units read from the broker's
-// “Livepeer-Work-Units“ header/trailer. Optional outcome +
-// settlement (the parsed “SettlementRecord“ if the broker emitted
-// one in the “Livepeer-Settlement“ header).
+// SDK reports the broker's terminal claim and the required signed
+// “SettlementRecord“ from “Livepeer-Settlement“. “outcome“ is
+// only an optional consistency assertion; signed settlement is
+// authoritative for accounting.
 type SettleJobRequest struct {
-	ActualUnits int                     `json:"actual_units"`
-	BrokerJobId string                  `json:"broker_job_id"`
-	Outcome     *string                 `json:"outcome,omitempty"`
-	Settlement  *map[string]interface{} `json:"settlement,omitempty"`
-	WorkUnit    string                  `json:"work_unit"`
+	ActualUnits int                `json:"actual_units"`
+	BrokerJobId string             `json:"broker_job_id"`
+	Outcome     *string            `json:"outcome,omitempty"`
+	Settlement  SettlementEnvelope `json:"settlement"`
+	WorkUnit    string             `json:"work_unit"`
 }
 
 // SettleJobResponse Outbound: “POST /v1/jobs/{id}/settle“.
@@ -916,6 +949,38 @@ type SettleJobResponse struct {
 	Outcome   string             `json:"outcome"`
 	RefundWei int                `json:"refund_wei"`
 	WorkId    string             `json:"work_id"`
+}
+
+// SettlementEnvelope defines model for SettlementEnvelope.
+type SettlementEnvelope struct {
+	Payload   map[string]interface{} `json:"payload"`
+	Signature SettlementSignature    `json:"signature"`
+}
+
+// SettlementSignature defines model for SettlementSignature.
+type SettlementSignature struct {
+	Algorithm        SettlementSignatureAlgorithm        `json:"algorithm"`
+	Canonicalization SettlementSignatureCanonicalization `json:"canonicalization"`
+	Value            string                              `json:"value"`
+}
+
+// SettlementSignatureAlgorithm defines model for SettlementSignature.Algorithm.
+type SettlementSignatureAlgorithm string
+
+// SettlementSignatureCanonicalization defines model for SettlementSignature.Canonicalization.
+type SettlementSignatureCanonicalization string
+
+// SessionSettlementEnvelope defines model for SessionSettlementEnvelope.
+type SessionSettlementEnvelope struct {
+	Payload   map[string]interface{}     `json:"payload"`
+	Signature SessionSettlementSignature `json:"signature"`
+}
+
+// SessionSettlementSignature defines model for SessionSettlementSignature.
+type SessionSettlementSignature struct {
+	Algorithm        string `json:"algorithm"`
+	Canonicalization string `json:"canonicalization"`
+	Value            string `json:"value"`
 }
 
 // SignupRequest Inbound: “POST /v1/accounts/signup“.

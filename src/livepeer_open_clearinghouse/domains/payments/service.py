@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,6 +86,38 @@ async def claim_create_request(
         idempotency_key=idempotency_key,
     )
     if row is not None:
+        if row.request_fingerprint != request_fingerprint:
+            return _claim_from_existing(row, request_fingerprint=request_fingerprint)
+        if row.status in {"in_flight", "expired"}:
+            reclaimed = await session.execute(
+                update(PaymentIdempotencyKey)
+                .where(
+                    PaymentIdempotencyKey.user_id == user_id,
+                    PaymentIdempotencyKey.operation == operation,
+                    PaymentIdempotencyKey.idempotency_key == idempotency_key,
+                    PaymentIdempotencyKey.status.in_(("in_flight", "expired")),
+                    PaymentIdempotencyKey.expires_at <= clock.now(),
+                )
+                .values(
+                    status="in_flight",
+                    expires_at=clock.now() + timedelta(seconds=inflight_timeout_seconds),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if int(reclaimed.rowcount or 0) == 1:  # type: ignore[attr-defined]
+                broker_request_id = row.broker_request_id
+                await session.commit()
+                return CreateRequestClaim(broker_request_id=broker_request_id)
+            await session.rollback()
+            winner = await _get_create_request(
+                session,
+                user_id=user_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+            )
+            if winner is None:  # pragma: no cover - defensive DB anomaly
+                raise RuntimeError("idempotency claim disappeared during recovery")
+            return _claim_from_existing(winner, request_fingerprint=request_fingerprint)
         return _claim_from_existing(row, request_fingerprint=request_fingerprint)
 
     row = PaymentIdempotencyKey(
@@ -151,11 +183,16 @@ async def fail_create_request(
     response_payload: dict[str, Any],
     clock: Clock,
     retention_seconds: int,
+    retain_tombstone: bool = False,
 ) -> None:
-    """Persist a deterministic failure after rolling back business writes."""
+    """Persist a failure after rolling back business writes.
+
+    Indeterminate payer outcomes retain a permanent tombstone so an old
+    customer key cannot later mint again under a fresh broker request ID.
+    """
 
     row = await _require_create_request(session, user_id, operation, idempotency_key)
-    row.status = "failed"
+    row.status = "outcome_unknown" if retain_tombstone else "failed"
     row.http_status = http_status
     row.response_payload = response_payload
     row.expires_at = clock.now() + timedelta(seconds=retention_seconds)
@@ -211,7 +248,7 @@ def _claim_from_existing(
         raise IdempotencyInProgress
     if row.status == "expired":
         raise IdempotencyOutcomeUnknown
-    if row.status not in {"completed", "failed"} or row.http_status is None:
+    if row.status not in {"completed", "failed", "outcome_unknown"} or row.http_status is None:
         raise IdempotencyOutcomeUnknown
     return CreateRequestClaim(
         broker_request_id=row.broker_request_id,
@@ -262,9 +299,10 @@ async def expire_stale_idempotency_keys(session: AsyncSession, *, clock: Clock) 
 
     Returns the number of rows mutated. Run periodically by APScheduler.
 
-    Terminal results are deleted after their replay-retention window. An
-    expired in-flight result is retained because its payer outcome is unknown;
-    silently reclaiming it could mint twice.
+    Ordinary terminal results are deleted after their replay-retention window.
+    Outcome-unknown tombstones are permanent. Stale in-flight claims are marked
+    expired so one subsequent caller can atomically reclaim the same payer mint
+    identity.
     """
     now: datetime = clock.now()
     rows = await session.scalars(

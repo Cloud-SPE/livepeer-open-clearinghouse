@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from livepeer_open_clearinghouse.domains.sessions.types import CapStatus
 
@@ -55,20 +55,35 @@ class CreateJobResponse(BaseModel):
     opened_at: datetime
 
 
+class SettlementSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["secp256k1"]
+    canonicalization: Literal["jcs"]
+    value: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class SettlementEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: dict[str, Any]
+    signature: SettlementSignature
+
+
 class SettleJobRequest(BaseModel):
     """Inbound: ``POST /v1/jobs/{id}/settle``.
 
-    SDK reports the final actual_units read from the broker's
-    ``Livepeer-Work-Units`` header/trailer. Optional outcome +
-    settlement (the parsed ``SettlementRecord`` if the broker emitted
-    one in the ``Livepeer-Settlement`` header).
+    SDK reports the broker's terminal claim and the required signed
+    ``SettlementRecord`` from ``Livepeer-Settlement``. ``outcome`` is
+    only an optional consistency assertion; signed settlement is
+    authoritative for accounting.
     """
 
     actual_units: int = Field(ge=0)
     broker_job_id: str = Field(min_length=1)
     work_unit: str = Field(min_length=1)
     outcome: str | None = None
-    settlement: dict[str, Any] | None = None
+    settlement: SettlementEnvelope
 
 
 class SettleJobResponse(BaseModel):

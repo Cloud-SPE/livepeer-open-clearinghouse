@@ -11,6 +11,8 @@ import {
 const BASE = "http://loc.test";
 const BROKER = "https://broker.example/livepeer";
 const KEY = "pymth_live_test";
+const SIGNED_SETTLEMENT = { payload: {}, signature: {} };
+const ENCODED_SETTLEMENT = btoa(JSON.stringify(SIGNED_SETTLEMENT));
 
 interface FetchCall {
   url: string;
@@ -69,6 +71,7 @@ function paidJobHeaders(units: number): Record<string, string> {
     "Livepeer-Work-Units": String(units),
     "Livepeer-Work-Unit": "token",
     "Livepeer-Job-Id": "broker-job-1",
+    "Livepeer-Settlement": ENCODED_SETTLEMENT,
   };
 }
 
@@ -155,6 +158,7 @@ describe("OpenClearinghouseClient", () => {
       actual_units: 42,
       broker_job_id: "broker-job-1",
       work_unit: "token",
+      settlement: SIGNED_SETTLEMENT,
     });
   });
 
@@ -385,7 +389,14 @@ describe("OpenClearinghouseClient", () => {
             session_id: sid,
             work_id: "wid-sess",
             broker_url: BROKER,
-            mode: "session-control-plus-media@v0",
+            request_id: "req-session",
+            protocol: "paid-session/v1",
+            session: {
+              descriptor_schema: "livepeer.session.test/v1",
+              attachment: "direct",
+              metering: "broker",
+              refill: "extensible",
+            },
             payment_envelope: "BASE64SESS",
             expected_value_wei: 100_000,
             funded_value_wei: 200_000,
@@ -400,6 +411,7 @@ describe("OpenClearinghouseClient", () => {
     const handle = await client.openSession({
       capability: "livepeer:vtuber-session",
       offering: "vtuber-1080p30",
+      descriptorSchema: "livepeer.session.test/v1",
       estimatedRunwayUnits: 100,
       maxTotalUnits: 200,
     });
@@ -426,8 +438,16 @@ describe("OpenClearinghouseClient", () => {
       },
     });
     const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
-    await client.closeSession(sid, { actualUnits: 100, outcome: "EXACT" });
-    expect(captured).toEqual({ actual_units: 100, outcome: "EXACT" });
+    await client.closeSession(sid, {
+      actualUnits: 100,
+      outcome: "EXACT",
+      settlement: { payload: {}, signature: {} },
+    });
+    expect(captured).toEqual({
+      actual_units: 100,
+      outcome: "EXACT",
+      settlement: { payload: {}, signature: {} },
+    });
   });
 
   it("getSessionStatus round-trips", async () => {

@@ -25,10 +25,10 @@ import (
 
 // Defaults mirror exec-plan 002 §"Mechanism".
 const (
-	telemetryDefaultBatchSize         = 100
-	telemetryDefaultFlushInterval     = 5 * time.Second
-	telemetryDefaultBufferCap         = 10_000
-	telemetryDefaultRetries           = 3
+	telemetryDefaultBatchSize          = 100
+	telemetryDefaultFlushInterval      = 5 * time.Second
+	telemetryDefaultBufferCap          = 10_000
+	telemetryDefaultRetries            = 3
 	telemetryDefaultGzipThresholdBytes = 1024
 )
 
@@ -63,10 +63,10 @@ type TelemetryEmitter struct {
 	apiKey      string
 	sdkIdentity string
 
-	batchSize        int
-	flushInterval    time.Duration
-	bufferCap        int
-	maxRetries       int
+	batchSize          int
+	flushInterval      time.Duration
+	bufferCap          int
+	maxRetries         int
 	gzipThresholdBytes int
 
 	mu        sync.Mutex
@@ -250,9 +250,9 @@ func (e *TelemetryEmitter) flushOnce() {
 		return
 	}
 	headers := map[string]string{
-		"Content-Type":                       "application/json",
-		"X-API-Key":                          e.apiKey,
-		"Livepeer-Open-Clearinghouse-SDK":    e.sdkIdentity,
+		"Content-Type":                    "application/json",
+		"X-API-Key":                       e.apiKey,
+		"Livepeer-Open-Clearinghouse-SDK": e.sdkIdentity,
 	}
 	if len(body) > e.gzipThresholdBytes {
 		gzipped, gerr := gzipBytes(body)

@@ -46,14 +46,27 @@ export interface JobResult {
 
 export interface SessionHandle {
   sessionId: string;
+  requestId: string;
   workId: string;
   brokerUrl: string;
-  mode: string;
+  protocol: "paid-session/v1";
+  capability: string;
+  offering: string;
+  session: SessionAxes;
+  sessionParams: Record<string, unknown>;
   paymentEnvelope: string;
   expectedValueWei: bigint;
   fundedValueWei: bigint;
   refillEndpoint: string;
   closeEndpoint: string;
+}
+
+export interface SessionAxes {
+  descriptor_schema: string;
+  attachment: "external" | "inband-ws";
+  metering: "runner-reported" | "broker-observed";
+  refill: "extensible" | "bounded";
+  [key: string]: unknown;
 }
 
 // ---- SDK identity --------------------------------------------------------
@@ -382,13 +395,22 @@ export class OpenClearinghouseClient {
         work_unit: brokerWorkUnit,
       };
       const encodedSettlement = claimRes.headers.get("livepeer-settlement");
-      if (encodedSettlement) {
-        try {
-          const bytes = Uint8Array.from(atob(encodedSettlement), (char) => char.charCodeAt(0));
-          settlementPayload.settlement = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-        } catch {
-          // LOC will reconcile the absent envelope; malformed evidence is never trusted.
-        }
+      if (!encodedSettlement) {
+        throw new BrokerProtocolError("terminal broker response missing Livepeer-Settlement", {
+          status: claimRes.status,
+          details: { missing_headers: ["Livepeer-Settlement"] },
+        });
+      }
+      try {
+        const bytes = Uint8Array.from(atob(encodedSettlement), (char) => char.charCodeAt(0));
+        settlementPayload.settlement = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+      } catch {
+        throw new BrokerProtocolError(
+          "terminal broker response has malformed Livepeer-Settlement",
+          {
+            status: claimRes.status,
+          },
+        );
       }
 
       // 4. Settle. Retain these values outside the request block without
@@ -504,66 +526,82 @@ export class OpenClearinghouseClient {
   /**
    * Open a long-running session and return a `SessionHandle`.
    *
-   * `maxTotalUnits` is the same input across all case-(d) modes, but
-   * the operational guarantee differs by mode class:
-   *
-   * **(d-bounded) modes** (`ws-realtime@v0`):
-   *   The session spends AT MOST `maxTotalUnits`. It may end earlier;
-   *   it ends no later than when this much is consumed. It cannot be
-   *   extended — refills are not supported in these modes.
-   *
-   * **(d-extensible) modes** (`session-control-plus-media@v0`,
-   * `rtmp-ingress-hls-egress@v0`, `live-session-remote-runner@v0`,
-   * `live-session-gateway-ingest@v0`):
-   *   The session spends AT MOST `maxTotalUnits`. Refills happen
-   *   automatically within this ceiling; the session drains if a
-   *   higher-tier cap (spend-period, operator-pool) is reached
-   *   before `maxTotalUnits` is exhausted.
+   * `maxTotalUnits` is a hard spend ceiling. Whether the session can extend
+   * within that ceiling comes from the offering's `session.refill` axis:
+   * `bounded` drains without refilling, while `extensible` uses the broker's
+   * authoritative HTTP top-up contract.
    *
    * `estimatedRunwayUnits` is the initial chunk LOC mints toward;
-   * `SessionRunner` tops up automatically as the broker signals
-   * balance-low.
+   * `SessionRunner` tops up automatically as the broker reports a normative
+   * low balance.
    */
   async openSession(args: {
     capability: string;
     offering: string;
+    descriptorSchema: string;
+    sessionParams?: Record<string, unknown>;
     estimatedRunwayUnits: number;
     maxTotalUnits: number;
+    requestId?: string;
   }): Promise<SessionHandle> {
     this.emitSdkInitOnce();
+    const locRequestId = args.requestId ?? crypto.randomUUID();
+    const sessionParams = args.sessionParams ?? {};
     const data = await this.request<{
       session_id: string;
+      request_id: string;
       work_id: string;
       broker_url: string;
-      mode: string;
+      protocol: string;
+      session: SessionAxes;
       payment_envelope: string;
       expected_value_wei: number;
       funded_value_wei: number;
       refill_endpoint: string;
       close_endpoint: string;
       opened_at: string;
-    }>("POST", "/v1/sessions", {
-      capability: args.capability,
-      offering: args.offering,
-      estimated_runway_units: args.estimatedRunwayUnits,
-      max_total_units: args.maxTotalUnits,
-    });
+    }>(
+      "POST",
+      "/v1/sessions",
+      {
+        capability: args.capability,
+        offering: args.offering,
+        descriptor_schema: args.descriptorSchema,
+        session_params: sessionParams,
+        estimated_runway_units: args.estimatedRunwayUnits,
+        max_total_units: args.maxTotalUnits,
+      },
+      { "Idempotency-Key": locRequestId },
+    );
+    if (data.protocol !== "paid-session/v1") {
+      throw new BrokerProtocolError(`LOC returned unsupported protocol ${data.protocol}`);
+    }
+    if (data.session.descriptor_schema !== args.descriptorSchema) {
+      throw new BrokerProtocolError("LOC returned an unexpected descriptor schema");
+    }
     this._telemetry.emit({
       eventType: "session.opened",
       correlationId: data.session_id,
       payload: {
         capability: args.capability,
         offering: args.offering,
-        mode: data.mode,
+        protocol: data.protocol,
+        descriptor_schema: data.session.descriptor_schema,
+        refill: data.session.refill,
         max_total_units: args.maxTotalUnits,
         initial_runway_units: args.estimatedRunwayUnits,
       },
     });
     return {
       sessionId: data.session_id,
+      requestId: data.request_id,
       workId: data.work_id,
       brokerUrl: data.broker_url,
-      mode: data.mode,
+      protocol: "paid-session/v1",
+      capability: args.capability,
+      offering: args.offering,
+      session: data.session,
+      sessionParams,
       paymentEnvelope: data.payment_envelope,
       expectedValueWei: BigInt(data.expected_value_wei),
       fundedValueWei: BigInt(data.funded_value_wei),
@@ -574,19 +612,33 @@ export class OpenClearinghouseClient {
 
   async refillSession(
     sessionId: string,
-    opts: { observedConsumedUnits?: number } = {},
+    opts: {
+      observedConsumedUnits?: number;
+      requestId?: string;
+      rebindFrom?: string;
+      replacesRequestId?: string;
+    } = {},
   ): Promise<unknown> {
     this._telemetry.emit({
       eventType: "session.refill_requested",
       correlationId: sessionId,
     });
     const refillStartedNs = process.hrtime.bigint();
+    const locRequestId = opts.requestId ?? crypto.randomUUID();
+    const body: Record<string, unknown> = {
+      observed_consumed_units: opts.observedConsumedUnits ?? null,
+    };
+    if (opts.rebindFrom !== undefined) {
+      body.rebind_from = opts.rebindFrom;
+      body.replaces_request_id = opts.replacesRequestId;
+    }
     let result: Record<string, unknown>;
     try {
       result = (await this.request<Record<string, unknown>>(
         "POST",
         `/v1/sessions/${sessionId}/refill`,
-        { observed_consumed_units: opts.observedConsumedUnits ?? null },
+        body,
+        { "Idempotency-Key": locRequestId },
       )) as Record<string, unknown>;
     } catch (exc) {
       const status = (exc as { status?: number })?.status;
@@ -628,11 +680,11 @@ export class OpenClearinghouseClient {
 
   async closeSession(
     sessionId: string,
-    args: { actualUnits: number; outcome?: string; settlement?: unknown },
+    args: { actualUnits: number; outcome?: string; settlement: unknown },
   ): Promise<unknown> {
     const body: Record<string, unknown> = { actual_units: args.actualUnits };
     if (args.outcome !== undefined) body.outcome = args.outcome;
-    if (args.settlement !== undefined) body.settlement = args.settlement;
+    body.settlement = args.settlement;
     let result: Record<string, unknown>;
     try {
       result = (await this.request<Record<string, unknown>>(

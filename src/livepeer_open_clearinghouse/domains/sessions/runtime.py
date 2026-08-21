@@ -41,7 +41,11 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     RefillSessionResponse,
     SessionStatusResponse,
 )
-from livepeer_open_clearinghouse.errors import DaemonUnavailable, OpenClearinghouseError
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    IdempotencyOutcomeUnknown,
+    OpenClearinghouseError,
+)
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -73,6 +77,8 @@ async def open_session_endpoint(
     enforce a min-version policy.
     """
     api_key, user = pair
+    api_key_id = api_key.id
+    user_id = user.id
     operation = "sessions.create"
     fingerprint = payments_service.create_request_fingerprint(
         operation=operation,
@@ -80,8 +86,8 @@ async def open_session_endpoint(
     )
     claim = await payments_service.claim_create_request(
         db,
-        user_id=user.id,
-        api_key_id=api_key.id,
+        user_id=user_id,
+        api_key_id=api_key_id,
         operation=operation,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
@@ -94,10 +100,11 @@ async def open_session_endpoint(
     try:
         response = await service.open_session(
             db,
-            user_id=user.id,
-            api_key_id=api_key.id,
+            user_id=user_id,
+            api_key_id=api_key_id,
             capability=body.capability,
             offering=body.offering,
+            descriptor_schema=body.descriptor_schema,
             estimated_runway_units=body.estimated_runway_units,
             max_total_units=body.max_total_units,
             sdk_identity=sdk_identity,
@@ -112,19 +119,20 @@ async def open_session_endpoint(
         if not isinstance(exc, DaemonUnavailable):
             await payments_service.fail_create_request(
                 db,
-                user_id=user.id,
+                user_id=user_id,
                 operation=operation,
                 idempotency_key=idempotency_key,
                 http_status=exc.status_code,
                 response_payload=_error_payload(exc),
                 clock=clock,
                 retention_seconds=settings.idempotency_retention_seconds,
+                retain_tombstone=isinstance(exc, IdempotencyOutcomeUnknown),
             )
         raise
 
     await payments_service.complete_create_request(
         db,
-        user_id=user.id,
+        user_id=user_id,
         operation=operation,
         idempotency_key=idempotency_key,
         http_status=status.HTTP_201_CREATED,
@@ -174,6 +182,10 @@ async def refill_session_endpoint(
     daemon: PaymentDaemonDep,
     clock: ClockDep,
     settings: SettingsDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=255),
+    ],
 ) -> RefillSessionResponse:
     """Mint a top-up envelope bound to an existing session.
 
@@ -184,15 +196,83 @@ async def refill_session_endpoint(
     ``draining`` or ``closed`` state.
     """
     api_key, user = pair
-    return await service.refill_session(
+    api_key_id = api_key.id
+    user_id = user.id
+    operation = "sessions.refill"
+    fingerprint = payments_service.create_request_fingerprint(
+        operation=operation,
+        payload={"session_id": str(session_id), **body.model_dump(mode="json")},
+    )
+    claim = await payments_service.claim_create_request(
         db,
-        session_id=session_id,
-        user_id=user.id,
-        api_key_id=api_key.id,
-        observed_consumed_units=body.observed_consumed_units,
-        daemon=daemon,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
         clock=clock,
-        settings=settings,
+        inflight_timeout_seconds=settings.idempotency_inflight_timeout_seconds,
+    )
+    if claim.is_replay:
+        return _replay_refill_session(claim)
+
+    try:
+        response = await service.refill_session(
+            db,
+            session_id=session_id,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            observed_consumed_units=body.observed_consumed_units,
+            rebind_from=body.rebind_from,
+            replaces_request_id=body.replaces_request_id,
+            daemon=daemon,
+            clock=clock,
+            settings=settings,
+            request_id=claim.broker_request_id,
+        )
+    except OpenClearinghouseError as exc:
+        await db.rollback()
+        if not isinstance(exc, DaemonUnavailable):
+            await payments_service.fail_create_request(
+                db,
+                user_id=user_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                http_status=exc.status_code,
+                response_payload=_error_payload(exc),
+                clock=clock,
+                retention_seconds=settings.idempotency_retention_seconds,
+                retain_tombstone=isinstance(exc, IdempotencyOutcomeUnknown),
+            )
+        raise
+
+    await payments_service.complete_create_request(
+        db,
+        user_id=user_id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        http_status=status.HTTP_200_OK,
+        response_payload=response.model_dump(mode="json"),
+        clock=clock,
+        retention_seconds=settings.idempotency_retention_seconds,
+    )
+    return response
+
+
+def _replay_refill_session(
+    claim: payments_service.CreateRequestClaim,
+) -> RefillSessionResponse:
+    payload = claim.replay_payload or {}
+    if claim.replay_status == status.HTTP_200_OK:
+        return RefillSessionResponse.model_validate(payload)
+    error = payload.get("error", {})
+    if not isinstance(error, dict):
+        raise RuntimeError("stored idempotency error payload is malformed")
+    raise OpenClearinghouseError(
+        status_code=claim.replay_status or 500,
+        code=str(error.get("code", "IDEMPOTENCY_REPLAY_ERROR")),
+        message=str(error.get("message", "Stored request failed")),
+        details=error.get("details") if isinstance(error.get("details"), dict) else {},
     )
 
 
@@ -233,13 +313,10 @@ async def close_session_endpoint(
     pair: CurrentApiKeyDep,
     db: SessionDep,
     clock: ClockDep,
-    daemon: PaymentDaemonDep,
 ) -> CloseSessionResponse:
     """Explicitly close a session and finalize accounting.
 
-    Trusts the SDK-reported ``actual_units`` on this synchronous
-    path. The reconciliation janitor (PR-8) does the daemon
-    cross-check via ``GetSessionDebits`` and corrects divergence.
+    Verifies the broker-signed settlement before finalizing accounting.
 
     Returns 409 ``session_not_open`` for an already-closed session
     (idempotency note: a second close is rejected, not a no-op —
@@ -252,7 +329,6 @@ async def close_session_endpoint(
         user_id=user.id,
         actual_units=body.actual_units,
         outcome=body.outcome,
-        settlement=body.settlement,
+        settlement=body.settlement.model_dump(mode="json"),
         clock=clock,
-        daemon=daemon,
     )
