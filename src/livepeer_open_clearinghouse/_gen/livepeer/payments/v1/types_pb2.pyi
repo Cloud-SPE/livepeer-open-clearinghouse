@@ -166,12 +166,14 @@ class SettlementRecord(_message.Message):
         OVERFUNDED: _ClassVar[SettlementRecord.SettlementOutcome]
         STOPPED_AT_BUDGET: _ClassVar[SettlementRecord.SettlementOutcome]
         TOPPED_UP: _ClassVar[SettlementRecord.SettlementOutcome]
+        DEBIT_FAILED: _ClassVar[SettlementRecord.SettlementOutcome]
     SETTLEMENT_OUTCOME_UNSPECIFIED: SettlementRecord.SettlementOutcome
     EXACT: SettlementRecord.SettlementOutcome
     UNDERFUNDED: SettlementRecord.SettlementOutcome
     OVERFUNDED: SettlementRecord.SettlementOutcome
     STOPPED_AT_BUDGET: SettlementRecord.SettlementOutcome
     TOPPED_UP: SettlementRecord.SettlementOutcome
+    DEBIT_FAILED: SettlementRecord.SettlementOutcome
     class BreakdownEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]

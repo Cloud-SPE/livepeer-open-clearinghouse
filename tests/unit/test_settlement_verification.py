@@ -83,6 +83,22 @@ def test_job_settlement_rejects_impossible_payment_curve() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("debited_units", [0, 20])
+def test_job_settlement_rejects_failed_debit_explicitly(debited_units: int) -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            _envelope(
+                actual_units=31,
+                debited_units=debited_units,
+                outcome="DEBIT_FAILED",
+            ),
+            settlement_keys=[delegated_key()],
+            expected=_expected(),
+        )
+    assert exc_info.value.code == "debit_failed"
+
+
+@pytest.mark.unit
 def test_tampered_payload_fails_signature() -> None:
     envelope = _envelope()
     envelope["payload"]["actual_units"] = "32"  # type: ignore[index]
@@ -216,6 +232,24 @@ def test_valid_session_settlement_binds_gateway_identity_and_signed_charge() -> 
     assert verified.debited_units == 31
     assert verified.billed_value_wei == 4
     assert verified.settlement_seq == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("debited_units", [0, 20])
+def test_session_settlement_rejects_failed_debit_explicitly(debited_units: int) -> None:
+    envelope = signed_session_settlement(
+        gateway_session_id="11111111-1111-1111-1111-111111111111",
+        actual_units=31,
+        debited_units=debited_units,
+        outcome="DEBIT_FAILED",
+    )
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_session_settlement(
+            envelope,
+            settlement_keys=[delegated_key()],
+            expected=_session_expected(),
+        )
+    assert exc_info.value.code == "debit_failed"
 
 
 @pytest.mark.unit

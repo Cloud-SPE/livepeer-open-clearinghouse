@@ -231,6 +231,18 @@ message SettlementRecord {
     OVERFUNDED = 3;
     STOPPED_AT_BUDGET = 4;
     TOPPED_UP = 5;
+
+    // The exchange was delivered but its debit did NOT complete, so no
+    // value moved for the units in actual_units. debited_units is what
+    // the ledger actually took, which is less than actual_units and is
+    // usually zero.
+    //
+    // A consumer MUST NOT treat this as settled. It exists because the
+    // alternative — emitting a record indistinguishable from a settled
+    // one — makes a broker whose ledger call failed look identical to a
+    // broker that was paid, and the failure is invisible precisely when
+    // it matters.
+    DEBIT_FAILED = 6;
   }
   SettlementOutcome outcome = 8;
 

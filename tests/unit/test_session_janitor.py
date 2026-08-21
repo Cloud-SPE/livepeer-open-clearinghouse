@@ -151,11 +151,15 @@ def _signed(
     *,
     state: str = "closed",
     gateway_session_id: str | None = None,
+    outcome: str = "OVERFUNDED",
+    actual_units: int | None = None,
+    debited_units: int = 350,
 ) -> dict[str, Any]:
     return signed_session_settlement(
         gateway_session_id=gateway_session_id or str(response.session_id),
         work_id=response.work_id,
-        debited_units=350,
+        actual_units=actual_units,
+        debited_units=debited_units,
         billed_value_wei=350_000,
         funded_value_wei=1_000_000,
         generation_funded_value_wei=1_000_000,
@@ -163,6 +167,7 @@ def _signed(
         per_units=1,
         work_unit="participant_minute",
         state=state,
+        outcome=outcome,
     )
 
 
@@ -207,6 +212,49 @@ async def test_janitor_verifies_active_record_but_leaves_session_open(
     assert row is not None
     assert row.state == sessions_service.SESSION_STATE_OPEN
     assert row.last_polled_at == clock.now().replace(tzinfo=None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_and_janitor_keep_session_encumbered_when_debit_failed(
+    db_session: AsyncSession,
+) -> None:
+    clock = _clock()
+    response = await _open(db_session, clock)
+    row = await db_session.get(PaymentSession, response.session_id)
+    assert row is not None
+    balance_before = (await db_session.get(CreditBalance, row.user_id)).amount_wei  # type: ignore[union-attr]
+    failed = _signed(
+        response,
+        outcome="DEBIT_FAILED",
+        actual_units=350,
+        debited_units=0,
+    )
+
+    with pytest.raises(sessions_service.SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=response.session_id,
+            user_id=row.user_id,
+            actual_units=350,
+            outcome=None,
+            settlement=failed,
+            clock=clock,
+        )
+    assert exc_info.value.details == {"reason": "debit_failed"}
+
+    assert (
+        await sessions_service.reconcile_open_sessions(
+            db_session,
+            settlement_client=_SettlementClient({response.session_id: failed}),
+            clock=clock,
+        )
+        == 0
+    )
+    await db_session.refresh(row)
+    assert row.state == sessions_service.SESSION_STATE_OPEN
+    balance_after = (await db_session.get(CreditBalance, row.user_id)).amount_wei  # type: ignore[union-attr]
+    assert balance_after == balance_before
 
 
 @pytest.mark.unit

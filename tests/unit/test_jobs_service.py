@@ -148,6 +148,7 @@ def _settlement(
     *,
     broker_job_id: str,
     actual_units: int,
+    debited_units: int | None = None,
     amount_wei: int = 100,
     per_units: int = 1,
     work_unit: str = "token",
@@ -159,6 +160,7 @@ def _settlement(
             job_id=broker_job_id,
             work_id=response.work_id,
             actual_units=actual_units,
+            debited_units=debited_units,
             amount_wei=amount_wei,
             per_units=per_units,
             work_unit=work_unit,
@@ -444,6 +446,56 @@ async def test_open_job_rejects_insufficient_balance(db_session: AsyncSession) -
 
 
 # ---- settle_job ----
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_keeps_encumbrance_when_broker_debit_failed(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=100,
+        max_total_units=100,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    balance_before = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed) as exc_info:
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=100,
+            broker_job_id="broker-job-debit-failed",
+            work_unit="token",
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-debit-failed",
+                actual_units=100,
+                debited_units=0,
+                outcome="DEBIT_FAILED",
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert exc_info.value.details == {"reason": "debit_failed"}
+    row = await db_session.get(PaymentSession, open_resp.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+    assert balance_after == balance_before
 
 
 @pytest.mark.unit

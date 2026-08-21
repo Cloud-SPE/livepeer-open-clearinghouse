@@ -91,6 +91,7 @@ def verify_job_settlement(
     """Verify signature, delegation, identity, quote, units, and arithmetic."""
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
+    _reject_failed_debit(record)
     if record.request_id != expected.request_id:
         raise SettlementVerificationError(
             "request_id_mismatch", "signed gateway request id does not match"
@@ -151,6 +152,7 @@ def verify_session_settlement(
     """Verify a paid-session settlement before it changes LOC accounting."""
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
+    _reject_failed_debit(record)
     _verify_session_identity(record, expected)
     billed_value = _verify_session_accounting(record, expected)
 
@@ -168,6 +170,15 @@ def verify_session_settlement(
         issued_at=issued_at,
         signing_public_key=public_key,
     )
+
+
+def _reject_failed_debit(record: Any) -> None:
+    """Refuse evidence that explicitly says the ledger did not settle."""
+
+    if record.outcome == record.DEBIT_FAILED:
+        raise SettlementVerificationError(
+            "debit_failed", "broker settlement reports that the ledger debit failed"
+        )
 
 
 def _verify_session_identity(record: Any, expected: SessionSettlementExpectation) -> None:

@@ -96,6 +96,7 @@ def signed_session_settlement(
     predecessor_work_id: str = "",
     rotation_generation: int = 0,
     debited_units: int = 31,
+    actual_units: int | None = None,
     claimed_units: int | None = None,
     generation_debited_units: int | None = None,
     billed_value_wei: int = 4,
@@ -113,6 +114,7 @@ def signed_session_settlement(
 ) -> dict[str, Any]:
     """Build one signed paid-session/v1 settlement envelope."""
 
+    actual = debited_units if actual_units is None else actual_units
     claimed = debited_units if claimed_units is None else claimed_units
     generation_units = (
         debited_units if generation_debited_units is None else generation_debited_units
@@ -122,8 +124,8 @@ def signed_session_settlement(
     )
     payload: dict[str, Any] = {
         "work_unit_name": work_unit,
-        "actual_units": str(debited_units),
-        "billed_units": str(debited_units),
+        "actual_units": str(actual),
+        "billed_units": str(actual),
         "funded_value_wei": {"value": base64.b64encode(_unsigned_bytes(funded_value_wei)).decode()},
         "billed_value_wei": {"value": base64.b64encode(_unsigned_bytes(billed_value_wei)).decode()},
         "outcome": outcome,
