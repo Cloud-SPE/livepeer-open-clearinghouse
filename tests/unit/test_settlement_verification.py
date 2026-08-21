@@ -21,6 +21,7 @@ from tests.fixtures.signed_settlement import (
 
 def _expected(**overrides: object) -> JobSettlementExpectation:
     values = {
+        "request_id": "request-1",
         "job_id": "job-1",
         "work_id": "work-1",
         "work_unit": "token",
@@ -38,6 +39,7 @@ def _expected(**overrides: object) -> JobSettlementExpectation:
 
 def _envelope(**overrides: object) -> dict[str, object]:
     values = {
+        "request_id": "request-1",
         "job_id": "job-1",
         "work_id": "work-1",
         "actual_units": 31,
@@ -93,6 +95,7 @@ def test_tampered_payload_fails_signature() -> None:
 @pytest.mark.parametrize(
     ("expected_override", "code"),
     [
+        ({"request_id": "other"}, "request_id_mismatch"),
         ({"job_id": "other"}, "job_id_mismatch"),
         ({"work_id": "other"}, "work_id_mismatch"),
         ({"work_unit": "frame"}, "work_unit_mismatch"),
@@ -170,6 +173,18 @@ def test_cross_job_replay_fails_even_when_every_other_field_matches() -> None:
             expected=_expected(job_id="job-2"),
         )
     assert exc_info.value.code == "job_id_mismatch"
+
+
+@pytest.mark.unit
+def test_cross_job_replay_fails_on_gateway_request_identity() -> None:
+    replay = copy.deepcopy(_envelope())
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            replay,
+            settlement_keys=[delegated_key()],
+            expected=_expected(request_id="request-2"),
+        )
+    assert exc_info.value.code == "request_id_mismatch"
 
 
 def _session_expected(**overrides: object) -> SessionSettlementExpectation:

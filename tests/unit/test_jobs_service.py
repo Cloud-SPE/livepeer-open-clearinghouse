@@ -155,6 +155,7 @@ def _settlement(
 ) -> SettlementEnvelope:
     return SettlementEnvelope.model_validate(
         signed_job_settlement(
+            request_id=response.request_id,
             job_id=broker_job_id,
             work_id=response.work_id,
             actual_units=actual_units,

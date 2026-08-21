@@ -404,6 +404,11 @@ async def settle_job(
     if work_unit != expected_work_unit:
         raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
     try:
+        request_id = job_row.broker_request_id
+        if not request_id:
+            raise SettlementVerificationError(
+                "missing_request_id", "job has no durable broker request id"
+            )
         settlement_keys = snapshot["settlement_keys"]
         if not isinstance(settlement_keys, list) or not settlement_keys:
             raise SettlementVerificationError(
@@ -413,6 +418,7 @@ async def settle_job(
             settlement.model_dump(mode="python"),
             settlement_keys=settlement_keys,
             expected=JobSettlementExpectation(
+                request_id=request_id,
                 job_id=broker_job_id,
                 work_id=job_row.work_id,
                 work_unit=expected_work_unit,

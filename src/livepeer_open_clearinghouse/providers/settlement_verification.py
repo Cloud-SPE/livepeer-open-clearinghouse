@@ -29,6 +29,7 @@ class SettlementVerificationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class JobSettlementExpectation:
+    request_id: str
     job_id: str
     work_id: str
     work_unit: str
@@ -90,6 +91,10 @@ def verify_job_settlement(
     """Verify signature, delegation, identity, quote, units, and arithmetic."""
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
+    if record.request_id != expected.request_id:
+        raise SettlementVerificationError(
+            "request_id_mismatch", "signed gateway request id does not match"
+        )
     if record.job_id != expected.job_id:
         raise SettlementVerificationError("job_id_mismatch", "signed job_id does not match")
     if record.work_id != expected.work_id:

@@ -215,6 +215,7 @@ async def test_open_job_then_call_mock_broker_then_settle(
         outcome=None,
         settlement=SettlementEnvelope.model_validate(
             signed_job_settlement(
+                request_id=job.request_id,
                 job_id="broker-job-handoff",
                 work_id=job.work_id,
                 actual_units=120,
@@ -320,6 +321,7 @@ async def test_mock_broker_returns_configurable_actual_units(
         outcome=None,
         settlement=SettlementEnvelope.model_validate(
             signed_job_settlement(
+                request_id=job.request_id,
                 job_id="broker-job-error",
                 work_id=job.work_id,
                 actual_units=100,

@@ -157,7 +157,7 @@ class FundingIntent(_message.Message):
     def __init__(self, estimated_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., top_up_allowed: bool = ...) -> None: ...
 
 class SettlementRecord(_message.Message):
-    __slots__ = ("accepted_quote_ref", "work_unit_name", "estimated_units", "actual_units", "billed_units", "funded_value_wei", "billed_value_wei", "outcome", "breakdown", "session_id", "work_id", "predecessor_work_id", "rotation_generation", "claimed_units", "debited_units", "generation_debited_units", "generation_billed_value_wei", "generation_funded_value_wei", "amount_wei", "per_units", "settlement_seq", "issued_at", "state", "job_id", "payment_cumulative_units", "gateway_session_id")
+    __slots__ = ("accepted_quote_ref", "work_unit_name", "estimated_units", "actual_units", "billed_units", "funded_value_wei", "billed_value_wei", "outcome", "breakdown", "session_id", "work_id", "predecessor_work_id", "rotation_generation", "claimed_units", "debited_units", "generation_debited_units", "generation_billed_value_wei", "generation_funded_value_wei", "amount_wei", "per_units", "settlement_seq", "issued_at", "state", "job_id", "payment_cumulative_units", "gateway_session_id", "request_id")
     class SettlementOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         SETTLEMENT_OUTCOME_UNSPECIFIED: _ClassVar[SettlementRecord.SettlementOutcome]
@@ -205,6 +205,7 @@ class SettlementRecord(_message.Message):
     JOB_ID_FIELD_NUMBER: _ClassVar[int]
     PAYMENT_CUMULATIVE_UNITS_FIELD_NUMBER: _ClassVar[int]
     GATEWAY_SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     accepted_quote_ref: QuoteRef
     work_unit_name: str
     estimated_units: int
@@ -231,7 +232,8 @@ class SettlementRecord(_message.Message):
     job_id: str
     payment_cumulative_units: int
     gateway_session_id: str
-    def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ..., session_id: _Optional[str] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., rotation_generation: _Optional[int] = ..., claimed_units: _Optional[int] = ..., debited_units: _Optional[int] = ..., generation_debited_units: _Optional[int] = ..., generation_billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., generation_funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., amount_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., per_units: _Optional[int] = ..., settlement_seq: _Optional[int] = ..., issued_at: _Optional[str] = ..., state: _Optional[str] = ..., job_id: _Optional[str] = ..., payment_cumulative_units: _Optional[int] = ..., gateway_session_id: _Optional[str] = ...) -> None: ...
+    request_id: str
+    def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ..., session_id: _Optional[str] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., rotation_generation: _Optional[int] = ..., claimed_units: _Optional[int] = ..., debited_units: _Optional[int] = ..., generation_debited_units: _Optional[int] = ..., generation_billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., generation_funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., amount_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., per_units: _Optional[int] = ..., settlement_seq: _Optional[int] = ..., issued_at: _Optional[str] = ..., state: _Optional[str] = ..., job_id: _Optional[str] = ..., payment_cumulative_units: _Optional[int] = ..., gateway_session_id: _Optional[str] = ..., request_id: _Optional[str] = ...) -> None: ...
 
 class TicketStatus(_message.Message):
     __slots__ = ("sender_nonce", "rejection_reason", "credited_ev", "was_winning")

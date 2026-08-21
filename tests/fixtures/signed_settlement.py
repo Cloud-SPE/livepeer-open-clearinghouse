@@ -37,6 +37,7 @@ def signed_job_settlement(
     payment_cumulative_units: int | None = None,
     amount_wei: int,
     per_units: int,
+    request_id: str = "request-1",
     work_unit: str = "token",
     quote_id: str = "q-1",
     quote_version: int = 1,
@@ -71,6 +72,7 @@ def signed_job_settlement(
         "work_id": work_id,
         "issued_at": issued_at,
         "job_id": job_id,
+        "request_id": request_id,
     }
     canonical = rfc8785.dumps(payload)
     prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()

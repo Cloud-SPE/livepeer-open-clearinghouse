@@ -275,6 +275,11 @@ message SettlementRecord {
   // session settlements so the consumer can bind broker evidence to its
   // own durable session without trusting broker-local identifiers.
   string gateway_session_id = 26;
+
+  // Gateway-issued identity for one paid-job exchange, echoed from
+  // Livepeer-Request-Id. Required on job settlements so the consumer can
+  // bind broker evidence to its own durable job record.
+  string request_id = 27;
 }
 
 // PaymentRejectionReason is the machine-readable reason a payee daemon
