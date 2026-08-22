@@ -465,6 +465,8 @@ async def settle_job(
                 work_id=job_row.work_id,
                 work_unit=expected_work_unit,
                 actual_units=actual_units,
+                max_total_units=job_row.max_total_units,
+                funded_value_wei=int(job_row.funded_value_wei),
                 amount_wei=int(price_wei),
                 per_units=int(snapshot["units_per_price"]),
                 quote_id=str(snapshot["quote_id"]),

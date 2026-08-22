@@ -555,6 +555,54 @@ async def test_settle_job_keeps_encumbrance_when_broker_debit_failed(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_settle_job_rejects_signed_usage_above_funded_ceiling(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=100,
+        max_total_units=100,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    balance_before = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed) as exc_info:
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=101,
+            broker_job_id="broker-job-over-ceiling",
+            work_unit="token",
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-over-ceiling",
+                actual_units=101,
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert exc_info.value.details == {"reason": "usage_ceiling_exceeded"}
+    row = await db_session.get(PaymentSession, open_resp.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+    assert balance_after == balance_before
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) -> None:
     """SDK opened with max_total=1000 (funded 100_000); broker actually
     processed 600 units. Settle: billed 60_000, refund 40_000."""

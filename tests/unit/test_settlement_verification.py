@@ -26,6 +26,8 @@ def _expected(**overrides: object) -> JobSettlementExpectation:
         "work_id": "work-1",
         "work_unit": "token",
         "actual_units": 31,
+        "max_total_units": 100,
+        "funded_value_wei": 10,
         "amount_wei": 100,
         "per_units": 1000,
         "quote_id": "q-1",
@@ -80,6 +82,32 @@ def test_job_settlement_rejects_impossible_payment_curve() -> None:
             expected=_expected(),
         )
     assert exc_info.value.code == "payment_curve_invalid"
+
+
+@pytest.mark.unit
+def test_job_settlement_rejects_signed_usage_above_funded_ceiling() -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            _envelope(actual_units=101, debited_units=101, payment_cumulative_units=101),
+            settlement_keys=[delegated_key()],
+            expected=_expected(actual_units=101, max_total_units=100),
+        )
+    assert exc_info.value.code == "usage_ceiling_exceeded"
+
+
+@pytest.mark.unit
+def test_job_settlement_rejects_billed_value_above_funded_ceiling() -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            _envelope(actual_units=101, debited_units=101, payment_cumulative_units=101),
+            settlement_keys=[delegated_key()],
+            expected=_expected(
+                actual_units=101,
+                max_total_units=101,
+                funded_value_wei=10,
+            ),
+        )
+    assert exc_info.value.code == "funding_ceiling_exceeded"
 
 
 @pytest.mark.unit

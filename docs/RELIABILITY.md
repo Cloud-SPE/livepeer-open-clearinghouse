@@ -81,6 +81,14 @@ broker's required `Livepeer-Request-Id`. An LOC retry therefore replays one
 payer mint, and a broker retry replays one credit and lease extension. A new
 refill intent gets a new key; transport retries of that intent do not.
 
+For paid jobs, `max_total_units` is only the caller's pre-execution funding
+ceiling. LOC reserves `bill(max_total_units)` and does not treat the estimate
+as evidence of delivered work. Terminal accounting comes exclusively from the
+broker-signed settlement. LOC verifies its unit against the route snapshot and
+rejects signed units or billed value above the persisted ceiling; otherwise it
+bills the signed actual amount and releases the unused reservation. LOC never
+parses workload media to determine usage.
+
 ### Jobs that never reach broker admission
 
 Once LOC returns a signed payment envelope, it cannot revoke it. The broker or

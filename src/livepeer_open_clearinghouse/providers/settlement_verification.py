@@ -34,6 +34,8 @@ class JobSettlementExpectation:
     work_id: str
     work_unit: str
     actual_units: int
+    max_total_units: int
+    funded_value_wei: int
     amount_wei: int
     per_units: int
     quote_id: str
@@ -108,6 +110,10 @@ def verify_job_settlement(
         or record.debited_units != expected.actual_units
     ):
         raise SettlementVerificationError("work_units_mismatch", "signed work units do not match")
+    if record.actual_units > expected.max_total_units:
+        raise SettlementVerificationError(
+            "usage_ceiling_exceeded", "signed work units exceed the funded job ceiling"
+        )
 
     quote = record.accepted_quote_ref
     if (
@@ -132,6 +138,10 @@ def verify_job_settlement(
     if billed_value != normative_bill:
         raise SettlementVerificationError(
             "billed_value_mismatch", "signed billed value does not match normative bill(U)"
+        )
+    if billed_value > expected.funded_value_wei:
+        raise SettlementVerificationError(
+            "funding_ceiling_exceeded", "signed billed value exceeds the funded job ceiling"
         )
 
     return VerifiedJobSettlement(
