@@ -353,6 +353,72 @@ async def test_crash_after_claim_before_daemon_recovers_same_request_id(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.kind)
+async def test_expired_crash_claim_becomes_durable_outcome_unknown(
+    database: tuple[async_sessionmaker[AsyncSession], uuid.UUID, uuid.UUID],
+    case: CreateCase,
+) -> None:
+    """Reproduce the live stale-claim report through its terminal outcome."""
+
+    maker, user_id, key_id = database
+    clock = FrozenClock(datetime(2026, 8, 20, tzinfo=UTC))
+    key = f"{case.kind}-expired-incomplete-payer"
+    async with maker() as db:
+        first = await payments_service.claim_create_request(
+            db,
+            user_id=user_id,
+            api_key_id=key_id,
+            operation=case.operation,
+            idempotency_key=key,
+            request_fingerprint=payments_service.create_request_fingerprint(
+                operation=case.operation,
+                payload=case.body.model_dump(mode="json"),
+            ),
+            clock=clock,
+            inflight_timeout_seconds=5,
+        )
+
+    clock.advance(timedelta(seconds=6))
+    async with maker() as db:
+        assert await payments_service.expire_stale_idempotency_keys(db, clock=clock) == 1
+        await db.commit()
+
+    daemon = IncompleteReservationDaemon()
+    async with maker() as db:
+        with pytest.raises(OpenClearinghouseError) as exc_info:
+            await _invoke(
+                case,
+                db,
+                user_id=user_id,
+                key_id=key_id,
+                daemon=daemon,
+                clock=clock,
+                idempotency_key=key,
+            )
+        assert exc_info.value.code == "IDEMPOTENCY_OUTCOME_UNKNOWN"
+
+    async with maker() as db:
+        claim = await db.get(
+            PaymentIdempotencyKey,
+            {
+                "user_id": user_id,
+                "operation": case.operation,
+                "idempotency_key": key,
+            },
+        )
+        assert claim is not None
+        assert claim.status == "outcome_unknown"
+        assert claim.broker_request_id == first.broker_request_id
+        assert claim.payment_id is None
+        assert await db.scalar(select(func.count()).select_from(Payment)) == 0
+        assert await db.scalar(select(func.count()).select_from(PaymentSession)) == 0
+        assert await db.scalar(select(func.count()).select_from(CreditLedger)) == 0
+
+    assert daemon.attempts == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.kind)
 async def test_stale_loc_claim_recovers_completed_payer_result_once(
     database: tuple[async_sessionmaker[AsyncSession], uuid.UUID, uuid.UUID],
     case: CreateCase,

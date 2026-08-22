@@ -18,6 +18,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     RegistryClient,
     SelectedRoute,
     SessionAxes,
+    WorkUnitEstimator,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "RegistryClient",
     "SelectedRoute",
     "SessionAxes",
+    "WorkUnitEstimator",
 ]

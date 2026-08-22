@@ -406,9 +406,10 @@ type CapabilityList struct {
 
 // CapabilityView defines model for CapabilityView.
 type CapabilityView struct {
-	Name      string         `json:"name"`
-	Offerings []OfferingView `json:"offerings"`
-	WorkUnit  *string        `json:"work_unit"`
+	Name              string             `json:"name"`
+	Offerings         []OfferingView     `json:"offerings"`
+	WorkUnit          *string            `json:"work_unit"`
+	WorkUnitEstimator *WorkUnitEstimator `json:"work_unit_estimator"`
 }
 
 // CloseSessionRequest Inbound: “POST /v1/sessions/{id}/close“.
@@ -745,6 +746,7 @@ type OfferingView struct {
 	Session             *SessionAxes            `json:"session"`
 	UnitsPerPrice       int                     `json:"units_per_price"`
 	WorkUnit            *string                 `json:"work_unit"`
+	WorkUnitEstimator   *WorkUnitEstimator      `json:"work_unit_estimator"`
 }
 
 // OperatorList defines model for OperatorList.
@@ -902,6 +904,7 @@ type RouteView struct {
 	Session             *SessionAxes            `json:"session"`
 	UnitsPerPrice       int                     `json:"units_per_price"`
 	WorkUnit            string                  `json:"work_unit"`
+	WorkUnitEstimator   *WorkUnitEstimator      `json:"work_unit_estimator"`
 	WorkerUrl           string                  `json:"worker_url"`
 }
 
@@ -1255,6 +1258,19 @@ type WebhookConfigView struct {
 type WebhookTestResult struct {
 	Detail *string `json:"detail,omitempty"`
 	Ok     bool    `json:"ok"`
+}
+
+// WorkUnitEstimator Signed client-side funding-ceiling estimator declaration.
+//
+// LOC does not execute the estimator. It parses the registry boundary and
+// relays the declaration so gateways can select their matching independent
+// implementation.
+type WorkUnitEstimator struct {
+	Exactness string  `json:"exactness"`
+	Fixtures  string  `json:"fixtures"`
+	Id        string  `json:"id"`
+	Package   *string `json:"package,omitempty"`
+	Rounding  string  `json:"rounding"`
 }
 
 // MeEndpointV1AccountsMeGetParams defines parameters for MeEndpointV1AccountsMeGet.

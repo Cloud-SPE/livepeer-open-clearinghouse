@@ -7,7 +7,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from livepeer_open_clearinghouse.providers.registry_daemon import JobAxes, SessionAxes
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    JobAxes,
+    SessionAxes,
+    WorkUnitEstimator,
+)
 
 
 class OfferingView(BaseModel):
@@ -16,6 +20,7 @@ class OfferingView(BaseModel):
     work_unit: str | None
     units_per_price: int
     protocol: str
+    work_unit_estimator: WorkUnitEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
     # Merged node+capability extra_json metadata from the upstream
@@ -28,6 +33,7 @@ class OfferingView(BaseModel):
 class CapabilityView(BaseModel):
     name: str
     work_unit: str | None
+    work_unit_estimator: WorkUnitEstimator | None
     offerings: list[OfferingView]
 
 
@@ -59,6 +65,7 @@ class RouteView(BaseModel):
     units_per_price: int
     quote_id: str
     protocol: str
+    work_unit_estimator: WorkUnitEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
     # Opaque registry metadata for this route (see OfferingView.extra).

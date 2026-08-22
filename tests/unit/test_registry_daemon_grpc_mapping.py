@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from livepeer_open_clearinghouse import _gen  # noqa: F401  — pulls _gen onto sys.path
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SelectedRoute,
+    WorkUnitEstimator,
     _decode_extra_json,
     _selected_route_proto_to_dataclass,
 )
@@ -65,6 +66,45 @@ def test_selected_route_proto_to_dataclass_carries_every_field() -> None:
     assert dc.quote_version == 7
     assert dc.constraint_fingerprint == b"\x00" * 32
     assert dc.route_fingerprint == b"\x11" * 32
+
+
+@pytest.mark.unit
+def test_selected_route_carries_signed_work_unit_estimator() -> None:
+    proto = _route_proto(
+        capability="openai:audio-transcriptions",
+        work_unit="seconds",
+        work_unit_estimator={
+            "id": "multipart-audio-duration/v1",
+            "rounding": "ceil-to-whole-seconds",
+            "exactness": "exact-or-reject",
+            "fixtures": (
+                "livepeer-network-protocol/extractors/fixtures/multipart-audio-duration-v1"
+            ),
+        },
+    )
+
+    route = _selected_route_proto_to_dataclass(proto)
+
+    assert route.work_unit_estimator == WorkUnitEstimator(
+        id="multipart-audio-duration/v1",
+        rounding="ceil-to-whole-seconds",
+        exactness="exact-or-reject",
+        package=None,
+        fixtures=("livepeer-network-protocol/extractors/fixtures/multipart-audio-duration-v1"),
+    )
+    assert route.snapshot()["work_unit_estimator"] == {
+        "id": "multipart-audio-duration/v1",
+        "rounding": "ceil-to-whole-seconds",
+        "exactness": "exact-or-reject",
+        "package": None,
+        "fixtures": ("livepeer-network-protocol/extractors/fixtures/multipart-audio-duration-v1"),
+    }
+
+
+@pytest.mark.unit
+def test_absent_work_unit_estimator_remains_absent() -> None:
+    route = _selected_route_proto_to_dataclass(_route_proto())
+    assert route.work_unit_estimator is None
 
 
 @pytest.mark.unit

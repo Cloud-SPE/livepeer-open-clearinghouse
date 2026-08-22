@@ -69,6 +69,23 @@ class SettlementKey(BaseModel):
         return self
 
 
+class WorkUnitEstimator(BaseModel):
+    """Signed client-side funding-ceiling estimator declaration.
+
+    LOC does not execute the estimator. It parses the registry boundary and
+    relays the declaration so gateways can select their matching independent
+    implementation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    rounding: str = Field(min_length=1)
+    exactness: str = Field(min_length=1)
+    package: str | None = None
+    fixtures: str = Field(min_length=1)
+
+
 class SelectedRoute(BaseModel):
     """One concrete route — output of ``Select`` / ``SelectMany``.
 
@@ -92,6 +109,7 @@ class SelectedRoute(BaseModel):
     route_fingerprint: bytes
     protocol: Literal["paid-job/v1", "paid-session/v1"]
     settlement_keys: tuple[SettlementKey, ...] = ()
+    work_unit_estimator: WorkUnitEstimator | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -137,6 +155,11 @@ class SelectedRoute(BaseModel):
             "constraint_fingerprint": self.constraint_fingerprint.hex(),
             "route_fingerprint": self.route_fingerprint.hex(),
             "settlement_keys": [key.model_dump(mode="json") for key in self.settlement_keys],
+            "work_unit_estimator": (
+                self.work_unit_estimator.model_dump(mode="json")
+                if self.work_unit_estimator is not None
+                else None
+            ),
             "axes": self.extra["job"] if self.job is not None else self.extra["session"],
             "extra": self.extra,
         }
@@ -156,6 +179,7 @@ class OfferingInfo:
     work_unit: str | None
     units_per_price: int
     protocol: Literal["paid-job/v1", "paid-session/v1"]
+    work_unit_estimator: WorkUnitEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -168,6 +192,7 @@ def _offering_from_route(route: SelectedRoute) -> OfferingInfo:
         work_unit=route.work_unit,
         units_per_price=route.units_per_price,
         protocol=route.protocol,
+        work_unit_estimator=route.work_unit_estimator,
         job=route.job,
         session=route.session,
         extra=dict(route.extra),
@@ -180,6 +205,7 @@ class CapabilityInfo:
 
     name: str
     work_unit: str | None
+    work_unit_estimator: WorkUnitEstimator | None
     offerings: list[OfferingInfo]
 
 
@@ -306,7 +332,24 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
             )
             for key in proto.settlement_keys
         ),
+        work_unit_estimator=_estimator_from_proto(proto.work_unit_estimator),
         extra=_decode_extra_json(bytes(proto.extra_json)),
+    )
+
+
+def _estimator_from_proto(proto: object) -> WorkUnitEstimator | None:
+    """Parse an optional proto estimator without inventing empty metadata."""
+
+    estimator_id = str(getattr(proto, "id", ""))
+    if not estimator_id:
+        return None
+    package = str(getattr(proto, "package", "")) or None
+    return WorkUnitEstimator(
+        id=estimator_id,
+        rounding=str(getattr(proto, "rounding", "")),
+        exactness=str(getattr(proto, "exactness", "")),
+        package=package,
+        fixtures=str(getattr(proto, "fixtures", "")),
     )
 
 
@@ -400,6 +443,7 @@ class GrpcRegistryClient:
         addresses = await self._list_known_addresses()
         merged: dict[str, set[str]] = {}
         work_units: dict[str, str | None] = {}
+        estimators: dict[str, WorkUnitEstimator | None] = {}
         for addr in addresses:
             try:
                 resolved = await self._resolve(addr)
@@ -413,6 +457,7 @@ class GrpcRegistryClient:
                 for cap in node.capabilities:
                     offerings = merged.setdefault(cap.name, set())
                     work_units[cap.name] = cap.work_unit or None
+                    estimators[cap.name] = _estimator_from_proto(cap.work_unit_estimator)
                     for off in cap.offerings:
                         offerings.add(off.id)
         result: list[CapabilityInfo] = []
@@ -427,6 +472,7 @@ class GrpcRegistryClient:
                     CapabilityInfo(
                         name=name,
                         work_unit=work_units.get(name),
+                        work_unit_estimator=estimators.get(name),
                         offerings=enriched,
                     )
                 )
@@ -461,6 +507,7 @@ class GrpcRegistryClient:
                         CapabilityInfo(
                             name=cap.name,
                             work_unit=cap.work_unit or None,
+                            work_unit_estimator=_estimator_from_proto(cap.work_unit_estimator),
                             offerings=offering_views,
                         )
                     )
@@ -589,6 +636,14 @@ class MockRegistryClient:
             CapabilityInfo(
                 name=name,
                 work_unit=work_units.get(name),
+                work_unit_estimator=next(
+                    (
+                        route.work_unit_estimator
+                        for route in self._routes
+                        if route.capability == name and route.work_unit_estimator is not None
+                    ),
+                    None,
+                ),
                 offerings=list(offerings.values()),
             )
             for name, offerings in by_name.items()
@@ -613,6 +668,16 @@ class MockRegistryClient:
                     CapabilityInfo(
                         name=cap_name,
                         work_unit=work_units.get((addr, cap_name)),
+                        work_unit_estimator=next(
+                            (
+                                route.work_unit_estimator
+                                for route in self._routes
+                                if route.eth_address == addr
+                                and route.capability == cap_name
+                                and route.work_unit_estimator is not None
+                            ),
+                            None,
+                        ),
                         offerings=offerings,
                     )
                     for cap_name, offerings in caps.items()

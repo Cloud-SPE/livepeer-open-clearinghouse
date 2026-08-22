@@ -54,16 +54,32 @@ SOURCE_STATIC_OVERLAY: Source
 SOURCE_CSV_FALLBACK: Source
 
 class Capability(_message.Message):
-    __slots__ = ("name", "work_unit", "offerings", "extra_json")
+    __slots__ = ("name", "work_unit", "offerings", "extra_json", "work_unit_estimator")
     NAME_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_FIELD_NUMBER: _ClassVar[int]
     OFFERINGS_FIELD_NUMBER: _ClassVar[int]
     EXTRA_JSON_FIELD_NUMBER: _ClassVar[int]
+    WORK_UNIT_ESTIMATOR_FIELD_NUMBER: _ClassVar[int]
     name: str
     work_unit: str
     offerings: _containers.RepeatedCompositeFieldContainer[Offering]
     extra_json: bytes
-    def __init__(self, name: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ..., extra_json: _Optional[bytes] = ...) -> None: ...
+    work_unit_estimator: Estimator
+    def __init__(self, name: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ..., extra_json: _Optional[bytes] = ..., work_unit_estimator: _Optional[_Union[Estimator, _Mapping]] = ...) -> None: ...
+
+class Estimator(_message.Message):
+    __slots__ = ("id", "rounding", "exactness", "package", "fixtures")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    ROUNDING_FIELD_NUMBER: _ClassVar[int]
+    EXACTNESS_FIELD_NUMBER: _ClassVar[int]
+    PACKAGE_FIELD_NUMBER: _ClassVar[int]
+    FIXTURES_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    rounding: str
+    exactness: str
+    package: str
+    fixtures: str
+    def __init__(self, id: _Optional[str] = ..., rounding: _Optional[str] = ..., exactness: _Optional[str] = ..., package: _Optional[str] = ..., fixtures: _Optional[str] = ...) -> None: ...
 
 class Offering(_message.Message):
     __slots__ = ("id", "price_per_work_unit_wei", "constraints_json")

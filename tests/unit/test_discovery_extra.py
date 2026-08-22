@@ -20,6 +20,7 @@ from livepeer_open_clearinghouse.domains.discovery.service import (
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     MockRegistryClient,
     SelectedRoute,
+    WorkUnitEstimator,
 )
 
 _ROUTE = SelectedRoute(
@@ -35,6 +36,12 @@ _ROUTE = SelectedRoute(
     constraint_fingerprint=b"\x00" * 32,
     route_fingerprint=b"\x11" * 32,
     protocol="paid-job/v1",
+    work_unit_estimator=WorkUnitEstimator(
+        id="multipart-audio-duration/v1",
+        rounding="ceil-to-whole-seconds",
+        exactness="exact-or-reject",
+        fixtures=("livepeer-network-protocol/extractors/fixtures/multipart-audio-duration-v1"),
+    ),
     extra={
         "job": {"transports": ["unary", "stream"]},
         "openai": {"model": "Qwen3.6-27B", "name": "Qwen 3.6 27B"},
@@ -50,8 +57,15 @@ async def test_capability_offering_view_carries_extra() -> None:
     offering = caps[0].offerings[0]
     assert offering.extra["openai"]["model"] == "Qwen3.6-27B"
     assert offering.protocol == "paid-job/v1"
+    assert offering.work_unit_estimator is not None
+    assert offering.work_unit_estimator.id == "multipart-audio-duration/v1"
     assert offering.job is not None
     assert offering.job.transports == {"unary", "stream"}
+    assert caps[0].work_unit_estimator is not None
+    assert caps[0].work_unit_estimator.id == "multipart-audio-duration/v1"
+    assert caps[0].work_unit_estimator.rounding == "ceil-to-whole-seconds"
+    assert caps[0].work_unit_estimator.exactness == "exact-or-reject"
+    assert caps[0].work_unit_estimator.fixtures.endswith("multipart-audio-duration-v1")
 
 
 @pytest.mark.unit
@@ -64,6 +78,8 @@ async def test_route_view_carries_extra() -> None:
     )
     assert route is not None
     assert route.extra["openai"]["model"] == "Qwen3.6-27B"
+    assert route.work_unit_estimator is not None
+    assert route.work_unit_estimator.id == "multipart-audio-duration/v1"
 
 
 @pytest.mark.unit

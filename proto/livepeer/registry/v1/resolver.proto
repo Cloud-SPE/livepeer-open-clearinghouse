@@ -75,6 +75,10 @@ message SelectedRoute {
   // Overlap keys remain present until expiry so in-flight settlement records
   // continue to verify across a manifest key rotation.
   repeated SettlementKey settlement_keys = 15;
+
+  // Signed client-side funding-ceiling estimator declaration. Absent when
+  // the request already exposes a canonical ceiling.
+  Estimator work_unit_estimator = 16;
 }
 
 message SettlementKey {

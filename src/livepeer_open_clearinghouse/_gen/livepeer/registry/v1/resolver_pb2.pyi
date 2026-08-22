@@ -68,7 +68,7 @@ class SelectManyResult(_message.Message):
     def __init__(self, routes: _Optional[_Iterable[_Union[SelectedRoute, _Mapping]]] = ...) -> None: ...
 
 class SelectedRoute(_message.Message):
-    __slots__ = ("worker_url", "eth_address", "capability", "offering", "price_per_work_unit_wei", "work_unit", "extra_json", "constraints_json", "quote_id", "quote_version", "constraint_fingerprint", "route_fingerprint", "units_per_price", "protocol", "settlement_keys")
+    __slots__ = ("worker_url", "eth_address", "capability", "offering", "price_per_work_unit_wei", "work_unit", "extra_json", "constraints_json", "quote_id", "quote_version", "constraint_fingerprint", "route_fingerprint", "units_per_price", "protocol", "settlement_keys", "work_unit_estimator")
     WORKER_URL_FIELD_NUMBER: _ClassVar[int]
     ETH_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     CAPABILITY_FIELD_NUMBER: _ClassVar[int]
@@ -84,6 +84,7 @@ class SelectedRoute(_message.Message):
     UNITS_PER_PRICE_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_FIELD_NUMBER: _ClassVar[int]
     SETTLEMENT_KEYS_FIELD_NUMBER: _ClassVar[int]
+    WORK_UNIT_ESTIMATOR_FIELD_NUMBER: _ClassVar[int]
     worker_url: str
     eth_address: str
     capability: str
@@ -99,7 +100,8 @@ class SelectedRoute(_message.Message):
     units_per_price: int
     protocol: str
     settlement_keys: _containers.RepeatedCompositeFieldContainer[SettlementKey]
-    def __init__(self, worker_url: _Optional[str] = ..., eth_address: _Optional[str] = ..., capability: _Optional[str] = ..., offering: _Optional[str] = ..., price_per_work_unit_wei: _Optional[str] = ..., work_unit: _Optional[str] = ..., extra_json: _Optional[bytes] = ..., constraints_json: _Optional[bytes] = ..., quote_id: _Optional[str] = ..., quote_version: _Optional[int] = ..., constraint_fingerprint: _Optional[bytes] = ..., route_fingerprint: _Optional[bytes] = ..., units_per_price: _Optional[int] = ..., protocol: _Optional[str] = ..., settlement_keys: _Optional[_Iterable[_Union[SettlementKey, _Mapping]]] = ...) -> None: ...
+    work_unit_estimator: _types_pb2.Estimator
+    def __init__(self, worker_url: _Optional[str] = ..., eth_address: _Optional[str] = ..., capability: _Optional[str] = ..., offering: _Optional[str] = ..., price_per_work_unit_wei: _Optional[str] = ..., work_unit: _Optional[str] = ..., extra_json: _Optional[bytes] = ..., constraints_json: _Optional[bytes] = ..., quote_id: _Optional[str] = ..., quote_version: _Optional[int] = ..., constraint_fingerprint: _Optional[bytes] = ..., route_fingerprint: _Optional[bytes] = ..., units_per_price: _Optional[int] = ..., protocol: _Optional[str] = ..., settlement_keys: _Optional[_Iterable[_Union[SettlementKey, _Mapping]]] = ..., work_unit_estimator: _Optional[_Union[_types_pb2.Estimator, _Mapping]] = ...) -> None: ...
 
 class SettlementKey(_message.Message):
     __slots__ = ("public_key", "not_before", "expires_at", "introduced_in_publication_seq")

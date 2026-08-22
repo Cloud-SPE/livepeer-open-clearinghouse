@@ -114,15 +114,22 @@ class PayerDaemonServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def GetSessionDebits(self, request, context):
-        """Read the per-session debit ledger for a long-lived session
-        (`paid-session/v1`). Used by
-        gateway adapters at session-close time to surface a final
-        `Livepeer-Work-Units` count to the gateway caller without adding a
-        close-frame extension or a control-plane event. The daemon may
-        return UNIMPLEMENTED when long-lived debit tracking is not wired
-        (the gateway-side adapter treats UNIMPLEMENTED as "0 work units,
-        best effort"). The actual debit-pushdown from the broker-side
-        ticker lands with plan 0015.
+        """Deprecated: NOT the reconciliation source, and not implemented.
+
+        The payer daemon keeps no debit ledger. Debits happen payee-side —
+        the broker debits its payee daemon as usage is claimed — so a payer
+        has nothing to report and this RPC returns UNIMPLEMENTED.
+
+        Session usage is reconciled from the payee side instead:
+
+        - the signed settlement record (`Livepeer-Settlement`), carrying
+        cumulative claimed and debited units, the billed value, and the
+        session's rotation chain; or
+        - a direct read of `GET {worker_url}/v1/settlement/{id}` when the
+        record should not cross a customer-controlled SDK at all.
+
+        `debited_units` there is the authoritative billing quantity. Two
+        ledgers is how two ledgers drift, so the payee's is the only one.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

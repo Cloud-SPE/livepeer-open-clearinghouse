@@ -1500,6 +1500,7 @@ export interface components {
             name: string;
             /** Work Unit */
             work_unit: string | null;
+            work_unit_estimator: components["schemas"]["WorkUnitEstimator"] | null;
             /** Offerings */
             offerings: components["schemas"]["OfferingView"][];
         };
@@ -2080,6 +2081,7 @@ export interface components {
             units_per_price: number;
             /** Protocol */
             protocol: string;
+            work_unit_estimator: components["schemas"]["WorkUnitEstimator"] | null;
             job: components["schemas"]["JobAxes"] | null;
             session: components["schemas"]["SessionAxes"] | null;
             /** Extra */
@@ -2335,6 +2337,7 @@ export interface components {
             quote_id: string;
             /** Protocol */
             protocol: string;
+            work_unit_estimator: components["schemas"]["WorkUnitEstimator"] | null;
             job: components["schemas"]["JobAxes"] | null;
             session: components["schemas"]["SessionAxes"] | null;
             /** Extra */
@@ -2896,6 +2899,26 @@ export interface components {
             ok: boolean;
             /** Detail */
             detail?: string | null;
+        };
+        /**
+         * WorkUnitEstimator
+         * @description Signed client-side funding-ceiling estimator declaration.
+         *
+         *     LOC does not execute the estimator. It parses the registry boundary and
+         *     relays the declaration so gateways can select their matching independent
+         *     implementation.
+         */
+        WorkUnitEstimator: {
+            /** Id */
+            id: string;
+            /** Rounding */
+            rounding: string;
+            /** Exactness */
+            exactness: string;
+            /** Package */
+            package?: string | null;
+            /** Fixtures */
+            fixtures: string;
         };
     };
     responses: never;

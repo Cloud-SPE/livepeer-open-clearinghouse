@@ -28,6 +28,7 @@ def _offering(info: object) -> OfferingView:
         work_unit=info.work_unit,  # type: ignore[attr-defined]
         units_per_price=info.units_per_price,  # type: ignore[attr-defined]
         protocol=info.protocol,  # type: ignore[attr-defined]
+        work_unit_estimator=info.work_unit_estimator,  # type: ignore[attr-defined]
         job=info.job,  # type: ignore[attr-defined]
         session=info.session,  # type: ignore[attr-defined]
         extra=getattr(info, "extra", {}) or {},
@@ -38,6 +39,7 @@ def _capability(info: CapabilityInfo) -> CapabilityView:
     return CapabilityView(
         name=info.name,
         work_unit=info.work_unit,
+        work_unit_estimator=info.work_unit_estimator,
         offerings=[_offering(o) for o in info.offerings],
     )
 
@@ -63,6 +65,7 @@ def _route(r: SelectedRoute) -> RouteView:
         units_per_price=r.units_per_price,
         quote_id=r.quote_id,
         protocol=r.protocol,
+        work_unit_estimator=r.work_unit_estimator,
         job=r.job,
         session=r.session,
         extra=dict(r.extra),
