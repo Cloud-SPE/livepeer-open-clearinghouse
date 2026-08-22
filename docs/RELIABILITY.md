@@ -120,6 +120,10 @@ or fabricated work units. Signed non-admission remains attributable audit and
 dispute evidence, not refund authority. The deadline is configured with
 `JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS`; its safe default is `0` (disabled), so
 operators must select and document a nonzero billing policy deliberately.
+An unreachable broker, timeout, or malformed lookup response is retained as a
+LOC-observed `LOOKUP_FAILED` result: it is not broker evidence, but it also must
+not bypass an operator's configured deadline forever. LOC retries it before the
+deadline and applies the same distinct conservative outcome after the deadline.
 
 There is deliberately no customer-authorized `abandon` endpoint. A broker
 refusal may improve telemetry but cannot release money because a broker that

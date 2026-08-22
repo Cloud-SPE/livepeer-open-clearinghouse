@@ -58,6 +58,7 @@ from livepeer_open_clearinghouse.errors import (
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
     BrokerExchangeResult,
+    BrokerSettlementQueryError,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -187,6 +188,20 @@ class _StaticExchangeClient:
     async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
         self.calls.append((broker_url, request_id))
         return self.result
+
+    async def get_settlement(
+        self, *, broker_url: str, gateway_session_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        raise AssertionError("job reconciliation must not use the session lookup")
+
+
+class _FailingExchangeClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
+        self.calls.append((broker_url, request_id))
+        raise BrokerSettlementQueryError("broker exchange query failed")
 
     async def get_settlement(
         self, *, broker_url: str, gateway_session_id: uuid.UUID
@@ -1099,6 +1114,54 @@ async def test_reconcile_finalizes_unresolved_job_as_distinct_full_charge(
         )
         == 1
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_lookup_failure_retries_then_conservatively_charges(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    settings = _settings().model_copy(update={"job_conservative_charge_after_seconds": 3600})
+    client = _FailingExchangeClient()
+
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 0
+    )
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.breakdown is not None
+    assert row.breakdown["broker_exchange"] == {
+        "request_id": response.request_id,
+        "outcome": "LOOKUP_FAILED",
+        "detail": "broker exchange query failed",
+    }
+
+    clock.advance(timedelta(hours=1))
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 1
+    )
+    await db_session.refresh(row)
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.actual_units is None
+    assert row.billed_value_wei == row.funded_value_wei
+    assert row.outcome == "conservative_full_charge"
+    assert row.breakdown is not None
+    assert row.breakdown["evidence"]["outcome"] == "LOOKUP_FAILED"
 
 
 @pytest.mark.unit

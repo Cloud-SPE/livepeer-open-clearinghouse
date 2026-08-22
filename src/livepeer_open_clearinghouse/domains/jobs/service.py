@@ -602,7 +602,36 @@ async def reconcile_open_jobs(
                 broker_url=broker_url,
                 request_id=request_id,
             )
-        except BrokerSettlementQueryError:
+        except BrokerSettlementQueryError as exc:
+            # A transport or protocol failure is also an unresolved lookup
+            # result. Keep retrying before the operator-selected deadline,
+            # but do not let an unreachable broker bypass the terminal policy
+            # forever. The error is deliberately recorded as LOC observation,
+            # never as broker evidence.
+            evidence: dict[str, object] = {
+                "request_id": request_id,
+                "outcome": "LOOKUP_FAILED",
+                "detail": str(exc),
+            }
+            job_reconciliation_observations_total.labels(outcome="LOOKUP_FAILED").inc()
+            job_row.last_polled_at = clock.now()
+            job_row.breakdown = {
+                **(job_row.breakdown or {}),
+                "broker_exchange": evidence,
+            }
+            await db.flush()
+            if settings.job_conservative_charge_after_seconds <= 0:
+                continue
+            charged = await finalize_conservative_full_charge(
+                db,
+                job_id=job_row.id,
+                clock=clock,
+                deadline_seconds=settings.job_conservative_charge_after_seconds,
+                evidence=evidence,
+            )
+            if charged:
+                job_terminal_accounting_total.labels(terminal_kind="conservative_full_charge").inc()
+                finalized += 1
             continue
 
         job_reconciliation_observations_total.labels(outcome=exchange.outcome.value).inc()
