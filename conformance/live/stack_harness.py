@@ -31,16 +31,27 @@ from typing import IO, Any
 
 import asyncpg
 import grpc
+import httpx
+from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
 from registry_seed_probe import (  # type: ignore[import-not-found]
     COLD_KEY,
     SETTLEMENT_KEY,
     _signed_manifest,
 )
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from livepeer_open_clearinghouse.domains.accounts.repo import User
+from livepeer_open_clearinghouse.domains.admin import repo as _admin_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.api_keys import service as api_keys_service
+from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance, CreditLedger
+from livepeer_open_clearinghouse.domains.payments import repo as _payments_repo  # noqa: F401
+from livepeer_open_clearinghouse.domains.sessions import repo as _sessions_repo  # noqa: F401
 from livepeer_open_clearinghouse.providers.registry_daemon import GrpcRegistryClient
 
 
 class _BackendHandler(BaseHTTPRequestHandler):
+    job_calls = 0
+
     def log_message(self, _format: str, *args: object) -> None:
         return
 
@@ -57,6 +68,7 @@ class _BackendHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length:
             self.rfile.read(length)
+        type(self).job_calls += 1
         self._json({"bark_count": 1})
 
     def _json(self, payload: dict[str, Any]) -> None:
@@ -236,6 +248,8 @@ def _write_broker_config(
     payee_socket: Path,
     backend_url: str,
     settlement_key_path: Path,
+    session_store_path: Path,
+    sealing_key_path: Path,
 ) -> None:
     now = datetime.now(UTC).replace(microsecond=0)
     path.write_text(
@@ -250,6 +264,10 @@ listen:
   metrics: "127.0.0.1:{metrics_port}"
 payment_daemon:
   socket: "{payee_socket}"
+session_store:
+  path: "{session_store_path}"
+  sealing_key_file: "{sealing_key_path}"
+  job_retention: 96h
 capabilities:
   - id: "test:job"
     offering_id: "default"
@@ -261,6 +279,14 @@ capabilities:
       extractor: {{type: "response-jsonpath", path: "$.bark_count"}}
     health:
       initial_status: "ready"
+      probe:
+        type: "http-status"
+        interval_ms: 500
+        timeout_ms: 250
+        unhealthy_after: 2
+        healthy_after: 1
+        config:
+          url: "{backend_url}/healthz"
     price:
       amount_wei: "100"
       per_units: 1000
@@ -270,6 +296,212 @@ capabilities:
       auth: "none"
 """
     )
+
+
+async def _seed_customer(database_url: str, *, pepper: str) -> str:
+    """Create one funded SDK principal through LOC's real persistence layer."""
+
+    engine = create_async_engine(database_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with factory() as db:
+            user = User(
+                email=f"live-matrix-{uuid.uuid4().hex}@example.test",
+                email_verified_at=now,
+                password_hash=None,
+            )
+            db.add(user)
+            await db.flush()
+            _key, raw_key = await api_keys_service.create(
+                db,
+                user_id=user.id,
+                label="live-matrix",
+                pepper=pepper,
+            )
+            initial_credit = 10**12
+            db.add(CreditBalance(user_id=user.id, amount_wei=initial_credit))
+            db.add(
+                CreditLedger(
+                    user_id=user.id,
+                    delta_wei=initial_credit,
+                    reason="topup",
+                    related_payment_id=None,
+                    related_topup_id=None,
+                    created_by_operator_id=None,
+                )
+            )
+            await db.commit()
+            return raw_key
+    finally:
+        await engine.dispose()
+
+
+def _broker_headers(job: dict[str, Any]) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "Livepeer-Capability": "test:job",
+        "Livepeer-Offering": "default",
+        "Livepeer-Payment": str(job["payment_envelope"]),
+        "Livepeer-Protocol": str(job["protocol"]),
+        "Livepeer-Request-Id": str(job["request_id"]),
+    }
+
+
+async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matrix
+    loc_url: str, api_key: str
+) -> list[dict[str, Any]]:
+    """Drive paid-job/v1 through public LOC and broker HTTP boundaries."""
+
+    cases: list[dict[str, Any]] = []
+    async with OpenClearinghouseClient(base_url=loc_url, api_key=api_key) as sdk:
+        result = await sdk.submit_job(
+            capability="test:job",
+            offering="default",
+            estimated_units=10_240,
+            max_total_units=10_240,
+            body={"prompt": "live SDK matrix"},
+            request_id=f"sdk-{uuid.uuid4()}",
+        )
+        if result.status != 200 or result.actual_units != 1 or result.work_unit != "tokens":
+            raise AssertionError(f"official SDK paid-job result is invalid: {result!r}")
+        cases.append(
+            {
+                "case": "python_sdk_paid_job",
+                "status": "passed",
+                "request_id": result.request_id,
+                "broker_job_id": result.broker_job_id,
+            }
+        )
+
+    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
+    async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
+        idem_key = f"loc-open-{uuid.uuid4()}"
+        open_body = {
+            "capability": "test:job",
+            "offering": "default",
+            "transport": "unary",
+            "estimated_units": 10_240,
+            "max_total_units": 10_240,
+        }
+        first = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
+        first.raise_for_status()
+        replay = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
+        replay.raise_for_status()
+        if replay.json() != first.json():
+            raise AssertionError("LOC job-open replay did not return the durable result")
+        reuse = await loc.post(
+            "/v1/jobs",
+            headers={"Idempotency-Key": idem_key},
+            json={**open_body, "max_total_units": 10_241},
+        )
+        if reuse.status_code != 409:
+            raise AssertionError(f"LOC request-id reuse returned {reuse.status_code}, want 409")
+        job = first.json()
+        cases.append(
+            {
+                "case": "loc_job_open_idempotency",
+                "status": "passed",
+                "request_id": job["request_id"],
+                "job_id": job["job_id"],
+            }
+        )
+
+        baseline_calls = _BackendHandler.job_calls
+        broker_url = str(job["broker_url"]).rstrip("/")
+        async with httpx.AsyncClient(timeout=10) as broker:
+            broker_first = await broker.post(
+                f"{broker_url}/v1/job",
+                headers=_broker_headers(job),
+                json={"prompt": "withhold settlement"},
+            )
+            broker_first.raise_for_status()
+            broker_replay = await broker.post(
+                f"{broker_url}/v1/job",
+                headers=_broker_headers(job),
+                json={"prompt": "withhold settlement"},
+            )
+            broker_replay.raise_for_status()
+            if _BackendHandler.job_calls != baseline_calls + 1:
+                raise AssertionError("broker replay executed the backend more than once")
+            for header in ("Livepeer-Job-Id", "Livepeer-Settlement", "Livepeer-Work-Units"):
+                if broker_replay.headers.get(header) != broker_first.headers.get(header):
+                    raise AssertionError(f"broker replay changed {header}")
+            broker_reuse = await broker.post(
+                f"{broker_url}/v1/job",
+                headers=_broker_headers(job),
+                json={"prompt": "different content"},
+            )
+            if broker_reuse.status_code != 409:
+                raise AssertionError(
+                    f"broker request-id reuse returned {broker_reuse.status_code}, want 409"
+                )
+            if _BackendHandler.job_calls != baseline_calls + 1:
+                raise AssertionError("broker request-id reuse executed the backend")
+        cases.append(
+            {
+                "case": "broker_job_idempotency",
+                "status": "passed",
+                "request_id": job["request_id"],
+                "broker_job_id": broker_first.headers["Livepeer-Job-Id"],
+            }
+        )
+
+        deadline = time.monotonic() + 10
+        status: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            status_response = await loc.get(f"/v1/jobs/{job['job_id']}")
+            status_response.raise_for_status()
+            status = status_response.json()
+            if status.get("accounting_outcome") == "broker_settled":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(f"LOC did not recover withheld settlement: {status!r}")
+        if status.get("actual_units") != 1 or status.get("broker_exchange_outcome") != "SETTLED":
+            raise AssertionError(f"LOC recovered the wrong broker outcome: {status!r}")
+        cases.append(
+            {
+                "case": "request_id_settlement_recovery",
+                "status": "passed",
+                "request_id": job["request_id"],
+                "accounting_outcome": status["accounting_outcome"],
+            }
+        )
+
+        cross_key = f"loc-cross-{uuid.uuid4()}"
+        cross_open = await loc.post(
+            "/v1/jobs", headers={"Idempotency-Key": cross_key}, json=open_body
+        )
+        cross_open.raise_for_status()
+        cross_job = cross_open.json()
+        encoded = broker_first.headers["Livepeer-Settlement"]
+        settlement = json.loads(__import__("base64").b64decode(encoded, validate=True))
+        cross_settle = await loc.post(
+            cross_job["settle_endpoint"],
+            json={
+                "actual_units": 1,
+                "broker_job_id": broker_first.headers["Livepeer-Job-Id"],
+                "work_unit": "tokens",
+                "settlement": settlement,
+            },
+        )
+        if cross_settle.status_code != 400:
+            raise AssertionError(
+                f"cross-request settlement returned {cross_settle.status_code}, want 400"
+            )
+        cross_status = await loc.get(f"/v1/jobs/{cross_job['job_id']}")
+        cross_status.raise_for_status()
+        if cross_status.json().get("accounting_outcome") != "unresolved":
+            raise AssertionError("cross-request evidence changed financial state")
+        cases.append(
+            {
+                "case": "cross_request_settlement_rejected",
+                "status": "passed",
+                "request_id": cross_job["request_id"],
+            }
+        )
+    return cases
 
 
 def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
@@ -356,6 +588,8 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
 
         settlement_key_path = runtime / "settlement-key.hex"
         settlement_key_path.write_text(SETTLEMENT_KEY.to_bytes().hex() + "\n")
+        sealing_key_path = runtime / "sealing-key.hex"
+        sealing_key_path.write_text((b"\x03" * 32).hex() + "\n")
         broker_paid_port = _free_port()
         broker_metrics_port = _free_port()
         broker_config = runtime / "broker.yaml"
@@ -366,6 +600,8 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             payee_socket=payee_socket,
             backend_url=backend_url,
             settlement_key_path=settlement_key_path,
+            session_store_path=runtime / "broker-state.db",
+            sealing_key_path=sealing_key_path,
         )
         broker_process = _start_process(
             "capability-broker",
@@ -472,8 +708,11 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 "REGISTRY_DAEMON_MODE": "grpc",
                 "REGISTRY_DAEMON_SOCKET": str(registry_socket),
                 "REGISTRY_CACHE_TTL_SECONDS": "0",
+                "API_KEY_HASH_PEPPER": "live-matrix-pepper",
                 "EMAIL_PROVIDER": "null",
                 "AUTO_REPLENISH_CHECK_INTERVAL_SECONDS": "0",
+                "JOB_RECONCILIATION_INTERVAL_SECONDS": "1",
+                "JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS": "0",
                 "SESSION_RECONCILIATION_INTERVAL_SECONDS": "0",
                 "TELEMETRY_RAW_RETENTION_DAYS": "0",
             }
@@ -488,6 +727,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+        api_key = asyncio.run(_seed_customer(database_url, pepper=app_env["API_KEY_HASH_PEPPER"]))
         loc_port = _free_port()
         loc_process = _start_process(
             "livepeer-open-clearinghouse",
@@ -512,6 +752,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             processes,
             timeout=60,
         )
+        cases = asyncio.run(_exercise_job_matrix(loc_url, api_key))
 
         result = {
             "status": "ok",
@@ -520,6 +761,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             "processes": [process.name for process in processes],
             "postgres": "postgres:16-alpine",
             "route": route,
+            "cases": cases,
         }
         (artifacts / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
