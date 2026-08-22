@@ -1201,7 +1201,7 @@ wheels = [
 
 [[package]]
 name = "livepeer-open-clearinghouse"
-version = "1.3.3"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -1284,7 +1284,7 @@ dev = [
 
 [[package]]
 name = "livepeer-open-clearinghouse-sdk"
-version = "1.3.3"
+version = "2.0.0"
 source = { editable = "sdks/python" }
 dependencies = [
     { name = "httpx" },

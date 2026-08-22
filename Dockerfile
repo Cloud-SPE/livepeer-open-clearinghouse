@@ -36,8 +36,7 @@ COPY uv.lock* ./
 # Sync into /opt/venv. --no-install-project so we don't try to install
 # livepeer_open_clearinghouse itself before the source is present.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev || \
-    uv sync --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev
 
 # Layer 2: source. LICENSE + README.md are referenced from pyproject.toml
 # (`license = { file = "LICENSE" }`, `readme = "README.md"`) so hatchling
@@ -52,7 +51,7 @@ COPY alembic.ini ./
 # without it uv installs a .pth pointing at /build/src, which doesn't exist
 # in the runtime stage and Python can't find `livepeer_open_clearinghouse` at startup.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime

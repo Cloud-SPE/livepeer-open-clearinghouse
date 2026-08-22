@@ -22,7 +22,7 @@ use crate::errors::OpenClearinghouseError;
 // SDK identity sent on every LOC request. Operator-side trust scoring
 // keys off this header per the design doc.
 pub const SDK_LANG: &str = "rust";
-pub const SDK_VERSION: &str = "1.3.3";
+pub const SDK_VERSION: &str = "2.0.0";
 pub const SDK_GIT_SHA: &str = "dev";
 
 fn default_sdk_identity() -> String {

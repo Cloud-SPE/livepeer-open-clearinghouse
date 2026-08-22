@@ -72,7 +72,7 @@ async fn submit_job_happy_path() {
 
     Mock::given(method("POST"))
         .and(path("/v1/jobs"))
-        .and(header("Livepeer-Open-Clearinghouse-SDK", "rust/1.3.3/dev"))
+        .and(header("Livepeer-Open-Clearinghouse-SDK", "rust/2.0.0/dev"))
         .and(header("Idempotency-Key", "loc-id-1"))
         .respond_with(ResponseTemplate::new(201).set_body_json(job_open_payload(&broker_uri)))
         .mount(&loc)

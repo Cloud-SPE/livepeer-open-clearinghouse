@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   payment-daemon:
-    image: tztcloud/livepeer-payment-daemon:${LIVEPEER_PAYER_DAEMON_TAG:-v1.3.0}
+    image: tztcloud/livepeer-payment-daemon:${LIVEPEER_PAYER_DAEMON_TAG:-v2.0.0}
     container_name: livepeer-open-clearinghouse-payment-daemon
     command:
       - --mode=sender
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
 
   service-registry-daemon:
-    image: tztcloud/livepeer-service-registry-daemon:${LIVEPEER_REGISTRY_DAEMON_TAG:-v1.3.0}
+    image: tztcloud/livepeer-service-registry-daemon:${LIVEPEER_REGISTRY_DAEMON_TAG:-v2.0.0}
     container_name: livepeer-open-clearinghouse-service-registry-daemon
     command:
       - --mode=resolver

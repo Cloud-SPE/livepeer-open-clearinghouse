@@ -83,7 +83,7 @@ export interface SessionAxes {
 // ---- SDK identity --------------------------------------------------------
 
 export const SDK_LANG = "typescript";
-export const SDK_VERSION = "1.3.3";
+export const SDK_VERSION = "2.0.0";
 export const SDK_GIT_SHA = "dev";
 export const SDK_IDENTITY = `${SDK_LANG}/${SDK_VERSION}/${SDK_GIT_SHA}`;
 
