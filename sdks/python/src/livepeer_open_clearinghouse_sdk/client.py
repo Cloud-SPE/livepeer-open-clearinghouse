@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -423,26 +424,71 @@ class OpenClearinghouseClient:
             job_url = f"{broker_url.rstrip('/')}/v1/job"
             resp = await broker.post(job_url, headers=headers, content=broker_body)
             claim_resp = resp
+            claim_body: dict[str, Any] | None = None
+            initial_job_id = resp.headers.get("livepeer-job-id")
+            if selected_transport == "stream" and not initial_job_id:
+                raise BrokerProtocolError(
+                    "stream response missing Livepeer-Job-Id",
+                    code="broker_protocol_error",
+                    status=resp.status_code,
+                    details={"missing_headers": ["Livepeer-Job-Id"]},
+                )
 
-            # HTTPX does not expose response trailers. The broker retains a
-            # stream's terminal claim and signed settlement under its job id,
-            # where ordinary HTTP clients can retrieve them.
-            if selected_transport == "stream":
-                initial_job_id = resp.headers.get("livepeer-job-id")
-                if not initial_job_id:
-                    raise BrokerProtocolError(
-                        "stream response missing Livepeer-Job-Id",
-                        code="broker_protocol_error",
-                        status=resp.status_code,
-                        details={"missing_headers": ["Livepeer-Job-Id"]},
-                    )
-                settlement_url = f"{broker_url.rstrip('/')}/v1/settlement/{initial_job_id}"
-                for attempt in range(4):
-                    query = await broker.get(settlement_url)
-                    if query.status_code == 202 and attempt < 3:
-                        await asyncio.sleep(0.05 * (2**attempt))
-                        continue
+            # A unary or multipart response can also finish before its debit.
+            # In that case it has an application response and stable job id,
+            # but no signed terminal claim yet. Request-ID lookup is the one
+            # recovery path the caller cannot withhold and works for streams
+            # whose trailers HTTPX cannot expose, so use it for every
+            # non-terminal initial response.
+            terminal_headers = (
+                resp.headers.get("livepeer-work-units"),
+                resp.headers.get("livepeer-work-unit"),
+                initial_job_id,
+                resp.headers.get("livepeer-settlement"),
+            )
+            if not all(terminal_headers):
+                exchange_url = (
+                    f"{broker_url.rstrip('/')}/v1/exchange/{quote(broker_request_id, safe='')}"
+                )
+                for attempt in range(8):
+                    query = await broker.get(exchange_url)
+                    try:
+                        exchange = query.json()
+                    except ValueError as exc:
+                        raise BrokerProtocolError(
+                            "broker exchange lookup returned malformed JSON",
+                            code="broker_protocol_error",
+                            status=query.status_code,
+                        ) from exc
+                    if exchange.get("request_id") != broker_request_id:
+                        raise BrokerProtocolError(
+                            "broker exchange lookup returned a different request id",
+                            code="broker_request_id_mismatch",
+                            status=query.status_code,
+                        )
+                    outcome = exchange.get("outcome")
+                    if query.status_code == 202 and outcome in {
+                        "IN_FLIGHT",
+                        "ACCOUNTING_PENDING",
+                    }:
+                        if attempt < 7:
+                            await asyncio.sleep(0.05 * (2**attempt))
+                            continue
+                        raise BrokerProtocolError(
+                            f"broker exchange remained {outcome}",
+                            code="broker_exchange_pending",
+                            status=query.status_code,
+                            details={"outcome": outcome},
+                        )
+                    if query.status_code != 200 or outcome != "SETTLED":
+                        raise BrokerProtocolError(
+                            f"broker exchange lookup returned {outcome!r}",
+                            code="broker_exchange_unresolved",
+                            status=query.status_code,
+                            details={"outcome": outcome},
+                        )
                     claim_resp = query
+                    claim_body = cast("dict[str, Any]", exchange)
                     break
 
         # 3. Read the terminal claim. Unary/multipart return it directly;
@@ -450,6 +496,13 @@ class OpenClearinghouseClient:
         actual_units_str = claim_resp.headers.get("livepeer-work-units")
         broker_work_unit = claim_resp.headers.get("livepeer-work-unit")
         broker_job_id = claim_resp.headers.get("livepeer-job-id")
+        if claim_body is not None:
+            if actual_units_str is None and claim_body.get("work_units") is not None:
+                actual_units_str = str(claim_body["work_units"])
+            if broker_work_unit is None and claim_body.get("unit") is not None:
+                broker_work_unit = str(claim_body["unit"])
+            if broker_job_id is None and claim_body.get("job_id") is not None:
+                broker_job_id = str(claim_body["job_id"])
         missing = [
             name
             for name, value in (
@@ -469,7 +522,7 @@ class OpenClearinghouseClient:
         assert actual_units_str is not None
         assert broker_work_unit is not None
         assert broker_job_id is not None
-        if selected_transport == "stream" and broker_job_id != initial_job_id:
+        if initial_job_id is not None and broker_job_id != initial_job_id:
             raise BrokerProtocolError(
                 f"settlement query returned job id {broker_job_id!r}; expected {initial_job_id!r}",
                 code="broker_job_id_mismatch",
@@ -499,8 +552,18 @@ class OpenClearinghouseClient:
             "broker_job_id": broker_job_id,
             "work_unit": broker_work_unit,
         }
-        livepeer_settlement = claim_resp.headers.get("livepeer-settlement") or resp.headers.get(
-            "livepeer-settlement"
+        livepeer_settlement = claim_resp.headers.get("livepeer-settlement")
+        body_settlement = claim_body.get("settlement") if claim_body is not None else None
+        if livepeer_settlement is not None and body_settlement not in (None, livepeer_settlement):
+            raise BrokerProtocolError(
+                "broker exchange settlement header and body disagree",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+            )
+        livepeer_settlement = (
+            livepeer_settlement
+            or (str(body_settlement) if body_settlement is not None else None)
+            or resp.headers.get("livepeer-settlement")
         )
         if not livepeer_settlement:
             raise BrokerProtocolError(

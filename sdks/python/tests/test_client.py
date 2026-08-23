@@ -286,14 +286,18 @@ async def test_submit_job_stream_selects_sse_and_settles_terminal_units() -> Non
             headers={"Content-Type": "text/event-stream", **stream_headers},
         )
     )
-    settlement_query = respx.get(f"{BROKER}/v1/settlement/broker-job-1").mock(
+    settlement_query = respx.get(f"{BROKER}/v1/exchange/broker-request-1").mock(
         return_value=httpx.Response(
             200,
             json={
+                "request_id": "broker-request-1",
+                "outcome": "SETTLED",
                 "job_id": "broker-job-1",
                 "state": "terminal",
+                "status": 200,
                 "work_units": 7,
                 "unit": "tokens",
+                "settlement": encoded_settlement,
             },
             headers={**_broker_headers(7), "Livepeer-Settlement": encoded_settlement},
         )
@@ -318,6 +322,70 @@ async def test_submit_job_stream_selects_sse_and_settles_terminal_units() -> Non
     assert result.transport == "stream"
     assert result.actual_units == 7
     assert json.loads(settle_call.calls[0].request.content)["settlement"] == signed_settlement
+
+
+@respx.mock
+async def test_submit_job_polls_request_id_when_unary_accounting_is_pending() -> None:
+    jid = "00000000-0000-0000-0000-000000000eee"
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=_job_open(jid)))
+    respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(
+            200,
+            json={"ok": True},
+            headers={
+                "Livepeer-Job-Id": "broker-job-1",
+                "Livepeer-Work-Unit": "token",
+            },
+        )
+    )
+    exchange = respx.get(f"{BROKER}/v1/exchange/broker-request-1").mock(
+        side_effect=[
+            httpx.Response(
+                202,
+                json={
+                    "request_id": "broker-request-1",
+                    "outcome": "ACCOUNTING_PENDING",
+                    "job_id": "broker-job-1",
+                    "state": "accounting_pending",
+                    "work_units": 7,
+                    "unit": "token",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "request_id": "broker-request-1",
+                    "outcome": "SETTLED",
+                    "job_id": "broker-job-1",
+                    "state": "terminal",
+                    "status": 200,
+                    "work_units": 7,
+                    "unit": "token",
+                    "settlement": ENCODED_SETTLEMENT,
+                },
+                headers={
+                    "Livepeer-Job-Id": "broker-job-1",
+                    "Livepeer-Work-Units": "7",
+                    "Livepeer-Settlement": ENCODED_SETTLEMENT,
+                },
+            ),
+        ]
+    )
+    settle_call = respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=7))
+    )
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        result = await client.submit_job(
+            capability="x",
+            offering="x",
+            estimated_units=10,
+            body={"prompt": "hello"},
+        )
+
+    assert len(exchange.calls) == 2
+    assert result.actual_units == 7
+    assert json.loads(settle_call.calls[0].request.content)["settlement"] == SIGNED_SETTLEMENT
 
 
 @respx.mock

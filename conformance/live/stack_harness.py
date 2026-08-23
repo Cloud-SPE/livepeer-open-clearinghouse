@@ -409,17 +409,38 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
 
         baseline_calls = _BackendHandler.job_calls
         broker_url = str(job["broker_url"]).rstrip("/")
+        broker_body = b'{"prompt":"withhold settlement"}'
         async with httpx.AsyncClient(timeout=10) as broker:
             broker_first = await broker.post(
                 f"{broker_url}/v1/job",
                 headers=_broker_headers(job),
-                json={"prompt": "withhold settlement"},
+                content=broker_body,
             )
             broker_first.raise_for_status()
+
+            # Payment accounting may finish after a unary response. Wait on
+            # the request-id lookup before replaying so this case tests a
+            # completed replay rather than the separately valid job_in_flight
+            # response. This is also the recovery handle LOC owns even when a
+            # customer withholds the broker job id and settlement.
+            exchange: dict[str, Any] = {}
+            for _ in range(40):
+                exchange_response = await broker.get(
+                    f"{broker_url}/v1/exchange/{job['request_id']}"
+                )
+                exchange = exchange_response.json()
+                if exchange.get("outcome") == "SETTLED":
+                    break
+                if exchange.get("outcome") not in {"IN_FLIGHT", "ACCOUNTING_PENDING"}:
+                    raise AssertionError(f"broker exchange did not settle: {exchange!r}")
+                await asyncio.sleep(0.25)
+            else:
+                raise AssertionError(f"broker exchange remained pending: {exchange!r}")
+
             broker_replay = await broker.post(
                 f"{broker_url}/v1/job",
                 headers=_broker_headers(job),
-                json={"prompt": "withhold settlement"},
+                content=broker_body,
             )
             broker_replay.raise_for_status()
             if _BackendHandler.job_calls != baseline_calls + 1:
@@ -430,11 +451,11 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
             broker_reuse = await broker.post(
                 f"{broker_url}/v1/job",
                 headers=_broker_headers(job),
-                json={"prompt": "different content"},
+                content=b'{"prompt":"different content"}',
             )
-            if broker_reuse.status_code != 409:
+            if broker_reuse.status_code != 400:
                 raise AssertionError(
-                    f"broker request-id reuse returned {broker_reuse.status_code}, want 409"
+                    f"broker request-id reuse returned {broker_reuse.status_code}, want 400"
                 )
             if _BackendHandler.job_calls != baseline_calls + 1:
                 raise AssertionError("broker request-id reuse executed the backend")
@@ -443,7 +464,7 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 "case": "broker_job_idempotency",
                 "status": "passed",
                 "request_id": job["request_id"],
-                "broker_job_id": broker_first.headers["Livepeer-Job-Id"],
+                "broker_job_id": exchange["job_id"],
             }
         )
 
@@ -475,13 +496,13 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         )
         cross_open.raise_for_status()
         cross_job = cross_open.json()
-        encoded = broker_first.headers["Livepeer-Settlement"]
+        encoded = exchange["settlement"]
         settlement = json.loads(__import__("base64").b64decode(encoded, validate=True))
         cross_settle = await loc.post(
             cross_job["settle_endpoint"],
             json={
                 "actual_units": 1,
-                "broker_job_id": broker_first.headers["Livepeer-Job-Id"],
+                "broker_job_id": exchange["job_id"],
                 "work_unit": "tokens",
                 "settlement": settlement,
             },
