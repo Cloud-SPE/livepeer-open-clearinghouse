@@ -95,6 +95,12 @@ ticket_validity_period_observed_at: string  # RFC3339 observation timestamp
   so repeated calls reuse `recipient_rand_hash` and increment nonce.
 - EV is `face_value × win_prob / 2^256`, computed by the daemon and
   returned in `expected_value`. The caller does not compute EV.
+- A successful response MUST echo the requested `funded_value_wei` exactly
+  and its `expected_value` MUST be at least that funding intent. The receiver
+  may choose a probabilistic ticket whose face value is greater than the
+  intent so its credited EV covers the intent. Livepeer Open Clearinghouse
+  rejects the envelope before persisting or returning it if either invariant
+  fails.
 - `face_value` from `funding.funded_value_wei` is a **request**, not
   authoritative — the receiver chooses the final `face_value` × `win_prob`
   pair. EV in the response is the authoritative value.

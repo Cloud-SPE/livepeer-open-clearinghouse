@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -41,7 +42,11 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     ProtocolNotSupportedForSession,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    InsufficientCredit,
+    NoRouteAvailable,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
@@ -214,6 +219,36 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert any(
         e.reason == "session_encumbrance" and e.delta_wei == Decimal(-7_200_000) for e in ledger
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_payment_ev_below_initial_funding(
+    db_session: AsyncSession,
+) -> None:
+    class UnderfundedDaemon(MockPaymentDaemonClient):
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            return replace(response, expected_value=Decimal(2))
+
+    user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            estimated_runway_units=3,
+            max_total_units=6,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")]),
+            daemon=UnderfundedDaemon(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
 
 
 # ---- error paths ----

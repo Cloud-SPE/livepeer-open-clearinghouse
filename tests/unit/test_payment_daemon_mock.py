@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -13,6 +14,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     MockPaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
+    validate_funding_response,
 )
 
 
@@ -106,6 +108,18 @@ async def test_ev_ratio_below_one() -> None:
     res = await client.create_payment(_request(100))
     assert res.expected_value == Decimal(50)
     assert res.funded_value_wei == Decimal(100)
+
+
+@pytest.mark.unit
+async def test_funding_response_requires_exact_echo_and_sufficient_ev() -> None:
+    request = _request(3_000)
+    response = await MockPaymentDaemonClient().create_payment(request)
+    validate_funding_response(request, response)
+
+    with pytest.raises(PaymentDaemonError, match="does not echo"):
+        validate_funding_response(request, replace(response, funded_value_wei=Decimal(2_999)))
+    with pytest.raises(PaymentDaemonError, match="does not cover"):
+        validate_funding_response(request, replace(response, expected_value=Decimal(2)))
 
 
 @pytest.mark.unit

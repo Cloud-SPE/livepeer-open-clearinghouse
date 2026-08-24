@@ -141,6 +141,23 @@ class PaymentDaemonClient(Protocol):
     async def health(self) -> bool: ...
 
 
+def validate_funding_response(
+    request: CreatePaymentRequest, response: CreatePaymentResponse
+) -> CreatePaymentResponse:
+    """Fail closed unless the minted envelope funds the caller's intent."""
+
+    requested = request.funding.funded_value_wei
+    if response.funded_value_wei != requested:
+        raise PaymentDaemonError(
+            "daemon funded_value_wei does not echo the requested funding intent"
+        )
+    if response.expected_value < requested:
+        raise PaymentDaemonError(
+            "daemon expected_value does not cover the requested funding intent"
+        )
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Mock implementation — used in Phase 7 and tests
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon.client import (
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
+    validate_funding_response,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "PaymentDaemonClient",
     "PaymentDaemonError",
     "QuoteRef",
+    "validate_funding_response",
 ]

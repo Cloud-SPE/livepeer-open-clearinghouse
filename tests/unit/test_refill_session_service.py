@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -846,6 +847,40 @@ async def test_refill_will_refuse_next_refill_when_approaching_session_cap(
 
 
 # ---- error paths ----
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refill_rejects_payment_ev_below_refill_funding(
+    db_session: AsyncSession,
+) -> None:
+    class UnderfundedRefillDaemon(MockPaymentDaemonClient):
+        reject_next = False
+
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            if self.reject_next:
+                return replace(response, expected_value=Decimal(2))
+            return response
+
+    daemon = UnderfundedRefillDaemon()
+    user_id, key_id, opened, _ = await _open_extensible_session(db_session, daemon=daemon)
+    daemon.reject_next = True
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=opened.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=0,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+    payments = (
+        await db_session.scalars(select(Payment).where(Payment.session_id == opened.session_id))
+    ).all()
+    assert len(payments) == 1
 
 
 @pytest.mark.unit

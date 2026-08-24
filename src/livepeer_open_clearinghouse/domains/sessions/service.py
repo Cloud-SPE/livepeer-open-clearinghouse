@@ -59,6 +59,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
+    validate_funding_response,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
 from livepeer_open_clearinghouse.providers.settlement_verification import (
@@ -505,7 +506,9 @@ async def open_session(
         ),
     )
     try:
-        daemon_response = await daemon.create_payment(daemon_request)
+        daemon_response = validate_funding_response(
+            daemon_request, await daemon.create_payment(daemon_request)
+        )
     except MintOutcomeUnknown as exc:
         from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
 
@@ -787,7 +790,9 @@ async def _mint_refill(
         ),
     )
     try:
-        return await daemon.create_payment(daemon_request)
+        return validate_funding_response(
+            daemon_request, await daemon.create_payment(daemon_request)
+        )
     except MintOutcomeUnknown as exc:
         from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
 

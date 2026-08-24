@@ -472,6 +472,31 @@ async def test_open_job_rejects_invalid_envelope_expiry(db_session: AsyncSession
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_open_job_rejects_payment_ev_below_funding_intent(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=30,
+            max_total_units=30,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route()]),
+            daemon=MockPaymentDaemonClient(ev_ratio=Decimal("0.001")),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_open_job_rejects_no_route(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
     daemon = MockPaymentDaemonClient()
