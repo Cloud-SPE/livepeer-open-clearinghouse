@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -41,6 +42,11 @@ from registry_seed_probe import (  # type: ignore[import-not-found]
 )
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from livepeer_open_clearinghouse._gen.livepeer.payments.v1 import (
+    payee_admin_pb2,
+    payee_admin_pb2_grpc,
+    types_pb2,
+)
 from livepeer_open_clearinghouse.domains.accounts.repo import User
 from livepeer_open_clearinghouse.domains.admin import repo as _admin_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.api_keys import service as api_keys_service
@@ -48,6 +54,8 @@ from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance, Cred
 from livepeer_open_clearinghouse.domains.payments import repo as _payments_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.sessions import repo as _sessions_repo  # noqa: F401
 from livepeer_open_clearinghouse.providers.registry_daemon import GrpcRegistryClient
+
+_PAYEE_ADMIN_TOKEN = "live-matrix-payee-admin"  # noqa: S105 — disposable harness secret
 
 
 class _BackendHandler(BaseHTTPRequestHandler):
@@ -770,6 +778,166 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     return cases
 
 
+def _rotate_payee_recipient(payee_socket: Path, payment_envelope: str) -> str:
+    """Rotate the exact payer/payee tuple carried by a live payment."""
+
+    payment = types_pb2.Payment()
+    payment.ParseFromString(base64.b64decode(payment_envelope, validate=True))
+    channel = grpc.insecure_channel(f"unix://{payee_socket}")
+    try:
+        response = payee_admin_pb2_grpc.PayeeAdminStub(channel).ResetSession(  # type: ignore[no-untyped-call]
+            payee_admin_pb2.ResetSessionRequest(
+                sender=payment.sender,
+                recipient=payment.ticket_params.recipient,
+                capability="test:session",
+                offering="default",
+            ),
+            metadata=(("authorization", f"Bearer {_PAYEE_ADMIN_TOKEN}"),),
+            timeout=5,
+        )
+    finally:
+        channel.close()
+    if not response.reset or not response.old_work_id:
+        raise AssertionError(f"payee did not rotate its recipient: {response!r}")
+    return str(response.old_work_id)
+
+
+async def _exercise_session_rotation(
+    loc_url: str, api_key: str, payee_socket: Path
+) -> dict[str, Any]:
+    """Prove stale-refill rejection and an exactly-once replacement rebind."""
+
+    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
+    async with (
+        httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc,
+        httpx.AsyncClient(timeout=10) as broker,
+    ):
+        opened_response = await loc.post(
+            "/v1/sessions",
+            headers={"Idempotency-Key": f"rotation-open-{uuid.uuid4()}"},
+            json={
+                "capability": "test:session",
+                "offering": "default",
+                "descriptor_schema": "test-runtime/v1",
+                "session_params": {"name": "rotation-matrix"},
+                "estimated_runway_units": 6_000,
+                "max_total_units": 18_000,
+            },
+        )
+        opened_response.raise_for_status()
+        opened = opened_response.json()
+        broker_url = str(opened["broker_url"]).rstrip("/")
+        broker_open = await broker.post(
+            f"{broker_url}/v1/session",
+            headers={
+                "Content-Type": "application/json",
+                "Livepeer-Capability": "test:session",
+                "Livepeer-Offering": "default",
+                "Livepeer-Payment": str(opened["payment_envelope"]),
+                "Livepeer-Protocol": str(opened["protocol"]),
+                "Livepeer-Request-Id": str(opened["request_id"]),
+            },
+            content=json.dumps(
+                {
+                    "gateway_session_id": opened["session_id"],
+                    "session_params": {"name": "rotation-matrix"},
+                },
+                separators=(",", ":"),
+            ).encode(),
+        )
+        broker_open.raise_for_status()
+        session = broker_open.json()
+
+        stale_response = await loc.post(
+            opened["refill_endpoint"],
+            headers={"Idempotency-Key": f"rotation-stale-{uuid.uuid4()}"},
+            json={"observed_consumed_units": 0},
+        )
+        stale_response.raise_for_status()
+        stale = stale_response.json()
+        predecessor = _rotate_payee_recipient(payee_socket, str(stale["payment_envelope"]))
+        if predecessor != stale["work_id"] or predecessor != opened["work_id"]:
+            raise AssertionError("payee rotated a different payment identity than the LOC session")
+
+        stale_topup = await broker.post(
+            session["control"]["topup_url"],
+            headers={
+                "Authorization": f"Bearer {session['credential']}",
+                "Livepeer-Payment": str(stale["payment_envelope"]),
+                "Livepeer-Request-Id": str(stale["request_id"]),
+            },
+        )
+        if (
+            stale_topup.status_code != 409
+            or stale_topup.headers.get("Livepeer-Error") != "recipient_rotated"
+        ):
+            raise AssertionError(
+                "stale refill did not return the recipient_rotated contract: "
+                f"{stale_topup.status_code} {stale_topup.text}"
+            )
+
+        replacement_response = await loc.post(
+            opened["refill_endpoint"],
+            headers={"Idempotency-Key": f"rotation-successor-{uuid.uuid4()}"},
+            json={
+                "observed_consumed_units": 0,
+                "rebind_from": predecessor,
+                "replaces_request_id": stale["request_id"],
+            },
+        )
+        replacement_response.raise_for_status()
+        replacement = replacement_response.json()
+        if replacement["work_id"] == predecessor or replacement["rebind_from"] != predecessor:
+            raise AssertionError("LOC did not mint a successor bound to the predecessor")
+
+        rebind_headers = {
+            "Authorization": f"Bearer {session['credential']}",
+            "Livepeer-Payment": str(replacement["payment_envelope"]),
+            "Livepeer-Request-Id": str(replacement["request_id"]),
+            "Livepeer-Rebind-From": predecessor,
+        }
+        rebound = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
+        rebound.raise_for_status()
+        rebound_replay = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
+        rebound_replay.raise_for_status()
+        if rebound_replay.json() != rebound.json():
+            raise AssertionError("broker rotation replay changed the recorded outcome")
+
+        ended = await broker.post(
+            session["control"]["end_url"],
+            headers={"Authorization": f"Bearer {session['credential']}"},
+            json={"reason": "rotation_conformance_complete"},
+        )
+        ended.raise_for_status()
+        encoded = ended.headers.get("Livepeer-Settlement")
+        if not encoded:
+            raise AssertionError("rotated session end omitted its signed settlement")
+        settlement = json.loads(base64.b64decode(encoded, validate=True))
+        payload = settlement.get("payload", {})
+        if (
+            payload.get("rotation_generation") != 1
+            or payload.get("predecessor_work_id") != predecessor
+            or payload.get("work_id") != replacement["work_id"]
+        ):
+            raise AssertionError(f"rotated settlement lost its identity chain: {payload!r}")
+        closed = await loc.post(
+            opened["close_endpoint"],
+            json={"actual_units": 0, "settlement": settlement},
+        )
+        closed.raise_for_status()
+        if closed.json().get("outcome") != "OVERFUNDED":
+            raise AssertionError(f"rotated LOC close is invalid: {closed.json()!r}")
+
+        return {
+            "case": "session_recipient_rotation_rebind",
+            "status": "passed",
+            "session_id": opened["session_id"],
+            "predecessor_work_id": predecessor,
+            "work_id": replacement["work_id"],
+            "rotation_generation": payload["rotation_generation"],
+        }
+
+
 def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
     for command in ("docker", "git", "go", "uv"):
         if shutil.which(command) is None:
@@ -840,6 +1008,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 f"--socket={payee_socket}",
                 f"--db={runtime / 'payee.db'}",
                 f"--orch-address={COLD_KEY.public_key.to_address()}",
+                f"--payee-admin-token={_PAYEE_ADMIN_TOKEN}",
             ],
             artifacts,
             processes,
@@ -1059,6 +1228,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             }
         )
         cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
+        cases.append(asyncio.run(_exercise_session_rotation(loc_url, api_key, payee_socket)))
 
         result = {
             "status": "ok",
