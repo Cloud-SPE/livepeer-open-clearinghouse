@@ -181,6 +181,15 @@ def _http_json(url: str) -> dict[str, Any]:
     return payload
 
 
+def _job_exchange(broker_url: str, request_id: str) -> dict[str, Any]:
+    response = httpx.get(f"{broker_url.rstrip('/')}/v1/exchange/{request_id}", timeout=5)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise TypeError("broker exchange lookup did not return an object")
+    return payload
+
+
 def _start_process(
     name: str,
     command: list[str],
@@ -1010,6 +1019,45 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             timeout=60,
         )
         cases = asyncio.run(_exercise_job_matrix(loc_url, api_key))
+
+        recovery_case = next(
+            case for case in cases if case["case"] == "request_id_settlement_recovery"
+        )
+        recovery_request_id = str(recovery_case["request_id"])
+        before_restart = _job_exchange(broker_url, recovery_request_id)
+        if before_restart.get("outcome") != "SETTLED" or not before_restart.get("settlement"):
+            raise AssertionError(
+                f"broker held no terminal evidence before restart: {before_restart!r}"
+            )
+        broker_process.stop()
+        processes.remove(broker_process)
+        restarted_broker = _start_process(
+            "capability-broker-restarted",
+            [str(broker_bin), f"--config={broker_config}"],
+            artifacts,
+            processes,
+            cwd=modules_repo / "capability-broker",
+        )
+        stack.callback(restarted_broker.stop)
+        _wait_for(
+            "restarted broker registry health",
+            lambda: any(
+                cap.get("id") == "test:job" and cap.get("status") == "ready"
+                for cap in _http_json(f"{broker_url}/registry/health").get("capabilities", [])
+            ),
+            processes,
+        )
+        after_restart = _job_exchange(broker_url, recovery_request_id)
+        if after_restart != before_restart:
+            raise AssertionError("broker restart changed retained request-ID settlement evidence")
+        cases.append(
+            {
+                "case": "request_id_settlement_survives_broker_restart",
+                "status": "passed",
+                "request_id": recovery_request_id,
+                "broker_job_id": after_restart["job_id"],
+            }
+        )
         cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
 
         result = {
