@@ -26,6 +26,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon.client import (
     dataclass_request_to_proto,
     int_to_biguint_bytes,
     proto_response_to_dataclass,
+    validate_funding_response,
 )
 
 
@@ -133,6 +134,7 @@ def test_proto_response_to_dataclass() -> None:
             route_fingerprint=b"\x33" * 32,
         ),
         work_id="deadbeef" * 8,
+        predecessor_work_id="cafebabe" * 8,
         creation_round=700,
         expires_after_round=702,
         ticket_validity_period=3,
@@ -147,6 +149,7 @@ def test_proto_response_to_dataclass() -> None:
     assert dc.accepted_quote_ref.quote_id == "q-2"
     assert dc.accepted_quote_ref.quote_version == 3
     assert dc.work_id == "deadbeef" * 8
+    assert dc.predecessor_work_id == "cafebabe" * 8
     assert dc.creation_round == 700
     assert dc.expires_after_round == 702
     assert dc.ticket_validity_period == 3
@@ -176,6 +179,27 @@ def test_proto_response_rejects_invalid_validity_telemetry(
     )
     with pytest.raises(PaymentDaemonError):
         proto_response_to_dataclass(proto)
+
+
+@pytest.mark.unit
+def test_funding_response_rejects_self_referential_predecessor() -> None:
+    request = _sample_request(funded_wei=50_000)
+    from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
+
+    proto = payer_daemon_pb2.CreatePaymentResponse(
+        expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
+        funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
+        accepted_quote_ref=types_pb2.QuoteRef(),
+        work_id="ab" * 32,
+        predecessor_work_id="ab" * 32,
+        creation_round=700,
+        expires_after_round=702,
+        ticket_validity_period=3,
+        ticket_validity_period_observed_at="2026-08-21T12:00:00Z",
+    )
+
+    with pytest.raises(PaymentDaemonError, match="self-referential"):
+        validate_funding_response(request, proto_response_to_dataclass(proto))
 
 
 @pytest.mark.unit

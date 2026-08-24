@@ -139,6 +139,13 @@ the audit record. If the broker refuses the declared rebind, the SDK emits one
 `payment_unrecoverable` winddown warning and lets the funded session drain. It
 does not attempt another rotation.
 
+The payer can avoid the rejected-ticket round trip by rotating proactively at
+its nonce boundary. In that case `CreatePaymentResponse.predecessor_work_id`
+is non-empty only when the work ID actually changed. LOC requires it to equal
+the session's locked current work ID, advances the generation exactly once,
+and returns the ordinary rebind response to the SDK. The broker-facing steps
+3–4 above are unchanged; there is no refused payment to refund in this path.
+
 ---
 
 ## 5. SDK criticality

@@ -120,6 +120,7 @@ class CreatePaymentResponse:
     expires_after_round: int
     ticket_validity_period: int
     ticket_validity_period_observed_at: datetime
+    predecessor_work_id: str = ""
 
     @property
     def payment_bytes_b64(self) -> str:
@@ -155,6 +156,8 @@ def validate_funding_response(
         raise PaymentDaemonError(
             "daemon expected_value does not cover the requested funding intent"
         )
+    if response.predecessor_work_id and response.predecessor_work_id == response.work_id:
+        raise PaymentDaemonError("daemon returned a self-referential predecessor_work_id")
     return response
 
 
@@ -177,6 +180,7 @@ class MockPaymentDaemonClient:
         # by the receiver's faceValue/winProb choice.
         self._ev_ratio = ev_ratio
         self._mint_replays: dict[str, tuple[CreatePaymentRequest, CreatePaymentResponse]] = {}
+        self._session_work_ids: dict[tuple[bytes, str, str, str], str] = {}
         self.reported_invalid_recipient_rands: list[tuple[str, str, str]] = []
 
     async def health(self) -> bool:
@@ -198,6 +202,9 @@ class MockPaymentDaemonClient:
     ) -> None:
         """Record the expected payer-cache eviction in the test double."""
         self.reported_invalid_recipient_rands.append((work_id, capability, offering))
+        for key, cached_work_id in tuple(self._session_work_ids.items()):
+            if cached_work_id == work_id and key[1:3] == (capability, offering):
+                del self._session_work_ids[key]
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
         if not request.mint_request_id:
@@ -220,7 +227,13 @@ class MockPaymentDaemonClient:
             + request.accepted_price.quote_ref.quote_id.encode("utf-8")
             + request.mint_request_id.encode("utf-8")
         ).digest()
-        work_id = digest.hex()
+        session_key = (
+            request.recipient,
+            request.accepted_price.capability,
+            request.accepted_price.offering,
+            request.ticket_params_base_url,
+        )
+        work_id = self._session_work_ids.setdefault(session_key, digest.hex())
 
         # The body of payment_bytes is a stable, recognizable stub: a magic
         # marker + serialized request summary. Not wire-compatible.
@@ -337,6 +350,7 @@ def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore
             route_fingerprint=bytes(proto.accepted_quote_ref.route_fingerprint),
         ),
         work_id=proto.work_id,
+        predecessor_work_id=proto.predecessor_work_id,
         creation_round=int(proto.creation_round),
         expires_after_round=int(proto.expires_after_round),
         ticket_validity_period=int(proto.ticket_validity_period),

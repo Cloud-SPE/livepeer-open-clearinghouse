@@ -63,12 +63,12 @@ async def test_payment_bytes_has_recognizable_magic() -> None:
 
 
 @pytest.mark.unit
-async def test_work_id_is_hex_and_carries_request_signal() -> None:
+async def test_work_id_is_hex_and_stable_for_one_payment_session() -> None:
     client = MockPaymentDaemonClient()
     a = await client.create_payment(_request(mint_request_id="loc:a"))
     b = await client.create_payment(_request(mint_request_id="loc:b"))
-    # work_id derives from a nonce; two calls produce different ids
-    assert a.work_id != b.work_id
+    # The payer caches one recipient rand for the stable session tuple.
+    assert a.work_id == b.work_id
     # 64 hex chars = sha256
     assert len(a.work_id) == 64
     int(a.work_id, 16)  # raises if not hex

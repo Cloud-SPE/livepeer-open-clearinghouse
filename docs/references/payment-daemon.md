@@ -175,6 +175,7 @@ No explicit expiry timestamp on the ticket; freshness is via
 |---|---|---|
 | `--mode=sender` | required | daemon mode |
 | `--socket` | default `/var/run/livepeer/payer-daemon.sock` | UDS path |
+| `--db` | default `/var/lib/livepeer/payment-daemon/sessions.db` | durable mint idempotency, sender nonce watermarks, and session state |
 | `--chain-rpc` | required for prod | Ethereum JSON-RPC (Arbitrum) |
 | `--keystore-path` | required for prod | V3 keystore file |
 | `--keystore-password-file` *or* `LIVEPEER_KEYSTORE_PASSWORD` | required for prod | keystore password |
@@ -183,7 +184,10 @@ No explicit expiry timestamp on the ticket; freshness is via
 | `--chain-controller-address` | optional | override Controller address |
 | `--expected-chain-id` | default Arbitrum One | sanity-check |
 
-Sender mode does not use a DB; sessions are in-memory.
+Sender mode keeps a BoltDB. The mount must survive restarts: mint replay and
+sender nonce high-water recovery depend on it. The payee's reported
+`highest_seen_nonce` is an authoritative restart backstop, not a replacement
+for preserving this store.
 
 ## Deployment
 
@@ -198,7 +202,10 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
 
 ## Gotchas
 
-- **One ticket per call.** Need N → call N times.
+- **A payment may contain multiple tickets.** The payer sizes the batch so its
+  credited EV covers `funded_value_wei`, refuses a batch above 600 tickets, and
+  rotates the recipient before a cached session would cross its cumulative
+  600-nonce budget.
 - **`ticket_params_base_url` is required per call.** Livepeer Open Clearinghouse must know
   the orchestrator's broker URL (it comes from
   `service-registry-daemon.Select().worker_url`).
@@ -206,6 +213,10 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
   Latency includes this round-trip.
 - **`AcceptedPrice.quote_ref` is strictly validated.** Triplet must be
   non-empty. Livepeer Open Clearinghouse synthesizes/forwards from `Select()`.
+- **`CreatePaymentResponse.predecessor_work_id` is a strict rollover signal.**
+  It is empty unless `work_id` actually changed. Jobs adopt the successor;
+  sessions accept it only when the predecessor is their locked current work
+  ID and then use their existing broker rebind flow.
 - **Caller-supplied `face_value` is a request, not authoritative.** Trust
   `response.expected_value` for charging.
 - **No multi-wallet support.** One daemon process, one wallet. Per-tenant

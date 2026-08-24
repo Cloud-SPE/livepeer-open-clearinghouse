@@ -974,6 +974,145 @@ async def _exercise_session_rotation(
         }
 
 
+async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str) -> dict[str, Any]:
+    """Cross the real 600-ticket boundary through LOC and broker APIs."""
+
+    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
+    estimated_units = 6_000
+    total_payments = 601
+    async with (
+        httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=20) as loc,
+        httpx.AsyncClient(timeout=20) as broker,
+    ):
+        opened_response = await loc.post(
+            "/v1/sessions",
+            headers={"Idempotency-Key": f"proactive-open-{uuid.uuid4()}"},
+            json={
+                "capability": "test:session",
+                "offering": "default",
+                "descriptor_schema": "test-runtime/v1",
+                "session_params": {"name": "proactive-nonce-boundary"},
+                "estimated_runway_units": estimated_units,
+                "max_total_units": estimated_units * total_payments,
+            },
+        )
+        opened_response.raise_for_status()
+        opened = opened_response.json()
+        predecessor = str(opened["work_id"])
+        broker_url = str(opened["broker_url"]).rstrip("/")
+        broker_open = await broker.post(
+            f"{broker_url}/v1/session",
+            headers={
+                "Content-Type": "application/json",
+                "Livepeer-Capability": "test:session",
+                "Livepeer-Offering": "default",
+                "Livepeer-Payment": str(opened["payment_envelope"]),
+                "Livepeer-Protocol": str(opened["protocol"]),
+                "Livepeer-Request-Id": str(opened["request_id"]),
+            },
+            content=json.dumps(
+                {
+                    "gateway_session_id": opened["session_id"],
+                    "session_params": {"name": "proactive-nonce-boundary"},
+                },
+                separators=(",", ":"),
+            ).encode(),
+        )
+        broker_open.raise_for_status()
+        session = broker_open.json()
+
+        # Payments may contain more than one ticket, so the authoritative
+        # boundary is the payer's declared predecessor rather than a guessed
+        # payment ordinal. This funded range must cross 600 accepted tickets.
+        boundary: dict[str, Any] | None = None
+        boundary_payment = 0
+        for payment_number in range(2, total_payments + 1):
+            refill_key = f"proactive-{payment_number}-{uuid.uuid4()}"
+            refill_response = await loc.post(
+                opened["refill_endpoint"],
+                headers={"Idempotency-Key": refill_key},
+                json={"observed_consumed_units": 0},
+            )
+            refill_response.raise_for_status()
+            refill = refill_response.json()
+            if refill.get("rebind_from") is not None:
+                if refill["work_id"] == predecessor or refill.get("rebind_from") != predecessor:
+                    raise AssertionError(f"LOC lost the proactive rollover pair: {refill!r}")
+                replay = await loc.post(
+                    opened["refill_endpoint"],
+                    headers={"Idempotency-Key": refill_key},
+                    json={"observed_consumed_units": 0},
+                )
+                replay.raise_for_status()
+                if replay.json() != refill:
+                    raise AssertionError(
+                        "proactive LOC rollover replay changed its durable response"
+                    )
+                boundary = refill
+                boundary_payment = payment_number
+                break
+            if refill["work_id"] != predecessor:
+                raise AssertionError(f"payer silently changed work ID at payment {payment_number}")
+            topup = await broker.post(
+                session["control"]["topup_url"],
+                headers={
+                    "Authorization": f"Bearer {session['credential']}",
+                    "Livepeer-Payment": str(refill["payment_envelope"]),
+                    "Livepeer-Request-Id": str(refill["request_id"]),
+                },
+            )
+            topup.raise_for_status()
+
+        if boundary is None:
+            raise AssertionError(f"payer did not rotate within {total_payments} funded payments")
+
+        rebind_headers = {
+            "Authorization": f"Bearer {session['credential']}",
+            "Livepeer-Payment": str(boundary["payment_envelope"]),
+            "Livepeer-Request-Id": str(boundary["request_id"]),
+            "Livepeer-Rebind-From": predecessor,
+        }
+        rebound = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
+        rebound.raise_for_status()
+        rebound_replay = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
+        rebound_replay.raise_for_status()
+        if rebound_replay.json() != rebound.json():
+            raise AssertionError("proactive broker rebind replay changed its durable response")
+
+        ended = await broker.post(
+            session["control"]["end_url"],
+            headers={"Authorization": f"Bearer {session['credential']}"},
+            json={"reason": "proactive_nonce_boundary_complete"},
+        )
+        ended.raise_for_status()
+        encoded = ended.headers.get("Livepeer-Settlement")
+        if not encoded:
+            raise AssertionError("proactively rotated session omitted terminal settlement")
+        settlement = json.loads(base64.b64decode(encoded, validate=True))
+        payload = settlement.get("payload", {})
+        if (
+            payload.get("rotation_generation") != 1
+            or payload.get("predecessor_work_id") != predecessor
+            or payload.get("work_id") != boundary["work_id"]
+        ):
+            raise AssertionError(f"proactive settlement lost its identity chain: {payload!r}")
+        closed = await loc.post(
+            opened["close_endpoint"],
+            json={"actual_units": 0, "settlement": settlement},
+        )
+        closed.raise_for_status()
+
+        return {
+            "case": "session_proactive_nonce_boundary_rotation",
+            "status": "passed",
+            "session_id": opened["session_id"],
+            "rollover_payment": boundary_payment,
+            "predecessor_work_id": predecessor,
+            "work_id": boundary["work_id"],
+            "rotation_generation": payload["rotation_generation"],
+        }
+
+
 async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault lifecycle
     loc_url: str,
     api_key: str,
@@ -1366,6 +1505,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
         )
         cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
         cases.append(asyncio.run(_exercise_session_rotation(loc_url, api_key, payee_socket)))
+        cases.append(asyncio.run(_exercise_proactive_nonce_boundary_rotation(loc_url, api_key)))
 
         def stop_payee_for_fault() -> None:
             payee_process.stop()
@@ -1416,10 +1556,13 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
 
 
 def _grpc_ready(channel: grpc.Channel) -> bool:
+    ready = grpc.channel_ready_future(channel)
     try:
-        grpc.channel_ready_future(channel).result(timeout=0.2)
+        ready.result(timeout=0.2)
     except grpc.FutureTimeoutError:
         return False
+    finally:
+        ready.cancel()
     return True
 
 

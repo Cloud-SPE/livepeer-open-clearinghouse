@@ -803,6 +803,40 @@ async def _mint_refill(
         ) from exc
 
 
+def _resolve_refill_work_id(
+    *,
+    current_work_id: str,
+    response: CreatePaymentResponse,
+    reactive_predecessor: str | None,
+) -> tuple[str, str | None]:
+    """Validate a payer rollover and return successor plus SDK rebind ID."""
+
+    daemon_predecessor = response.predecessor_work_id or None
+    if daemon_predecessor is not None and daemon_predecessor != current_work_id:
+        raise DaemonUnavailable(
+            daemon="payment-daemon",
+            reason="rotation predecessor does not match the session work_id",
+        )
+    if reactive_predecessor is not None and response.work_id == reactive_predecessor:
+        raise DaemonUnavailable(
+            daemon="payment-daemon", reason="rotation mint reused the rejected work_id"
+        )
+    if (
+        reactive_predecessor is None
+        and response.work_id != current_work_id
+        and daemon_predecessor is None
+    ):
+        raise DaemonUnavailable(
+            daemon="payment-daemon",
+            reason="payment daemon changed work_id without declaring its predecessor",
+        )
+
+    rotation_happened = reactive_predecessor is not None or daemon_predecessor is not None
+    if rotation_happened:
+        return response.work_id, current_work_id
+    return current_work_id, None
+
+
 async def refill_session(
     db: AsyncSession,
     *,
@@ -987,16 +1021,16 @@ async def refill_session(
         daemon=daemon,
     )
 
-    if replaced_payment is not None and daemon_response.work_id == rebind_from:
-        raise DaemonUnavailable(
-            daemon="payment-daemon", reason="rotation mint reused the rejected work_id"
-        )
-
-    # Ordinary refills remain attached to the logical session work ID.
-    # Only the explicit rotation path adopts the daemon's fresh recipient.
-    current_work_id = (
-        daemon_response.work_id if replaced_payment is not None else session_row.work_id
+    # A reactive rotation is requested by the gateway after a broker refusal.
+    # A proactive rotation is declared by the payer before the exhausted rand
+    # can reject a ticket. Both use the same session rebind response and advance
+    # the generation exactly once; ordinary refills must keep the current ID.
+    current_work_id, effective_rebind_from = _resolve_refill_work_id(
+        current_work_id=session_row.work_id,
+        response=daemon_response,
+        reactive_predecessor=rebind_from if replaced_payment is not None else None,
     )
+    rotation_happened = effective_rebind_from is not None
 
     # ---- Persist the top-up Payment row + bump the LOC refill ordinal
     refill_payment = Payment(
@@ -1022,7 +1056,8 @@ async def refill_session(
     )
     db.add(refill_payment)
     session_row.refill_seq = session_row.refill_seq + 1
-    if replaced_payment is not None:
+    if rotation_happened:
+        session_row.predecessor_work_id = effective_rebind_from
         session_row.work_id = current_work_id
         session_row.rotation_generation += 1
     await db.flush()
@@ -1037,7 +1072,7 @@ async def refill_session(
         raw_record={
             "refill_seq": session_row.refill_seq,
             "observed_consumed_units": observed_consumed_units,
-            "rebind_from": rebind_from,
+            "rebind_from": effective_rebind_from,
             "rotation_generation": session_row.rotation_generation,
         },
     )
@@ -1074,7 +1109,7 @@ async def refill_session(
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(daemon_response.funded_value_wei),
         cap_status=cap_status,
-        rebind_from=rebind_from,
+        rebind_from=effective_rebind_from,
     )
 
 
@@ -1204,19 +1239,9 @@ async def _verify_close_settlement(
         raise SessionSettlementVerificationFailed(reason="missing_delegation")
     predecessor_work_id = ""
     if session_row.rotation_generation > 0:
-        predecessor = await db.scalar(
-            select(Payment)
-            .where(
-                Payment.session_id == session_row.id,
-                Payment.status == "refused",
-                Payment.refused_reason == "invalid_recipient_rand",
-            )
-            .order_by(Payment.created_at.desc())
-            .limit(1)
-        )
-        if predecessor is None:
+        if not session_row.predecessor_work_id:
             raise SessionSettlementVerificationFailed(reason="missing_rotation_predecessor")
-        predecessor_work_id = predecessor.work_id
+        predecessor_work_id = session_row.predecessor_work_id
     try:
         return verify_session_settlement(
             settlement,

@@ -214,6 +214,22 @@ class IncompleteNextReservationDaemon(MockPaymentDaemonClient):
         return await super().create_payment(request)
 
 
+class MutateNextPaymentResponseDaemon(MockPaymentDaemonClient):
+    def __init__(self) -> None:
+        super().__init__(ev_ratio=Decimal("1.0"))
+        self.next_changes: dict[str, str] | None = None
+
+    async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
+        response = await super().create_payment(request)
+        if self.next_changes is None:
+            return response
+        changes = self.next_changes
+        self.next_changes = None
+        response = replace(response, **changes)
+        self._mint_replays[request.mint_request_id] = (request, response)
+        return response
+
+
 # ---- happy path ----
 
 
@@ -362,6 +378,124 @@ async def test_refill_endpoint_replays_one_payer_mint_and_accounting_mutation(
     session_row = await db_session.get(PaymentSession, open_resp.session_id)
     assert session_row is not None
     assert session_row.refill_seq == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proactive_rotation_rebinds_once_and_replays_idempotently(
+    db_session: AsyncSession,
+) -> None:
+    daemon = MutateNextPaymentResponseDaemon()
+    user_id, key_id, open_resp, _ = await _open_extensible_session(db_session, daemon=daemon)
+    successor = "cd" * 32
+    daemon.next_changes = {
+        "predecessor_work_id": open_resp.work_id,
+        "work_id": successor,
+    }
+    user = await db_session.get(User, user_id)
+    api_key = await db_session.get(ApiKey, key_id)
+    assert user is not None
+    assert api_key is not None
+    arguments = {
+        "session_id": open_resp.session_id,
+        "body": RefillSessionRequest(observed_consumed_units=80),
+        "pair": (api_key, user),
+        "db": db_session,
+        "daemon": daemon,
+        "clock": _clock(),
+        "settings": _settings(),
+        "idempotency_key": "proactive-rotation",
+    }
+
+    first = await refill_session_endpoint(**arguments)
+    await db_session.commit()
+    replay = await refill_session_endpoint(**arguments)
+
+    assert replay == first
+    assert first.work_id == successor
+    assert first.rebind_from == open_resp.work_id
+    session_row = await db_session.get(PaymentSession, open_resp.session_id)
+    assert session_row is not None
+    assert session_row.work_id == successor
+    assert session_row.rotation_generation == 1
+    assert session_row.predecessor_work_id == open_resp.work_id
+    assert session_row.refill_seq == 1
+    payments = (
+        await db_session.scalars(
+            select(Payment)
+            .where(Payment.session_id == open_resp.session_id)
+            .order_by(Payment.created_at)
+        )
+    ).all()
+    assert len(payments) == 2
+    assert [payment.status for payment in payments] == ["issued", "issued"]
+    assert payments[-1].work_id == successor
+
+    settlement = signed_session_settlement(
+        gateway_session_id=str(open_resp.session_id),
+        work_id=successor,
+        predecessor_work_id=open_resp.work_id,
+        rotation_generation=1,
+        debited_units=0,
+        generation_debited_units=0,
+        billed_value_wei=0,
+        generation_billed_value_wei=0,
+        funded_value_wei=1_000_000,
+        generation_funded_value_wei=100_000,
+        amount_wei=1000,
+        per_units=1,
+        work_unit="session_second",
+    )
+    closed = await sessions_service.close_session(
+        db_session,
+        session_id=open_resp.session_id,
+        user_id=user_id,
+        actual_units=0,
+        outcome=None,
+        settlement=settlement,
+        clock=_clock(),
+    )
+    assert closed.outcome == "OVERFUNDED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("predecessor", "successor", "reason"),
+    [
+        ("ef" * 32, "cd" * 32, "predecessor does not match"),
+        ("", "cd" * 32, "without declaring its predecessor"),
+    ],
+)
+async def test_refill_rejects_invalid_proactive_rotation_pair(
+    db_session: AsyncSession,
+    predecessor: str,
+    successor: str,
+    reason: str,
+) -> None:
+    daemon = MutateNextPaymentResponseDaemon()
+    user_id, key_id, open_resp, _ = await _open_extensible_session(db_session, daemon=daemon)
+    daemon.next_changes = {
+        "predecessor_work_id": predecessor,
+        "work_id": successor,
+    }
+
+    with pytest.raises(DaemonUnavailable, match=reason):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=80,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    session_row = await db_session.get(PaymentSession, open_resp.session_id)
+    assert session_row is not None
+    assert session_row.work_id == open_resp.work_id
+    assert session_row.rotation_generation == 0
 
 
 @pytest.mark.unit

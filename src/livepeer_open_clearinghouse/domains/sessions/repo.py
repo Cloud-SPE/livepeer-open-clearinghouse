@@ -76,6 +76,7 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     # the payee uses debit_seq for a different, money-authoritative key.
     refill_seq: Mapped[int] = mapped_column(nullable=False, default=0)
     rotation_generation: Mapped[int] = mapped_column(nullable=False, default=0)
+    predecessor_work_id: Mapped[str | None] = mapped_column(nullable=True)
     broker_session_id: Mapped[str | None] = mapped_column(nullable=True)
     last_settlement_seq: Mapped[int] = mapped_column(nullable=False, default=0)
     last_polled_at: Mapped[datetime | None] = mapped_column(nullable=True)

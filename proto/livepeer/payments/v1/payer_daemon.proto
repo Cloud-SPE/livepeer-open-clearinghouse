@@ -150,6 +150,13 @@ message CreatePaymentResponse {
   // Work-id bound to this minted payment (hex recipient_rand_hash).
   string work_id = 6;
 
+  // Set when minting this payment rotated the ticket session: the work_id
+  // that `work_id` supersedes. Empty on every ordinary mint.
+  //
+  // Jobs adopt the successor directly. Open sessions compare this value to
+  // their current work_id and use the existing gateway rebind contract.
+  string predecessor_work_id = 11;
+
   // ---- encumbrance release ----
 
   // The round these tickets were minted in, the last round in which they
