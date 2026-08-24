@@ -57,6 +57,13 @@ Before calling `CreatePayment`, LOC commits an `in_flight` claim with a stable
 hours and replayed exactly without another mint or balance mutation. A concurrent
 identical request returns `IDEMPOTENCY_IN_PROGRESS`.
 
+When an open carries a `route_binding`, that binding is part of the canonical
+request fingerprint. LOC resolves it against the registry's authoritative
+`SelectMany` result before minting and returns `route_binding_mismatch` if the
+signed candidate no longer exists. LOC persists and replays the resulting full
+route snapshot; an idempotent replay never re-runs route selection. Changing
+the binding under the same key is request reuse, not failover.
+
 LOC derives a stable payer `mint_request_id` from the durable request claim, so
 an ordinary lost response can replay the daemon's recorded result. After the
 in-flight timeout, LOC atomically reclaims the existing claim and retries only

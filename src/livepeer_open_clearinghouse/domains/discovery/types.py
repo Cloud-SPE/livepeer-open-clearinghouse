@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     JobAxes,
+    RouteBinding,
+    RouteSnapshot,
     SessionAxes,
+    SettlementKey,
     WorkUnitEstimator,
 )
 
@@ -64,9 +67,15 @@ class RouteView(BaseModel):
     work_unit: str
     units_per_price: int
     quote_id: str
+    quote_version: int
+    constraint_fingerprint: str
+    route_fingerprint: str
     protocol: str
+    settlement_keys: tuple[SettlementKey, ...]
     work_unit_estimator: WorkUnitEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
+    route_binding: RouteBinding
+    route_snapshot: RouteSnapshot
     # Opaque registry metadata for this route (see OfferingView.extra).
     extra: dict[str, Any] = Field(default_factory=dict)

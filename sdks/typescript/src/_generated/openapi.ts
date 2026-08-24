@@ -1606,6 +1606,7 @@ export interface components {
             estimated_units: number;
             /** Max Total Units */
             max_total_units?: number | null;
+            route_binding?: components["schemas"]["RouteBinding"] | null;
         };
         /**
          * CreateJobResponse
@@ -1638,6 +1639,7 @@ export interface components {
             transport: "unary" | "stream" | "multipart";
             /** Work Unit */
             work_unit: string;
+            route_snapshot: components["schemas"]["RouteSnapshot"];
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
@@ -1716,6 +1718,7 @@ export interface components {
             estimated_runway_units: number;
             /** Max Total Units */
             max_total_units: number;
+            route_binding?: components["schemas"]["RouteBinding"] | null;
         };
         /**
          * CreateSessionResponse
@@ -1748,6 +1751,7 @@ export interface components {
             /** Protocol */
             protocol: string;
             session: components["schemas"]["SessionAxesView"];
+            route_snapshot: components["schemas"]["RouteSnapshot"];
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
@@ -1941,7 +1945,7 @@ export interface components {
          */
         JobAxes: {
             /** Transports */
-            transports: ("unary" | "stream" | "multipart")[];
+            transports: string[];
         } & {
             [key: string]: unknown;
         };
@@ -2315,6 +2319,62 @@ export interface components {
             email: string;
         };
         /**
+         * RouteBinding
+         * @description Compact caller-stable identity for one signed selected route.
+         */
+        RouteBinding: {
+            /** Quote Id */
+            quote_id: string;
+            /** Quote Version */
+            quote_version: number;
+            /** Constraint Fingerprint */
+            constraint_fingerprint: string;
+            /** Route Fingerprint */
+            route_fingerprint: string;
+        };
+        /**
+         * RouteSnapshot
+         * @description Immutable public route declaration used to authorize one open.
+         */
+        RouteSnapshot: {
+            /** Broker Url */
+            broker_url: string;
+            /** Eth Address */
+            eth_address: string;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /**
+             * Protocol
+             * @enum {string}
+             */
+            protocol: "paid-job/v1" | "paid-session/v1";
+            /** Work Unit */
+            work_unit: string;
+            /** Price Per Work Unit Wei */
+            price_per_work_unit_wei: string;
+            /** Units Per Price */
+            units_per_price: number;
+            /** Quote Id */
+            quote_id: string;
+            /** Quote Version */
+            quote_version: number;
+            /** Constraint Fingerprint */
+            constraint_fingerprint: string;
+            /** Route Fingerprint */
+            route_fingerprint: string;
+            /** Settlement Keys */
+            settlement_keys: components["schemas"]["SettlementKey"][];
+            work_unit_estimator?: components["schemas"]["WorkUnitEstimator"] | null;
+            job?: components["schemas"]["JobAxes"] | null;
+            session?: components["schemas"]["SessionAxes"] | null;
+            /** Extra */
+            extra?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
          * RouteView
          * @description A single selected route — what `Select()` returns, web-flavored.
          */
@@ -2335,11 +2395,21 @@ export interface components {
             units_per_price: number;
             /** Quote Id */
             quote_id: string;
+            /** Quote Version */
+            quote_version: number;
+            /** Constraint Fingerprint */
+            constraint_fingerprint: string;
+            /** Route Fingerprint */
+            route_fingerprint: string;
             /** Protocol */
             protocol: string;
+            /** Settlement Keys */
+            settlement_keys: components["schemas"]["SettlementKey"][];
             work_unit_estimator: components["schemas"]["WorkUnitEstimator"] | null;
             job: components["schemas"]["JobAxes"] | null;
             session: components["schemas"]["SessionAxes"] | null;
+            route_binding: components["schemas"]["RouteBinding"];
+            route_snapshot: components["schemas"]["RouteSnapshot"];
             /** Extra */
             extra?: {
                 [key: string]: unknown;
@@ -2690,6 +2760,26 @@ export interface components {
                 [key: string]: unknown;
             };
             signature: components["schemas"]["SettlementSignature"];
+        };
+        /**
+         * SettlementKey
+         * @description Cold-key-authorized broker key accepted for settlement signatures.
+         */
+        SettlementKey: {
+            /** Public Key */
+            public_key: string;
+            /**
+             * Not Before
+             * Format: date-time
+             */
+            not_before: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Introduced In Publication Seq */
+            introduced_in_publication_seq: number;
         };
         /** SettlementSignature */
         SettlementSignature: {

@@ -16,9 +16,13 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     OfferingInfo,
     OrchestratorInfo,
     RegistryClient,
+    RouteBinding,
+    RouteSnapshot,
     SelectedRoute,
     SessionAxes,
+    SettlementKey,
     WorkUnitEstimator,
+    select_bound_route,
 )
 
 __all__ = [
@@ -30,7 +34,11 @@ __all__ = [
     "OfferingInfo",
     "OrchestratorInfo",
     "RegistryClient",
+    "RouteBinding",
+    "RouteSnapshot",
     "SelectedRoute",
     "SessionAxes",
+    "SettlementKey",
     "WorkUnitEstimator",
+    "select_bound_route",
 ]

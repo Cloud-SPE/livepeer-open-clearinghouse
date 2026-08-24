@@ -16,7 +16,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, Protocol
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    model_validator,
+)
 
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.registry.v1 import ...` resolves. Loading
@@ -33,6 +40,12 @@ class JobAxes(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     transports: frozenset[Literal["unary", "stream", "multipart"]] = Field(min_length=1)
+
+    @field_serializer("transports")
+    def serialize_transports(
+        self, value: frozenset[Literal["unary", "stream", "multipart"]]
+    ) -> list[str]:
+        return sorted(value)
 
 
 class SessionAxes(BaseModel):
@@ -84,6 +97,58 @@ class WorkUnitEstimator(BaseModel):
     exactness: str = Field(min_length=1)
     package: str | None = None
     fixtures: str = Field(min_length=1)
+
+
+class RouteBinding(BaseModel):
+    """Compact caller-stable identity for one signed selected route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    quote_id: str = Field(min_length=1)
+    quote_version: int = Field(ge=1)
+    constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RouteSnapshot(BaseModel):
+    """Immutable public route declaration used to authorize one open."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    broker_url: str = Field(min_length=1)
+    eth_address: str = Field(min_length=1)
+    capability: str = Field(min_length=1)
+    offering: str = Field(min_length=1)
+    protocol: Literal["paid-job/v1", "paid-session/v1"]
+    work_unit: str = Field(min_length=1)
+    price_per_work_unit_wei: Decimal = Field(ge=0)
+    units_per_price: int = Field(ge=1)
+    quote_id: str = Field(min_length=1)
+    quote_version: int = Field(ge=1)
+    constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    settlement_keys: tuple[SettlementKey, ...]
+    work_unit_estimator: WorkUnitEstimator | None = None
+    job: JobAxes | None = None
+    session: SessionAxes | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def exactly_one_protocol_axis(self) -> RouteSnapshot:
+        if self.protocol == "paid-job/v1" and (self.job is None or self.session is not None):
+            raise ValueError("paid-job/v1 snapshot requires job axes only")
+        if self.protocol == "paid-session/v1" and (self.session is None or self.job is not None):
+            raise ValueError("paid-session/v1 snapshot requires session axes only")
+        return self
+
+    @property
+    def binding(self) -> RouteBinding:
+        return RouteBinding(
+            quote_id=self.quote_id,
+            quote_version=self.quote_version,
+            constraint_fingerprint=self.constraint_fingerprint,
+            route_fingerprint=self.route_fingerprint,
+        )
 
 
 class SelectedRoute(BaseModel):
@@ -138,31 +203,42 @@ class SelectedRoute(BaseModel):
             return None
         return SessionAxes.model_validate(self.extra["session"])
 
+    @property
+    def binding(self) -> RouteBinding:
+        return RouteBinding(
+            quote_id=self.quote_id,
+            quote_version=self.quote_version,
+            constraint_fingerprint=self.constraint_fingerprint.hex(),
+            route_fingerprint=self.route_fingerprint.hex(),
+        )
+
+    def snapshot_view(self) -> RouteSnapshot:
+        """Return the complete immutable declaration used at issuance."""
+
+        return RouteSnapshot(
+            broker_url=self.worker_url,
+            eth_address=self.eth_address,
+            capability=self.capability,
+            offering=self.offering,
+            protocol=self.protocol,
+            work_unit=self.work_unit,
+            price_per_work_unit_wei=self.price_per_work_unit_wei,
+            units_per_price=self.units_per_price,
+            quote_id=self.quote_id,
+            quote_version=self.quote_version,
+            constraint_fingerprint=self.constraint_fingerprint.hex(),
+            route_fingerprint=self.route_fingerprint.hex(),
+            settlement_keys=self.settlement_keys,
+            work_unit_estimator=self.work_unit_estimator,
+            job=self.job,
+            session=self.session,
+            extra=self.extra,
+        )
+
     def snapshot(self) -> dict[str, Any]:
         """JSON-safe immutable route declaration persisted at issuance."""
 
-        return {
-            "worker_url": self.worker_url,
-            "eth_address": self.eth_address,
-            "capability": self.capability,
-            "offering": self.offering,
-            "protocol": self.protocol,
-            "work_unit": self.work_unit,
-            "price_per_work_unit_wei": str(self.price_per_work_unit_wei),
-            "units_per_price": self.units_per_price,
-            "quote_id": self.quote_id,
-            "quote_version": self.quote_version,
-            "constraint_fingerprint": self.constraint_fingerprint.hex(),
-            "route_fingerprint": self.route_fingerprint.hex(),
-            "settlement_keys": [key.model_dump(mode="json") for key in self.settlement_keys],
-            "work_unit_estimator": (
-                self.work_unit_estimator.model_dump(mode="json")
-                if self.work_unit_estimator is not None
-                else None
-            ),
-            "axes": self.extra["job"] if self.job is not None else self.extra["session"],
-            "extra": self.extra,
-        }
+        return self.snapshot_view().model_dump(mode="json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +308,21 @@ class RegistryClient(Protocol):
     async def list_orchestrators(
         self, *, capability: str | None = None
     ) -> list[OrchestratorInfo]: ...
+
+
+async def select_bound_route(
+    client: RegistryClient,
+    *,
+    capability: str,
+    offering: str,
+    binding: RouteBinding | None,
+) -> SelectedRoute | None:
+    """Select normally, or resolve the exact authoritative bound candidate."""
+
+    if binding is None:
+        return await client.select(capability, offering)
+    routes = await client.select_many(capability, offering)
+    return next((route for route in routes if route.binding == binding), None)
 
 
 # ---------------------------------------------------------------------------

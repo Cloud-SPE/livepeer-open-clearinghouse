@@ -61,7 +61,11 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     QuoteRef,
     validate_funding_response,
 )
-from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    RegistryClient,
+    RouteBinding,
+    select_bound_route,
+)
 from livepeer_open_clearinghouse.providers.settlement_verification import (
     SessionSettlementExpectation,
     SettlementVerificationError,
@@ -130,6 +134,18 @@ class InvalidSessionRequest(OpenClearinghouseError):
             code="invalid_session_request",
             message=message,
             status_code=400,
+        )
+
+
+class RouteBindingMismatch(OpenClearinghouseError):
+    """The selected route is no longer an authoritative registry candidate."""
+
+    def __init__(self, *, binding: RouteBinding) -> None:
+        super().__init__(
+            code="route_binding_mismatch",
+            message="the selected route binding is unavailable or has changed",
+            status_code=409,
+            details={"route_binding": binding.model_dump(mode="json")},
         )
 
 
@@ -391,6 +407,7 @@ async def open_session(
     clock: Clock,
     settings: Settings,
     descriptor_schema: str | None = None,
+    route_binding: RouteBinding | None = None,
     request_id: str | None = None,
 ) -> CreateSessionResponse:
     """Open a long-running session (case d) under handoff mode.
@@ -425,8 +442,15 @@ async def open_session(
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # ---- 2. Discovery
-    route = await registry.select(capability, offering)
+    route = await select_bound_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        binding=route_binding,
+    )
     if route is None:
+        if route_binding is not None:
+            raise RouteBindingMismatch(binding=route_binding)
         raise NoRouteAvailable(capability=capability, offering=offering)
 
     # ---- 3. Protocol declaration + validation
@@ -618,6 +642,7 @@ async def open_session(
         broker_url=route.worker_url,
         protocol=protocol,
         session=SessionAxesView.model_validate(session_axes.model_dump(mode="json")),
+        route_snapshot=route.snapshot_view(),
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -689,7 +714,7 @@ def _refill_snapshot(session_row: PaymentSession) -> dict[str, Any]:
     """Return a usable v1 route snapshot or refuse the refill."""
 
     snapshot = session_row.route_snapshot or {}
-    axes = snapshot.get("axes")
+    axes = snapshot.get("session", snapshot.get("axes"))
     if not isinstance(axes, dict):
         raise InvalidSessionRequest(message="session route declaration is unavailable")
     if axes.get("refill", "extensible") == "bounded":
@@ -767,7 +792,7 @@ async def _mint_refill(
         # existing payment identity. An empty URL does not mean "reuse";
         # it is an invalid request. Keep using the route pinned at open so
         # a refill neither rediscovers nor drifts to another payee.
-        ticket_params_base_url=str(snapshot.get("worker_url", "")),
+        ticket_params_base_url=str(snapshot.get("broker_url", snapshot.get("worker_url", ""))),
         accepted_price=AcceptedPrice(
             capability=initial_payment_row.capability,
             offering=initial_payment_row.offering,
@@ -1430,7 +1455,7 @@ async def reconcile_open_sessions(
     finalized = 0
     for session_row in rows:
         snapshot = session_row.route_snapshot or {}
-        broker_url = snapshot.get("worker_url")
+        broker_url = snapshot.get("broker_url", snapshot.get("worker_url"))
         if not isinstance(broker_url, str) or not broker_url:
             continue
         try:

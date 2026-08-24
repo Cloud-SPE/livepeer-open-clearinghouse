@@ -68,7 +68,12 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     QuoteRef,
     validate_funding_response,
 )
-from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    RegistryClient,
+    RouteBinding,
+    SelectedRoute,
+    select_bound_route,
+)
 from livepeer_open_clearinghouse.providers.settlement_verification import (
     JobSettlementExpectation,
     SettlementVerificationError,
@@ -135,6 +140,37 @@ class JobAlreadySettled(OpenClearinghouseError):
         )
 
 
+async def _select_job_route(
+    registry: RegistryClient,
+    *,
+    capability: str,
+    offering: str,
+    transport: Literal["unary", "stream", "multipart"],
+    binding: RouteBinding | None,
+) -> SelectedRoute:
+    route = await select_bound_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        binding=binding,
+    )
+    if route is None:
+        if binding is not None:
+            raise sessions_service.RouteBindingMismatch(binding=binding)
+        raise NoRouteAvailable(capability=capability, offering=offering)
+    if route.protocol != PAID_JOB_PROTOCOL:
+        raise ProtocolNotSupportedForJob(protocol=route.protocol)
+    job_axes = route.job
+    if job_axes is None:  # pragma: no cover - enforced by SelectedRoute validation
+        raise RuntimeError("paid-job/v1 route has no job axes")
+    if transport not in job_axes.transports:
+        raise TransportNotSupportedForJob(
+            transport=transport,
+            declared=frozenset(job_axes.transports),
+        )
+    return route
+
+
 class WorkUnitMismatch(OpenClearinghouseError):
     """The broker's terminal unit echo differs from the pinned route unit."""
 
@@ -178,6 +214,7 @@ async def open_job(
     clock: Clock,
     settings: Settings,
     transport: Literal["unary", "stream", "multipart"] = "unary",
+    route_binding: RouteBinding | None = None,
     request_id: str | None = None,
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
@@ -200,21 +237,14 @@ async def open_job(
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # Discovery
-    route = await registry.select(capability, offering)
-    if route is None:
-        raise NoRouteAvailable(capability=capability, offering=offering)
-
+    route = await _select_job_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        transport=transport,
+        binding=route_binding,
+    )
     protocol = route.protocol
-    if protocol != PAID_JOB_PROTOCOL:
-        raise ProtocolNotSupportedForJob(protocol=protocol)
-    job_axes = route.job
-    if job_axes is None:  # pragma: no cover - enforced by SelectedRoute validation
-        raise RuntimeError("paid-job/v1 route has no job axes")
-    if transport not in job_axes.transports:
-        raise TransportNotSupportedForJob(
-            transport=transport,
-            declared=frozenset(job_axes.transports),
-        )
 
     # Worst case = full max_total_units (jobs have no refills, so the
     # initial mint funds the entire envelope).
@@ -392,6 +422,7 @@ async def open_job(
         protocol=protocol,
         transport=transport,
         work_unit=route.work_unit,
+        route_snapshot=route.snapshot_view(),
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -597,7 +628,7 @@ async def reconcile_open_jobs(
     for job_row in rows:
         request_id = job_row.broker_request_id
         snapshot = job_row.route_snapshot or {}
-        broker_url = snapshot.get("worker_url")
+        broker_url = snapshot.get("broker_url", snapshot.get("worker_url"))
         if not request_id or not isinstance(broker_url, str) or not broker_url:
             continue
         try:

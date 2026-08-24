@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
+
 
 class SessionAxesView(BaseModel):
     """Authoritative paid-session/v1 offering axes selected for the session."""
@@ -38,6 +40,7 @@ class CreateSessionRequest(BaseModel):
     session_params: dict[str, Any] = Field(default_factory=dict)
     estimated_runway_units: int = Field(gt=0)
     max_total_units: int = Field(gt=0)
+    route_binding: RouteBinding | None = None
 
 
 class CapStatus(BaseModel):
@@ -209,6 +212,7 @@ class CreateSessionResponse(BaseModel):
     broker_url: str
     protocol: str
     session: SessionAxesView
+    route_snapshot: RouteSnapshot
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int

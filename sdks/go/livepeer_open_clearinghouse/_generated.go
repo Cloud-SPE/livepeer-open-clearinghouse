@@ -54,27 +54,6 @@ func (e CreateJobResponseTransport) Valid() bool {
 	}
 }
 
-// Defines values for JobAxesTransports.
-const (
-	JobAxesTransportsMultipart JobAxesTransports = "multipart"
-	JobAxesTransportsStream    JobAxesTransports = "stream"
-	JobAxesTransportsUnary     JobAxesTransports = "unary"
-)
-
-// Valid indicates whether the value is a known member of the JobAxesTransports enum.
-func (e JobAxesTransports) Valid() bool {
-	switch e {
-	case JobAxesTransportsMultipart:
-		return true
-	case JobAxesTransportsStream:
-		return true
-	case JobAxesTransportsUnary:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for JobStatusResponseAccountingOutcome.
 const (
 	BrokerSettled          JobStatusResponseAccountingOutcome = "broker_settled"
@@ -93,6 +72,24 @@ func (e JobStatusResponseAccountingOutcome) Valid() bool {
 	case NonAdmissionAudit:
 		return true
 	case Unresolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RouteSnapshotProtocol.
+const (
+	PaidJobv1     RouteSnapshotProtocol = "paid-job/v1"
+	PaidSessionv1 RouteSnapshotProtocol = "paid-session/v1"
+)
+
+// Valid indicates whether the value is a known member of the RouteSnapshotProtocol enum.
+func (e RouteSnapshotProtocol) Valid() bool {
+	switch e {
+	case PaidJobv1:
+		return true
+	case PaidSessionv1:
 		return true
 	default:
 		return false
@@ -473,6 +470,7 @@ type CreateJobRequest struct {
 	EstimatedUnits int                       `json:"estimated_units"`
 	MaxTotalUnits  *int                      `json:"max_total_units,omitempty"`
 	Offering       string                    `json:"offering"`
+	RouteBinding   *RouteBinding             `json:"route_binding,omitempty"`
 	Transport      CreateJobRequestTransport `json:"transport"`
 }
 
@@ -487,18 +485,21 @@ type CreateJobRequestTransport string
 // the broker's response (terminal headers for unary/multipart, or a
 // terminal settlement lookup when stream trailers are inaccessible).
 type CreateJobResponse struct {
-	BrokerUrl        string                     `json:"broker_url"`
-	ExpectedValueWei int                        `json:"expected_value_wei"`
-	FundedValueWei   int                        `json:"funded_value_wei"`
-	JobId            openapi_types.UUID         `json:"job_id"`
-	OpenedAt         time.Time                  `json:"opened_at"`
-	PaymentEnvelope  string                     `json:"payment_envelope"`
-	Protocol         string                     `json:"protocol"`
-	RequestId        string                     `json:"request_id"`
-	SettleEndpoint   string                     `json:"settle_endpoint"`
-	Transport        CreateJobResponseTransport `json:"transport"`
-	WorkId           string                     `json:"work_id"`
-	WorkUnit         string                     `json:"work_unit"`
+	BrokerUrl        string             `json:"broker_url"`
+	ExpectedValueWei int                `json:"expected_value_wei"`
+	FundedValueWei   int                `json:"funded_value_wei"`
+	JobId            openapi_types.UUID `json:"job_id"`
+	OpenedAt         time.Time          `json:"opened_at"`
+	PaymentEnvelope  string             `json:"payment_envelope"`
+	Protocol         string             `json:"protocol"`
+	RequestId        string             `json:"request_id"`
+
+	// RouteSnapshot Immutable public route declaration used to authorize one open.
+	RouteSnapshot  RouteSnapshot              `json:"route_snapshot"`
+	SettleEndpoint string                     `json:"settle_endpoint"`
+	Transport      CreateJobResponseTransport `json:"transport"`
+	WorkId         string                     `json:"work_id"`
+	WorkUnit       string                     `json:"work_unit"`
 }
 
 // CreateJobResponseTransport defines model for CreateJobResponse.Transport.
@@ -535,6 +536,7 @@ type CreateSessionRequest struct {
 	EstimatedRunwayUnits int                     `json:"estimated_runway_units"`
 	MaxTotalUnits        int                     `json:"max_total_units"`
 	Offering             string                  `json:"offering"`
+	RouteBinding         *RouteBinding           `json:"route_binding,omitempty"`
 	SessionParams        *map[string]interface{} `json:"session_params,omitempty"`
 }
 
@@ -561,6 +563,9 @@ type CreateSessionResponse struct {
 	Protocol         string    `json:"protocol"`
 	RefillEndpoint   string    `json:"refill_endpoint"`
 	RequestId        string    `json:"request_id"`
+
+	// RouteSnapshot Immutable public route declaration used to authorize one open.
+	RouteSnapshot RouteSnapshot `json:"route_snapshot"`
 
 	// Session Authoritative paid-session/v1 offering axes selected for the session.
 	Session   SessionAxesView    `json:"session"`
@@ -662,12 +667,9 @@ type IngestResponse struct {
 
 // JobAxes Known paid-job/v1 axes, preserving future minor-version additions.
 type JobAxes struct {
-	Transports           []JobAxesTransports    `json:"transports"`
+	Transports           []string               `json:"transports"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
-
-// JobAxesTransports defines model for JobAxes.Transports.
-type JobAxesTransports string
 
 // JobStatusResponse Customer-visible job state without conflating billing evidence.
 type JobStatusResponse struct {
@@ -891,21 +893,63 @@ type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
 
+// RouteBinding Compact caller-stable identity for one signed selected route.
+type RouteBinding struct {
+	ConstraintFingerprint string `json:"constraint_fingerprint"`
+	QuoteId               string `json:"quote_id"`
+	QuoteVersion          int    `json:"quote_version"`
+	RouteFingerprint      string `json:"route_fingerprint"`
+}
+
+// RouteSnapshot Immutable public route declaration used to authorize one open.
+type RouteSnapshot struct {
+	BrokerUrl             string                  `json:"broker_url"`
+	Capability            string                  `json:"capability"`
+	ConstraintFingerprint string                  `json:"constraint_fingerprint"`
+	EthAddress            string                  `json:"eth_address"`
+	Extra                 *map[string]interface{} `json:"extra,omitempty"`
+	Job                   *JobAxes                `json:"job,omitempty"`
+	Offering              string                  `json:"offering"`
+	PricePerWorkUnitWei   string                  `json:"price_per_work_unit_wei"`
+	Protocol              RouteSnapshotProtocol   `json:"protocol"`
+	QuoteId               string                  `json:"quote_id"`
+	QuoteVersion          int                     `json:"quote_version"`
+	RouteFingerprint      string                  `json:"route_fingerprint"`
+	Session               *SessionAxes            `json:"session,omitempty"`
+	SettlementKeys        []SettlementKey         `json:"settlement_keys"`
+	UnitsPerPrice         int                     `json:"units_per_price"`
+	WorkUnit              string                  `json:"work_unit"`
+	WorkUnitEstimator     *WorkUnitEstimator      `json:"work_unit_estimator,omitempty"`
+}
+
+// RouteSnapshotProtocol defines model for RouteSnapshot.Protocol.
+type RouteSnapshotProtocol string
+
 // RouteView A single selected route — what `Select()` returns, web-flavored.
 type RouteView struct {
-	Capability          string                  `json:"capability"`
-	EthAddress          string                  `json:"eth_address"`
-	Extra               *map[string]interface{} `json:"extra,omitempty"`
-	Job                 *JobAxes                `json:"job"`
-	Offering            string                  `json:"offering"`
-	PricePerWorkUnitWei string                  `json:"price_per_work_unit_wei"`
-	Protocol            string                  `json:"protocol"`
-	QuoteId             string                  `json:"quote_id"`
-	Session             *SessionAxes            `json:"session"`
-	UnitsPerPrice       int                     `json:"units_per_price"`
-	WorkUnit            string                  `json:"work_unit"`
-	WorkUnitEstimator   *WorkUnitEstimator      `json:"work_unit_estimator"`
-	WorkerUrl           string                  `json:"worker_url"`
+	Capability            string                  `json:"capability"`
+	ConstraintFingerprint string                  `json:"constraint_fingerprint"`
+	EthAddress            string                  `json:"eth_address"`
+	Extra                 *map[string]interface{} `json:"extra,omitempty"`
+	Job                   *JobAxes                `json:"job"`
+	Offering              string                  `json:"offering"`
+	PricePerWorkUnitWei   string                  `json:"price_per_work_unit_wei"`
+	Protocol              string                  `json:"protocol"`
+	QuoteId               string                  `json:"quote_id"`
+	QuoteVersion          int                     `json:"quote_version"`
+
+	// RouteBinding Compact caller-stable identity for one signed selected route.
+	RouteBinding     RouteBinding `json:"route_binding"`
+	RouteFingerprint string       `json:"route_fingerprint"`
+
+	// RouteSnapshot Immutable public route declaration used to authorize one open.
+	RouteSnapshot     RouteSnapshot      `json:"route_snapshot"`
+	Session           *SessionAxes       `json:"session"`
+	SettlementKeys    []SettlementKey    `json:"settlement_keys"`
+	UnitsPerPrice     int                `json:"units_per_price"`
+	WorkUnit          string             `json:"work_unit"`
+	WorkUnitEstimator *WorkUnitEstimator `json:"work_unit_estimator"`
+	WorkerUrl         string             `json:"worker_url"`
 }
 
 // SdkApprovalList defines model for SdkApprovalList.
@@ -1129,6 +1173,14 @@ type SettleJobResponse struct {
 type SettlementEnvelope struct {
 	Payload   map[string]interface{} `json:"payload"`
 	Signature SettlementSignature    `json:"signature"`
+}
+
+// SettlementKey Cold-key-authorized broker key accepted for settlement signatures.
+type SettlementKey struct {
+	ExpiresAt                  time.Time `json:"expires_at"`
+	IntroducedInPublicationSeq int       `json:"introduced_in_publication_seq"`
+	NotBefore                  time.Time `json:"not_before"`
+	PublicKey                  string    `json:"public_key"`
 }
 
 // SettlementSignature defines model for SettlementSignature.

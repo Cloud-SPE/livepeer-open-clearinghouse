@@ -189,7 +189,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert ps.broker_request_id == response.request_id
     assert ps.route_snapshot is not None
     assert ps.route_snapshot["protocol"] == "paid-session/v1"
-    assert ps.route_snapshot["axes"]["refill"] == "bounded"
+    assert ps.route_snapshot["session"]["refill"] == "bounded"
     assert ps.route_snapshot["units_per_price"] == 1
     assert ps.route_snapshot["quote_id"] == "q-1"
     assert ps.work_id == response.work_id
@@ -197,6 +197,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert ps.max_total_units == 7200
     assert ps.funded_value_wei == Decimal(7_200_000)
     assert ps.sdk_identity == "python/0.4.0/abc1234"
+    assert response.route_snapshot.model_dump(mode="json") == ps.route_snapshot
 
     # ---- Payment row linked via session_id
     payments = (await db_session.scalars(select(Payment))).all()

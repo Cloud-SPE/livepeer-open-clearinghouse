@@ -48,6 +48,7 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
+    RouteBindingMismatch,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import (
@@ -249,11 +250,12 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     assert ps.broker_request_id == resp.request_id
     assert ps.route_snapshot is not None
     assert ps.route_snapshot["protocol"] == "paid-job/v1"
-    assert ps.route_snapshot["axes"]["transports"] == [
-        "unary",
-        "stream",
+    assert ps.route_snapshot["job"]["transports"] == [
         "multipart",
+        "stream",
+        "unary",
     ]
+    assert resp.route_snapshot.model_dump(mode="json") == ps.route_snapshot
     assert ps.max_total_units == 1000
 
     # Payment row tied to the session, funded for the full worst case.
@@ -266,6 +268,76 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     assert payments[0].creation_round == 100
     assert payments[0].expires_after_round == 101
     assert payments[0].ticket_validity_period == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_uses_exact_authoritative_route_binding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    first = _route()
+    selected = first.model_copy(
+        update={
+            "worker_url": "https://selected-broker.example/livepeer",
+            "eth_address": "0x" + "22" * 20,
+            "quote_id": "q-selected",
+            "constraint_fingerprint": b"\x22" * 32,
+            "route_fingerprint": b"\x33" * 32,
+        }
+    )
+    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+
+    response = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=selected.capability,
+        offering=selected.offering,
+        route_binding=selected.binding,
+        estimated_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[first, selected]),
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert response.broker_url == selected.worker_url
+    assert response.route_snapshot == selected.snapshot_view()
+    assert len(daemon._mint_replays) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_stale_route_binding_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route()
+    daemon = MockPaymentDaemonClient()
+    stale = route.binding.model_copy(update={"route_fingerprint": "ff" * 32})
+
+    with pytest.raises(RouteBindingMismatch):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            route_binding=stale,
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

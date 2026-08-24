@@ -107,6 +107,7 @@ async def open_session_endpoint(
             descriptor_schema=body.descriptor_schema,
             estimated_runway_units=body.estimated_runway_units,
             max_total_units=body.max_total_units,
+            route_binding=body.route_binding,
             sdk_identity=sdk_identity,
             registry=registry,
             daemon=daemon,

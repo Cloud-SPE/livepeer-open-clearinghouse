@@ -64,10 +64,16 @@ def _route(r: SelectedRoute) -> RouteView:
         work_unit=r.work_unit,
         units_per_price=r.units_per_price,
         quote_id=r.quote_id,
+        quote_version=r.quote_version,
+        constraint_fingerprint=r.constraint_fingerprint.hex(),
+        route_fingerprint=r.route_fingerprint.hex(),
         protocol=r.protocol,
+        settlement_keys=r.settlement_keys,
         work_unit_estimator=r.work_unit_estimator,
         job=r.job,
         session=r.session,
+        route_binding=r.binding,
+        route_snapshot=r.snapshot_view(),
         extra=dict(r.extra),
     )
 

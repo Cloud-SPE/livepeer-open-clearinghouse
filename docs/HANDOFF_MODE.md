@@ -33,6 +33,7 @@ close** — see §5.
 
 | Path | Use |
 |---|---|
+| `GET  /v1/routes` | Select a route and obtain its stable `route_binding` and complete `route_snapshot` |
 | `POST /v1/jobs` | Open a one-shot job (cases a/b/c — atomic, post-settled, streaming) |
 | `POST /v1/jobs/{id}/settle` | Report actual_units; reconcile billing |
 | `POST /v1/sessions` | Open a long-running session (case d) |
@@ -46,6 +47,28 @@ The customer SDK (`OpenClearinghouseClient.submit_job`,
 `open_session`, etc.) wraps these. Direct HTTP is supported for
 non-Python languages without an official SDK; see the OpenAPI doc
 at `/openapi.json`.
+
+### Caller-stable route selection
+
+A gateway that separates discovery from payment open sends the
+`route_binding` returned by `GET /v1/routes` on `POST /v1/jobs` or
+`POST /v1/sessions`. The binding contains only the signed quote identity and
+route/constraint fingerprints. LOC resolves all matching candidates through
+the registry and requires an exact binding match before it mints. A stale or
+unknown binding returns `409 route_binding_mismatch` without charging or
+minting.
+
+LOC never trusts a caller-supplied broker URL, price, descriptor, estimator, or
+settlement key. Those values come from the registry's verified route and are
+returned as an immutable `route_snapshot`. The snapshot includes the selected
+protocol axes, declared transports or session descriptor, work unit and
+estimator, pricing denominator, quote identity and fingerprints, settlement
+delegation, broker URL, and signed offering metadata. The same snapshot is
+persisted with the payment session and returned by every idempotent replay.
+
+`route_binding` is part of the open request's idempotency fingerprint. Reusing
+an `Idempotency-Key` with a different binding returns
+`409 request_id_reuse`; replay never silently selects a new route.
 
 ---
 

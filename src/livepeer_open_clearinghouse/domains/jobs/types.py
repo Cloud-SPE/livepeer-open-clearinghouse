@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from livepeer_open_clearinghouse.domains.sessions.types import CapStatus
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
 
 
 class CreateJobRequest(BaseModel):
@@ -29,6 +30,7 @@ class CreateJobRequest(BaseModel):
     transport: Literal["unary", "stream", "multipart"]
     estimated_units: int = Field(gt=0)
     max_total_units: int | None = Field(default=None, gt=0)
+    route_binding: RouteBinding | None = None
 
 
 class CreateJobResponse(BaseModel):
@@ -48,6 +50,7 @@ class CreateJobResponse(BaseModel):
     protocol: str
     transport: Literal["unary", "stream", "multipart"]
     work_unit: str
+    route_snapshot: RouteSnapshot
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int

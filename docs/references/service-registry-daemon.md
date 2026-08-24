@@ -66,6 +66,10 @@ the relevant fields through unchanged.
 ### `SelectMany(capability, offering, …) → []SelectedRoute`
 
 Same filter as `Select` but returns all payment-ready routes for failover.
+LOC also uses this call to verify a caller-stable `route_binding`: quote ID,
+quote version, constraint fingerprint, and route fingerprint must all match one
+authoritative candidate. LOC then snapshots that candidate; it does not accept
+caller-supplied pricing, broker URL, protocol axes, or settlement delegation.
 
 ### `ResolveByAddress(eth_address, allow_legacy_fallback, allow_unsigned, force_refresh) → ResolveResult`
 

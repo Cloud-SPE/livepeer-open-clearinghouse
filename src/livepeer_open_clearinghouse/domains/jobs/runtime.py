@@ -97,6 +97,7 @@ async def open_job_endpoint(
             transport=body.transport,
             estimated_units=body.estimated_units,
             max_total_units=body.max_total_units,
+            route_binding=body.route_binding,
             sdk_identity=sdk_identity,
             registry=registry,
             daemon=daemon,

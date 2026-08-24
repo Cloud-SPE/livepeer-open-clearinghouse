@@ -467,12 +467,18 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
     headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
     async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
         idem_key = f"loc-open-{uuid.uuid4()}"
+        selected = await loc.get(
+            "/v1/routes", params={"capability": "test:job", "offering": "default"}
+        )
+        selected.raise_for_status()
+        selected_route = selected.json()
         open_body = {
             "capability": "test:job",
             "offering": "default",
             "transport": "unary",
             "estimated_units": 10_250,
             "max_total_units": 10_250,
+            "route_binding": selected_route["route_binding"],
         }
         first = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
         first.raise_for_status()
@@ -480,6 +486,8 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         replay.raise_for_status()
         if replay.json() != first.json():
             raise AssertionError("LOC job-open replay did not return the durable result")
+        if first.json()["route_snapshot"] != selected_route["route_snapshot"]:
+            raise AssertionError("LOC job open did not preserve the selected route snapshot")
         reuse = await loc.post(
             "/v1/jobs",
             headers={"Idempotency-Key": idem_key},
@@ -487,6 +495,20 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         )
         if reuse.status_code != 409:
             raise AssertionError(f"LOC request-id reuse returned {reuse.status_code}, want 409")
+        stale_binding = {
+            **selected_route["route_binding"],
+            "route_fingerprint": "0" * 64,
+        }
+        stale = await loc.post(
+            "/v1/jobs",
+            headers={"Idempotency-Key": f"loc-open-stale-{uuid.uuid4()}"},
+            json={**open_body, "route_binding": stale_binding},
+        )
+        if (
+            stale.status_code != 409
+            or stale.json().get("error", {}).get("code") != "route_binding_mismatch"
+        ):
+            raise AssertionError(f"LOC stale job route binding was not rejected: {stale.text}")
         job = first.json()
         cases.append(
             {
@@ -679,6 +701,11 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
     async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
         idem_key = f"loc-session-{uuid.uuid4()}"
+        selected = await loc.get(
+            "/v1/routes", params={"capability": "test:session", "offering": "default"}
+        )
+        selected.raise_for_status()
+        selected_route = selected.json()
         open_body = {
             "capability": "test:session",
             "offering": "default",
@@ -686,6 +713,7 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
             "session_params": {"name": "idempotency-matrix"},
             "estimated_runway_units": 6_000,
             "max_total_units": 12_000,
+            "route_binding": selected_route["route_binding"],
         }
         first = await loc.post(
             "/v1/sessions", headers={"Idempotency-Key": idem_key}, json=open_body
@@ -697,6 +725,8 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         replay.raise_for_status()
         if replay.json() != first.json():
             raise AssertionError("LOC session-open replay did not return the durable result")
+        if first.json()["route_snapshot"] != selected_route["route_snapshot"]:
+            raise AssertionError("LOC session open did not preserve the selected route snapshot")
         reuse = await loc.post(
             "/v1/sessions",
             headers={"Idempotency-Key": idem_key},

@@ -80,6 +80,12 @@ async def test_route_view_carries_extra() -> None:
     assert route.extra["openai"]["model"] == "Qwen3.6-27B"
     assert route.work_unit_estimator is not None
     assert route.work_unit_estimator.id == "multipart-audio-duration/v1"
+    assert route.route_binding.quote_id == "q-extra"
+    assert route.route_binding.route_fingerprint == "11" * 32
+    assert route.route_snapshot.broker_url == "https://orch.example/livepeer"
+    assert route.route_snapshot.job is not None
+    assert route.route_snapshot.job.transports == {"unary", "stream"}
+    assert route.route_snapshot.extra["openai"]["model"] == "Qwen3.6-27B"
 
 
 @pytest.mark.unit

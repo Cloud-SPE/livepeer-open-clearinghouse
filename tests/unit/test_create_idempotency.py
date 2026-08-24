@@ -20,6 +20,7 @@ from livepeer_open_clearinghouse.domains.admin import repo as _admin  # noqa: F4
 from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys  # noqa: F401
 from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
 from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa: F401
+from livepeer_open_clearinghouse.domains.jobs.types import CreateJobRequest
 from livepeer_open_clearinghouse.domains.notifications import repo as _notifications  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import service
@@ -32,6 +33,7 @@ from livepeer_open_clearinghouse.errors import (
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding
 
 
 @pytest_asyncio.fixture()
@@ -69,6 +71,34 @@ def _fingerprint(units: int = 10) -> str:
         operation="jobs.create",
         payload={"capability": "llm", "offering": "chat", "units": units},
     )
+
+
+@pytest.mark.unit
+def test_route_binding_is_part_of_open_idempotency_fingerprint() -> None:
+    first = RouteBinding(
+        quote_id="q-1",
+        quote_version=1,
+        constraint_fingerprint="00" * 32,
+        route_fingerprint="11" * 32,
+    )
+    changed = first.model_copy(update={"route_fingerprint": "22" * 32})
+
+    def fingerprint(binding: RouteBinding) -> str:
+        body = CreateJobRequest(
+            capability="livepeer:transcoder/h264",
+            offering="h264-1080p",
+            transport="unary",
+            estimated_units=100,
+            max_total_units=100,
+            route_binding=binding,
+        )
+        return service.create_request_fingerprint(
+            operation="jobs.create",
+            payload=body.model_dump(mode="json"),
+        )
+
+    assert fingerprint(first) == fingerprint(first)
+    assert fingerprint(first) != fingerprint(changed)
 
 
 @pytest.mark.unit
