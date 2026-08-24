@@ -27,12 +27,13 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, ClassVar
 
 import asyncpg
 import grpc
 import httpx
 from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
+from livepeer_open_clearinghouse_sdk.session_runner import SessionRunner
 from registry_seed_probe import (  # type: ignore[import-not-found]
     COLD_KEY,
     SETTLEMENT_KEY,
@@ -51,25 +52,59 @@ from livepeer_open_clearinghouse.providers.registry_daemon import GrpcRegistryCl
 
 class _BackendHandler(BaseHTTPRequestHandler):
     job_calls = 0
+    sessions: ClassVar[dict[str, str]] = {}
 
     def log_message(self, _format: str, *args: object) -> None:
         return
 
     def do_GET(self) -> None:
-        if self.path != "/healthz":
-            self.send_error(404)
+        if self.path == "/healthz":
+            self._json({"ready": True})
             return
-        self._json({"ready": True})
+        if self.path.startswith("/sessions/"):
+            session_id = self.path.removeprefix("/sessions/")
+            self._json(
+                {
+                    "runner_session_id": session_id,
+                    "state": type(self).sessions.get(session_id, "gone"),
+                }
+            )
+            return
+        self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path != "/count":
-            self.send_error(404)
+        if self.path == "/count":
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            type(self).job_calls += 1
+            self._json({"bark_count": 1})
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        if length:
-            self.rfile.read(length)
-        type(self).job_calls += 1
-        self._json({"bark_count": 1})
+        if self.path == "/sessions":
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            session_id = f"runner_{uuid.uuid4()}"
+            type(self).sessions[session_id] = "active"
+            self._json(
+                {
+                    "runner_session_id": session_id,
+                    "runtime": {
+                        "schema": "test-runtime/v1",
+                        "public": {"endpoint": f"https://runtime.invalid/{session_id}"},
+                    },
+                }
+            )
+            return
+        self.send_error(404)
+
+    def do_DELETE(self) -> None:
+        if self.path.startswith("/sessions/"):
+            session_id = self.path.removeprefix("/sessions/")
+            type(self).sessions.pop(session_id, None)
+            self._json({"terminated": True})
+            return
+        self.send_error(404)
 
     def _json(self, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode()
@@ -229,6 +264,11 @@ async def _select_route(socket_path: Path) -> dict[str, Any]:
         expected_key = "0x04" + SETTLEMENT_KEY.public_key.to_bytes().hex()
         if not route.settlement_keys or route.settlement_keys[0].public_key != expected_key:
             raise AssertionError("settlement delegation missing from selected route")
+        session_route = await client.select("test:session", "default")
+        if session_route is None or session_route.protocol != "paid-session/v1":
+            raise AssertionError("LOC registry client received no paid-session/v1 route")
+        if session_route.extra.get("session", {}).get("descriptor_schema") != "test-runtime/v1":
+            raise AssertionError(f"session axes missing from route: {session_route.extra!r}")
         return {
             "protocol": route.protocol,
             "worker_url": route.worker_url,
@@ -259,6 +299,7 @@ def _write_broker_config(
   settlement_key_file: "{settlement_key_path}"
   settlement_key_not_before: "{(now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")}"
   settlement_key_expires_at: "{(now + timedelta(hours=23)).isoformat().replace("+00:00", "Z")}"
+external_base_url: "http://127.0.0.1:{paid_port}"
 listen:
   paid: "127.0.0.1:{paid_port}"
   metrics: "127.0.0.1:{metrics_port}"
@@ -293,6 +334,28 @@ capabilities:
     backend:
       transport: "http"
       url: "{backend_url}/count"
+      auth: "none"
+  - id: "test:session"
+    offering_id: "default"
+    protocol: "paid-session/v1"
+    session:
+      descriptor_schema: "test-runtime/v1"
+      lease_policy: fixed
+      lease_max_seconds: 600
+      runner:
+        create_path: /sessions
+        status_path: "/sessions/{{id}}"
+        terminate_path: "/sessions/{{id}}"
+    health:
+      initial_status: "ready"
+    work_unit:
+      name: "seconds"
+    price:
+      amount_wei: "200"
+      per_units: 1000
+    backend:
+      transport: "http"
+      url: "{backend_url}"
       auth: "none"
 """
     )
@@ -358,8 +421,8 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         result = await sdk.submit_job(
             capability="test:job",
             offering="default",
-            estimated_units=10_240,
-            max_total_units=10_240,
+            estimated_units=10_250,
+            max_total_units=10_250,
             body={"prompt": "live SDK matrix"},
             request_id=f"sdk-{uuid.uuid4()}",
         )
@@ -381,8 +444,8 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
             "capability": "test:job",
             "offering": "default",
             "transport": "unary",
-            "estimated_units": 10_240,
-            "max_total_units": 10_240,
+            "estimated_units": 10_250,
+            "max_total_units": 10_250,
         }
         first = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
         first.raise_for_status()
@@ -393,7 +456,7 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         reuse = await loc.post(
             "/v1/jobs",
             headers={"Idempotency-Key": idem_key},
-            json={**open_body, "max_total_units": 10_241},
+            json={**open_body, "max_total_units": 10_251},
         )
         if reuse.status_code != 409:
             raise AssertionError(f"LOC request-id reuse returned {reuse.status_code}, want 409")
@@ -507,9 +570,9 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 "settlement": settlement,
             },
         )
-        if cross_settle.status_code != 400:
+        if cross_settle.status_code != 409:
             raise AssertionError(
-                f"cross-request settlement returned {cross_settle.status_code}, want 400"
+                f"cross-request settlement returned {cross_settle.status_code}, want 409"
             )
         cross_status = await loc.get(f"/v1/jobs/{cross_job['job_id']}")
         cross_status.raise_for_status()
@@ -521,6 +584,179 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 "status": "passed",
                 "request_id": cross_job["request_id"],
             }
+        )
+    return cases
+
+
+async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol matrix
+    loc_url: str, api_key: str
+) -> list[dict[str, Any]]:
+    """Drive paid-session/v1 open, replay, refill, and close boundaries."""
+
+    cases: list[dict[str, Any]] = []
+    async with OpenClearinghouseClient(base_url=loc_url, api_key=api_key) as sdk:
+        handle = await sdk.open_session(
+            capability="test:session",
+            offering="default",
+            descriptor_schema="test-runtime/v1",
+            session_params={"name": "official-sdk"},
+            estimated_runway_units=6_000,
+            max_total_units=12_000,
+            request_id=f"sdk-session-{uuid.uuid4()}",
+        )
+        runner = SessionRunner(client=sdk, handle=handle)
+        broker_session = await runner.start()
+        if broker_session.runtime_schema != "test-runtime/v1" or broker_session.grants:
+            raise AssertionError(f"official SDK parsed the wrong runtime: {broker_session!r}")
+        status = await runner.status()
+        if status.get("state") != "active":
+            raise AssertionError(f"broker session status is not active: {status!r}")
+        closed = await runner.close(actual_units=0)
+        if closed.get("actual_units") != 0 or closed.get("outcome") != "OVERFUNDED":
+            raise AssertionError(f"official SDK session close is invalid: {closed!r}")
+        cases.append(
+            {
+                "case": "python_sdk_paid_session",
+                "status": "passed",
+                "session_id": str(handle.session_id),
+                "broker_session_id": broker_session.session_id,
+            }
+        )
+
+    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
+    async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
+        idem_key = f"loc-session-{uuid.uuid4()}"
+        open_body = {
+            "capability": "test:session",
+            "offering": "default",
+            "descriptor_schema": "test-runtime/v1",
+            "session_params": {"name": "idempotency-matrix"},
+            "estimated_runway_units": 6_000,
+            "max_total_units": 12_000,
+        }
+        first = await loc.post(
+            "/v1/sessions", headers={"Idempotency-Key": idem_key}, json=open_body
+        )
+        first.raise_for_status()
+        replay = await loc.post(
+            "/v1/sessions", headers={"Idempotency-Key": idem_key}, json=open_body
+        )
+        replay.raise_for_status()
+        if replay.json() != first.json():
+            raise AssertionError("LOC session-open replay did not return the durable result")
+        reuse = await loc.post(
+            "/v1/sessions",
+            headers={"Idempotency-Key": idem_key},
+            json={**open_body, "max_total_units": 12_001},
+        )
+        if reuse.status_code != 409:
+            raise AssertionError(f"LOC session request-id reuse returned {reuse.status_code}")
+        opened = first.json()
+
+        broker_url = str(opened["broker_url"]).rstrip("/")
+        broker_headers = {
+            "Content-Type": "application/json",
+            "Livepeer-Capability": "test:session",
+            "Livepeer-Offering": "default",
+            "Livepeer-Payment": str(opened["payment_envelope"]),
+            "Livepeer-Protocol": str(opened["protocol"]),
+            "Livepeer-Request-Id": str(opened["request_id"]),
+        }
+        broker_body = json.dumps(
+            {
+                "gateway_session_id": opened["session_id"],
+                "session_params": open_body["session_params"],
+            },
+            separators=(",", ":"),
+        ).encode()
+        async with httpx.AsyncClient(timeout=10) as broker:
+            broker_first = await broker.post(
+                f"{broker_url}/v1/session", headers=broker_headers, content=broker_body
+            )
+            broker_first.raise_for_status()
+            broker_replay = await broker.post(
+                f"{broker_url}/v1/session", headers=broker_headers, content=broker_body
+            )
+            broker_replay.raise_for_status()
+            if broker_replay.json() != broker_first.json():
+                raise AssertionError("broker session-open replay changed the usable outcome")
+            session = broker_first.json()
+            runtime = session.get("runtime", {})
+            if runtime.get("schema") != "test-runtime/v1" or "grants" in runtime:
+                raise AssertionError(f"broker emitted an invalid empty-grants runtime: {runtime!r}")
+
+            refill_key = f"refill-{uuid.uuid4()}"
+            refill_body = {"observed_consumed_units": 0}
+            refill_first = await loc.post(
+                opened["refill_endpoint"],
+                headers={"Idempotency-Key": refill_key},
+                json=refill_body,
+            )
+            if refill_first.is_error:
+                raise AssertionError(
+                    f"LOC session refill returned {refill_first.status_code}: {refill_first.text}"
+                )
+            refill_replay = await loc.post(
+                opened["refill_endpoint"],
+                headers={"Idempotency-Key": refill_key},
+                json=refill_body,
+            )
+            refill_replay.raise_for_status()
+            if refill_replay.json() != refill_first.json():
+                raise AssertionError("LOC refill replay did not return the durable result")
+            refill = refill_first.json()
+            topup_headers = {
+                "Authorization": f"Bearer {session['credential']}",
+                "Livepeer-Payment": str(refill["payment_envelope"]),
+                "Livepeer-Request-Id": str(refill["request_id"]),
+            }
+            topup_first = await broker.post(session["control"]["topup_url"], headers=topup_headers)
+            topup_first.raise_for_status()
+            topup_replay = await broker.post(session["control"]["topup_url"], headers=topup_headers)
+            topup_replay.raise_for_status()
+            if topup_replay.json() != topup_first.json():
+                raise AssertionError("broker top-up replay changed the recorded outcome")
+
+            ended = await broker.post(
+                session["control"]["end_url"],
+                headers={"Authorization": f"Bearer {session['credential']}"},
+                json={"reason": "conformance_complete"},
+            )
+            ended.raise_for_status()
+            encoded = ended.headers.get("Livepeer-Settlement")
+            if not encoded:
+                raise AssertionError("broker session end omitted its signed settlement")
+            settlement = json.loads(__import__("base64").b64decode(encoded, validate=True))
+            if settlement.get("payload", {}).get("state") != "closed":
+                raise AssertionError("broker signed a non-normative terminal session state")
+            closed = await loc.post(
+                opened["close_endpoint"],
+                json={"actual_units": 0, "settlement": settlement},
+            )
+            closed.raise_for_status()
+            if closed.json().get("outcome") != "OVERFUNDED":
+                raise AssertionError(f"LOC session close is invalid: {closed.json()!r}")
+
+        cases.extend(
+            [
+                {
+                    "case": "session_open_idempotency",
+                    "status": "passed",
+                    "session_id": opened["session_id"],
+                    "broker_session_id": session["session_id"],
+                },
+                {
+                    "case": "session_refill_idempotency",
+                    "status": "passed",
+                    "session_id": opened["session_id"],
+                    "refill_seq": refill["refill_seq"],
+                },
+                {
+                    "case": "signed_session_terminal_close",
+                    "status": "passed",
+                    "session_id": opened["session_id"],
+                },
+            ]
         )
     return cases
 
@@ -774,6 +1010,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             timeout=60,
         )
         cases = asyncio.run(_exercise_job_matrix(loc_url, api_key))
+        cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
 
         result = {
             "status": "ok",

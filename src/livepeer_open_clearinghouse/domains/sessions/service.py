@@ -752,7 +752,6 @@ async def _mint_refill(
     next_mint_value_wei: Decimal,
     per_units: int,
     broker_request_id: str,
-    is_rotation: bool,
     daemon: PaymentDaemonClient,
 ) -> CreatePaymentResponse:
     """Mint one ordinary top-up or fresh rotation successor."""
@@ -760,7 +759,12 @@ async def _mint_refill(
     daemon_request = CreatePaymentRequest(
         mint_request_id=f"loc:{broker_request_id}",
         recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
-        ticket_params_base_url=str(snapshot.get("worker_url", "")) if is_rotation else "",
+        # The payer requires the payee's ticket-params route on every
+        # CreatePayment call, including a refill that should reuse its
+        # existing payment identity. An empty URL does not mean "reuse";
+        # it is an invalid request. Keep using the route pinned at open so
+        # a refill neither rediscovers nor drifts to another payee.
+        ticket_params_base_url=str(snapshot.get("worker_url", "")),
         accepted_price=AcceptedPrice(
             capability=initial_payment_row.capability,
             offering=initial_payment_row.offering,
@@ -975,7 +979,6 @@ async def refill_session(
         next_mint_value_wei=next_mint_value_wei,
         per_units=per_units,
         broker_request_id=broker_request_id,
-        is_rotation=replaced_payment is not None,
         daemon=daemon,
     )
 

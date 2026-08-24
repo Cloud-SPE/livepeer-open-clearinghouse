@@ -89,6 +89,7 @@ def _signed_manifest(worker_url: str) -> dict[str, Any]:
                 },
                 "work_unit": {"name": "seconds"},
                 "price_per_unit_wei": "200",
+                "per_units": 1000,
                 "worker_url": worker_url,
             },
         ],

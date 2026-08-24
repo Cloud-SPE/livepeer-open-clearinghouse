@@ -242,6 +242,8 @@ async def test_refill_writes_new_payment_and_bumps_debit_seq(
     # refill chunk = estimated runway x price = 100 x 1000 = 100_000
     assert refill_resp.funded_value_wei == 100_000
     assert refill_resp.expected_value_wei == 100_000
+    refill_request = daemon._mint_replays[f"loc:{refill_resp.request_id}"][0]
+    assert refill_request.ticket_params_base_url == "https://broker.example/livepeer"
 
     # cap_status: session_pct_used = (initial 100_000 + refill 100_000) / 1_000_000 = 0.2
     assert refill_resp.cap_status.session_pct_used == pytest.approx(0.2)
@@ -478,6 +480,10 @@ async def test_rotation_rejects_predecessor_and_remints_without_double_funding(
 
     assert replacement.work_id != rejected.work_id
     assert replacement.rebind_from == rejected.work_id
+    rejected_request = daemon._mint_replays["loc:rejected-refill"][0]
+    replacement_request = daemon._mint_replays["loc:rotation-successor"][0]
+    assert rejected_request.ticket_params_base_url == "https://broker.example/livepeer"
+    assert replacement_request.ticket_params_base_url == "https://broker.example/livepeer"
     assert daemon.reported_invalid_recipient_rands == [
         (rejected.work_id, "livepeer:vtuber-session", "vtuber-1080p30")
     ]
