@@ -21,12 +21,14 @@ settle path mirrors ``sessions.service.close_session``. Differences:
 from __future__ import annotations
 
 import base64
+import hashlib
 import time
 import uuid
-from datetime import timedelta
+from datetime import UTC, timedelta
 from decimal import Decimal
 from typing import Literal, TypedDict
 
+import rfc8785
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,7 +44,7 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     PaymentDaemonDepositSnapshot,
 )
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
@@ -56,6 +58,7 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeResult,
     BrokerSettlementClient,
     BrokerSettlementQueryError,
+    NonAdmissionQuery,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -76,8 +79,10 @@ from livepeer_open_clearinghouse.providers.registry_daemon import (
 )
 from livepeer_open_clearinghouse.providers.settlement_verification import (
     JobSettlementExpectation,
+    NonAdmissionExpectation,
     SettlementVerificationError,
     verify_job_settlement,
+    verify_non_admission,
 )
 from livepeer_open_clearinghouse.providers.telemetry import (
     job_reconciliation_observations_total,
@@ -348,6 +353,7 @@ async def open_job(
         session_id=job_row.id,
         work_id=daemon_response.work_id,
         mint_request_id=mint_request_id,
+        sender_eth_address="0x" + daemon_response.sender.hex(),
         recipient_eth_address=route.eth_address,
         capability=route.capability,
         offering=route.offering,
@@ -591,7 +597,7 @@ async def settle_job(
     )
 
 
-async def reconcile_open_jobs(
+async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome state machine
     db: AsyncSession,
     *,
     settlement_client: BrokerSettlementClient,
@@ -668,6 +674,20 @@ async def reconcile_open_jobs(
                 finalized += 1
             continue
 
+        if exchange.outcome is BrokerExchangeOutcome.NO_RECORD:
+            try:
+                exchange = await _request_non_admission(
+                    db,
+                    settlement_client=settlement_client,
+                    job_row=job_row,
+                    broker_url=broker_url,
+                    request_id=request_id,
+                )
+            except BrokerSettlementQueryError as exc:
+                exchange = exchange.model_copy(
+                    update={"detail": f"non-admission query failed: {exc}"}
+                )
+
         job_reconciliation_observations_total.labels(outcome=exchange.outcome.value).inc()
         job_row.last_polled_at = clock.now()
         job_row.breakdown = {
@@ -675,6 +695,13 @@ async def reconcile_open_jobs(
             "broker_exchange": _exchange_audit_record(exchange),
         }
         await db.flush()
+        if exchange.outcome is BrokerExchangeOutcome.NOT_ADMITTED:
+            await _retain_verified_non_admission(
+                db,
+                job_row=job_row,
+                exchange=exchange,
+                clock=clock,
+            )
         settled = False
         if exchange.outcome is BrokerExchangeOutcome.SETTLED:
             claims = _recovered_settlement_claims(exchange)
@@ -729,6 +756,155 @@ async def reconcile_open_jobs(
             finalized += 1
 
     return finalized
+
+
+async def _request_non_admission(
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    job_row: PaymentSession,
+    broker_url: str,
+    request_id: str,
+) -> BrokerExchangeResult:
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_row.id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    snapshot = job_row.route_snapshot or {}
+    if initial_payment is None or initial_payment.sender_eth_address is None:
+        raise BrokerSettlementQueryError("job lacks persisted payer sender scope")
+    try:
+        query = NonAdmissionQuery(
+            protocol=PAID_JOB_PROTOCOL,
+            work_id=job_row.work_id,
+            sender=initial_payment.sender_eth_address.lower(),
+            recipient=initial_payment.recipient_eth_address.lower(),
+            quote_id=str(snapshot["quote_id"]),
+            quote_version=int(snapshot["quote_version"]),
+            constraint_fingerprint=str(snapshot["constraint_fingerprint"]),
+            route_fingerprint=str(snapshot["route_fingerprint"]),
+            job_issued_at=(
+                job_row.opened_at
+                if job_row.opened_at.tzinfo is not None
+                else job_row.opened_at.replace(tzinfo=UTC)
+            ).isoformat(),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BrokerSettlementQueryError("job lacks valid non-admission scope") from exc
+    return await settlement_client.request_non_admission(
+        broker_url=broker_url,
+        request_id=request_id,
+        query=query,
+    )
+
+
+async def _retain_verified_non_admission(
+    db: AsyncSession,
+    *,
+    job_row: PaymentSession,
+    exchange: BrokerExchangeResult,
+    clock: Clock,
+) -> None:
+    """Verify and append one audit claim without changing accounting state."""
+
+    locked_job = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_row.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_job is None:
+        return
+    job_row = locked_job
+    envelope = exchange.non_admission
+    request_id = job_row.broker_request_id
+    if envelope is None or request_id is None:
+        return
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_row.id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    snapshot = job_row.route_snapshot or {}
+    audit = _exchange_audit_record(exchange)
+    try:
+        if initial_payment is None or initial_payment.sender_eth_address is None:
+            raise SettlementVerificationError("missing_sender", "payer sender was not persisted")
+        settlement_keys = snapshot["settlement_keys"]
+        if not isinstance(settlement_keys, list) or not settlement_keys:
+            raise SettlementVerificationError(
+                "missing_delegation", "route snapshot has no settlement keys"
+            )
+        verified = verify_non_admission(
+            envelope,
+            settlement_keys=settlement_keys,
+            expected=NonAdmissionExpectation(
+                protocol=PAID_JOB_PROTOCOL,
+                request_id=request_id,
+                work_id=job_row.work_id,
+                sender=sessions_service._eth_address_to_bytes(initial_payment.sender_eth_address),
+                recipient=sessions_service._eth_address_to_bytes(
+                    initial_payment.recipient_eth_address
+                ),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+                broker_eth_address=str(snapshot["eth_address"]),
+                job_issued_at=(
+                    job_row.opened_at
+                    if job_row.opened_at.tzinfo is not None
+                    else job_row.opened_at.replace(tzinfo=UTC)
+                ),
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        audit["verification"] = {
+            "status": "rejected",
+            "reason": exc.code
+            if isinstance(exc, SettlementVerificationError)
+            else "invalid_snapshot",
+        }
+        job_row.breakdown = {**(job_row.breakdown or {}), "broker_exchange": audit}
+        await db.flush()
+        return
+
+    evidence_digest = hashlib.sha256(rfc8785.dumps(envelope)).hexdigest()
+    audit["verification"] = {
+        "status": "verified",
+        "evidence_digest": evidence_digest,
+        "signing_public_key": verified.signing_public_key,
+        "observed_at": verified.observed_at.isoformat(),
+        "coverage_started_at": verified.coverage_started_at.isoformat(),
+    }
+    job_row.breakdown = {**(job_row.breakdown or {}), "broker_exchange": audit}
+    prior = list(
+        (
+            await db.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == job_row.id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    if not any(
+        isinstance(row.raw_record, dict)
+        and row.raw_record.get("evidence_digest") == evidence_digest
+        for row in prior
+    ):
+        await sessions_service.record_settlement(
+            db,
+            job_row.id,
+            event_type="non_admission_audit",
+            clock=clock,
+            outcome="NOT_ADMITTED",
+            raw_record={"evidence_digest": evidence_digest, **audit},
+        )
+    await db.flush()
 
 
 def _recovered_settlement_claims(
@@ -929,7 +1105,12 @@ async def get_job_status(
         accounting_outcome = "conservative_full_charge"
     elif job_row.state == sessions_service.SESSION_STATE_CLOSED:
         accounting_outcome = "broker_settled"
-    elif exchange_outcome == BrokerExchangeOutcome.NOT_ADMITTED.value:
+    elif (
+        exchange_outcome == BrokerExchangeOutcome.NOT_ADMITTED.value
+        and isinstance(exchange, dict)
+        and isinstance(exchange.get("verification"), dict)
+        and exchange["verification"].get("status") == "verified"
+    ):
         accounting_outcome = "non_admission_audit"
     else:
         accounting_outcome = "unresolved"

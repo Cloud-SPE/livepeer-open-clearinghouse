@@ -13,8 +13,13 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
     BrokerSettlementQueryError,
     HttpBrokerSettlementClient,
+    NonAdmissionQuery,
 )
-from tests.fixtures.signed_settlement import signed_job_settlement, signed_session_settlement
+from tests.fixtures.signed_settlement import (
+    signed_job_settlement,
+    signed_non_admission,
+    signed_session_settlement,
+)
 
 
 @pytest.mark.unit
@@ -164,6 +169,97 @@ async def test_job_exchange_decodes_non_admission_as_audit_evidence() -> None:
             broker_url="https://broker.example", request_id="request-1"
         )
     assert result.non_admission == envelope
+
+
+def _non_admission_query() -> NonAdmissionQuery:
+    return NonAdmissionQuery(
+        protocol="paid-job/v1",
+        work_id="work-1",
+        sender="0x" + "aa" * 20,
+        recipient="0x" + "11" * 20,
+        quote_id="q-1",
+        quote_version=1,
+        constraint_fingerprint="00" * 32,
+        route_fingerprint="11" * 32,
+        job_issued_at="2026-05-24T12:00:00+00:00",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_admission_post_sends_scope_and_decodes_signed_record() -> None:
+    envelope = signed_non_admission()
+    encoded = base64.b64encode(json.dumps(envelope).encode()).decode()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/non-admission/request-1"
+        assert json.loads(request.content) == _non_admission_query().model_dump(mode="json")
+        return httpx.Response(
+            200,
+            headers={"Livepeer-Non-Admission": encoded},
+            json={
+                "request_id": "request-1",
+                "outcome": "NOT_ADMITTED",
+                "replayed": False,
+                "non_admission": encoded,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).request_non_admission(
+            broker_url="https://broker.example",
+            request_id="request-1",
+            query=_non_admission_query(),
+        )
+    assert result.outcome is BrokerExchangeOutcome.NOT_ADMITTED
+    assert result.non_admission == envelope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_admission_post_can_return_admitted_outcome() -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            202,
+            json={
+                "request_id": "request-1",
+                "job_id": "broker-job-1",
+                "outcome": "ACCOUNTING_PENDING",
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).request_non_admission(
+            broker_url="https://broker.example",
+            request_id="request-1",
+            query=_non_admission_query(),
+        )
+    assert result.outcome is BrokerExchangeOutcome.ACCOUNTING_PENDING
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_admission_post_rejects_header_body_mismatch() -> None:
+    envelope = signed_non_admission()
+    encoded = base64.b64encode(json.dumps(envelope).encode()).decode()
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            headers={"Livepeer-Non-Admission": "different"},
+            json={
+                "request_id": "request-1",
+                "outcome": "NOT_ADMITTED",
+                "non_admission": encoded,
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        with pytest.raises(BrokerSettlementQueryError):
+            await HttpBrokerSettlementClient(http_client).request_non_admission(
+                broker_url="https://broker.example",
+                request_id="request-1",
+                query=_non_admission_query(),
+            )
 
 
 @pytest.mark.unit

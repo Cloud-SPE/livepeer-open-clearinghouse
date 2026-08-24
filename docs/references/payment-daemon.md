@@ -66,6 +66,8 @@ mint_request_id: string             # required; unique in the daemon sender's na
 ```
 payment_bytes: bytes               # base64 this into the
                                    #   Livepeer-Payment HTTP header
+                                   # LOC parses and persists Payment.sender
+                                   # for signed non-admission scope
 tickets_created: uint32            # always 1 in current daemon
 expected_value: BigUInt            # EV in wei — what to charge the user
 funded_value_wei: BigUInt          # echoes the funding intent

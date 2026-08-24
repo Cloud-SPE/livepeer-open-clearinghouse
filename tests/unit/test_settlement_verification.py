@@ -1,22 +1,97 @@
 from __future__ import annotations
 
 import copy
+from datetime import UTC, datetime
 
 import pytest
 
 from livepeer_open_clearinghouse.providers.settlement_verification import (
     JobSettlementExpectation,
+    NonAdmissionExpectation,
     SessionSettlementExpectation,
     SettlementVerificationError,
     verify_job_settlement,
+    verify_non_admission,
     verify_session_settlement,
 )
 from tests.fixtures.signed_settlement import (
     TEST_PUBLIC_KEY,
     delegated_key,
     signed_job_settlement,
+    signed_non_admission,
     signed_session_settlement,
 )
+
+
+def _non_admission_expected(**overrides: object) -> NonAdmissionExpectation:
+    values = {
+        "protocol": "paid-job/v1",
+        "request_id": "request-1",
+        "work_id": "work-1",
+        "sender": b"\xaa" * 20,
+        "recipient": b"\x11" * 20,
+        "quote_id": "q-1",
+        "quote_version": 1,
+        "constraint_fingerprint": b"\x00" * 32,
+        "route_fingerprint": b"\x11" * 32,
+        "broker_eth_address": "0x" + "11" * 20,
+        "job_issued_at": datetime(2026, 5, 24, 12, tzinfo=UTC),
+    }
+    values.update(overrides)
+    return NonAdmissionExpectation(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_valid_non_admission_verifies_as_audit_evidence() -> None:
+    verified = verify_non_admission(
+        signed_non_admission(),
+        settlement_keys=[delegated_key()],
+        expected=_non_admission_expected(),
+    )
+    assert verified.signing_public_key == TEST_PUBLIC_KEY
+    assert verified.coverage_started_at == datetime(2026, 5, 1, tzinfo=UTC)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("override", "code"),
+    [
+        ({"request_id": "other"}, "request_id_mismatch"),
+        ({"work_id": "other"}, "work_id_mismatch"),
+        ({"sender": b"\xbb" * 20}, "sender_mismatch"),
+        ({"recipient": b"\xbb" * 20}, "recipient_mismatch"),
+        ({"quote_id": "other"}, "quote_mismatch"),
+        ({"broker_eth_address": "0x" + "22" * 20}, "broker_identity_mismatch"),
+    ],
+)
+def test_non_admission_must_match_pinned_job(override: dict[str, object], code: str) -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_non_admission(
+            signed_non_admission(),
+            settlement_keys=[delegated_key()],
+            expected=_non_admission_expected(**override),
+        )
+    assert exc_info.value.code == code
+
+
+@pytest.mark.unit
+def test_non_admission_rejects_tampering_and_coverage_gap() -> None:
+    tampered = signed_non_admission()
+    tampered["payload"]["work_id"] = "other"  # type: ignore[index]
+    with pytest.raises(SettlementVerificationError, match="delegated"):
+        verify_non_admission(
+            tampered,
+            settlement_keys=[delegated_key()],
+            expected=_non_admission_expected(),
+        )
+
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_non_admission(
+            signed_non_admission(coverage_started_at="2026-06-01T00:00:00Z"),
+            settlement_keys=[delegated_key()],
+            expected=_non_admission_expected(),
+        )
+    assert exc_info.value.code == "coverage_gap"
 
 
 def _expected(**overrides: object) -> JobSettlementExpectation:

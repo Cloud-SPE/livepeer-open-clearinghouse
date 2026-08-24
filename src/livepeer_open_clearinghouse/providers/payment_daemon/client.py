@@ -21,11 +21,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from google.protobuf.message import DecodeError
+
 # Side-effect import: livepeer_open_clearinghouse._gen injects the generated-stubs dir onto
 # sys.path so `from livepeer.payments.v1 import ...` resolves. Loaded
 # eagerly so any function in this file can do the absolute `livepeer.*`
 # import without first calling _ensure_stub().
 from livepeer_open_clearinghouse import _gen  # noqa: F401
+
+_ETH_ADDRESS_BYTES = 20
 
 
 class PaymentDaemonError(Exception):
@@ -111,6 +115,7 @@ class CreatePaymentResponse:
     """Mirror of `livepeer.payments.v1.CreatePaymentResponse`."""
 
     payment_bytes: bytes
+    sender: bytes
     tickets_created: int
     expected_value: Decimal
     funded_value_wei: Decimal
@@ -156,6 +161,8 @@ def validate_funding_response(
         raise PaymentDaemonError(
             "daemon expected_value does not cover the requested funding intent"
         )
+    if len(response.sender) != _ETH_ADDRESS_BYTES:
+        raise PaymentDaemonError("daemon payment sender must be exactly 20 bytes")
     if response.predecessor_work_id and response.predecessor_work_id == response.work_id:
         raise PaymentDaemonError("daemon returned a self-referential predecessor_work_id")
     return response
@@ -247,6 +254,7 @@ class MockPaymentDaemonClient:
 
         response = CreatePaymentResponse(
             payment_bytes=payload,
+            sender=b"\xaa" * 20,
             tickets_created=1,
             expected_value=expected_value,
             funded_value_wei=funded,
@@ -338,8 +346,18 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
 
 def proto_response_to_dataclass(proto) -> CreatePaymentResponse:  # type: ignore[no-untyped-def]
     """Map a generated CreatePaymentResponse back to our dataclass."""
+    from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
+
+    try:
+        payment = types_pb2.Payment.FromString(bytes(proto.payment_bytes))
+    except (DecodeError, ValueError) as exc:
+        raise PaymentDaemonError("daemon returned malformed payment_bytes") from exc
+    sender = bytes(payment.sender)
+    if len(sender) != _ETH_ADDRESS_BYTES:
+        raise PaymentDaemonError("daemon payment_bytes omitted its 20-byte sender")
     response = CreatePaymentResponse(
         payment_bytes=bytes(proto.payment_bytes),
+        sender=sender,
         tickets_created=int(proto.tickets_created),
         expected_value=biguint_bytes_to_decimal(bytes(proto.expected_value.value)),
         funded_value_wei=biguint_bytes_to_decimal(bytes(proto.funded_value_wei.value)),

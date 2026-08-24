@@ -237,6 +237,36 @@ class SettlementRecord(_message.Message):
     request_id: str
     def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ..., session_id: _Optional[str] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., rotation_generation: _Optional[int] = ..., claimed_units: _Optional[int] = ..., debited_units: _Optional[int] = ..., generation_debited_units: _Optional[int] = ..., generation_billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., generation_funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., amount_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., per_units: _Optional[int] = ..., settlement_seq: _Optional[int] = ..., issued_at: _Optional[str] = ..., state: _Optional[str] = ..., job_id: _Optional[str] = ..., payment_cumulative_units: _Optional[int] = ..., gateway_session_id: _Optional[str] = ..., request_id: _Optional[str] = ...) -> None: ...
 
+class NonAdmissionRecord(_message.Message):
+    __slots__ = ("protocol", "request_id", "work_id", "sender", "recipient", "accepted_quote_ref", "broker_eth_address", "observed_at", "coverage_started_at", "outcome")
+    class Outcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        OUTCOME_UNSPECIFIED: _ClassVar[NonAdmissionRecord.Outcome]
+        NOT_ADMITTED: _ClassVar[NonAdmissionRecord.Outcome]
+    OUTCOME_UNSPECIFIED: NonAdmissionRecord.Outcome
+    NOT_ADMITTED: NonAdmissionRecord.Outcome
+    PROTOCOL_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    WORK_ID_FIELD_NUMBER: _ClassVar[int]
+    SENDER_FIELD_NUMBER: _ClassVar[int]
+    RECIPIENT_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_QUOTE_REF_FIELD_NUMBER: _ClassVar[int]
+    BROKER_ETH_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    COVERAGE_STARTED_AT_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    protocol: str
+    request_id: str
+    work_id: str
+    sender: bytes
+    recipient: bytes
+    accepted_quote_ref: QuoteRef
+    broker_eth_address: str
+    observed_at: str
+    coverage_started_at: str
+    outcome: NonAdmissionRecord.Outcome
+    def __init__(self, protocol: _Optional[str] = ..., request_id: _Optional[str] = ..., work_id: _Optional[str] = ..., sender: _Optional[bytes] = ..., recipient: _Optional[bytes] = ..., accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., broker_eth_address: _Optional[str] = ..., observed_at: _Optional[str] = ..., coverage_started_at: _Optional[str] = ..., outcome: _Optional[_Union[NonAdmissionRecord.Outcome, str]] = ...) -> None: ...
+
 class TicketStatus(_message.Message):
     __slots__ = ("sender_nonce", "rejection_reason", "credited_ev", "was_winning")
     SENDER_NONCE_FIELD_NUMBER: _ClassVar[int]

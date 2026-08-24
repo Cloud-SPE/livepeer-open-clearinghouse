@@ -60,6 +60,7 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
     BrokerExchangeResult,
     BrokerSettlementQueryError,
+    NonAdmissionQuery,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -69,7 +70,11 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SelectedRoute,
 )
 from livepeer_open_clearinghouse.settings import Settings
-from tests.fixtures.signed_settlement import delegated_key, signed_job_settlement
+from tests.fixtures.signed_settlement import (
+    delegated_key,
+    signed_job_settlement,
+    signed_non_admission,
+)
 
 
 @pytest_asyncio.fixture()
@@ -182,13 +187,26 @@ def _settlement(
 
 
 class _StaticExchangeClient:
-    def __init__(self, result: BrokerExchangeResult) -> None:
+    def __init__(
+        self,
+        result: BrokerExchangeResult,
+        *,
+        non_admission_result: BrokerExchangeResult | None = None,
+    ) -> None:
         self.result = result
+        self.non_admission_result = non_admission_result or result
         self.calls: list[tuple[str, str]] = []
+        self.non_admission_calls: list[tuple[str, str, NonAdmissionQuery]] = []
 
     async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
         self.calls.append((broker_url, request_id))
         return self.result
+
+    async def request_non_admission(
+        self, *, broker_url: str, request_id: str, query: NonAdmissionQuery
+    ) -> BrokerExchangeResult:
+        self.non_admission_calls.append((broker_url, request_id, query))
+        return self.non_admission_result
 
     async def get_settlement(
         self, *, broker_url: str, gateway_session_id: uuid.UUID
@@ -208,6 +226,11 @@ class _FailingExchangeClient:
         self, *, broker_url: str, gateway_session_id: uuid.UUID
     ) -> dict[str, Any] | None:
         raise AssertionError("job reconciliation must not use the session lookup")
+
+    async def request_non_admission(
+        self, *, broker_url: str, request_id: str, query: NonAdmissionQuery
+    ) -> BrokerExchangeResult:
+        raise BrokerSettlementQueryError("broker non-admission query failed")
 
 
 # ---- open_job happy path ----
@@ -1300,24 +1323,26 @@ async def test_job_status_exposes_non_admission_as_audit_only(
     db_session: AsyncSession,
 ) -> None:
     user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    balance_before = await billing_service.get_balance(db_session, user_id=user_id)
     client = _StaticExchangeClient(
         BrokerExchangeResult(
             request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NO_RECORD,
+        ),
+        non_admission_result=BrokerExchangeResult(
+            request_id=response.request_id,
             outcome=BrokerExchangeOutcome.NOT_ADMITTED,
-            non_admission={
-                "payload": {"request_id": response.request_id},
-                "signature": {
-                    "algorithm": "secp256k1",
-                    "canonicalization": "jcs",
-                    "value": "evidence-retained-but-not-accounting-authority",
-                },
-            },
-        )
+            non_admission=signed_non_admission(
+                request_id=response.request_id,
+                work_id=response.work_id,
+            ),
+        ),
     )
     await jobs_service.reconcile_open_jobs(
         db_session,
         settlement_client=client,
-        clock=_clock(),
+        clock=clock,
         settings=_settings(),
     )
 
@@ -1326,6 +1351,75 @@ async def test_job_status_exposes_non_admission_as_audit_only(
     assert status.broker_exchange_outcome == "NOT_ADMITTED"
     assert status.state == SESSION_STATE_OPEN
     assert status.billed_value_wei is None
+    balance_after = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance_after.amount_wei == balance_before.amount_wei
+    assert len(client.non_admission_calls) == 1
+    query = client.non_admission_calls[0][2]
+    assert query.sender == "0x" + "aa" * 20
+    assert query.recipient == "0x" + "11" * 20
+    assert query.quote_id == "q-1"
+
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+    assert events[0].billed_value_wei is None
+    assert events[0].raw_record["verification"]["status"] == "verified"
+
+    # Replayed evidence remains one append-only audit fact.
+    clock.advance(timedelta(seconds=61))
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=_settings(),
+    )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_reconciliation_rejects_tampered_non_admission(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    envelope = signed_non_admission(request_id=response.request_id, work_id=response.work_id)
+    envelope["payload"]["work_id"] = "cross-job"  # type: ignore[index]
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission=envelope,
+        )
+    )
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+    status = await jobs_service.get_job_status(db_session, job_id=response.job_id, user_id=user_id)
+    assert status.accounting_outcome == "unresolved"
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.breakdown["broker_exchange"]["verification"]["status"] == "rejected"
 
 
 @pytest.mark.unit
@@ -1349,3 +1443,79 @@ async def test_conservative_full_charge_waits_for_operational_deadline(
     row = await db_session.get(PaymentSession, response.job_id)
     assert row is not None
     assert row.state == SESSION_STATE_OPEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_conservative_charge_wins_over_later_signed_settlement(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(hours=1))
+    assert await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+
+    with pytest.raises(JobAlreadySettled):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=response.job_id,
+            user_id=user_id,
+            actual_units=7,
+            broker_job_id="broker-late",
+            work_unit="token",
+            outcome="OVERFUNDED",
+            settlement=_settlement(response, broker_job_id="broker-late", actual_units=7),
+            clock=clock,
+            settings=_settings(),
+        )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(PaymentSettlement.session_id == response.job_id)
+            )
+        ).all()
+    )
+    assert [event.event_type for event in events] == ["conservative_full_charge"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_signed_settlement_wins_over_later_conservative_charge(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    await jobs_service.settle_job(
+        db_session,
+        job_id=response.job_id,
+        user_id=user_id,
+        actual_units=7,
+        broker_job_id="broker-first",
+        work_unit="token",
+        outcome="OVERFUNDED",
+        settlement=_settlement(response, broker_job_id="broker-first", actual_units=7),
+        clock=clock,
+        settings=_settings(),
+    )
+    clock.advance(timedelta(hours=1))
+    assert not await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(PaymentSettlement.session_id == response.job_id)
+            )
+        ).all()
+    )
+    assert [event.event_type for event in events] == ["close"]

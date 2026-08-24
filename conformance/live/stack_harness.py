@@ -660,6 +660,43 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 "request_id": cross_job["request_id"],
             }
         )
+
+        # Mint but deliberately never present the envelope to the broker.
+        # LOC must turn broker silence into a directly retrieved, verified
+        # audit record without changing the job's accounting state.
+        absent_open = await loc.post(
+            "/v1/jobs",
+            headers={"Idempotency-Key": f"loc-not-admitted-{uuid.uuid4()}"},
+            json=open_body,
+        )
+        absent_open.raise_for_status()
+        absent_job = absent_open.json()
+        deadline = time.monotonic() + 10
+        absent_status: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            response = await loc.get(f"/v1/jobs/{absent_job['job_id']}")
+            response.raise_for_status()
+            absent_status = response.json()
+            if absent_status.get("accounting_outcome") == "non_admission_audit":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(
+                f"LOC did not retain verified non-admission evidence: {absent_status!r}"
+            )
+        if (
+            absent_status.get("state") != "open"
+            or absent_status.get("billed_value_wei") is not None
+            or absent_status.get("broker_exchange_outcome") != "NOT_ADMITTED"
+        ):
+            raise AssertionError(f"non-admission changed accounting state: {absent_status!r}")
+        cases.append(
+            {
+                "case": "verified_non_admission_audit_only",
+                "status": "passed",
+                "request_id": absent_job["request_id"],
+            }
+        )
     return cases
 
 

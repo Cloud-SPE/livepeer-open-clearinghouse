@@ -54,6 +54,28 @@ class VerifiedJobSettlement:
 
 
 @dataclass(frozen=True, slots=True)
+class NonAdmissionExpectation:
+    protocol: str
+    request_id: str
+    work_id: str
+    sender: bytes
+    recipient: bytes
+    quote_id: str
+    quote_version: int
+    constraint_fingerprint: bytes
+    route_fingerprint: bytes
+    broker_eth_address: str
+    job_issued_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedNonAdmission:
+    observed_at: datetime
+    coverage_started_at: datetime
+    signing_public_key: str
+
+
+@dataclass(frozen=True, slots=True)
 class SessionSettlementExpectation:
     gateway_session_id: str
     broker_session_id: str | None
@@ -149,6 +171,82 @@ def verify_job_settlement(
         billed_value_wei=billed_value,
         outcome=record.SettlementOutcome.Name(record.outcome),
         issued_at=issued_at,
+        signing_public_key=public_key,
+    )
+
+
+def verify_non_admission(  # noqa: PLR0912 — every signed scope field fails closed independently
+    envelope: Mapping[str, Any],
+    *,
+    settlement_keys: Sequence[Mapping[str, Any]],
+    expected: NonAdmissionExpectation,
+) -> VerifiedNonAdmission:
+    """Verify one signed audit claim without granting it billing authority."""
+
+    payload = envelope.get("payload")
+    signature = envelope.get("signature")
+    if not isinstance(payload, dict) or not isinstance(signature, dict):
+        raise SettlementVerificationError(
+            "malformed_envelope", "payload and signature are required"
+        )
+    if signature.get("algorithm") != "secp256k1" or signature.get("canonicalization") != "jcs":
+        raise SettlementVerificationError(
+            "unsupported_signature", "unsupported non-admission signature scheme"
+        )
+    canonical = _canonicalize(payload)
+    public_key = _recover_public_key(canonical, signature.get("value"))
+    record = _parse_non_admission_record(payload)
+    observed_at = _parse_timestamp(record.observed_at, field="observed_at")
+    coverage_started_at = _parse_timestamp(record.coverage_started_at, field="coverage_started_at")
+    _authorize_key(public_key, observed_at, settlement_keys)
+
+    if record.outcome != record.NOT_ADMITTED:
+        raise SettlementVerificationError(
+            "non_admission_outcome_mismatch", "signed outcome is not NOT_ADMITTED"
+        )
+    if record.protocol != expected.protocol:
+        raise SettlementVerificationError("protocol_mismatch", "signed protocol does not match")
+    if record.request_id != expected.request_id:
+        raise SettlementVerificationError("request_id_mismatch", "signed request id does not match")
+    if record.work_id != expected.work_id:
+        raise SettlementVerificationError("work_id_mismatch", "signed work id does not match")
+    if bytes(record.sender) != expected.sender:
+        raise SettlementVerificationError("sender_mismatch", "signed sender does not match")
+    if bytes(record.recipient) != expected.recipient:
+        raise SettlementVerificationError("recipient_mismatch", "signed recipient does not match")
+    quote = record.accepted_quote_ref
+    if (
+        quote.quote_id != expected.quote_id
+        or quote.quote_version != expected.quote_version
+        or bytes(quote.constraint_fingerprint) != expected.constraint_fingerprint
+        or bytes(quote.route_fingerprint) != expected.route_fingerprint
+    ):
+        raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
+    if record.broker_eth_address.lower() != expected.broker_eth_address.lower():
+        raise SettlementVerificationError(
+            "broker_identity_mismatch", "signed broker identity does not match"
+        )
+
+    issued_at = expected.job_issued_at
+    if issued_at.tzinfo is None:
+        raise SettlementVerificationError(
+            "invalid_job_issued_at", "job issuance time must be timezone-aware"
+        )
+    if coverage_started_at > issued_at:
+        raise SettlementVerificationError(
+            "coverage_gap", "broker evidence coverage begins after job issuance"
+        )
+    if observed_at < issued_at:
+        raise SettlementVerificationError(
+            "observation_precedes_job", "broker observation predates job issuance"
+        )
+    if coverage_started_at > observed_at:
+        raise SettlementVerificationError(
+            "invalid_coverage", "broker coverage begins after its observation"
+        )
+    return VerifiedNonAdmission(
+        observed_at=observed_at,
+        coverage_started_at=coverage_started_at,
         signing_public_key=public_key,
     )
 
@@ -306,17 +404,19 @@ def _recover_public_key(canonical: bytes, value: object) -> str:
 
 
 def _parse_issued_at(value: object) -> datetime:
-    if not isinstance(value, str):
-        raise SettlementVerificationError("missing_issued_at", "signed issued_at is required")
+    return _parse_timestamp(value, field="issued_at")
+
+
+def _parse_timestamp(value: object, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise SettlementVerificationError(f"missing_{field}", f"signed {field} is required")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise SettlementVerificationError(
-            "invalid_issued_at", "signed issued_at is invalid"
-        ) from exc
+        raise SettlementVerificationError(f"invalid_{field}", f"signed {field} is invalid") from exc
     if parsed.tzinfo is None:
         raise SettlementVerificationError(
-            "invalid_issued_at", "signed issued_at must be timezone-aware"
+            f"invalid_{field}", f"signed {field} must be timezone-aware"
         )
     return parsed
 
@@ -352,6 +452,17 @@ def _parse_record(payload: dict[str, Any]):  # type: ignore[no-untyped-def]
         return json_format.ParseDict(payload, types_pb2.SettlementRecord())
     except (json_format.ParseError, DecodeError, ValueError) as exc:
         raise SettlementVerificationError("malformed_payload", "invalid settlement record") from exc
+
+
+def _parse_non_admission_record(payload: dict[str, Any]):  # type: ignore[no-untyped-def]
+    from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
+
+    try:
+        return json_format.ParseDict(payload, types_pb2.NonAdmissionRecord())
+    except (json_format.ParseError, DecodeError, ValueError) as exc:
+        raise SettlementVerificationError(
+            "malformed_payload", "invalid non-admission record"
+        ) from exc
 
 
 def _bill(units: int, amount_wei: int, per_units: int) -> int:

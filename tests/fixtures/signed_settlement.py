@@ -88,6 +88,55 @@ def signed_job_settlement(
     }
 
 
+def signed_non_admission(
+    *,
+    request_id: str = "request-1",
+    work_id: str = "work-1",
+    protocol: str = "paid-job/v1",
+    sender: bytes = b"\xaa" * 20,
+    recipient: bytes = b"\x11" * 20,
+    quote_id: str = "q-1",
+    quote_version: int = 1,
+    constraint_fingerprint: bytes = b"\x00" * 32,
+    route_fingerprint: bytes = b"\x11" * 32,
+    broker_eth_address: str = "0x" + "11" * 20,
+    observed_at: str = TEST_ISSUED_AT,
+    coverage_started_at: str = "2026-05-01T00:00:00Z",
+    private_key: PrivateKey = TEST_PRIVATE_KEY,
+) -> dict[str, Any]:
+    """Build one broker-signed, audit-only NOT_ADMITTED record."""
+
+    payload: dict[str, Any] = {
+        "protocol": protocol,
+        "request_id": request_id,
+        "work_id": work_id,
+        "sender": base64.b64encode(sender).decode(),
+        "recipient": base64.b64encode(recipient).decode(),
+        "accepted_quote_ref": {
+            "quote_id": quote_id,
+            "quote_version": str(quote_version),
+            "constraint_fingerprint": base64.b64encode(constraint_fingerprint).decode(),
+            "route_fingerprint": base64.b64encode(route_fingerprint).decode(),
+        },
+        "broker_eth_address": broker_eth_address,
+        "observed_at": observed_at,
+        "coverage_started_at": coverage_started_at,
+        "outcome": "NOT_ADMITTED",
+    }
+    canonical = rfc8785.dumps(payload)
+    prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
+    signature = bytearray(private_key.sign_msg_hash(keccak(prefix + canonical)).to_bytes())
+    signature[64] += 27
+    return {
+        "payload": payload,
+        "signature": {
+            "algorithm": "secp256k1",
+            "canonicalization": "jcs",
+            "value": "0x" + signature.hex(),
+        },
+    }
+
+
 def signed_session_settlement(
     *,
     gateway_session_id: str,

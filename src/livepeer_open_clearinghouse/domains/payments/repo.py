@@ -46,6 +46,10 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     )
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
     mint_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Parsed from the daemon-returned payment envelope at mint. Nullable only
+    # for pre-0023 rows, whose envelopes were not retained and cannot be
+    # reconstructed safely.
+    sender_eth_address: Mapped[str | None] = mapped_column(nullable=True)
     recipient_eth_address: Mapped[str] = mapped_column(nullable=False)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)

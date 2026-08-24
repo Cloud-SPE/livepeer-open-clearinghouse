@@ -123,7 +123,7 @@ def test_proto_response_to_dataclass() -> None:
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
 
     proto = payer_daemon_pb2.CreatePaymentResponse(
-        payment_bytes=b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT-V1-test",
+        payment_bytes=types_pb2.Payment(sender=b"\xbb" * 20).SerializeToString(),
         tickets_created=1,
         expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(12_345)),
         funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
@@ -142,7 +142,7 @@ def test_proto_response_to_dataclass() -> None:
     )
 
     dc = proto_response_to_dataclass(proto)
-    assert dc.payment_bytes == b"OPEN-CLEARINGHOUSE-MOCK-PAYMENT-V1-test"
+    assert dc.sender == b"\xbb" * 20
     assert dc.tickets_created == 1
     assert dc.expected_value == Decimal(12_345)
     assert dc.funded_value_wei == Decimal(50_000)
@@ -169,6 +169,7 @@ def test_proto_response_rejects_invalid_validity_telemetry(
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
 
     proto = payer_daemon_pb2.CreatePaymentResponse(
+        payment_bytes=types_pb2.Payment(sender=b"\xbb" * 20).SerializeToString(),
         expected_value=types_pb2.BigUInt(),
         funded_value_wei=types_pb2.BigUInt(),
         accepted_quote_ref=types_pb2.QuoteRef(),
@@ -187,6 +188,7 @@ def test_funding_response_rejects_self_referential_predecessor() -> None:
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
 
     proto = payer_daemon_pb2.CreatePaymentResponse(
+        payment_bytes=types_pb2.Payment(sender=b"\xbb" * 20).SerializeToString(),
         expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
         funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
         accepted_quote_ref=types_pb2.QuoteRef(),

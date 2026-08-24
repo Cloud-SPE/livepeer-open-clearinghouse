@@ -110,7 +110,12 @@ automatically refunds, releases on expiry, or attempts re-encumbrance.
 Before applying a conservative full charge, LOC polls the snapshotted broker's
 `GET /v1/exchange/{request_id}` using the request ID LOC created. `IN_FLIGHT`
 and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence;
-`NOT_ADMITTED` is signed audit evidence only; `ADMITTED_OUTCOME_UNKNOWN` and
+after that silence LOC directly requests an attributable record from
+`POST /v1/non-admission/{request_id}` using scope from its immutable route and
+payment records. LOC verifies the signature, delegated key, request/work/payment
+identities, full quote reference, broker identity, observation time, and record
+coverage before retaining `NOT_ADMITTED` as append-only audit evidence. Invalid
+or unverifiable evidence remains unresolved. `ADMITTED_OUTCOME_UNKNOWN` and
 `ADMITTED_EVIDENCE_EXPIRED` both prove admission without usable settlement
 evidence. None authorizes a refund or an accounting mutation.
 

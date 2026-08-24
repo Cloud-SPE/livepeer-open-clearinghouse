@@ -294,6 +294,31 @@ message SettlementRecord {
   string request_id = 27;
 }
 
+// Broker-signed, attributable audit evidence that no exchange was admitted
+// for a consumer-issued request id. This does not retire payment_bytes and
+// MUST NOT authorize an automatic refund or be represented as settlement.
+message NonAdmissionRecord {
+  string protocol = 1;
+  string request_id = 2;
+
+  // Caller-supplied scope. The verifier compares every field with its own
+  // immutable route and payment records.
+  string work_id = 3;
+  bytes sender = 4;
+  bytes recipient = 5;
+  QuoteRef accepted_quote_ref = 6;
+
+  string broker_eth_address = 7;
+  string observed_at = 8;
+  string coverage_started_at = 9;
+
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    NOT_ADMITTED = 1;
+  }
+  Outcome outcome = 10;
+}
+
 // PaymentRejectionReason is the machine-readable reason a payee daemon
 // rejected a ticket in ProcessPayment. UNSPECIFIED means the ticket was
 // accepted.
