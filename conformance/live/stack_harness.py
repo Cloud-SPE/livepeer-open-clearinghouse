@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import traceback
 import urllib.request
@@ -61,6 +62,9 @@ _PAYEE_ADMIN_TOKEN = "live-matrix-payee-admin"  # noqa: S105 — disposable harn
 class _BackendHandler(BaseHTTPRequestHandler):
     job_calls = 0
     sessions: ClassVar[dict[str, str]] = {}
+    block_next_job = False
+    blocked_job_entered = threading.Event()
+    blocked_job_release = threading.Event()
 
     def log_message(self, _format: str, *args: object) -> None:
         return
@@ -86,6 +90,12 @@ class _BackendHandler(BaseHTTPRequestHandler):
             if length:
                 self.rfile.read(length)
             type(self).job_calls += 1
+            if type(self).block_next_job:
+                type(self).block_next_job = False
+                type(self).blocked_job_entered.set()
+                if not type(self).blocked_job_release.wait(timeout=10):
+                    self.send_error(504)
+                    return
             self._json({"bark_count": 1})
             return
         if self.path == "/sessions":
@@ -595,9 +605,35 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         cross_status.raise_for_status()
         if cross_status.json().get("accounting_outcome") != "unresolved":
             raise AssertionError("cross-request evidence changed financial state")
+        tampered = json.loads(json.dumps(settlement))
+        tampered["payload"]["request_id"] = cross_job["request_id"]
+        tampered_settle = await loc.post(
+            cross_job["settle_endpoint"],
+            json={
+                "actual_units": 1,
+                "broker_job_id": exchange["job_id"],
+                "work_unit": "tokens",
+                "settlement": tampered,
+            },
+        )
+        if tampered_settle.status_code != 409:
+            raise AssertionError(
+                f"tampered signed settlement returned {tampered_settle.status_code}, want 409"
+            )
+        tampered_status = await loc.get(f"/v1/jobs/{cross_job['job_id']}")
+        tampered_status.raise_for_status()
+        if tampered_status.json().get("accounting_outcome") != "unresolved":
+            raise AssertionError("tampered settlement changed financial state")
         cases.append(
             {
                 "case": "cross_request_settlement_rejected",
+                "status": "passed",
+                "request_id": cross_job["request_id"],
+            }
+        )
+        cases.append(
+            {
+                "case": "tampered_signed_settlement_rejected",
                 "status": "passed",
                 "request_id": cross_job["request_id"],
             }
@@ -938,6 +974,106 @@ async def _exercise_session_rotation(
         }
 
 
+async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault lifecycle
+    loc_url: str,
+    api_key: str,
+    *,
+    stop_payee: Callable[[], None],
+    restart_payee: Callable[[], None],
+) -> dict[str, Any]:
+    """Interrupt the payee after admission and prove durable debit recovery."""
+
+    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
+    async with (
+        httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc,
+        httpx.AsyncClient(timeout=15) as broker,
+    ):
+        opened_response = await loc.post(
+            "/v1/jobs",
+            headers={"Idempotency-Key": f"debit-fault-open-{uuid.uuid4()}"},
+            json={
+                "capability": "test:job",
+                "offering": "default",
+                "transport": "unary",
+                "estimated_units": 10_250,
+                "max_total_units": 10_250,
+            },
+        )
+        opened_response.raise_for_status()
+        opened = opened_response.json()
+        broker_url = str(opened["broker_url"]).rstrip("/")
+        baseline_calls = _BackendHandler.job_calls
+        _BackendHandler.blocked_job_entered.clear()
+        _BackendHandler.blocked_job_release.clear()
+        _BackendHandler.block_next_job = True
+        exchange_task = asyncio.create_task(
+            broker.post(
+                f"{broker_url}/v1/job",
+                headers=_broker_headers(opened),
+                content=b'{"prompt":"interrupt debit after delivery"}',
+            )
+        )
+        entered = await asyncio.to_thread(_BackendHandler.blocked_job_entered.wait, 5)
+        if not entered:
+            _BackendHandler.blocked_job_release.set()
+            raise AssertionError("fault-injection backend was not entered")
+        try:
+            stop_payee()
+        finally:
+            _BackendHandler.blocked_job_release.set()
+        broker_response = await exchange_task
+        broker_response.raise_for_status()
+        if encoded_pending := broker_response.headers.get("Livepeer-Settlement"):
+            pending_claim = json.loads(base64.b64decode(encoded_pending, validate=True))
+            raise AssertionError(
+                "ACCOUNTING_PENDING response carried a terminal settlement: "
+                f"{pending_claim.get('payload', {}).get('outcome')!r}"
+            )
+        if _BackendHandler.job_calls != baseline_calls + 1:
+            raise AssertionError("debit fault executed backend work more than once")
+
+        pending = _job_exchange(broker_url, str(opened["request_id"]))
+        if pending.get("outcome") != "ACCOUNTING_PENDING":
+            raise AssertionError(f"failed debit was not durably pending: {pending!r}")
+        restart_payee()
+
+        exchange: dict[str, Any] = {}
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            exchange = _job_exchange(broker_url, str(opened["request_id"]))
+            if exchange.get("outcome") == "SETTLED":
+                break
+            if exchange.get("outcome") != "ACCOUNTING_PENDING":
+                raise AssertionError(f"debit retry entered an invalid outcome: {exchange!r}")
+            await asyncio.sleep(0.5)
+        else:
+            raise AssertionError(f"broker did not recover the failed debit: {exchange!r}")
+        if not exchange.get("settlement"):
+            raise AssertionError("recovered debit omitted signed settlement evidence")
+
+        loc_status: dict[str, Any] = {}
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            status_response = await loc.get(f"/v1/jobs/{opened['job_id']}")
+            status_response.raise_for_status()
+            loc_status = status_response.json()
+            if loc_status.get("accounting_outcome") == "broker_settled":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(f"LOC did not recover the retried debit: {loc_status!r}")
+        if loc_status.get("actual_units") != 1 or _BackendHandler.job_calls != baseline_calls + 1:
+            raise AssertionError("debit recovery changed usage or repeated backend work")
+
+        return {
+            "case": "transient_debit_failure_recovers",
+            "status": "passed",
+            "request_id": opened["request_id"],
+            "broker_job_id": exchange["job_id"],
+            "pending_attempts": pending.get("debit_attempts"),
+        }
+
+
 def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
     for command in ("docker", "git", "go", "uv"):
         if shutil.which(command) is None:
@@ -1000,16 +1136,17 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             cwd=modules_repo / "payment-daemon",
         )
         stack.callback(payer_process.stop)
+        payee_command = [
+            str(payer_bin),
+            "--mode=receiver",
+            f"--socket={payee_socket}",
+            f"--db={runtime / 'payee.db'}",
+            f"--orch-address={COLD_KEY.public_key.to_address()}",
+            f"--payee-admin-token={_PAYEE_ADMIN_TOKEN}",
+        ]
         payee_process = _start_process(
             "payee-daemon",
-            [
-                str(payer_bin),
-                "--mode=receiver",
-                f"--socket={payee_socket}",
-                f"--db={runtime / 'payee.db'}",
-                f"--orch-address={COLD_KEY.public_key.to_address()}",
-                f"--payee-admin-token={_PAYEE_ADMIN_TOKEN}",
-            ],
+            payee_command,
             artifacts,
             processes,
             cwd=modules_repo / "payment-daemon",
@@ -1229,6 +1366,41 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
         )
         cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
         cases.append(asyncio.run(_exercise_session_rotation(loc_url, api_key, payee_socket)))
+
+        def stop_payee_for_fault() -> None:
+            payee_process.stop()
+            processes.remove(payee_process)
+
+        def restart_payee_after_fault() -> None:
+            nonlocal payee_process
+            payee_process = _start_process(
+                "payee-daemon-restarted",
+                payee_command,
+                artifacts,
+                processes,
+                cwd=modules_repo / "payment-daemon",
+            )
+            stack.callback(payee_process.stop)
+            payee_channel = grpc.insecure_channel(f"unix://{payee_socket}")
+            try:
+                _wait_for(
+                    "restarted payee gRPC socket",
+                    lambda: _grpc_ready(payee_channel),
+                    [payee_process],
+                )
+            finally:
+                payee_channel.close()
+
+        cases.append(
+            asyncio.run(
+                _exercise_transient_debit_failure(
+                    loc_url,
+                    api_key,
+                    stop_payee=stop_payee_for_fault,
+                    restart_payee=restart_payee_after_fault,
+                )
+            )
+        )
 
         result = {
             "status": "ok",
