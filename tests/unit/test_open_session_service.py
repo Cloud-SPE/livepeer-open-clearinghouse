@@ -40,6 +40,7 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
     ProtocolNotSupportedForSession,
+    RouteBindingMismatch,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import (
@@ -189,8 +190,9 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert ps.broker_request_id == response.request_id
     assert ps.route_snapshot is not None
     assert ps.route_snapshot["protocol"] == "paid-session/v1"
+    assert ps.route_snapshot["schema_version"] == "route-snapshot/v1"
     assert ps.route_snapshot["session"]["refill"] == "bounded"
-    assert ps.route_snapshot["units_per_price"] == 1
+    assert ps.route_snapshot["units_per_price"] == "1"
     assert ps.route_snapshot["quote_id"] == "q-1"
     assert ps.work_id == response.work_id
     assert ps.estimated_units == 3600
@@ -220,6 +222,76 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert any(
         e.reason == "session_encumbrance" and e.delta_wei == Decimal(-7_200_000) for e in ledger
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_uses_exact_authoritative_route_binding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    first = _route_for_protocol("paid-session/v1")
+    selected = first.model_copy(
+        update={
+            "worker_url": "https://selected-session.example/livepeer",
+            "eth_address": "0x" + "22" * 20,
+            "quote_id": "q-selected-session",
+            "constraint_fingerprint": b"\x22" * 32,
+            "route_fingerprint": b"\x33" * 32,
+        }
+    )
+    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+
+    response = await sessions_service.open_session(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=selected.capability,
+        offering=selected.offering,
+        route_binding=selected.binding,
+        estimated_runway_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[first, selected]),
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert response.broker_url == selected.worker_url
+    assert response.route_snapshot == selected.snapshot_view()
+    assert len(daemon._mint_replays) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_stale_route_binding_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-session/v1")
+    daemon = MockPaymentDaemonClient()
+    stale = route.binding.model_copy(update={"route_fingerprint": "ff" * 32})
+
+    with pytest.raises(RouteBindingMismatch):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            route_binding=stale,
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

@@ -13,6 +13,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon import (
     RouteSnapshot,
     SessionAxes,
     SettlementKey,
+    UInt64Decimal,
     WorkUnitEstimator,
 )
 
@@ -21,7 +22,7 @@ class OfferingView(BaseModel):
     id: str
     price_per_work_unit_wei: Decimal | None
     work_unit: str | None
-    units_per_price: int
+    units_per_price: UInt64Decimal
     protocol: str
     work_unit_estimator: WorkUnitEstimator | None
     job: JobAxes | None
@@ -65,9 +66,9 @@ class RouteView(BaseModel):
     offering: str
     price_per_work_unit_wei: Decimal
     work_unit: str
-    units_per_price: int
+    units_per_price: UInt64Decimal
     quote_id: str
-    quote_version: int
+    quote_version: UInt64Decimal
     constraint_fingerprint: str
     route_fingerprint: str
     protocol: str

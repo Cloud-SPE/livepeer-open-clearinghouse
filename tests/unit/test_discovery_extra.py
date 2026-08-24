@@ -12,6 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from livepeer_open_clearinghouse.domains.discovery.service import (
     list_capabilities,
@@ -19,6 +20,7 @@ from livepeer_open_clearinghouse.domains.discovery.service import (
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     MockRegistryClient,
+    RouteBinding,
     SelectedRoute,
     WorkUnitEstimator,
 )
@@ -83,9 +85,37 @@ async def test_route_view_carries_extra() -> None:
     assert route.route_binding.quote_id == "q-extra"
     assert route.route_binding.route_fingerprint == "11" * 32
     assert route.route_snapshot.broker_url == "https://orch.example/livepeer"
+    assert route.route_snapshot.schema_version == "route-snapshot/v1"
     assert route.route_snapshot.job is not None
     assert route.route_snapshot.job.transports == {"unary", "stream"}
     assert route.route_snapshot.extra["openai"]["model"] == "Qwen3.6-27B"
+
+
+@pytest.mark.unit
+async def test_registry_uint64_fields_are_lossless_decimal_strings() -> None:
+    uint64_max = (1 << 64) - 1
+    selected = _ROUTE.model_copy(
+        update={"quote_version": uint64_max, "units_per_price": uint64_max}
+    )
+    route = await select_route(
+        MockRegistryClient(routes=[selected]),
+        capability=selected.capability,
+        offering=selected.offering,
+    )
+    assert route is not None
+    payload = route.model_dump(mode="json")
+    assert payload["quote_version"] == str(uint64_max)
+    assert payload["units_per_price"] == str(uint64_max)
+    assert payload["route_binding"]["quote_version"] == str(uint64_max)
+    assert payload["route_snapshot"]["quote_version"] == str(uint64_max)
+    assert payload["route_snapshot"]["units_per_price"] == str(uint64_max)
+
+    parsed = RouteBinding.model_validate(payload["route_binding"])
+    assert parsed.quote_version == uint64_max
+    with pytest.raises(ValidationError):
+        RouteBinding.model_validate(
+            {**payload["route_binding"], "quote_version": str(uint64_max + 1)}
+        )
 
 
 @pytest.mark.unit

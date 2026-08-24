@@ -2081,8 +2081,11 @@ export interface components {
             price_per_work_unit_wei: string | null;
             /** Work Unit */
             work_unit: string | null;
-            /** Units Per Price */
-            units_per_price: number;
+            /**
+             * Units Per Price
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            units_per_price: string;
             /** Protocol */
             protocol: string;
             work_unit_estimator: components["schemas"]["WorkUnitEstimator"] | null;
@@ -2325,8 +2328,11 @@ export interface components {
         RouteBinding: {
             /** Quote Id */
             quote_id: string;
-            /** Quote Version */
-            quote_version: number;
+            /**
+             * Quote Version
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            quote_version: string;
             /** Constraint Fingerprint */
             constraint_fingerprint: string;
             /** Route Fingerprint */
@@ -2337,6 +2343,12 @@ export interface components {
          * @description Immutable public route declaration used to authorize one open.
          */
         RouteSnapshot: {
+            /**
+             * Schema Version
+             * @default route-snapshot/v1
+             * @constant
+             */
+            schema_version: "route-snapshot/v1";
             /** Broker Url */
             broker_url: string;
             /** Eth Address */
@@ -2354,12 +2366,18 @@ export interface components {
             work_unit: string;
             /** Price Per Work Unit Wei */
             price_per_work_unit_wei: string;
-            /** Units Per Price */
-            units_per_price: number;
+            /**
+             * Units Per Price
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            units_per_price: string;
             /** Quote Id */
             quote_id: string;
-            /** Quote Version */
-            quote_version: number;
+            /**
+             * Quote Version
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            quote_version: string;
             /** Constraint Fingerprint */
             constraint_fingerprint: string;
             /** Route Fingerprint */
@@ -2391,12 +2409,18 @@ export interface components {
             price_per_work_unit_wei: string;
             /** Work Unit */
             work_unit: string;
-            /** Units Per Price */
-            units_per_price: number;
+            /**
+             * Units Per Price
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            units_per_price: string;
             /** Quote Id */
             quote_id: string;
-            /** Quote Version */
-            quote_version: number;
+            /**
+             * Quote Version
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            quote_version: string;
             /** Constraint Fingerprint */
             constraint_fingerprint: string;
             /** Route Fingerprint */
@@ -2778,8 +2802,11 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
-            /** Introduced In Publication Seq */
-            introduced_in_publication_seq: number;
+            /**
+             * Introduced In Publication Seq
+             * @description Canonical decimal encoding of an unsigned 64-bit integer.
+             */
+            introduced_in_publication_seq: string;
         };
         /** SettlementSignature */
         SettlementSignature: {

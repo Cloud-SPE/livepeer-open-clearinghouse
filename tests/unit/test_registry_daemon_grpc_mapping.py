@@ -128,7 +128,10 @@ def test_selected_route_preserves_overlapping_settlement_keys_in_snapshot() -> N
         newer["public_key"],
         outgoing["public_key"],
     ]
-    assert route.snapshot()["settlement_keys"] == [newer, outgoing]
+    assert route.snapshot()["settlement_keys"] == [
+        {**newer, "introduced_in_publication_seq": "8"},
+        {**outgoing, "introduced_in_publication_seq": "7"},
+    ]
 
 
 @pytest.mark.unit

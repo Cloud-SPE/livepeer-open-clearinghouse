@@ -66,6 +66,14 @@ estimator, pricing denominator, quote identity and fingerprints, settlement
 delegation, broker URL, and signed offering metadata. The same snapshot is
 persisted with the payment session and returned by every idempotent replay.
 
+Every snapshot carries `schema_version: "route-snapshot/v1"`. Registry
+`uint64` values are encoded as canonical decimal strings at the JSON boundary
+(`units_per_price`, `quote_version`, and settlement-key publication sequence).
+Gateways must keep them as strings in JavaScript/TypeScript; converting them to
+`number` can lose route identity above `Number.MAX_SAFE_INTEGER`. LOC parses
+them back to bounded integers only for internal arithmetic and rejects
+non-canonical or out-of-range values.
+
 `route_binding` is part of the open request's idempotency fingerprint. Reusing
 an `Idempotency-Key` with a different binding returns
 `409 request_id_reuse`; replay never silently selects a new route.

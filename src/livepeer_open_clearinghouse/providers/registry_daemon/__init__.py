@@ -21,6 +21,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SelectedRoute,
     SessionAxes,
     SettlementKey,
+    UInt64Decimal,
     WorkUnitEstimator,
     select_bound_route,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "SelectedRoute",
     "SessionAxes",
     "SettlementKey",
+    "UInt64Decimal",
     "WorkUnitEstimator",
     "select_bound_route",
 ]

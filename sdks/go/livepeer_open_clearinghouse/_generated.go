@@ -96,6 +96,21 @@ func (e RouteSnapshotProtocol) Valid() bool {
 	}
 }
 
+// Defines values for RouteSnapshotSchemaVersion.
+const (
+	RouteSnapshotv1 RouteSnapshotSchemaVersion = "route-snapshot/v1"
+)
+
+// Valid indicates whether the value is a known member of the RouteSnapshotSchemaVersion enum.
+func (e RouteSnapshotSchemaVersion) Valid() bool {
+	switch e {
+	case RouteSnapshotv1:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionAxesAttachment.
 const (
 	SessionAxesAttachmentExternal SessionAxesAttachment = "external"
@@ -746,9 +761,11 @@ type OfferingView struct {
 	PricePerWorkUnitWei *string                 `json:"price_per_work_unit_wei"`
 	Protocol            string                  `json:"protocol"`
 	Session             *SessionAxes            `json:"session"`
-	UnitsPerPrice       int                     `json:"units_per_price"`
-	WorkUnit            *string                 `json:"work_unit"`
-	WorkUnitEstimator   *WorkUnitEstimator      `json:"work_unit_estimator"`
+
+	// UnitsPerPrice Canonical decimal encoding of an unsigned 64-bit integer.
+	UnitsPerPrice     string             `json:"units_per_price"`
+	WorkUnit          *string            `json:"work_unit"`
+	WorkUnitEstimator *WorkUnitEstimator `json:"work_unit_estimator"`
 }
 
 // OperatorList defines model for OperatorList.
@@ -897,8 +914,10 @@ type ResendVerificationRequest struct {
 type RouteBinding struct {
 	ConstraintFingerprint string `json:"constraint_fingerprint"`
 	QuoteId               string `json:"quote_id"`
-	QuoteVersion          int    `json:"quote_version"`
-	RouteFingerprint      string `json:"route_fingerprint"`
+
+	// QuoteVersion Canonical decimal encoding of an unsigned 64-bit integer.
+	QuoteVersion     string `json:"quote_version"`
+	RouteFingerprint string `json:"route_fingerprint"`
 }
 
 // RouteSnapshot Immutable public route declaration used to authorize one open.
@@ -913,17 +932,25 @@ type RouteSnapshot struct {
 	PricePerWorkUnitWei   string                  `json:"price_per_work_unit_wei"`
 	Protocol              RouteSnapshotProtocol   `json:"protocol"`
 	QuoteId               string                  `json:"quote_id"`
-	QuoteVersion          int                     `json:"quote_version"`
-	RouteFingerprint      string                  `json:"route_fingerprint"`
-	Session               *SessionAxes            `json:"session,omitempty"`
-	SettlementKeys        []SettlementKey         `json:"settlement_keys"`
-	UnitsPerPrice         int                     `json:"units_per_price"`
-	WorkUnit              string                  `json:"work_unit"`
-	WorkUnitEstimator     *WorkUnitEstimator      `json:"work_unit_estimator,omitempty"`
+
+	// QuoteVersion Canonical decimal encoding of an unsigned 64-bit integer.
+	QuoteVersion     string                      `json:"quote_version"`
+	RouteFingerprint string                      `json:"route_fingerprint"`
+	SchemaVersion    *RouteSnapshotSchemaVersion `json:"schema_version,omitempty"`
+	Session          *SessionAxes                `json:"session,omitempty"`
+	SettlementKeys   []SettlementKey             `json:"settlement_keys"`
+
+	// UnitsPerPrice Canonical decimal encoding of an unsigned 64-bit integer.
+	UnitsPerPrice     string             `json:"units_per_price"`
+	WorkUnit          string             `json:"work_unit"`
+	WorkUnitEstimator *WorkUnitEstimator `json:"work_unit_estimator,omitempty"`
 }
 
 // RouteSnapshotProtocol defines model for RouteSnapshot.Protocol.
 type RouteSnapshotProtocol string
+
+// RouteSnapshotSchemaVersion defines model for RouteSnapshot.SchemaVersion.
+type RouteSnapshotSchemaVersion string
 
 // RouteView A single selected route — what `Select()` returns, web-flavored.
 type RouteView struct {
@@ -936,17 +963,21 @@ type RouteView struct {
 	PricePerWorkUnitWei   string                  `json:"price_per_work_unit_wei"`
 	Protocol              string                  `json:"protocol"`
 	QuoteId               string                  `json:"quote_id"`
-	QuoteVersion          int                     `json:"quote_version"`
+
+	// QuoteVersion Canonical decimal encoding of an unsigned 64-bit integer.
+	QuoteVersion string `json:"quote_version"`
 
 	// RouteBinding Compact caller-stable identity for one signed selected route.
 	RouteBinding     RouteBinding `json:"route_binding"`
 	RouteFingerprint string       `json:"route_fingerprint"`
 
 	// RouteSnapshot Immutable public route declaration used to authorize one open.
-	RouteSnapshot     RouteSnapshot      `json:"route_snapshot"`
-	Session           *SessionAxes       `json:"session"`
-	SettlementKeys    []SettlementKey    `json:"settlement_keys"`
-	UnitsPerPrice     int                `json:"units_per_price"`
+	RouteSnapshot  RouteSnapshot   `json:"route_snapshot"`
+	Session        *SessionAxes    `json:"session"`
+	SettlementKeys []SettlementKey `json:"settlement_keys"`
+
+	// UnitsPerPrice Canonical decimal encoding of an unsigned 64-bit integer.
+	UnitsPerPrice     string             `json:"units_per_price"`
 	WorkUnit          string             `json:"work_unit"`
 	WorkUnitEstimator *WorkUnitEstimator `json:"work_unit_estimator"`
 	WorkerUrl         string             `json:"worker_url"`
@@ -1177,8 +1208,10 @@ type SettlementEnvelope struct {
 
 // SettlementKey Cold-key-authorized broker key accepted for settlement signatures.
 type SettlementKey struct {
-	ExpiresAt                  time.Time `json:"expires_at"`
-	IntroducedInPublicationSeq int       `json:"introduced_in_publication_seq"`
+	ExpiresAt time.Time `json:"expires_at"`
+
+	// IntroducedInPublicationSeq Canonical decimal encoding of an unsigned 64-bit integer.
+	IntroducedInPublicationSeq string    `json:"introduced_in_publication_seq"`
 	NotBefore                  time.Time `json:"not_before"`
 	PublicKey                  string    `json:"public_key"`
 }

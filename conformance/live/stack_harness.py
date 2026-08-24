@@ -734,6 +734,20 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         )
         if reuse.status_code != 409:
             raise AssertionError(f"LOC session request-id reuse returned {reuse.status_code}")
+        stale_binding = {
+            **selected_route["route_binding"],
+            "route_fingerprint": "0" * 64,
+        }
+        stale = await loc.post(
+            "/v1/sessions",
+            headers={"Idempotency-Key": f"loc-session-stale-{uuid.uuid4()}"},
+            json={**open_body, "route_binding": stale_binding},
+        )
+        if (
+            stale.status_code != 409
+            or stale.json().get("error", {}).get("code") != "route_binding_mismatch"
+        ):
+            raise AssertionError(f"LOC stale session route binding was not rejected: {stale.text}")
         opened = first.json()
 
         broker_url = str(opened["broker_url"]).rstrip("/")

@@ -14,13 +14,16 @@ import json
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
+    PlainSerializer,
+    WithJsonSchema,
     field_serializer,
     model_validator,
 )
@@ -32,6 +35,37 @@ from pydantic import (
 from livepeer_open_clearinghouse import _gen  # noqa: F401
 
 _logger = logging.getLogger(__name__)
+
+_UINT64_MAX = (1 << 64) - 1
+
+
+def _parse_uint64_decimal(value: object) -> int:
+    """Parse a uint64 without allowing JSON-number precision loss."""
+
+    if isinstance(value, bool):
+        raise ValueError("uint64 decimal must not be boolean")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        if value != "0" and value.startswith("0"):
+            raise ValueError("uint64 decimal must be canonical")
+        return int(value)
+    raise ValueError("uint64 decimal must be an integer or canonical decimal string")
+
+
+UInt64Decimal = Annotated[
+    int,
+    BeforeValidator(_parse_uint64_decimal),
+    Field(ge=0, le=_UINT64_MAX),
+    PlainSerializer(str, return_type=str, when_used="json"),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": r"^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical decimal encoding of an unsigned 64-bit integer.",
+        }
+    ),
+]
 
 
 class JobAxes(BaseModel):
@@ -73,7 +107,7 @@ class SettlementKey(BaseModel):
     public_key: str = Field(pattern=r"^0x[0-9a-f]{130}$")
     not_before: AwareDatetime
     expires_at: AwareDatetime
-    introduced_in_publication_seq: int = Field(ge=0)
+    introduced_in_publication_seq: UInt64Decimal
 
     @model_validator(mode="after")
     def validity_window_is_ordered(self) -> SettlementKey:
@@ -105,7 +139,7 @@ class RouteBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     quote_id: str = Field(min_length=1)
-    quote_version: int = Field(ge=1)
+    quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -115,6 +149,7 @@ class RouteSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    schema_version: Literal["route-snapshot/v1"] = "route-snapshot/v1"
     broker_url: str = Field(min_length=1)
     eth_address: str = Field(min_length=1)
     capability: str = Field(min_length=1)
@@ -122,9 +157,9 @@ class RouteSnapshot(BaseModel):
     protocol: Literal["paid-job/v1", "paid-session/v1"]
     work_unit: str = Field(min_length=1)
     price_per_work_unit_wei: Decimal = Field(ge=0)
-    units_per_price: int = Field(ge=1)
+    units_per_price: UInt64Decimal = Field(ge=1)
     quote_id: str = Field(min_length=1)
-    quote_version: int = Field(ge=1)
+    quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     settlement_keys: tuple[SettlementKey, ...]
@@ -167,9 +202,9 @@ class SelectedRoute(BaseModel):
     offering: str = Field(min_length=1)
     price_per_work_unit_wei: Decimal = Field(ge=0)
     work_unit: str = Field(min_length=1)
-    units_per_price: int = Field(ge=1)
+    units_per_price: UInt64Decimal = Field(ge=1)
     quote_id: str
-    quote_version: int
+    quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: bytes
     route_fingerprint: bytes
     protocol: Literal["paid-job/v1", "paid-session/v1"]

@@ -71,6 +71,11 @@ quote version, constraint fingerprint, and route fingerprint must all match one
 authoritative candidate. LOC then snapshots that candidate; it does not accept
 caller-supplied pricing, broker URL, protocol axes, or settlement delegation.
 
+The gRPC `uint64` values remain integers internally, but LOC's HTTP/OpenAPI
+surface serializes them as canonical decimal strings so JavaScript gateways
+cannot truncate a quote or pricing denominator. Route snapshots identify their
+wire shape with `schema_version: "route-snapshot/v1"`.
+
 ### `ResolveByAddress(eth_address, allow_legacy_fallback, allow_unsigned, force_refresh) → ResolveResult`
 
 Returns the full parsed manifest + overlay-merged nodes for a single
