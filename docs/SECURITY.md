@@ -4,6 +4,10 @@ The security model for Livepeer Open Clearinghouse. This is the contract Livepee
 its users and operator. Don't relax it without an explicit Beads decision and
 the resulting durable design record.
 
+The production runtime, persistence, recovery objectives, and go-live gates
+are defined in
+[`design-docs/001-production-topology.md`](design-docs/001-production-topology.md).
+
 ## Trust boundaries
 
 ```
@@ -26,7 +30,7 @@ There are three explicit trust transitions:
 1. **Internet → livepeer-open-clearinghouse-gateway:** authenticated. Either an API key
    (app-dev surface) or a web session cookie (portal/admin UI).
 2. **livepeer-open-clearinghouse-gateway → Postgres:** TCP with username/password from env.
-   The DB is on the same Docker network. Not exposed externally.
+   The DB is on a private network and is not exposed externally.
 3. **livepeer-open-clearinghouse-gateway → daemons:** Unix socket. Shared volume
    (`livepeer-run`) with mode `0o660`. Trust is filesystem-mediated:
    only processes with matching uid/gid (`65532`) can connect.
@@ -128,10 +132,13 @@ All secrets come from environment variables and are documented in
 | `API_KEY_HASH_PEPPER` | Pepper for API key hashing |
 | `SESSION_SECRET` | Signing key for session cookies |
 | `RESEND_API_KEY` | Email provider credential (optional; falls back to a no-op `NullEmail` in dev) |
+| `RESEND_WEBHOOK_SECRET` | Verifies inbound email provider webhooks |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Google OAuth |
 | `GITHUB_OAUTH_CLIENT_ID` / `_SECRET` | GitHub OAuth |
 | `METRICS_TOKEN` | Bearer token for `/metrics` endpoint |
 | `ADMIN_BOOTSTRAP_TOKEN` | One-time token to create the first operator |
+| `SDK_MANIFEST_SIGNING_KEY` | Signs the SDK approval manifest |
+| `WEBHOOK_SIGNING_SEED` | Derives per-user outbound webhook signing secrets |
 | `LIVEPEER_KEYSTORE_PASSWORD` | Passed to `payment-daemon`, never read by gateway |
 
 `.env` is git-ignored. `.env.example` lives in the repo with dev-safe
