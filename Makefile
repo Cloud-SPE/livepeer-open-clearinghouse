@@ -94,7 +94,7 @@ IMAGE_NAME ?= tztcloud/livepeer-open-clearinghouse-gateway
 IMAGE_TAG ?= dev
 
 image-build: ## Build the gateway image and tag it for local compose
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	IMAGE_NAME="$(IMAGE_NAME)" TAG="$(IMAGE_TAG)" ./infra/scripts/build-images.sh
 
 refresh-openapi: ## Snapshot /openapi.json to repo root (requires a running gateway on :8000)
 	@if ! curl -sf http://localhost:8000/openapi.json > openapi.json.tmp; then \

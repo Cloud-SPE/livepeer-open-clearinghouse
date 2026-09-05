@@ -9,7 +9,14 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+ARG PYTHON_VERSION=3.13
+ARG UV_VERSION=0.5
+ARG VERSION=dev
+ARG REVISION=unknown
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # uv from the official image, no installer to keep things deterministic.
-COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /usr/local/bin/
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 WORKDIR /build
 
@@ -56,7 +63,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS runtime
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ARG VERSION
+ARG REVISION
 
 # OCI image metadata — the publish workflow's docker/metadata-action
 # layers more labels on top at release time (revision, version, created).
@@ -65,6 +75,8 @@ FROM python:3.13-slim AS runtime
 LABEL org.opencontainers.image.title="livepeer-open-clearinghouse-gateway" \
       org.opencontainers.image.description="FastAPI clearinghouse gateway for Livepeer probabilistic-payment ticket minting and session settlement." \
       org.opencontainers.image.source="https://github.com/livepeer/livepeer-cloud-spe" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

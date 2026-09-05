@@ -57,3 +57,32 @@ health and performs signed route selection through LOC's production UDS gRPC
 client. Every process log, build log, migration log, and a machine-readable
 result is retained under `.artifacts/live-conformance/stack/`; processes and
 the Postgres container are removed on success or failure.
+
+## Image builds
+
+Build the gateway image locally with the same root-independent entrypoint used
+by operators:
+
+```bash
+make image-build
+IMAGE_TAG=test make image-build
+```
+
+The direct interface follows the Livepeer Modules image builder convention:
+
+```bash
+TAG=test ./infra/scripts/build-images.sh
+PUSH=1 TAG=v2.0.1 ./infra/scripts/build-images.sh
+```
+
+`REGISTRY`, `IMAGE`, or the full `IMAGE_NAME` can override the default
+`tztcloud/livepeer-open-clearinghouse-gateway` repository. `VERSION` overrides
+the derived OCI version label. A local build may use dirty source and is marked
+accordingly; a push refuses tracked or untracked changes because that image
+could not be reproduced from a commit. A SemVer push also refuses to reuse an
+existing Git tag that identifies another commit. Record and deploy the digest
+printed after a push, not the mutable tag.
+
+The shell entrypoint builds for the current platform. Tagged releases continue
+through `.github/workflows/publish-image.yml`, which publishes amd64 and arm64
+images with provenance and an SBOM.
