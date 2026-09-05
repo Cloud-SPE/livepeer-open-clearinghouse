@@ -1,5 +1,5 @@
-.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e \
-        run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc refresh-openapi
+.PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e test-conformance test-live-registry test-live-stack test-sdks test-release \
+        run dev down logs ps migrate migrate-create migrate-rehearse clean image-build dev-keystore protoc refresh-openapi
 
 UV ?= uv
 COMPOSE ?= docker compose
@@ -55,6 +55,30 @@ test-integration: ## Run integration tests (requires services running)
 test-e2e: ## Run end-to-end tests (requires full compose stack)
 	$(UV) run pytest -m e2e
 
+test-conformance: ## Run the Modules v2 fixture harness
+	$(UV) run ruff check conformance
+	$(UV) run ruff format --check conformance
+	$(UV) run pytest -q conformance/runners/python
+
+test-live-registry: ## Prove the real registry signed chain-seed path (requires sibling Modules checkout)
+	$(UV) run python conformance/live/registry_seed_probe.py
+
+test-live-stack: ## Boot real LOC + Modules v2 processes (requires Docker and sibling Modules checkout)
+	$(UV) run python conformance/live/stack_harness.py
+
+test-sdks: ## Run quality checks and tests for all four official SDKs
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev ruff format --check sdks/python
+	$(UV) run --package livepeer-open-clearinghouse-sdk --extra dev pytest sdks/python -q
+	$(UV) run python -m py_compile examples/python/*/main.py
+	cd sdks/typescript && pnpm lint && pnpm test && pnpm build
+	for example in one-shot-job streaming-ws streaming-http; do pnpm --filter "@livepeer/example-$$example" exec tsc --noEmit -p tsconfig.json; done
+	cd sdks/go && go vet ./... && go test ./...
+	for example in examples/go/*; do (cd "$$example" && go build -o /dev/null ./...); done
+	cargo fmt --check && cargo test -p livepeer-open-clearinghouse-sdk && cargo check --workspace --all-targets
+
+test-release: check test test-conformance test-sdks ## Run the complete local release baseline
+
 # ---------------------------------------------------------------------------
 # application
 # ---------------------------------------------------------------------------
@@ -70,7 +94,7 @@ IMAGE_NAME ?= tztcloud/livepeer-open-clearinghouse-gateway
 IMAGE_TAG ?= dev
 
 image-build: ## Build the gateway image and tag it for local compose
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	IMAGE_NAME="$(IMAGE_NAME)" TAG="$(IMAGE_TAG)" ./infra/scripts/build-images.sh
 
 refresh-openapi: ## Snapshot /openapi.json to repo root (requires a running gateway on :8000)
 	@if ! curl -sf http://localhost:8000/openapi.json > openapi.json.tmp; then \
@@ -83,7 +107,7 @@ refresh-openapi: ## Snapshot /openapi.json to repo root (requires a running gate
 	@echo "next: re-run codegen in each SDK that needs it"
 	@echo "  ts:     (cd sdks/typescript && pnpm gen:openapi)"
 	@echo "  python: (cd sdks/python && uv run datamodel-codegen --input ../../openapi.json --input-file-type openapi --output src/livepeer_open_clearinghouse_sdk/_generated.py --output-model-type dataclasses.dataclass --use-double-quotes)"
-	@echo "  go:     (cd sdks/go && oapi-codegen -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../../openapi.json)"
+	@echo "  go:     (cd sdks/go && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../../openapi.json)"
 
 dev: ## Bring the full stack up (postgres + daemons + gateway)
 	$(COMPOSE) up -d
@@ -109,6 +133,9 @@ migrate: ## Apply Alembic migrations
 
 migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="add foo")
 	$(UV) run alembic revision --autogenerate -m "$(m)"
+
+migrate-rehearse: ## Restore/audit/migrate a v1 dump (requires SOURCE_DATABASE_URL + ARTIFACT_DIR)
+	./infra/scripts/rehearse-v1-postgres-migration.sh
 
 # ---------------------------------------------------------------------------
 # protobuf

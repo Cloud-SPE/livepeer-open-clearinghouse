@@ -53,6 +53,15 @@ pub enum OpenClearinghouseError {
         retry_after_seconds: Option<u64>,
     },
 
+    /// The broker violated paid-job/v1 and the response cannot be safely settled.
+    #[error("livepeer_open_clearinghouse: broker protocol: {message} ({code})")]
+    BrokerProtocol {
+        code: String,
+        message: String,
+        status: Option<u16>,
+        details: Value,
+    },
+
     /// Configuration mistake at construction time.
     #[error("livepeer_open_clearinghouse: configuration: {0}")]
     Config(String),
@@ -87,6 +96,16 @@ impl OpenClearinghouseError {
     #[must_use]
     pub fn transport(msg: impl Into<String>) -> Self {
         Self::Config(format!("transport: {}", msg.into()))
+    }
+
+    #[must_use]
+    pub fn broker_protocol(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::BrokerProtocol {
+            code: code.into(),
+            message: message.into(),
+            status: None,
+            details: Value::Null,
+        }
     }
 
     /// Build an `Api` variant from a JSON body returned by LOC.

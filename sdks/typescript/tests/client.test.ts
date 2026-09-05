@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BrokerProtocolError,
   InsufficientCredit,
   NoRouteAvailable,
   OpenClearinghouseClient,
@@ -10,15 +11,18 @@ import {
 const BASE = "http://loc.test";
 const BROKER = "https://broker.example/livepeer";
 const KEY = "pymth_live_test";
+const SIGNED_SETTLEMENT = { payload: {}, signature: {} };
+const ENCODED_SETTLEMENT = btoa(JSON.stringify(SIGNED_SETTLEMENT));
 
 interface FetchCall {
   url: string;
   init: RequestInit | undefined;
 }
 
-function makeFetch(
-  routes: Record<string, (call: FetchCall) => Promise<Response> | Response>,
-): { fetch: typeof fetch; calls: FetchCall[] } {
+function makeFetch(routes: Record<string, (call: FetchCall) => Promise<Response> | Response>): {
+  fetch: typeof fetch;
+  calls: FetchCall[];
+} {
   const calls: FetchCall[] = [];
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -41,7 +45,7 @@ function jsonResp(body: unknown, opts: ResponseInit = {}): Response {
     status: 200,
     headers: {
       "Content-Type": "application/json",
-      ...((opts.headers as Record<string, string>) ?? {}),
+      ...(opts.headers as Record<string, string>),
     },
     ...opts,
   });
@@ -49,15 +53,27 @@ function jsonResp(body: unknown, opts: ResponseInit = {}): Response {
 
 const JOB_OPEN = {
   job_id: "00000000-0000-0000-0000-000000000abc",
+  request_id: "broker-request-1",
   work_id: "wid-abc",
   broker_url: BROKER,
-  mode: "http-reqresp@v0",
+  protocol: "paid-job/v1",
+  transport: "unary" as const,
+  work_unit: "token",
   payment_envelope: "BASE64ENV",
   expected_value_wei: 100_000,
   funded_value_wei: 100_000,
   settle_endpoint: "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
   opened_at: "2026-05-24T12:00:00Z",
 };
+
+function paidJobHeaders(units: number): Record<string, string> {
+  return {
+    "Livepeer-Work-Units": String(units),
+    "Livepeer-Work-Unit": "token",
+    "Livepeer-Job-Id": "broker-job-1",
+    "Livepeer-Settlement": ENCODED_SETTLEMENT,
+  };
+}
 
 function settledFor(actual: number) {
   return {
@@ -83,9 +99,9 @@ function settledFor(actual: number) {
 
 describe("OpenClearinghouseClient", () => {
   it("rejects an obviously wrong api key", () => {
-    expect(
-      () => new OpenClearinghouseClient({ baseUrl: BASE, apiKey: "nope" }),
-    ).toThrow(/looks wrong/);
+    expect(() => new OpenClearinghouseClient({ baseUrl: BASE, apiKey: "nope" })).toThrow(
+      /looks wrong/,
+    );
   });
 
   it("attaches the SDK identity header on every request", async () => {
@@ -100,15 +116,14 @@ describe("OpenClearinghouseClient", () => {
 
   it("submitJob does mint + broker + settle and returns the broker body", async () => {
     const { fetch, calls } = makeFetch({
-      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
-        jsonResp(settledFor(42)),
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(42)),
       "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
-      "/v1/cap": () =>
+      "/v1/job": () =>
         new Response(JSON.stringify({ reply: "ok" }), {
           status: 200,
           headers: {
             "Content-Type": "application/json",
-            "Livepeer-Work-Units": "42",
+            ...paidJobHeaders(42),
           },
         }),
     });
@@ -125,26 +140,157 @@ describe("OpenClearinghouseClient", () => {
     expect(result.refundWei).toBe(58_000n);
     expect(result.outcome).toBe("OVERFUNDED");
     expect(result.body).toEqual({ reply: "ok" });
+    expect(result.protocol).toBe("paid-job/v1");
+    expect(result.transport).toBe("unary");
+    expect(result.workUnit).toBe("token");
+    expect(result.brokerJobId).toBe("broker-job-1");
+    expect(result.requestId).toBe("broker-request-1");
     expect(calls.map((c) => c.url)).toEqual([
       `${BASE}/v1/jobs`,
-      `${BROKER}/v1/cap`,
+      `${BROKER}/v1/job`,
       `${BASE}${JOB_OPEN.settle_endpoint}`,
     ]);
+    const openHeaders = calls[0]?.init?.headers as Record<string, string>;
+    expect(openHeaders["Idempotency-Key"]).toBeTruthy();
+    const settleBody = calls[2]?.init?.body;
+    if (typeof settleBody !== "string") throw new TypeError("expected JSON settle body");
+    expect(JSON.parse(settleBody)).toEqual({
+      actual_units: 42,
+      broker_job_id: "broker-job-1",
+      work_unit: "token",
+      settlement: SIGNED_SETTLEMENT,
+    });
+  });
+
+  it("submitJob queries a streamed terminal claim and signed settlement", async () => {
+    const streamJob = { ...JOB_OPEN, transport: "stream" as const };
+    const signedSettlement = {
+      payload: { work_id: "wid-abc", debited_units: "7" },
+      signature: {
+        algorithm: "secp256k1",
+        canonicalization: "jcs",
+        value: "0xsigned",
+      },
+    };
+    const encodedSettlement = btoa(JSON.stringify(signedSettlement));
+    const { fetch, calls } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(7)),
+      "/v1/jobs": () => jsonResp(streamJob, { status: 201 }),
+      "/v1/settlement/broker-job-1": () =>
+        jsonResp(
+          {
+            job_id: "broker-job-1",
+            state: "terminal",
+            work_units: 7,
+            unit: "token",
+          },
+          {
+            headers: {
+              ...paidJobHeaders(7),
+              "Livepeer-Settlement": encodedSettlement,
+            },
+          },
+        ),
+      "/v1/job": () =>
+        new Response("data: hello\n\n", {
+          status: 200,
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Livepeer-Job-Id": "broker-job-1",
+            "Livepeer-Work-Unit": "token",
+            Trailer: "Livepeer-Work-Units, Livepeer-Settlement",
+          },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const result = await client.submitJob({
+      capability: "openai:chat-completions",
+      offering: "gpt-oss-20b",
+      estimatedUnits: 10,
+      body: { prompt: "hello" },
+      transport: "stream",
+    });
+
+    expect(result.body).toBe("data: hello\n\n");
+    expect(result.actualUnits).toBe(7);
+    expect(calls.map((call) => call.url)).toContain(`${BROKER}/v1/settlement/broker-job-1`);
+    const brokerCall = calls.find((call) => call.url.endsWith("/v1/job"));
+    expect((brokerCall?.init?.headers as Record<string, string>).Accept).toBe("text/event-stream");
+    const settleCall = calls.find((call) => call.url.endsWith(JOB_OPEN.settle_endpoint));
+    const settleBody = settleCall?.init?.body;
+    if (typeof settleBody !== "string") throw new TypeError("expected JSON settle body");
+    expect(JSON.parse(settleBody)).toEqual({
+      actual_units: 7,
+      broker_job_id: "broker-job-1",
+      work_unit: "token",
+      settlement: signedSettlement,
+    });
+  });
+
+  it("submitJob selects multipart with a pre-encoded body", async () => {
+    const multipartJob = { ...JOB_OPEN, transport: "multipart" as const };
+    const { fetch, calls } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(2)),
+      "/v1/jobs": () => jsonResp(multipartJob, { status: 201 }),
+      "/v1/job": () =>
+        new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json", ...paidJobHeaders(2) },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await client.submitJob({
+      capability: "x",
+      offering: "x",
+      estimatedUnits: 2,
+      body: new TextEncoder().encode("--boundary--"),
+      transport: "multipart",
+      contentType: "multipart/form-data; boundary=boundary",
+    });
+    const openBody = calls[0]?.init?.body;
+    if (typeof openBody !== "string") throw new TypeError("expected JSON open body");
+    expect(JSON.parse(openBody).transport).toBe("multipart");
+    const brokerCall = calls.find((call) => call.url.endsWith("/v1/job"));
+    expect((brokerCall?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "multipart/form-data; boundary=boundary",
+    );
+  });
+
+  it("submitJob rejects work-unit drift without settling", async () => {
+    const { fetch, calls } = makeFetch({
+      "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
+      "/v1/job": () =>
+        new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            ...paidJobHeaders(3),
+            "Livepeer-Work-Unit": "frames",
+          },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await expect(
+      client.submitJob({
+        capability: "x",
+        offering: "x",
+        estimatedUnits: 3,
+        body: {},
+      }),
+    ).rejects.toBeInstanceOf(BrokerProtocolError);
+    expect(calls.some((call) => call.url.endsWith(JOB_OPEN.settle_endpoint))).toBe(false);
   });
 
   it("submitJob forwards Livepeer-* headers to the broker", async () => {
     let brokerHeaders: Record<string, string> | undefined;
     const { fetch } = makeFetch({
-      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
-        jsonResp(settledFor(10)),
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(10)),
       "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
-      "/v1/cap": ({ init }) => {
+      "/v1/job": ({ init }) => {
         brokerHeaders = (init?.headers ?? {}) as Record<string, string>;
         return new Response(JSON.stringify({}), {
           status: 200,
           headers: {
             "Content-Type": "application/json",
-            "Livepeer-Work-Units": "10",
+            ...paidJobHeaders(10),
           },
         });
       },
@@ -160,8 +306,10 @@ describe("OpenClearinghouseClient", () => {
     expect(brokerHeaders?.["Livepeer-Capability"]).toBe("openai:chat-completions");
     expect(brokerHeaders?.["Livepeer-Offering"]).toBe("gpt-oss-20b");
     expect(brokerHeaders?.["Livepeer-Payment"]).toBe("BASE64ENV");
-    expect(brokerHeaders?.["Livepeer-Mode"]).toBe("http-reqresp@v0");
-    expect(brokerHeaders?.["Livepeer-Request-Id"]).toBe("req-zzz");
+    expect(brokerHeaders?.["Livepeer-Protocol"]).toBe("paid-job/v1");
+    expect(brokerHeaders?.["Livepeer-Mode"]).toBeUndefined();
+    expect(brokerHeaders?.["Livepeer-Spec-Version"]).toBeUndefined();
+    expect(brokerHeaders?.["Livepeer-Request-Id"]).toBe("broker-request-1");
   });
 
   it("submitJob maps insufficient_credit error", async () => {
@@ -210,15 +358,14 @@ describe("OpenClearinghouseClient", () => {
 
   it("submitJob surfaces broker 4xx in JobResult.status (no raise)", async () => {
     const { fetch } = makeFetch({
-      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
-        jsonResp(settledFor(0)),
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(0)),
       "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
-      "/v1/cap": () =>
+      "/v1/job": () =>
         new Response(JSON.stringify({ error: "rate_limited" }), {
           status: 429,
           headers: {
             "Content-Type": "application/json",
-            "Livepeer-Work-Units": "0",
+            ...paidJobHeaders(0),
           },
         }),
     });
@@ -242,7 +389,14 @@ describe("OpenClearinghouseClient", () => {
             session_id: sid,
             work_id: "wid-sess",
             broker_url: BROKER,
-            mode: "session-control-plus-media@v0",
+            request_id: "req-session",
+            protocol: "paid-session/v1",
+            session: {
+              descriptor_schema: "livepeer-session-test/v1",
+              attachment: "direct",
+              metering: "broker",
+              refill: "extensible",
+            },
             payment_envelope: "BASE64SESS",
             expected_value_wei: 100_000,
             funded_value_wei: 200_000,
@@ -257,6 +411,7 @@ describe("OpenClearinghouseClient", () => {
     const handle = await client.openSession({
       capability: "livepeer:vtuber-session",
       offering: "vtuber-1080p30",
+      descriptorSchema: "livepeer-session-test/v1",
       estimatedRunwayUnits: 100,
       maxTotalUnits: 200,
     });
@@ -283,8 +438,16 @@ describe("OpenClearinghouseClient", () => {
       },
     });
     const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
-    await client.closeSession(sid, { actualUnits: 100, outcome: "EXACT" });
-    expect(captured).toEqual({ actual_units: 100, outcome: "EXACT" });
+    await client.closeSession(sid, {
+      actualUnits: 100,
+      outcome: "EXACT",
+      settlement: { payload: {}, signature: {} },
+    });
+    expect(captured).toEqual({
+      actual_units: 100,
+      outcome: "EXACT",
+      settlement: { payload: {}, signature: {} },
+    });
   });
 
   it("getSessionStatus round-trips", async () => {
@@ -296,7 +459,7 @@ describe("OpenClearinghouseClient", () => {
           work_id: "w",
           capability: "c",
           offering: "o",
-          mode: "ws-realtime@v0",
+          protocol: "paid-session/v1",
           state: "open",
           estimated_units: 100,
           max_total_units: 1000,

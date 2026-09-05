@@ -15,11 +15,12 @@ from livepeer_open_clearinghouse.providers.payment_daemon.client import (
     FundingIntent,
     GrpcPaymentDaemonClient,
     InvalidRecipientRand,
+    MintOutcomeUnknown,
     MockPaymentDaemonClient,
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
-    SessionDebits,
+    validate_funding_response,
 )
 
 __all__ = [
@@ -31,9 +32,10 @@ __all__ = [
     "FundingIntent",
     "GrpcPaymentDaemonClient",
     "InvalidRecipientRand",
+    "MintOutcomeUnknown",
     "MockPaymentDaemonClient",
     "PaymentDaemonClient",
     "PaymentDaemonError",
     "QuoteRef",
-    "SessionDebits",
+    "validate_funding_response",
 ]

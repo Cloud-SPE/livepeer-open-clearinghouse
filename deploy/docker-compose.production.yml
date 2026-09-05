@@ -1,0 +1,166 @@
+# Platform-neutral production baseline. Supply every ${...?required} value at
+# runtime and pin every image as repository@sha256:digest. This manifest uses
+# an external private PostgreSQL service and publishes LOC only on loopback for
+# a host TLS proxy. Staging uses this same file with staging identities.
+
+x-loc-environment: &loc-environment
+  APP_ENV: prod
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?required HTTPS public LOC URL}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: ${DATABASE_URL:?required private postgresql+asyncpg URL}
+  API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:?required secret}
+  SESSION_SECRET: ${SESSION_SECRET:?required secret}
+  METRICS_TOKEN: ${METRICS_TOKEN:?required secret}
+  ADMIN_BOOTSTRAP_TOKEN: ${ADMIN_BOOTSTRAP_TOKEN:-}
+  EMAIL_PROVIDER: resend
+  RESEND_API_KEY: ${RESEND_API_KEY:?required NuSend credential}
+  RESEND_API_URL: ${RESEND_API_URL:?required NuSend Resend-compatible base URL}
+  RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+  EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:?required verified sender}
+  EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Livepeer Open Clearinghouse}
+  GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+  GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+  GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+  PAYMENT_DAEMON_MODE: grpc
+  PAYMENT_DAEMON_SOCKET: /var/run/livepeer/payer-daemon.sock
+  REGISTRY_DAEMON_MODE: grpc
+  REGISTRY_DAEMON_SOCKET: /var/run/livepeer/service-registry.sock
+  REGISTRY_CACHE_TTL_SECONDS: ${REGISTRY_CACHE_TTL_SECONDS:-60}
+  DEFAULT_INITIAL_CREDIT_WEI: ${DEFAULT_INITIAL_CREDIT_WEI:-0}
+  DEFAULT_SPEND_PERIOD_SECONDS: ${DEFAULT_SPEND_PERIOD_SECONDS:-86400}
+  DEFAULT_SPEND_PERIOD_CAP_WEI: ${DEFAULT_SPEND_PERIOD_CAP_WEI:?required reviewed spend cap}
+  AUTO_REPLENISH_INCREMENT_WEI: ${AUTO_REPLENISH_INCREMENT_WEI:-0}
+  AUTO_REPLENISH_CHECK_INTERVAL_SECONDS: ${AUTO_REPLENISH_CHECK_INTERVAL_SECONDS:-300}
+  IDEMPOTENCY_INFLIGHT_TIMEOUT_SECONDS: ${IDEMPOTENCY_INFLIGHT_TIMEOUT_SECONDS:-60}
+  IDEMPOTENCY_RETENTION_SECONDS: ${IDEMPOTENCY_RETENTION_SECONDS:-86400}
+  JOB_RECONCILIATION_INTERVAL_SECONDS: ${JOB_RECONCILIATION_INTERVAL_SECONDS:-60}
+  JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS: ${JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS:-0}
+  SESSION_RECONCILIATION_INTERVAL_SECONDS: ${SESSION_RECONCILIATION_INTERVAL_SECONDS:-60}
+  TELEMETRY_RAW_RETENTION_DAYS: ${TELEMETRY_RAW_RETENTION_DAYS:-30}
+  TELEMETRY_RETENTION_JANITOR_INTERVAL_SECONDS: ${TELEMETRY_RETENTION_JANITOR_INTERVAL_SECONDS:-3600}
+  INGEST_NODE_ID: ${INGEST_NODE_ID:?required stable replica identifier}
+  SDK_MANIFEST_SIGNING_KEY: ${SDK_MANIFEST_SIGNING_KEY:?required base64 Ed25519 seed}
+  WEBHOOK_SIGNING_SEED: ${WEBHOOK_SIGNING_SEED:?required secret}
+
+x-hardened: &hardened
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  init: false
+
+services:
+  migrate:
+    <<: *hardened
+    image: ${LOC_IMAGE:?required LOC repository@sha256 digest}
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *loc-environment
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?required schema-owner postgresql+asyncpg URL}
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    restart: "no"
+    networks: [private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  payment-daemon:
+    <<: *hardened
+    image: ${PAYER_DAEMON_IMAGE:?required payer repository@sha256 digest}
+    command:
+      - --mode=sender
+      - --socket=/var/run/livepeer/payer-daemon.sock
+      - --db=/var/lib/livepeer/payment-daemon/sessions.db
+      - --chain-rpc-urls=${CHAIN_RPC_URLS:?required ordered Arbitrum RPC URLs}
+      - --max-payment-wei=${MAX_PAYMENT_WEI:?required reviewed single-payment ceiling}
+      - --keystore-path=/etc/livepeer/keystore.json
+      - --keystore-password-file=/run/secrets/keystore-password
+    volumes:
+      - livepeer-run:/var/run/livepeer
+      - payer-data:/var/lib/livepeer/payment-daemon
+      - ${LIVEPEER_KEYSTORE_FILE:?required keystore file}:/etc/livepeer/keystore.json:ro
+      - ${LIVEPEER_KEYSTORE_PASSWORD_FILE:?required password file}:/run/secrets/keystore-password:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks: [private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  service-registry-daemon:
+    <<: *hardened
+    image: ${REGISTRY_DAEMON_IMAGE:?required registry repository@sha256 digest}
+    command:
+      - --mode=resolver
+      - --socket=/var/run/livepeer/service-registry.sock
+      - --chain-rpc-urls=${CHAIN_RPC_URLS:?required ordered Arbitrum RPC URLs}
+    volumes:
+      - livepeer-run:/var/run/livepeer
+      - registry-data:/var/lib/livepeer
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks: [private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  gateway:
+    <<: *hardened
+    image: ${LOC_IMAGE:?required LOC repository@sha256 digest}
+    command:
+      - uvicorn
+      - livepeer_open_clearinghouse.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --workers=1
+      - --proxy-headers
+      - --forwarded-allow-ips=${TRUSTED_PROXY_CIDRS:?required trusted proxy CIDRs}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      payment-daemon:
+        condition: service_started
+      service-registry-daemon:
+        condition: service_started
+    environment: *loc-environment
+    volumes:
+      - livepeer-run:/var/run/livepeer
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - 127.0.0.1:${LOC_HOST_PORT:-8000}:8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 45s
+    networks: [private]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+networks:
+  private:
+
+volumes:
+  livepeer-run:
+  payer-data:
+  registry-data:

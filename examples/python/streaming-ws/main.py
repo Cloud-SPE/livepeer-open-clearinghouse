@@ -1,4 +1,4 @@
-"""Streaming session with WS topup (session-control-plus-media@v0).
+"""paid-session/v1 session with an optional broker events WebSocket.
 
 Run with:
 
@@ -33,10 +33,11 @@ async def main() -> None:
         handle = await client.open_session(
             capability="livepeer:live-video-control",
             offering="session-control-plus-media",
+            descriptor_schema="livepeer.session.video-control/v1",
             estimated_runway_units=1000,
             max_total_units=10000,
         )
-        print(f"session opened: {handle.session_id} (mode={handle.mode})")
+        print(f"session opened: {handle.session_id} (protocol={handle.protocol})")
 
         async with SessionRunner(
             client=client,

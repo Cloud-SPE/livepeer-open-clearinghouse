@@ -95,6 +95,9 @@ class DepositSnapshotView(BaseModel):
     deposit_wei: int
     reserve_wei: int
     withdraw_round: int
+    current_round: int | None
+    ticket_validity_period: int | None
+    ticket_validity_period_observed_at: datetime | None
 
 
 class DepositSnapshotList(BaseModel):
@@ -250,7 +253,7 @@ class SessionWithSdkView(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     sdk_identity: str | None
     sdk_status: str

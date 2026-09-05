@@ -58,6 +58,7 @@ funding: FundingIntent {
     estimated_units: uint64
     max_total_units: uint64
 }
+mint_request_id: string             # required; unique in the daemon sender's namespace
 ```
 
 **Response:**
@@ -65,11 +66,17 @@ funding: FundingIntent {
 ```
 payment_bytes: bytes               # base64 this into the
                                    #   Livepeer-Payment HTTP header
+                                   # LOC parses and persists Payment.sender
+                                   # for signed non-admission scope
 tickets_created: uint32            # always 1 in current daemon
 expected_value: BigUInt            # EV in wei — what to charge the user
 funded_value_wei: BigUInt          # echoes the funding intent
 accepted_quote_ref: QuoteRef
 work_id: string                    # an opaque session key from the daemon
+creation_round: int64              # round in which the envelope was minted
+expires_after_round: int64         # last round in which it may be redeemed
+ticket_validity_period: int64      # contract value used for this mint observation
+ticket_validity_period_observed_at: string  # RFC3339 observation timestamp
 ```
 
 **Behavior:**
@@ -78,17 +85,35 @@ work_id: string                    # an opaque session key from the daemon
   (synchronous outbound HTTP, 5s timeout) before signing.
 - Daemon signs **one ticket per call**. If Livepeer Open Clearinghouse needs N tickets, it
   calls N times.
+- `mint_request_id` is bound to the full mint intent. Once the daemon has
+  durably recorded a response, an identical retry replays it exactly; changed
+  content is refused. LOC uses `loc:<stable request UUID>` for create paths.
+- The current daemon still has an unsafe crash window between signing the
+  ticket and durably recording the response, and it does not serialize
+  concurrent requests for one mint id. LOC therefore does not reclaim an
+  expired in-flight create until the daemon closes those windows.
 - Daemon caches session keyed by
   `(recipient, capability, offering, funded_value_wei, ticket_params_base_url)`
   so repeated calls reuse `recipient_rand_hash` and increment nonce.
 - EV is `face_value × win_prob / 2^256`, computed by the daemon and
   returned in `expected_value`. The caller does not compute EV.
+- A successful response MUST echo the requested `funded_value_wei` exactly
+  and its `expected_value` MUST be at least that funding intent. The receiver
+  may choose a probabilistic ticket whose face value is greater than the
+  intent so its credited EV covers the intent. Livepeer Open Clearinghouse
+  rejects the envelope before persisting or returning it if either invariant
+  fails.
 - `face_value` from `funding.funded_value_wei` is a **request**, not
   authoritative — the receiver chooses the final `face_value` × `win_prob`
   pair. EV in the response is the authoritative value.
 - `quote_ref.quote_id`, `constraint_fingerprint`, `route_fingerprint` are
   validated as non-empty. Livepeer Open Clearinghouse gets all three from
   `service-registry-daemon.Select()`.
+- `expires_after_round` is derived as
+  `creation_round + ticket_validity_period - 1`. The validity period is a
+  mutable contract parameter, so these fields are telemetry, not permanent
+  retirement or refund authority. Governance may extend previously minted
+  tickets; LOC never automatically refunds or re-encumbers from this data.
 
 **Errors Livepeer Open Clearinghouse must handle:**
 
@@ -98,14 +123,17 @@ work_id: string                    # an opaque session key from the daemon
   is zero or `WithdrawRound` is imminent → surface as
   `503 DAEMON_DEPOSIT_INSUFFICIENT`.
 - Anything else from the daemon → `503` to the caller.
+- `codes.InvalidArgument` for a reused mint id with different content is a
+  caller/key-derivation defect. `codes.FailedPrecondition` after replay-payload
+  expiry is fail-closed: never issue a fresh mint under that id.
 
 ## Other RPCs
 
 | RPC | Use |
 |---|---|
 | `ReportPaymentResult` | Caller reports payee rejection (`INVALID_RECIPIENT_RAND`); daemon evicts cached session. Returns `Aborted` with retry-once metadata. |
-| `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round for the hot wallet. Useful for admin/health surfaces. |
-| `GetSessionDebits` | Long-running session debit ledger. May be `UNIMPLEMENTED`. |
+| `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round plus fresh `current_round`, `ticket_validity_period`, and its observation timestamp for the hot wallet. Useful for admin/health and governance-drift telemetry. |
+| `GetSessionDebits` | Legacy long-running session debit ledger. LOC v2 does not call it; reconciliation uses broker-signed settlements. |
 | `Health` | Returns `"ok"`. |
 
 Receiver-side RPCs (`PayeeDaemon`) exist but are not on the sender socket;
@@ -149,15 +177,20 @@ No explicit expiry timestamp on the ticket; freshness is via
 |---|---|---|
 | `--mode=sender` | required | daemon mode |
 | `--socket` | default `/var/run/livepeer/payer-daemon.sock` | UDS path |
-| `--chain-rpc` | required for prod | Ethereum JSON-RPC (Arbitrum) |
+| `--db` | default `/var/lib/livepeer/payment-daemon/sessions.db` | durable mint idempotency, sender nonce watermarks, and session state |
+| `--chain-rpc-urls` | required for prod | Comma-separated Ethereum JSON-RPC endpoints, primary first |
+| `--max-payment-wei` | required for prod | Maximum funded value one payment may authorize; operator circuit breaker |
 | `--keystore-path` | required for prod | V3 keystore file |
 | `--keystore-password-file` *or* `LIVEPEER_KEYSTORE_PASSWORD` | required for prod | keystore password |
-| `--dev-signing-key-hex` | dev only | raw hex key, rejected when `--chain-rpc` is set |
+| `--dev-signing-key-hex` | dev only | raw hex key, rejected when `--chain-rpc-urls` is set |
 | `--orch-address` | optional | cold orch identity (recipient embedded in tickets) |
 | `--chain-controller-address` | optional | override Controller address |
 | `--expected-chain-id` | default Arbitrum One | sanity-check |
 
-Sender mode does not use a DB; sessions are in-memory.
+Sender mode keeps a BoltDB. The mount must survive restarts: mint replay and
+sender nonce high-water recovery depend on it. The payee's reported
+`highest_seen_nonce` is an authoritative restart backstop, not a replacement
+for preserving this store.
 
 ## Deployment
 
@@ -172,7 +205,10 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
 
 ## Gotchas
 
-- **One ticket per call.** Need N → call N times.
+- **A payment may contain multiple tickets.** The payer sizes the batch so its
+  credited EV covers `funded_value_wei`, refuses a batch above 600 tickets, and
+  rotates the recipient before a cached session would cross its cumulative
+  600-nonce budget.
 - **`ticket_params_base_url` is required per call.** Livepeer Open Clearinghouse must know
   the orchestrator's broker URL (it comes from
   `service-registry-daemon.Select().worker_url`).
@@ -180,6 +216,10 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
   Latency includes this round-trip.
 - **`AcceptedPrice.quote_ref` is strictly validated.** Triplet must be
   non-empty. Livepeer Open Clearinghouse synthesizes/forwards from `Select()`.
+- **`CreatePaymentResponse.predecessor_work_id` is a strict rollover signal.**
+  It is empty unless `work_id` actually changed. Jobs adopt the successor;
+  sessions accept it only when the predecessor is their locked current work
+  ID and then use their existing broker rebind flow.
 - **Caller-supplied `face_value` is a request, not authoritative.** Trust
   `response.expected_value` for charging.
 - **No multi-wallet support.** One daemon process, one wallet. Per-tenant

@@ -233,6 +233,9 @@ async def list_deposit_snapshots_endpoint(
                 deposit_wei=int(r.deposit_wei),
                 reserve_wei=int(r.reserve_wei),
                 withdraw_round=r.withdraw_round,
+                current_round=r.current_round,
+                ticket_validity_period=r.ticket_validity_period,
+                ticket_validity_period_observed_at=(r.ticket_validity_period_observed_at),
             )
             for r in rows
         ]
@@ -536,7 +539,7 @@ async def list_recent_sessions_endpoint(
                 work_id=ps.work_id,
                 capability=ps.capability,
                 offering=ps.offering,
-                mode=ps.mode,
+                protocol=ps.protocol,
                 state=ps.state,
                 sdk_identity=ps.sdk_identity,
                 sdk_status=status_label,

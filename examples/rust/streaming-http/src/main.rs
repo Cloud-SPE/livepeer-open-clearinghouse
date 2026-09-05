@@ -1,4 +1,4 @@
-//! Streaming session with HTTP topup (live-session-remote-runner@v0).
+//! Extensible paid-session/v1 session with authoritative HTTP top-up.
 //!
 //! ```bash
 //! OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
@@ -6,9 +6,8 @@
 //! cargo run -p streaming-http-example
 //! ```
 //!
-//! For HTTP-topup modes, the broker doesn't push balance-low frames
-//! over a WebSocket — the customer's media plane observes balance-low
-//! out-of-band and routes the signal in via `runner.on_balance_low()`.
+//! The customer's media plane can pass the broker's normative balance
+//! object to `runner.on_balance()`.
 //! The runner then asks LOC for a refill and POSTs it to the broker's
 //! control.topup_url.
 
@@ -16,8 +15,8 @@ use std::env;
 use std::sync::Arc;
 
 use livepeer_open_clearinghouse_sdk::{
-    Client, ClientOptions, OpenClearinghouseError, OpenSessionInput, RefillEvent, SessionRunner,
-    SessionRunnerOptions, WinddownEvent,
+    Client, ClientOptions, OpenClearinghouseError, OpenSessionInput, RefillEvent, SessionBalance,
+    SessionRunner, SessionRunnerOptions, WinddownEvent,
 };
 
 #[tokio::main]
@@ -30,19 +29,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open_session(OpenSessionInput {
             capability: "livepeer:remote-runner",
             offering: "live-session-remote-runner",
+            descriptor_schema: "livepeer.session.remote-runner/v1",
+            session_params: serde_json::json!({}),
             estimated_runway_units: 1000,
             max_total_units: 10000,
+            request_id: None,
         })
         .await?;
-    println!("session opened: {} (mode={})", handle.session_id, handle.mode);
+    println!(
+        "session opened: {} (protocol={})",
+        handle.session_id, handle.protocol
+    );
 
     let mut opts = SessionRunnerOptions::new(client, handle);
     opts.on_refill_succeeded = Some(Arc::new(|e: RefillEvent| {
         Box::pin(async move {
-            println!(
-                "refill {:?}: +{:?} wei",
-                e.refill_seq, e.funded_value_wei
-            );
+            println!("refill {:?}: +{:?} wei", e.refill_seq, e.funded_value_wei);
         })
     }));
     opts.on_refill_refused = Some(Arc::new(|e: RefillEvent| {
@@ -72,7 +74,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Customer-driven refill. In production this fires when the media
     // plane observes balance-low on the runner channel.
-    runner.on_balance_low(Some(500), None).await;
+    runner
+        .on_balance(SessionBalance {
+            status: "low".to_string(),
+            claimed_units: 500,
+            debited_units: 500,
+            unit: "session_second".to_string(),
+            runway_units: 100,
+            runway_seconds_estimate: Some(100),
+            will_refuse_next_refill: false,
+        })
+        .await;
 
     let outcome = runner.close(750).await?;
     println!("==== final settlement ====");

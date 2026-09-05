@@ -28,7 +28,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Sync dependencies
-        run: uv sync --frozen || uv sync
+        run: uv sync --frozen
 
       - name: Ruff lint
         run: uv run ruff check src tests
@@ -42,8 +42,11 @@ jobs:
       - name: Mypy
         run: uv run mypy src
 
-      - name: Pytest (unit)
-        run: uv run pytest -m unit
+      - name: Pytest (all collected LOC tests)
+        run: uv run pytest
+
+      - name: Modules v2 fixture conformance
+        run: make test-conformance
 
   # Build/test the reference SDKs and compile-check the examples that
   # consume them, so an SDK API change can't silently break either.
@@ -62,7 +65,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv python install 3.13
-      - run: uv sync --frozen || uv sync
+      - run: uv sync --frozen
       - name: SDK lint
         run: |
           uv run --package livepeer-open-clearinghouse-sdk --extra dev ruff check sdks/python
@@ -82,10 +85,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # No pnpm-lock.yaml is committed, so this can't be --frozen-lockfile
-      # and setup-node's pnpm cache can't key off a lockfile. Commit a
-      # lockfile to enable both.
-      - run: pnpm install
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: SDK lint + test + typecheck
         run: |
           pnpm --filter @livepeer/open-clearinghouse-sdk lint

@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +60,7 @@ func errorCode(err error) string {
 // scoring. Operators reject obviously-stale versions per the design.
 const (
 	SDKLang    = "go"
-	SDKVersion = "1.3.3"
+	SDKVersion = "2.0.0"
 	SDKGitSHA  = "dev" // overwritten at build time
 )
 
@@ -70,12 +71,12 @@ var SDKIdentity = fmt.Sprintf("%s/%s/%s", SDKLang, SDKVersion, SDKGitSHA)
 // CapStatus is the cap-headroom snapshot returned with refill and settle
 // responses. Percentages are in [0, 1]; nil means the cap isn't enabled.
 type CapStatus struct {
-	SessionPctUsed        float64  `json:"session_pct_used"`
-	SpendPeriodPctUsed    *float64 `json:"spend_period_pct_used"`
-	UserBalancePctUsed    *float64 `json:"user_balance_pct_used"`
-	OperatorPoolPctUsed   *float64 `json:"operator_pool_pct_used"`
-	WillRefuseNextRefill  bool     `json:"will_refuse_next_refill"`
-	WinddownReason        *string  `json:"winddown_reason"`
+	SessionPctUsed       float64  `json:"session_pct_used"`
+	SpendPeriodPctUsed   *float64 `json:"spend_period_pct_used"`
+	UserBalancePctUsed   *float64 `json:"user_balance_pct_used"`
+	OperatorPoolPctUsed  *float64 `json:"operator_pool_pct_used"`
+	WillRefuseNextRefill bool     `json:"will_refuse_next_refill"`
+	WinddownReason       *string  `json:"winddown_reason"`
 }
 
 // Capability mirrors the registry's per-capability shape.
@@ -94,19 +95,22 @@ type Offering struct {
 
 // Orchestrator is one orch endpoint with its capability set.
 type Orchestrator struct {
-	EthAddress       string       `json:"eth_address"`
-	WorkerURL        string       `json:"worker_url"`
-	Capabilities     []Capability `json:"capabilities"`
-	SignatureStatus  string       `json:"signature_status"`
-	FreshnessStatus  string       `json:"freshness_status"`
+	EthAddress      string       `json:"eth_address"`
+	WorkerURL       string       `json:"worker_url"`
+	Capabilities    []Capability `json:"capabilities"`
+	SignatureStatus string       `json:"signature_status"`
+	FreshnessStatus string       `json:"freshness_status"`
 }
 
 // JobOpenResponse mirrors POST /v1/jobs response.
 type JobOpenResponse struct {
 	JobID            string `json:"job_id"`
+	RequestID        string `json:"request_id"`
 	WorkID           string `json:"work_id"`
 	BrokerURL        string `json:"broker_url"`
-	Mode             string `json:"mode"`
+	Protocol         string `json:"protocol"`
+	Transport        string `json:"transport"`
+	WorkUnit         string `json:"work_unit"`
 	PaymentEnvelope  string `json:"payment_envelope"`
 	ExpectedValueWei int64  `json:"expected_value_wei"`
 	FundedValueWei   int64  `json:"funded_value_wei"`
@@ -116,14 +120,37 @@ type JobOpenResponse struct {
 
 // JobSettleResponse mirrors POST /v1/jobs/{id}/settle response.
 type JobSettleResponse struct {
-	JobID            string    `json:"job_id"`
-	WorkID           string    `json:"work_id"`
-	ActualUnits      int64     `json:"actual_units"`
-	BilledValueWei   int64     `json:"billed_value_wei"`
-	RefundWei        int64     `json:"refund_wei"`
-	Outcome          string    `json:"outcome"`
-	ClosedAt         string    `json:"closed_at"`
-	CapStatus        CapStatus `json:"cap_status"`
+	JobID          string    `json:"job_id"`
+	WorkID         string    `json:"work_id"`
+	ActualUnits    int64     `json:"actual_units"`
+	BilledValueWei int64     `json:"billed_value_wei"`
+	RefundWei      int64     `json:"refund_wei"`
+	Outcome        string    `json:"outcome"`
+	ClosedAt       string    `json:"closed_at"`
+	CapStatus      CapStatus `json:"cap_status"`
+}
+
+// JobStatusResponse preserves LOC's four accounting outcomes without
+// representing a conservative charge or non-admission as broker settlement.
+type JobStatusResponse struct {
+	JobID                                 string  `json:"job_id"`
+	RequestID                             string  `json:"request_id"`
+	WorkID                                string  `json:"work_id"`
+	State                                 string  `json:"state"`
+	AccountingOutcome                     string  `json:"accounting_outcome"`
+	BrokerExchangeOutcome                 *string `json:"broker_exchange_outcome"`
+	ActualUnits                           *int64  `json:"actual_units"`
+	BilledValueWei                        *int64  `json:"billed_value_wei"`
+	FundedValueWei                        int64   `json:"funded_value_wei"`
+	OpenedAt                              string  `json:"opened_at"`
+	ClosedAt                              *string `json:"closed_at"`
+	CreationRound                         *int64  `json:"creation_round"`
+	ExpiresAfterRound                     *int64  `json:"expires_after_round"`
+	MintTicketValidityPeriod              *int64  `json:"mint_ticket_validity_period"`
+	MintTicketValidityPeriodObservedAt    *string `json:"mint_ticket_validity_period_observed_at"`
+	ObservedCurrentRound                  *int64  `json:"observed_current_round"`
+	CurrentTicketValidityPeriod           *int64  `json:"current_ticket_validity_period"`
+	CurrentTicketValidityPeriodObservedAt *string `json:"current_ticket_validity_period_observed_at"`
 }
 
 // JobResult is the end-to-end return of SubmitJob — the broker's
@@ -131,34 +158,50 @@ type JobSettleResponse struct {
 type JobResult struct {
 	// Body is the broker's response body. JSON when the Content-Type
 	// indicates it, otherwise the raw bytes are in BodyText.
-	Body         json.RawMessage
-	BodyText     string
-	Status       int
-	JobID        string
-	WorkID       string
-	ActualUnits  int64
+	Body           json.RawMessage
+	BodyText       string
+	Status         int
+	JobID          string
+	WorkID         string
+	BrokerJobID    string
+	Protocol       string
+	Transport      string
+	WorkUnit       string
+	ActualUnits    int64
 	BilledValueWei int64
-	RefundWei    int64
-	Outcome      string
-	CapStatus    CapStatus
-	RequestID    string
-	RawHeaders   http.Header
+	RefundWei      int64
+	Outcome        string
+	CapStatus      CapStatus
+	RequestID      string
+	RawHeaders     http.Header
 }
 
 // SessionHandle is the outbound from OpenSession (case d). Carries the
 // broker URL + minted envelope; the caller drives the broker WS/RTMP
 // wire today.
 type SessionHandle struct {
-	SessionID         string `json:"session_id"`
-	WorkID            string `json:"work_id"`
-	BrokerURL         string `json:"broker_url"`
-	Mode              string `json:"mode"`
-	PaymentEnvelope   string `json:"payment_envelope"`
-	ExpectedValueWei  int64  `json:"expected_value_wei"`
-	FundedValueWei    int64  `json:"funded_value_wei"`
-	RefillEndpoint    string `json:"refill_endpoint"`
-	CloseEndpoint     string `json:"close_endpoint"`
-	OpenedAt          string `json:"opened_at"`
+	SessionID        string         `json:"session_id"`
+	RequestID        string         `json:"request_id"`
+	WorkID           string         `json:"work_id"`
+	BrokerURL        string         `json:"broker_url"`
+	Protocol         string         `json:"protocol"`
+	Capability       string         `json:"-"`
+	Offering         string         `json:"-"`
+	Session          SessionAxes    `json:"session"`
+	SessionParams    map[string]any `json:"-"`
+	PaymentEnvelope  string         `json:"payment_envelope"`
+	ExpectedValueWei int64          `json:"expected_value_wei"`
+	FundedValueWei   int64          `json:"funded_value_wei"`
+	RefillEndpoint   string         `json:"refill_endpoint"`
+	CloseEndpoint    string         `json:"close_endpoint"`
+	OpenedAt         string         `json:"opened_at"`
+}
+
+type SessionAxes struct {
+	DescriptorSchema string `json:"descriptor_schema"`
+	Attachment       string `json:"attachment"`
+	Metering         string `json:"metering"`
+	Refill           string `json:"refill"`
 }
 
 // Client is the async HTTP client.
@@ -169,7 +212,7 @@ type Client struct {
 	http        *http.Client
 	telemetry   *TelemetryEmitter
 
-	initOnce    sync.Once
+	initOnce sync.Once
 }
 
 // Options is the input to NewClient.
@@ -273,15 +316,22 @@ func (c *Client) ListOrchestrators(ctx context.Context, capability string) ([]Or
 
 // SubmitJobInput collects the arguments for SubmitJob.
 type SubmitJobInput struct {
-	Capability      string
-	Offering        string
-	EstimatedUnits  int64
-	Body            []byte // raw bytes; caller marshals JSON if needed
-	ContentType     string // defaults to application/json if Body starts with {/[, else octet-stream
-	MaxTotalUnits   int64  // optional; defaults to EstimatedUnits
-	RequestID       string // optional; SubmitJob generates a UUID if empty
-	SpecVersion     string // defaults to "0.1"
-	Timeout         time.Duration
+	Capability     string
+	Offering       string
+	EstimatedUnits int64
+	Body           []byte // raw bytes; caller marshals JSON if needed
+	ContentType    string // defaults to application/json if Body starts with {/[, else octet-stream
+	MaxTotalUnits  int64  // optional; defaults to EstimatedUnits
+	RequestID      string // optional; SubmitJob generates a UUID if empty
+	Transport      string // unary (default), stream, or multipart
+	Timeout        time.Duration
+}
+
+func normalizedTransport(transport string) string {
+	if transport == "" {
+		return "unary"
+	}
+	return transport
 }
 
 // SubmitJob is the load-bearing convenience method: opens a job via
@@ -300,6 +350,13 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if requestID == "" {
 		requestID = newUUIDv4()
 	}
+	transport := normalizedTransport(in.Transport)
+	if transport != "unary" && transport != "stream" && transport != "multipart" {
+		return nil, &BrokerProtocolError{Code: "protocol_transport_unsupported", Message: fmt.Sprintf("unsupported transport %q", transport)}
+	}
+	if transport == "multipart" && !strings.HasPrefix(strings.ToLower(in.ContentType), "multipart/form-data") {
+		return nil, &BrokerProtocolError{Code: "protocol_transport_mismatch", Message: "multipart transport requires multipart/form-data Content-Type"}
+	}
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "request.mint_started",
 		CorrelationID: requestID,
@@ -314,6 +371,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	body := map[string]any{
 		"capability":      in.Capability,
 		"offering":        in.Offering,
+		"transport":       transport,
 		"estimated_units": in.EstimatedUnits,
 	}
 	if in.MaxTotalUnits > 0 {
@@ -322,7 +380,9 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		body["max_total_units"] = nil
 	}
 	var job JobOpenResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/jobs", body, &job); err != nil {
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/jobs", body, &job, http.Header{
+		"Idempotency-Key": []string{requestID},
+	}); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
 			EventType:     "request.error",
 			CorrelationID: requestID,
@@ -340,15 +400,17 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		Payload: map[string]interface{}{
 			"latency_ms":       time.Since(mintStarted).Milliseconds(),
 			"funded_value_wei": job.FundedValueWei,
-			"mode":             job.Mode,
+			"protocol":         job.Protocol,
 		},
 	})
+	if job.Protocol != "paid-job/v1" {
+		return nil, &BrokerProtocolError{Code: "protocol_unsupported", Message: fmt.Sprintf("LOC returned protocol %q", job.Protocol)}
+	}
+	if job.Transport != transport {
+		return nil, &BrokerProtocolError{Code: "protocol_transport_mismatch", Message: fmt.Sprintf("LOC returned transport %q; requested %q", job.Transport, transport)}
+	}
 
 	// 2. Call the broker directly
-	specVersion := in.SpecVersion
-	if specVersion == "" {
-		specVersion = "0.1"
-	}
 	contentType := in.ContentType
 	if contentType == "" {
 		if len(in.Body) > 0 && (in.Body[0] == '{' || in.Body[0] == '[') {
@@ -361,7 +423,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if timeout == 0 {
 		timeout = 60 * time.Second
 	}
-	endpoint := strings.TrimRight(job.BrokerURL, "/") + "/v1/cap"
+	endpoint := strings.TrimRight(job.BrokerURL, "/") + "/v1/job"
 
 	brokerCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -372,10 +434,12 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	req.Header.Set("Livepeer-Capability", in.Capability)
 	req.Header.Set("Livepeer-Offering", in.Offering)
 	req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
-	req.Header.Set("Livepeer-Mode", job.Mode)
-	req.Header.Set("Livepeer-Spec-Version", specVersion)
-	req.Header.Set("Livepeer-Request-Id", requestID)
+	req.Header.Set("Livepeer-Protocol", job.Protocol)
+	req.Header.Set("Livepeer-Request-Id", job.RequestID)
 	req.Header.Set("Content-Type", contentType)
+	if transport == "stream" {
+		req.Header.Set("Accept", "text/event-stream")
+	}
 
 	status, header, payload, brokerErr := readBroker(c.http, req)
 	if brokerErr != nil {
@@ -383,20 +447,44 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 
 	// 3. Read Livepeer-Work-Units from the broker response
-	var actualUnits int64
-	if wu := header.Get("Livepeer-Work-Units"); wu != "" {
-		if n, parseErr := strconv.ParseInt(wu, 10, 64); parseErr == nil {
-			actualUnits = n
-		}
+	workUnits := header.Get("Livepeer-Work-Units")
+	brokerWorkUnit := header.Get("Livepeer-Work-Unit")
+	brokerJobID := header.Get("Livepeer-Job-Id")
+	if workUnits == "" || brokerWorkUnit == "" || brokerJobID == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response missing Work-Units, Work-Unit, or Job-Id", Status: status}
+	}
+	actualUnits, parseErr := strconv.ParseInt(workUnits, 10, 64)
+	if parseErr != nil || actualUnits < 0 {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "invalid Livepeer-Work-Units", Status: status}
+	}
+	if brokerWorkUnit != job.WorkUnit {
+		return nil, &BrokerProtocolError{Code: "work_unit_mismatch", Message: fmt.Sprintf("broker reported work unit %q; expected %q", brokerWorkUnit, job.WorkUnit), Status: status}
 	}
 
-	// 4. Settle. Best-effort; LOC's janitor catches silent sessions.
+	// 4. Settle. Best-effort for caller compatibility; telemetry records failure.
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "request.settle_started",
 		CorrelationID: requestID,
 	})
 	settleStarted := time.Now()
-	settleBody := map[string]any{"actual_units": actualUnits}
+	settleBody := map[string]any{
+		"actual_units":  actualUnits,
+		"broker_job_id": brokerJobID,
+		"work_unit":     brokerWorkUnit,
+	}
+	encoded := header.Get("Livepeer-Settlement")
+	if encoded == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response missing Livepeer-Settlement", Status: status}
+	}
+	raw, decodeErr := base64.StdEncoding.DecodeString(encoded)
+	if decodeErr != nil {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+	}
+	var settlement map[string]any
+	if jsonErr := json.Unmarshal(raw, &settlement); jsonErr != nil {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+	}
+	settleBody["settlement"] = settlement
 	var settled JobSettleResponse
 	if err := c.doWithRetry(ctx, http.MethodPost, job.SettleEndpoint, settleBody, &settled, 3); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
@@ -426,7 +514,10 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		Payload: map[string]interface{}{
 			"capability":       in.Capability,
 			"offering":         in.Offering,
-			"mode":             job.Mode,
+			"protocol":         job.Protocol,
+			"transport":        job.Transport,
+			"work_unit":        job.WorkUnit,
+			"broker_job_id":    brokerJobID,
 			"estimated_units":  in.EstimatedUnits,
 			"actual_units":     settled.ActualUnits,
 			"billed_value_wei": settled.BilledValueWei,
@@ -440,12 +531,16 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		Status:         status,
 		JobID:          settled.JobID,
 		WorkID:         settled.WorkID,
+		BrokerJobID:    brokerJobID,
+		Protocol:       job.Protocol,
+		Transport:      job.Transport,
+		WorkUnit:       brokerWorkUnit,
 		ActualUnits:    settled.ActualUnits,
 		BilledValueWei: settled.BilledValueWei,
 		RefundWei:      settled.RefundWei,
 		Outcome:        settled.Outcome,
 		CapStatus:      settled.CapStatus,
-		RequestID:      requestID,
+		RequestID:      job.RequestID,
 		RawHeaders:     header,
 		BodyText:       string(payload),
 	}
@@ -461,53 +556,62 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 type OpenSessionInput struct {
 	Capability           string
 	Offering             string
+	DescriptorSchema     string
+	SessionParams        map[string]any
 	EstimatedRunwayUnits int64
 	MaxTotalUnits        int64
+	RequestID            string
 }
 
 // OpenSession opens a long-running session and returns the SessionHandle.
 //
-// in.MaxTotalUnits is the same input across all case-(d) modes, but
-// the operational guarantee differs by mode class:
-//
-//   (d-bounded) modes (ws-realtime@v0):
-//     The session spends AT MOST MaxTotalUnits. It may end earlier;
-//     it ends no later than when this much is consumed. It cannot be
-//     extended — refills are not supported in these modes.
-//
-//   (d-extensible) modes (session-control-plus-media@v0,
-//   rtmp-ingress-hls-egress@v0, live-session-remote-runner@v0,
-//   live-session-gateway-ingest@v0):
-//     The session spends AT MOST MaxTotalUnits. Refills happen
-//     automatically within this ceiling; the session drains if a
-//     higher-tier cap (spend-period, operator-pool) is reached
-//     before MaxTotalUnits is exhausted.
+// MaxTotalUnits is a hard spend ceiling. Whether the session can extend
+// within that ceiling comes from the offering's session.refill axis:
+// bounded drains without refilling; extensible uses the broker's
+// authoritative HTTP top-up contract.
 //
 // in.EstimatedRunwayUnits is the initial chunk LOC mints toward;
-// SessionRunner tops up automatically as the broker signals
-// balance-low.
+// SessionRunner tops up automatically as the broker reports a normative
+// low balance.
 //
 // The caller is responsible for the broker-side WS / RTMP wire today
 // (or use SessionRunner to drive it).
 func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*SessionHandle, error) {
 	c.emitSdkInitOnce()
+	if in.RequestID == "" {
+		in.RequestID = newUUIDv4()
+	}
 	body := map[string]any{
 		"capability":             in.Capability,
 		"offering":               in.Offering,
+		"descriptor_schema":      in.DescriptorSchema,
+		"session_params":         in.SessionParams,
 		"estimated_runway_units": in.EstimatedRunwayUnits,
 		"max_total_units":        in.MaxTotalUnits,
 	}
 	var out SessionHandle
-	if err := c.do(ctx, http.MethodPost, "/v1/sessions", body, &out); err != nil {
+	headers := http.Header{"Idempotency-Key": []string{in.RequestID}}
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions", body, &out, headers); err != nil {
 		return nil, err
 	}
+	if out.Protocol != "paid-session/v1" {
+		return nil, fmt.Errorf("openclearinghouse: unsupported session protocol %q", out.Protocol)
+	}
+	if out.Session.DescriptorSchema != in.DescriptorSchema {
+		return nil, fmt.Errorf("openclearinghouse: descriptor schema mismatch")
+	}
+	out.Capability = in.Capability
+	out.Offering = in.Offering
+	out.SessionParams = in.SessionParams
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.opened",
 		CorrelationID: out.SessionID,
 		Payload: map[string]interface{}{
 			"capability":           in.Capability,
 			"offering":             in.Offering,
-			"mode":                 out.Mode,
+			"protocol":             out.Protocol,
+			"descriptor_schema":    out.Session.DescriptorSchema,
+			"refill":               out.Session.Refill,
 			"max_total_units":      in.MaxTotalUnits,
 			"initial_runway_units": in.EstimatedRunwayUnits,
 		},
@@ -518,7 +622,7 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 // RefillSession mints a top-up bound to an existing session. The caller
 // is responsible for delivering the returned envelope to the broker via
 // the mode-specific channel (control-WS frame or HTTP POST to topup_url).
-func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64) (map[string]any, error) {
+func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64, requestID, rebindFrom, replacesRequestID string) (map[string]any, error) {
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.refill_requested",
 		CorrelationID: sessionID,
@@ -530,8 +634,16 @@ func (c *Client) RefillSession(ctx context.Context, sessionID string, observedCo
 	} else {
 		body["observed_consumed_units"] = nil
 	}
+	if rebindFrom != "" {
+		body["rebind_from"] = rebindFrom
+		body["replaces_request_id"] = replacesRequestID
+	}
 	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out); err != nil {
+	if requestID == "" {
+		requestID = newUUIDv4()
+	}
+	headers := http.Header{"Idempotency-Key": []string{requestID}}
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out, headers); err != nil {
 		var locErr *Error
 		if errors.As(err, &locErr) && locErr.Status == 402 {
 			c.telemetry.Emit(EmitTelemetryOptions{
@@ -574,9 +686,10 @@ func (c *Client) CloseSession(ctx context.Context, sessionID string, actualUnits
 	if outcome != "" {
 		body["outcome"] = outcome
 	}
-	if settlement != nil {
-		body["settlement"] = settlement
+	if settlement == nil {
+		return nil, fmt.Errorf("openclearinghouse: settlement is required")
 	}
+	body["settlement"] = settlement
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/close", body, &out); err != nil {
 		c.telemetry.Emit(EmitTelemetryOptions{
@@ -611,6 +724,15 @@ func (c *Client) GetSessionStatus(ctx context.Context, sessionID string) (map[st
 		return nil, err
 	}
 	return out, nil
+}
+
+// GetJobStatus returns exact, conservative, unresolved, or audit-only billing state.
+func (c *Client) GetJobStatus(ctx context.Context, jobID string) (*JobStatusResponse, error) {
+	var out JobStatusResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/jobs/"+jobID, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ---- internals ----
@@ -649,6 +771,16 @@ func (c *Client) do(
 	body any,
 	out any,
 ) error {
+	return c.doWithHeaders(ctx, method, path, body, out, nil)
+}
+
+func (c *Client) doWithHeaders(
+	ctx context.Context,
+	method, path string,
+	body any,
+	out any,
+	extraHeaders http.Header,
+) error {
 	var reader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -666,6 +798,11 @@ func (c *Client) do(
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, values := range extraHeaders {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
 	}
 
 	res, err := c.http.Do(req)
@@ -691,9 +828,8 @@ func (c *Client) do(
 
 // doWithRetry wraps `do` with exponential backoff on transient
 // failures. 5xx and 429 retry; 4xx surface immediately. Used by the
-// settle path so a transient LOC blip doesn't leave a session
-// unsettled — the janitor would catch it eventually, but synchronous
-// retry buys low latency for the common case.
+// settle path so a transient LOC blip doesn't leave a job unsettled.
+// The retry preserves the broker-signed terminal claim across that window.
 func (c *Client) doWithRetry(
 	ctx context.Context,
 	method, path string,

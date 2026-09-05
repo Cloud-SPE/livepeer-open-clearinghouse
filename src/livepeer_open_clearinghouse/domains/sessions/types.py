@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
+
+
+class SessionAxesView(BaseModel):
+    """Authoritative paid-session/v1 offering axes selected for the session."""
+
+    model_config = ConfigDict(extra="allow")
+
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    attachment: Literal["external"] = "external"
+    metering: Literal["runner-reported"]
+    refill: Literal["extensible", "bounded"] = "extensible"
 
 
 class CreateSessionRequest(BaseModel):
@@ -23,8 +36,11 @@ class CreateSessionRequest(BaseModel):
 
     capability: str = Field(min_length=1)
     offering: str = Field(min_length=1)
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    session_params: dict[str, Any] = Field(default_factory=dict)
     estimated_runway_units: int = Field(gt=0)
     max_total_units: int = Field(gt=0)
+    route_binding: RouteBinding | None = None
 
 
 class CapStatus(BaseModel):
@@ -59,30 +75,42 @@ class RefillSessionRequest(BaseModel):
     Body is mostly empty in v1 — the SDK signals "broker emitted
     Livepeer-Balance-Low, please mint more." The optional
     ``observed_consumed_units`` is an advisory hint from the SDK's
-    view of the broker's debit ledger; LOC cross-checks via
-    ``GetSessionDebits`` and uses the daemon's number as
-    authoritative (per the trust model).
+    view of broker progress. Signed broker settlements, supplied on
+    close/reconciliation, are authoritative for delivered work.
     """
 
     observed_consumed_units: int | None = Field(default=None, ge=0)
+
+    # Present only after the broker returned `recipient_rotated` for a
+    # previously issued LOC response. Both fields bind the rejected payment
+    # before LOC evicts payer state and mints a successor.
+    rebind_from: str | None = None
+    replaces_request_id: str | None = None
+
+    @model_validator(mode="after")
+    def rotation_fields_are_atomic(self) -> RefillSessionRequest:
+        if (self.rebind_from is None) != (self.replaces_request_id is None):
+            raise ValueError("rebind_from and replaces_request_id must be supplied together")
+        return self
 
 
 class RefillSessionResponse(BaseModel):
     """Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
 
     Carries the newly-minted top-up envelope plus a fresh cap_status
-    snapshot. The SDK delivers ``payment_envelope`` to the broker
-    via the mode-specific channel (``session.topup`` JSON frame for
-    ``session-control-plus-media@v0``; HTTP ``POST {topup_url}`` for
-    the ``live-session-*`` modes).
+    snapshot. The SDK delivers ``payment_envelope`` through the authoritative
+    paid-session HTTP top-up URL; a control WebSocket is only an optional push
+    mirror.
     """
 
     work_id: str
+    request_id: str
     refill_seq: int
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int
     cap_status: CapStatus
+    rebind_from: str | None = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -103,7 +131,7 @@ class SessionStatusResponse(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     estimated_units: int
     max_total_units: int
@@ -117,24 +145,32 @@ class SessionStatusResponse(BaseModel):
     outcome: str | None
 
 
+class SessionSettlementSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["secp256k1"]
+    canonicalization: Literal["jcs"]
+    value: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class SessionSettlementEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: dict[str, Any]
+    signature: SessionSettlementSignature
+
+
 class CloseSessionRequest(BaseModel):
     """Inbound: ``POST /v1/sessions/{id}/close``.
 
-    SDK reports the final actual_units consumed (read from the
-    broker's ``Livepeer-Work-Units`` trailer or the equivalent
-    in-band signal) and optionally the parsed ``SettlementRecord``
-    from the broker if one was delivered.
-
-    Per the trust model in the design doc, the SDK report is
-    advisory; the payer-daemon's ``GetSessionDebits`` is the
-    authoritative source. v1 trusts the SDK report on the synchronous
-    close path; the reconciliation janitor (PR-8) does the daemon
-    cross-check and corrects any divergence.
+    SDK forwards the required broker-signed terminal settlement. The
+    reported units and optional outcome are consistency assertions;
+    signed settlement fields are authoritative for accounting.
     """
 
     actual_units: int = Field(ge=0)
     outcome: str | None = None
-    settlement: dict[str, Any] | None = None
+    settlement: SessionSettlementEnvelope
 
 
 class CloseSessionResponse(BaseModel):
@@ -160,8 +196,8 @@ class CreateSessionResponse(BaseModel):
     Carries everything the SDK needs to open the broker-side session
     and bookkeep the LOC-side lifecycle. The ``payment_envelope``
     is base64-encoded wire-format Payment bytes — the SDK attaches
-    it as the ``Livepeer-Payment`` HTTP header (or upgrade header,
-    for WS modes) when connecting to ``broker_url``.
+    it as the ``Livepeer-Payment`` HTTP header when opening the broker's
+    paid-session/v1 control resource.
 
     Per exec-plan 002 handoff design, LOC never sits in the data
     path: ``broker_url`` is the orchestrator's HTTP/WS endpoint the
@@ -171,9 +207,12 @@ class CreateSessionResponse(BaseModel):
     """
 
     session_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
+    session: SessionAxesView
+    route_snapshot: RouteSnapshot
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Example: streaming session with HTTP topup (live-session-remote-runner@v0).",
+  "description": "Example: extensible paid-session/v1 with authoritative HTTP top-up.",
   "scripts": {
     "start": "tsx src/main.ts"
   },

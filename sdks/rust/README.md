@@ -78,7 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })),
             max_total_units: Some(2000),
             request_id: None,
-            spec_version: None,
+            transport: Some("unary"),
+            content_type: None,
         })
         .await
     {
@@ -117,15 +118,15 @@ ph.close_session(CloseSessionInput {
 
 Method surface:
 
-| | |
-|---|---|
-| `list_capabilities()` | discovery |
-| `list_orchestrators(capability)` | discovery |
-| `submit_job(SubmitJobInput)` | one-shot job (cases a/b/c) |
-| `open_session(OpenSessionInput)` | open long-running session (case d) |
-| `refill_session(...)` | top up an open session |
-| `close_session(CloseSessionInput)` | settle + close a session |
-| `telemetry()` | direct access to the (mandatory) `TelemetryEmitter` |
+|                                    |                                                     |
+| ---------------------------------- | --------------------------------------------------- |
+| `list_capabilities()`              | discovery                                           |
+| `list_orchestrators(capability)`   | discovery                                           |
+| `submit_job(SubmitJobInput)`       | one-shot job (cases a/b/c)                          |
+| `open_session(OpenSessionInput)`   | open long-running session (case d)                  |
+| `refill_session(...)`              | top up an open session                              |
+| `close_session(CloseSessionInput)` | settle + close a session                            |
+| `telemetry()`                      | direct access to the (mandatory) `TelemetryEmitter` |
 
 The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on
 every call, and telemetry events (`request.mint_started`,

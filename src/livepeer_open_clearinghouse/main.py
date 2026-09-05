@@ -9,13 +9,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from livepeer_open_clearinghouse import __version__
-from livepeer_open_clearinghouse.dependencies import SettingsDep
+from livepeer_open_clearinghouse.dependencies import (
+    PaymentDaemonDep,
+    RegistryDep,
+    SessionDep,
+    SettingsDep,
+)
 from livepeer_open_clearinghouse.domains.accounts import runtime as accounts_runtime
 from livepeer_open_clearinghouse.domains.admin import runtime as admin_runtime
 from livepeer_open_clearinghouse.domains.admin import service as admin_service
@@ -24,6 +30,7 @@ from livepeer_open_clearinghouse.domains.billing import runtime as billing_runti
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import runtime as discovery_runtime
 from livepeer_open_clearinghouse.domains.jobs import runtime as jobs_runtime
+from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
 from livepeer_open_clearinghouse.domains.notifications import runtime as notifications_runtime
 from livepeer_open_clearinghouse.domains.payments import runtime as payments_runtime
 from livepeer_open_clearinghouse.domains.payments import service as payments_service
@@ -32,11 +39,19 @@ from livepeer_open_clearinghouse.domains.sessions import service as sessions_ser
 from livepeer_open_clearinghouse.domains.telemetry import runtime as telemetry_runtime
 from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
 from livepeer_open_clearinghouse.errors import register_handlers
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    HttpBrokerSettlementClient,
+)
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
-from livepeer_open_clearinghouse.providers.db import session_scope
+from livepeer_open_clearinghouse.providers.db import (
+    EXPECTED_ALEMBIC_REVISION,
+    require_compatible_schema,
+    session_scope,
+)
 from livepeer_open_clearinghouse.providers.http.gzip_request import (
     GzipRequestMiddleware,
 )
+from livepeer_open_clearinghouse.providers.readiness import check_readiness
 from livepeer_open_clearinghouse.providers.scheduler import (
     register_interval_job,
     shutdown_scheduler,
@@ -57,6 +72,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
     configure_logging(cfg)
     log = get_logger("livepeer_open_clearinghouse.startup")
     log.info("startup.begin", env=cfg.app_env, version=__version__)
+
+    if cfg.app_env != "dev":
+        async with session_scope() as db:
+            await require_compatible_schema(db)
+        log.info("startup.database_schema.compatible", revision=EXPECTED_ALEMBIC_REVISION)
 
     if cfg.admin_bootstrap_token is not None:
         async with session_scope() as db:
@@ -89,6 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
                     "scheduler.deposit_snapshot.taken",
                     deposit_wei=str(row.deposit_wei),
                     reserve_wei=str(row.reserve_wei),
+                    current_round=row.current_round,
+                    ticket_validity_period=row.ticket_validity_period,
                 )
         except Exception as exc:
             log.warning("scheduler.deposit_snapshot.failed", error=str(exc))
@@ -103,18 +125,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             log.warning("scheduler.auto_replenish.failed", error=str(exc))
 
     async def _reconcile_open_sessions() -> None:
-        from livepeer_open_clearinghouse.dependencies import (  # noqa: PLC0415
-            _default_payment_daemon,
-        )
-
         try:
-            daemon = _default_payment_daemon()
-            async with session_scope() as db:
-                n = await sessions_service.reconcile_open_sessions(db, daemon=daemon, clock=clock)
-                if n:
-                    log.info("scheduler.reconcile_open_sessions.finalized", count=n)
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                settlement_client = HttpBrokerSettlementClient(http_client)
+                async with session_scope() as db:
+                    n = await sessions_service.reconcile_open_sessions(
+                        db,
+                        settlement_client=settlement_client,
+                        clock=clock,
+                        interval_seconds=cfg.session_reconciliation_interval_seconds,
+                    )
+                    if n:
+                        log.info("scheduler.reconcile_open_sessions.finalized", count=n)
         except Exception as exc:
             log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
+
+    async def _reconcile_open_jobs() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                settlement_client = HttpBrokerSettlementClient(http_client)
+                async with session_scope() as db:
+                    n = await jobs_service.reconcile_open_jobs(
+                        db,
+                        settlement_client=settlement_client,
+                        clock=clock,
+                        settings=cfg,
+                        interval_seconds=cfg.job_reconciliation_interval_seconds,
+                    )
+                    if n:
+                        log.info("scheduler.reconcile_open_jobs.finalized", count=n)
+        except Exception as exc:
+            log.warning("scheduler.reconcile_open_jobs.failed", error=str(exc))
 
     async def _purge_expired_telemetry() -> None:
         try:
@@ -145,11 +186,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             name="auto_replenish",
             seconds=cfg.auto_replenish_check_interval_seconds,
         )
-    register_interval_job(
-        _reconcile_open_sessions,
-        name="reconcile_open_sessions",
-        seconds=sessions_service.DEFAULT_JANITOR_INTERVAL_SECONDS,
-    )
+    if cfg.session_reconciliation_interval_seconds > 0:
+        register_interval_job(
+            _reconcile_open_sessions,
+            name="reconcile_open_sessions",
+            seconds=cfg.session_reconciliation_interval_seconds,
+        )
+    if cfg.job_reconciliation_interval_seconds > 0:
+        register_interval_job(
+            _reconcile_open_jobs,
+            name="reconcile_open_jobs",
+            seconds=cfg.job_reconciliation_interval_seconds,
+        )
     if cfg.telemetry_raw_retention_days > 0:
         register_interval_job(
             _purge_expired_telemetry,
@@ -196,6 +244,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["meta"])
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "version": __version__, "env": cfg.app_env})
+
+    @app.get("/ready", tags=["meta"], include_in_schema=False)
+    async def ready(
+        session: SessionDep,
+        payment_daemon: PaymentDaemonDep,
+        registry: RegistryDep,
+    ) -> JSONResponse:
+        result = await check_readiness(session, payment_daemon, registry)
+        return JSONResponse(
+            {
+                "status": "ready" if result.ready else "not_ready",
+                "version": __version__,
+                "schema_revision": result.revision,
+                "expected_schema_revision": EXPECTED_ALEMBIC_REVISION,
+                "checks": result.checks,
+            },
+            status_code=(
+                status.HTTP_200_OK if result.ready else status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+        )
 
     @app.get("/metrics", tags=["meta"], include_in_schema=False)
     async def metrics_endpoint(

@@ -104,8 +104,8 @@ When evaluating new work, ask in order:
    Fail-closed correctness, idempotency, telemetry — yes.
 3. **If not, is it required by a guardrail (security, key custody, billing
    correctness)?** — yes.
-4. **Otherwise — it's v2.** Add it to `docs/exec-plans/tech-debt-tracker.md`
-   if it's worth remembering. Don't build it now.
+4. **Otherwise — it's v2.** Create a low-priority Beads issue with the trigger
+   that would justify it if it's worth remembering. Don't build it now.
 
 ## What success looks like
 

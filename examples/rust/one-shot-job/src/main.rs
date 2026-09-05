@@ -36,7 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_tokens": 500
             })),
             request_id: None,
-            spec_version: None,
+            transport: Some("unary"),
+            content_type: None,
         })
         .await
     {

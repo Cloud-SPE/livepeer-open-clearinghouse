@@ -2,7 +2,7 @@
 
 Composes a mock payer-daemon + mock registry + in-memory aiosqlite
 DB to exercise the full session-open orchestration: route discovery,
-mode validation, worst-case encumbrance, mint, and the persisted
+protocol validation, worst-case encumbrance, mint, and the persisted
 payment_session + Payment rows.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -38,11 +39,15 @@ from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
-    ModeNotDeclared,
-    ModeNotSupportedForSession,
+    ProtocolNotSupportedForSession,
+    RouteBindingMismatch,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    InsufficientCredit,
+    NoRouteAvailable,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
@@ -106,8 +111,19 @@ async def _seed_user_key_and_balance(
     return user.id, key.id
 
 
-def _route_with_mode(mode: str | None) -> SelectedRoute:
-    extra = {"interaction_mode": mode} if mode is not None else {}
+def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> SelectedRoute:
+    is_session = protocol == "paid-session/v1"
+    extra = (
+        {
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": refill,
+            }
+        }
+        if is_session
+        else {"job": {"transports": ["unary", "stream", "multipart"]}}
+    )
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -120,6 +136,7 @@ def _route_with_mode(mode: str | None) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol=protocol,
         extra=extra,
     )
 
@@ -133,7 +150,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
@@ -153,7 +170,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     )
 
     # ---- response shape
-    assert response.mode == "ws-realtime@v0"
+    assert response.protocol == "paid-session/v1"
     assert response.broker_url == "https://broker.example/livepeer"
     assert response.refill_endpoint == f"/v1/sessions/{response.session_id}/refill"
     assert response.close_endpoint == f"/v1/sessions/{response.session_id}/close"
@@ -169,12 +186,20 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert len(sessions) == 1
     ps = sessions[0]
     assert ps.state == SESSION_STATE_OPEN
-    assert ps.mode == "ws-realtime@v0"
+    assert ps.protocol == "paid-session/v1"
+    assert ps.broker_request_id == response.request_id
+    assert ps.route_snapshot is not None
+    assert ps.route_snapshot["protocol"] == "paid-session/v1"
+    assert ps.route_snapshot["schema_version"] == "route-snapshot/v1"
+    assert ps.route_snapshot["session"]["refill"] == "bounded"
+    assert ps.route_snapshot["units_per_price"] == "1"
+    assert ps.route_snapshot["quote_id"] == "q-1"
     assert ps.work_id == response.work_id
     assert ps.estimated_units == 3600
     assert ps.max_total_units == 7200
     assert ps.funded_value_wei == Decimal(7_200_000)
     assert ps.sdk_identity == "python/0.4.0/abc1234"
+    assert response.route_snapshot.model_dump(mode="json") == ps.route_snapshot
 
     # ---- Payment row linked via session_id
     payments = (await db_session.scalars(select(Payment))).all()
@@ -182,6 +207,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     p = payments[0]
     assert p.session_id == ps.id
     assert p.work_id == response.work_id
+    assert p.mint_request_id == f"loc:{response.request_id}"
     # Initial ticket funded for runway (not worst case).
     assert p.funded_value_wei == Decimal(3_600_000)
 
@@ -198,6 +224,106 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_uses_exact_authoritative_route_binding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    first = _route_for_protocol("paid-session/v1")
+    selected = first.model_copy(
+        update={
+            "worker_url": "https://selected-session.example/livepeer",
+            "eth_address": "0x" + "22" * 20,
+            "quote_id": "q-selected-session",
+            "constraint_fingerprint": b"\x22" * 32,
+            "route_fingerprint": b"\x33" * 32,
+        }
+    )
+    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+
+    response = await sessions_service.open_session(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=selected.capability,
+        offering=selected.offering,
+        route_binding=selected.binding,
+        estimated_runway_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[first, selected]),
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert response.broker_url == selected.worker_url
+    assert response.route_snapshot == selected.snapshot_view()
+    assert len(daemon._mint_replays) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_stale_route_binding_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-session/v1")
+    daemon = MockPaymentDaemonClient()
+    stale = route.binding.model_copy(update={"route_fingerprint": "ff" * 32})
+
+    with pytest.raises(RouteBindingMismatch):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            route_binding=stale,
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+    assert (await db_session.scalars(select(Payment))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_payment_ev_below_initial_funding(
+    db_session: AsyncSession,
+) -> None:
+    class UnderfundedDaemon(MockPaymentDaemonClient):
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            return replace(response, expected_value=Decimal(2))
+
+    user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            estimated_runway_units=3,
+            max_total_units=6,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")]),
+            daemon=UnderfundedDaemon(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
+
+
 # ---- error paths ----
 
 
@@ -207,7 +333,7 @@ async def test_open_session_rejects_max_below_estimated(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -254,13 +380,13 @@ async def test_open_session_rejects_no_route(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_mode_not_declared(db_session: AsyncSession) -> None:
+async def test_open_session_rejects_job_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode(None)  # offering with no interaction_mode in extra
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotDeclared):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -279,15 +405,43 @@ async def test_open_session_rejects_mode_not_declared(db_session: AsyncSession) 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_http_modes(db_session: AsyncSession) -> None:
-    """http-reqresp / http-stream / http-multipart go through POST /v1/jobs,
-    not POST /v1/sessions."""
+async def test_open_session_rejects_descriptor_schema_mismatch_before_mint(
+    db_session: AsyncSession,
+) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("http-reqresp@v0")
+    registry = MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")])
+    daemon = MockPaymentDaemonClient()
+
+    with pytest.raises(InvalidSessionRequest, match="descriptor schema"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            descriptor_schema="different-runtime/v1",
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=registry,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_paid_job_protocol(db_session: AsyncSession) -> None:
+    """paid-job/v1 routes go through POST /v1/jobs, not sessions."""
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotSupportedForSession):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -311,7 +465,7 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 ) -> None:
     """Worst case is 1000 wei x 100 units = 100_000 wei; balance has 50_000."""
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=50_000)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -340,12 +494,12 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_accepts_session_control_plus_media(
+async def test_open_session_accepts_extensible_session_declaration(
     db_session: AsyncSession,
 ) -> None:
-    """Smoke test for the d-extensible side of the mode set."""
+    """Smoke test for the extensible paid-session declaration."""
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("session-control-plus-media@v0")
+    route = _route_for_protocol("paid-session/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -363,4 +517,4 @@ async def test_open_session_accepts_session_control_plus_media(
         clock=_clock(),
         settings=_settings(),
     )
-    assert response.mode == "session-control-plus-media@v0"
+    assert response.protocol == "paid-session/v1"

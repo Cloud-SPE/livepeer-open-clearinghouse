@@ -1,12 +1,11 @@
-// Streaming session with HTTP topup (live-session-remote-runner@v0).
+// Extensible paid-session/v1 session with authoritative HTTP top-up.
 //
 //	OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
 //	OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
 //	go run ./examples/go/streaming-http
 //
-// For HTTP-topup modes, the broker doesn't push balance-low frames over
-// a WebSocket — the customer's media plane observes balance-low
-// out-of-band and routes the signal in via runner.OnBalanceLow(). The
+// The customer's media plane observes the broker's normative balance
+// object and routes it in via runner.OnBalance(). The
 // runner then asks LOC for a refill and POSTs it to the broker's
 // control.topup_url.
 package main
@@ -46,6 +45,8 @@ func run() error {
 	handle, err := client.OpenSession(ctx, loc.OpenSessionInput{
 		Capability:           "livepeer:remote-runner",
 		Offering:             "live-session-remote-runner",
+		DescriptorSchema:     "livepeer.session.remote-runner/v1",
+		SessionParams:        map[string]any{},
 		EstimatedRunwayUnits: 1000,
 		MaxTotalUnits:        10000,
 	})
@@ -57,7 +58,7 @@ func run() error {
 		}
 		return err
 	}
-	fmt.Printf("session opened: %s (mode=%s)\n", handle.SessionID, handle.Mode)
+	fmt.Printf("session opened: %s (protocol=%s)\n", handle.SessionID, handle.Protocol)
 
 	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
 		Client: client,
@@ -87,8 +88,10 @@ func run() error {
 
 	// Customer-driven refill. In production this fires when the media
 	// plane observes balance-low on the runner channel.
-	observed := int64(500)
-	runner.OnBalanceLow(ctx, &observed, "")
+	runner.OnBalance(ctx, loc.SessionBalance{
+		Status: "low", ClaimedUnits: 500, DebitedUnits: 500,
+		Unit: "session_second", RunwayUnits: 100,
+	})
 
 	settle, err := runner.Close(ctx, loc.CloseSessionInput{
 		ActualUnits: 750,

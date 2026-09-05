@@ -3,14 +3,13 @@
 Composes the same primitives ``sessions.service`` uses
 (``create_session``, ``transition_state``, ``record_settlement``,
 ``billing.encumber_for_session`` / ``release_session_encumbrance``)
-but gated on the ``http-*@v0`` mode set instead of the case-(d)
-session modes.
+but gated on the authoritative ``paid-job/v1`` protocol.
 
 A job is just a short-lived ``payment_session`` row with a job-class
-mode. The mint path mirrors ``sessions.service.open_session``; the
+protocol. The mint path mirrors ``sessions.service.open_session``; the
 settle path mirrors ``sessions.service.close_session``. Differences:
 
-  - Mode gate: JOB_MODES instead of SESSION_OPEN_MODES.
+  - Protocol gate: ``paid-job/v1`` instead of ``paid-session/v1``.
   - Initial mint is sized for ``max_total_units`` (jobs are
     one-shot — no refills — so the full worst case lives in the
     single ticket).
@@ -22,22 +21,30 @@ settle path mirrors ``sessions.service.close_session``. Differences:
 from __future__ import annotations
 
 import base64
+import hashlib
 import time
 import uuid
+from datetime import UTC, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Literal, TypedDict
 
+import rfc8785
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobResponse,
+    JobStatusResponse,
     SettleJobResponse,
+    SettlementEnvelope,
 )
-from livepeer_open_clearinghouse.domains.payments.repo import Payment
+from livepeer_open_clearinghouse.domains.payments.repo import (
+    Payment,
+    PaymentDaemonDepositSnapshot,
+)
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
@@ -46,41 +53,77 @@ from livepeer_open_clearinghouse.errors import (
     OpenClearinghouseError,
     SpendCapExceeded,
 )
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerExchangeOutcome,
+    BrokerExchangeResult,
+    BrokerSettlementClient,
+    BrokerSettlementQueryError,
+    NonAdmissionQuery,
+)
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     FundingIntent,
+    MintOutcomeUnknown,
     PaymentDaemonClient,
     PaymentDaemonError,
     QuoteRef,
+    validate_funding_response,
 )
-from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    RegistryClient,
+    RouteBinding,
+    SelectedRoute,
+    select_bound_route,
+)
+from livepeer_open_clearinghouse.providers.settlement_verification import (
+    JobSettlementExpectation,
+    NonAdmissionExpectation,
+    SettlementVerificationError,
+    verify_job_settlement,
+    verify_non_admission,
+)
+from livepeer_open_clearinghouse.providers.telemetry import (
+    job_reconciliation_observations_total,
+    job_terminal_accounting_total,
+)
 from livepeer_open_clearinghouse.settings import Settings
 
-# Modes that POST /v1/jobs accepts. Long-running session modes go
-# through POST /v1/sessions instead.
-JOB_MODES: frozenset[str] = frozenset(
-    {
-        "http-reqresp@v0",
-        "http-stream@v0",
-        "http-multipart@v0",
-    }
-)
+PAID_JOB_PROTOCOL = "paid-job/v1"
+DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 60
 
 
-class ModeNotSupportedForJob(OpenClearinghouseError):
-    """Mode is known upstream but isn't a job-class mode."""
+class _RecoveredSettlementClaims(TypedDict):
+    job_id: str
+    work_unit: str
+    actual_units: int
+    outcome: str
 
-    def __init__(self, *, mode: str) -> None:
+
+class ProtocolNotSupportedForJob(OpenClearinghouseError):
+    """The selected route is not a paid-job/v1 offering."""
+
+    def __init__(self, *, protocol: str) -> None:
         super().__init__(
-            code="mode_not_supported_for_job",
+            code="protocol_not_supported_for_job",
             message=(
-                f"mode {mode!r} is not a job mode; use POST /v1/sessions "
-                "for ws-realtime / session-control-plus-media / live-session-* "
-                "workloads"
+                f"protocol {protocol!r} is not accepted by POST /v1/jobs; "
+                "paid sessions use POST /v1/sessions"
             ),
             status_code=400,
+        )
+
+
+class TransportNotSupportedForJob(OpenClearinghouseError):
+    """The selected offering does not declare the requested transport."""
+
+    def __init__(self, *, transport: str, declared: frozenset[str]) -> None:
+        super().__init__(
+            code="protocol_transport_unsupported",
+            message=f"transport {transport!r} is not declared by the selected offering",
+            status_code=400,
+            details={"transport": transport, "declared_transports": sorted(declared)},
         )
 
 
@@ -102,6 +145,61 @@ class JobAlreadySettled(OpenClearinghouseError):
         )
 
 
+async def _select_job_route(
+    registry: RegistryClient,
+    *,
+    capability: str,
+    offering: str,
+    transport: Literal["unary", "stream", "multipart"],
+    binding: RouteBinding | None,
+) -> SelectedRoute:
+    route = await select_bound_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        binding=binding,
+    )
+    if route is None:
+        if binding is not None:
+            raise sessions_service.RouteBindingMismatch(binding=binding)
+        raise NoRouteAvailable(capability=capability, offering=offering)
+    if route.protocol != PAID_JOB_PROTOCOL:
+        raise ProtocolNotSupportedForJob(protocol=route.protocol)
+    job_axes = route.job
+    if job_axes is None:  # pragma: no cover - enforced by SelectedRoute validation
+        raise RuntimeError("paid-job/v1 route has no job axes")
+    if transport not in job_axes.transports:
+        raise TransportNotSupportedForJob(
+            transport=transport,
+            declared=frozenset(job_axes.transports),
+        )
+    return route
+
+
+class WorkUnitMismatch(OpenClearinghouseError):
+    """The broker's terminal unit echo differs from the pinned route unit."""
+
+    def __init__(self, *, expected: str, received: str) -> None:
+        super().__init__(
+            code="work_unit_mismatch",
+            message=f"broker reported work unit {received!r}; expected {expected!r}",
+            status_code=409,
+            details={"expected": expected, "received": received},
+        )
+
+
+class SettlementVerificationFailed(OpenClearinghouseError):
+    """A broker claim cannot authorize a financial state change."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            code="settlement_verification_failed",
+            message="broker settlement verification failed",
+            status_code=409,
+            details={"reason": reason},
+        )
+
+
 def _settle_endpoint_for(job_id: uuid.UUID) -> str:
     return f"/v1/jobs/{job_id}/settle"
 
@@ -120,17 +218,21 @@ async def open_job(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    transport: Literal["unary", "stream", "multipart"] = "unary",
+    route_binding: RouteBinding | None = None,
+    request_id: str | None = None,
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
 
-    Behaves like ``sessions.service.open_session`` except the mode
-    gate is :data:`JOB_MODES`, and the initial mint funds the full
+        Behaves like ``sessions.service.open_session`` except the protocol
+    gate is ``paid-job/v1``, and the initial mint funds the full
     worst case (no refills are possible for jobs).
 
     Defaults ``max_total_units`` to ``estimated_units`` when the SDK
     doesn't supply it — typical for case (a) where the SDK knows
     exactly what it needs.
     """
+    broker_request_id = request_id or str(uuid.uuid4())
     effective_max = max_total_units if max_total_units is not None else estimated_units
     if effective_max < estimated_units:
         raise sessions_service.InvalidSessionRequest(
@@ -140,22 +242,23 @@ async def open_job(
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # Discovery
-    route = await registry.select(capability, offering)
-    if route is None:
-        raise NoRouteAvailable(capability=capability, offering=offering)
-
-    # Mode declaration + validation
-    mode = route.interaction_mode
-    if mode is None:
-        raise sessions_service.ModeNotDeclared(capability=capability, offering=offering)
-    if mode not in JOB_MODES:
-        raise ModeNotSupportedForJob(mode=mode)
+    route = await _select_job_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        transport=transport,
+        binding=route_binding,
+    )
+    protocol = route.protocol
 
     # Worst case = full max_total_units (jobs have no refills, so the
     # initial mint funds the entire envelope).
     price_wei = Decimal(route.price_per_work_unit_wei)
-    units_per_price = Decimal(route.units_per_price or 1)
-    worst_case_value_wei = price_wei * Decimal(effective_max) / units_per_price
+    worst_case_value_wei = sessions_service._bill_value_wei(
+        units=effective_max,
+        amount_wei=price_wei,
+        per_units=route.units_per_price,
+    )
 
     # Up-front balance check
     balance = await billing_service.get_balance(db, user_id=user_id)
@@ -178,7 +281,9 @@ async def open_job(
     # Daemon mint sized for the full worst case (one ticket covers
     # the whole job).
     mint_started_ns = time.monotonic_ns()
+    mint_request_id = f"loc:{broker_request_id}"
     daemon_request = CreatePaymentRequest(
+        mint_request_id=mint_request_id,
         recipient=sessions_service._eth_address_to_bytes(route.eth_address),
         ticket_params_base_url=route.worker_url,
         accepted_price=AcceptedPrice(
@@ -201,11 +306,27 @@ async def open_job(
         ),
     )
     try:
-        daemon_response = await daemon.create_payment(daemon_request)
+        daemon_response = validate_funding_response(
+            daemon_request, await daemon.create_payment(daemon_request)
+        )
+    except MintOutcomeUnknown as exc:
+        from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
+
+        raise IdempotencyOutcomeUnknown from exc
     except PaymentDaemonError as exc:
         raise DaemonUnavailable(
             daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
         ) from exc
+    if (
+        daemon_response.creation_round <= 0
+        or daemon_response.ticket_validity_period <= 0
+        or daemon_response.expires_after_round
+        != daemon_response.creation_round + daemon_response.ticket_validity_period - 1
+    ):
+        raise DaemonUnavailable(
+            daemon="payment-daemon",
+            reason="invalid payment envelope expiry",
+        )
 
     # Write payment_session (one row backs each job).
     job_row = await sessions_service.create_session(
@@ -215,7 +336,9 @@ async def open_job(
         work_id=daemon_response.work_id,
         capability=route.capability,
         offering=route.offering,
-        mode=mode,
+        protocol=protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=broker_request_id,
         estimated_units=estimated_units,
         max_total_units=effective_max,
         funded_value_wei=worst_case_value_wei,
@@ -229,6 +352,8 @@ async def open_job(
         api_key_id=api_key_id,
         session_id=job_row.id,
         work_id=daemon_response.work_id,
+        mint_request_id=mint_request_id,
+        sender_eth_address="0x" + daemon_response.sender.hex(),
         recipient_eth_address=route.eth_address,
         capability=route.capability,
         offering=route.offering,
@@ -236,6 +361,10 @@ async def open_job(
         price_per_work_unit_wei=price_wei,
         funded_value_wei=daemon_response.funded_value_wei,
         expected_value_wei=daemon_response.expected_value,
+        creation_round=daemon_response.creation_round,
+        expires_after_round=daemon_response.expires_after_round,
+        ticket_validity_period=daemon_response.ticket_validity_period,
+        ticket_validity_period_observed_at=(daemon_response.ticket_validity_period_observed_at),
         reserved_wei=daemon_response.expected_value,
         refunded_wei=Decimal(0),
         status="issued",
@@ -276,7 +405,7 @@ async def open_job(
         user_id=user_id,
         capability=capability,
         offering=offering,
-        mode=mode,
+        protocol=protocol,
         estimated_units=estimated_units,
         funded_value_wei=int(worst_case_value_wei),
         mint_latency_ms=int(mint_latency_ms),
@@ -293,9 +422,13 @@ async def open_job(
 
     return CreateJobResponse(
         job_id=job_row.id,
+        request_id=broker_request_id,
         work_id=daemon_response.work_id,
         broker_url=route.worker_url,
-        mode=mode,
+        protocol=protocol,
+        transport=transport,
+        work_unit=route.work_unit,
+        route_snapshot=route.snapshot_view(),
         payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
         expected_value_wei=int(daemon_response.expected_value),
         funded_value_wei=int(worst_case_value_wei),
@@ -310,21 +443,27 @@ async def settle_job(
     job_id: uuid.UUID,
     user_id: uuid.UUID,
     actual_units: int,
+    broker_job_id: str,
+    work_unit: str,
     outcome: str | None,
-    settlement: dict[str, Any] | None,
+    settlement: SettlementEnvelope,
     clock: Clock,
     settings: Settings,
 ) -> SettleJobResponse:
-    """Settle a job after the SDK has called the broker and read the
-    Livepeer-Work-Units header (or trailer for http-stream).
+    """Settle a job from the broker's signed terminal claim.
 
     Mirrors ``sessions.service.close_session`` — same accounting,
-    same encumbrance release, same settlement-event write. The mode
+    same encumbrance release, same settlement-event write. The protocol
     gate is enforced at open time, so settle works uniformly for any
     job-class session.
     """
     # Lookup + ownership
-    job_row = await db.get(PaymentSession, job_id)
+    job_row = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if job_row is None or job_row.user_id != user_id:
         raise JobNotFound
 
@@ -342,7 +481,46 @@ async def settle_job(
         raise JobNotFound  # defensive
 
     price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    billed_value_wei = price_wei * Decimal(actual_units)
+    snapshot = job_row.route_snapshot or {}
+    expected_work_unit = str(snapshot.get("work_unit", ""))
+    if work_unit != expected_work_unit:
+        raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
+    try:
+        request_id = job_row.broker_request_id
+        if not request_id:
+            raise SettlementVerificationError(
+                "missing_request_id", "job has no durable broker request id"
+            )
+        settlement_keys = snapshot["settlement_keys"]
+        if not isinstance(settlement_keys, list) or not settlement_keys:
+            raise SettlementVerificationError(
+                "missing_delegation", "route snapshot has no settlement keys"
+            )
+        verified = verify_job_settlement(
+            settlement.model_dump(mode="python"),
+            settlement_keys=settlement_keys,
+            expected=JobSettlementExpectation(
+                request_id=request_id,
+                job_id=broker_job_id,
+                work_id=job_row.work_id,
+                work_unit=expected_work_unit,
+                actual_units=actual_units,
+                max_total_units=job_row.max_total_units,
+                funded_value_wei=int(job_row.funded_value_wei),
+                amount_wei=int(price_wei),
+                per_units=int(snapshot["units_per_price"]),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        reason = exc.code if isinstance(exc, SettlementVerificationError) else "invalid_snapshot"
+        raise SettlementVerificationFailed(reason=reason) from exc
+    if outcome is not None and outcome != verified.outcome:
+        raise SettlementVerificationFailed(reason="outcome_mismatch")
+    billed_value_wei = Decimal(verified.billed_value_wei)
     refund_wei = job_row.funded_value_wei - billed_value_wei
 
     # Transition state
@@ -364,12 +542,15 @@ async def settle_job(
         )
 
     # Finalize fields
-    final_outcome = outcome or sessions_service._infer_close_outcome(
-        funded=job_row.funded_value_wei, billed=billed_value_wei
-    )
+    final_outcome = verified.outcome
     job_row.actual_units = actual_units
     job_row.billed_value_wei = billed_value_wei
     job_row.outcome = final_outcome
+    job_row.breakdown = {
+        **(job_row.breakdown or {}),
+        "broker_job_id": broker_job_id,
+        "work_unit": work_unit,
+    }
     await db.flush()
 
     # Settlement event
@@ -381,7 +562,11 @@ async def settle_job(
         actual_units=actual_units,
         billed_value_wei=billed_value_wei,
         outcome=final_outcome,
-        raw_record=settlement,
+        raw_record={
+            "broker_job_id": broker_job_id,
+            "work_unit": work_unit,
+            "settlement": settlement.model_dump(mode="json"),
+        },
     )
 
     # Cap snapshot for the SDK to surface "you're at N% of your
@@ -409,4 +594,574 @@ async def settle_job(
         outcome=final_outcome,
         closed_at=job_row.closed_at,
         cap_status=cap_status,
+    )
+
+
+async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome state machine
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    clock: Clock,
+    settings: Settings,
+    interval_seconds: int = DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
+    batch_limit: int = 100,
+) -> int:
+    """Recover paid-job outcomes using only LOC's durable request ID.
+
+    Broker outcome fields are hints. Only the embedded settlement, after
+    normal signature/delegation/identity verification by ``settle_job``, may
+    close a job or release encumbrance.
+    """
+
+    cutoff = clock.now() - timedelta(seconds=interval_seconds)
+    rows = list(
+        (
+            await db.scalars(
+                select(PaymentSession)
+                .where(
+                    PaymentSession.protocol == PAID_JOB_PROTOCOL,
+                    PaymentSession.state == sessions_service.SESSION_STATE_OPEN,
+                    (PaymentSession.last_polled_at.is_(None))
+                    | (PaymentSession.last_polled_at < cutoff),
+                )
+                .order_by(PaymentSession.last_polled_at.asc().nulls_first())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+
+    finalized = 0
+    for job_row in rows:
+        request_id = job_row.broker_request_id
+        snapshot = job_row.route_snapshot or {}
+        broker_url = snapshot.get("broker_url", snapshot.get("worker_url"))
+        if not request_id or not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            exchange = await settlement_client.get_job_exchange(
+                broker_url=broker_url,
+                request_id=request_id,
+            )
+        except BrokerSettlementQueryError as exc:
+            # A transport or protocol failure is also an unresolved lookup
+            # result. Keep retrying before the operator-selected deadline,
+            # but do not let an unreachable broker bypass the terminal policy
+            # forever. The error is deliberately recorded as LOC observation,
+            # never as broker evidence.
+            evidence: dict[str, object] = {
+                "request_id": request_id,
+                "outcome": "LOOKUP_FAILED",
+                "detail": str(exc),
+            }
+            job_reconciliation_observations_total.labels(outcome="LOOKUP_FAILED").inc()
+            job_row.last_polled_at = clock.now()
+            job_row.breakdown = {
+                **(job_row.breakdown or {}),
+                "broker_exchange": evidence,
+            }
+            await db.flush()
+            if settings.job_conservative_charge_after_seconds <= 0:
+                continue
+            charged = await finalize_conservative_full_charge(
+                db,
+                job_id=job_row.id,
+                clock=clock,
+                deadline_seconds=settings.job_conservative_charge_after_seconds,
+                evidence=evidence,
+            )
+            if charged:
+                job_terminal_accounting_total.labels(terminal_kind="conservative_full_charge").inc()
+                finalized += 1
+            continue
+
+        if exchange.outcome is BrokerExchangeOutcome.NO_RECORD:
+            try:
+                exchange = await _request_non_admission(
+                    db,
+                    settlement_client=settlement_client,
+                    job_row=job_row,
+                    broker_url=broker_url,
+                    request_id=request_id,
+                )
+            except BrokerSettlementQueryError as exc:
+                exchange = exchange.model_copy(
+                    update={"detail": f"non-admission query failed: {exc}"}
+                )
+
+        job_reconciliation_observations_total.labels(outcome=exchange.outcome.value).inc()
+        job_row.last_polled_at = clock.now()
+        job_row.breakdown = {
+            **(job_row.breakdown or {}),
+            "broker_exchange": _exchange_audit_record(exchange),
+        }
+        await db.flush()
+        if exchange.outcome is BrokerExchangeOutcome.NOT_ADMITTED:
+            await _retain_verified_non_admission(
+                db,
+                job_row=job_row,
+                exchange=exchange,
+                clock=clock,
+            )
+        settled = False
+        if exchange.outcome is BrokerExchangeOutcome.SETTLED:
+            claims = _recovered_settlement_claims(exchange)
+            if claims is not None and exchange.settlement is not None:
+                try:
+                    await settle_job(
+                        db,
+                        job_id=job_row.id,
+                        user_id=job_row.user_id,
+                        actual_units=claims["actual_units"],
+                        broker_job_id=claims["job_id"],
+                        work_unit=claims["work_unit"],
+                        outcome=claims["outcome"],
+                        settlement=SettlementEnvelope.model_validate(exchange.settlement),
+                        clock=clock,
+                        settings=settings,
+                    )
+                    settled = True
+                except (
+                    JobAlreadySettled,
+                    SettlementVerificationFailed,
+                    WorkUnitMismatch,
+                    ValueError,
+                ):
+                    # Keep the encumbrance intact. The audit snapshot makes a bad
+                    # broker claim observable without granting it financial authority.
+                    pass
+        if settled:
+            job_terminal_accounting_total.labels(terminal_kind="broker_settled").inc()
+            finalized += 1
+            continue
+
+        # These outcomes are still moving and must outlive every operational
+        # deadline. Charging while delivery/accounting is active would turn a
+        # recoverable exact settlement into an avoidable full charge.
+        if exchange.outcome in (
+            BrokerExchangeOutcome.ACCOUNTING_PENDING,
+            BrokerExchangeOutcome.IN_FLIGHT,
+        ):
+            continue
+        if settings.job_conservative_charge_after_seconds <= 0:
+            continue
+        charged = await finalize_conservative_full_charge(
+            db,
+            job_id=job_row.id,
+            clock=clock,
+            deadline_seconds=settings.job_conservative_charge_after_seconds,
+            evidence=_exchange_audit_record(exchange),
+        )
+        if charged:
+            job_terminal_accounting_total.labels(terminal_kind="conservative_full_charge").inc()
+            finalized += 1
+
+    return finalized
+
+
+async def _request_non_admission(
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    job_row: PaymentSession,
+    broker_url: str,
+    request_id: str,
+) -> BrokerExchangeResult:
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_row.id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    snapshot = job_row.route_snapshot or {}
+    if initial_payment is None or initial_payment.sender_eth_address is None:
+        raise BrokerSettlementQueryError("job lacks persisted payer sender scope")
+    try:
+        query = NonAdmissionQuery(
+            protocol=PAID_JOB_PROTOCOL,
+            work_id=job_row.work_id,
+            sender=initial_payment.sender_eth_address.lower(),
+            recipient=initial_payment.recipient_eth_address.lower(),
+            quote_id=str(snapshot["quote_id"]),
+            quote_version=int(snapshot["quote_version"]),
+            constraint_fingerprint=str(snapshot["constraint_fingerprint"]),
+            route_fingerprint=str(snapshot["route_fingerprint"]),
+            job_issued_at=(
+                job_row.opened_at
+                if job_row.opened_at.tzinfo is not None
+                else job_row.opened_at.replace(tzinfo=UTC)
+            ).isoformat(),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BrokerSettlementQueryError("job lacks valid non-admission scope") from exc
+    return await settlement_client.request_non_admission(
+        broker_url=broker_url,
+        request_id=request_id,
+        query=query,
+    )
+
+
+async def _retain_verified_non_admission(
+    db: AsyncSession,
+    *,
+    job_row: PaymentSession,
+    exchange: BrokerExchangeResult,
+    clock: Clock,
+) -> None:
+    """Verify and append one audit claim without changing accounting state."""
+
+    locked_job = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_row.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_job is None:
+        return
+    job_row = locked_job
+    envelope = exchange.non_admission
+    request_id = job_row.broker_request_id
+    if envelope is None or request_id is None:
+        return
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_row.id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    snapshot = job_row.route_snapshot or {}
+    audit = _exchange_audit_record(exchange)
+    try:
+        if initial_payment is None or initial_payment.sender_eth_address is None:
+            raise SettlementVerificationError("missing_sender", "payer sender was not persisted")
+        settlement_keys = snapshot["settlement_keys"]
+        if not isinstance(settlement_keys, list) or not settlement_keys:
+            raise SettlementVerificationError(
+                "missing_delegation", "route snapshot has no settlement keys"
+            )
+        verified = verify_non_admission(
+            envelope,
+            settlement_keys=settlement_keys,
+            expected=NonAdmissionExpectation(
+                protocol=PAID_JOB_PROTOCOL,
+                request_id=request_id,
+                work_id=job_row.work_id,
+                sender=sessions_service._eth_address_to_bytes(initial_payment.sender_eth_address),
+                recipient=sessions_service._eth_address_to_bytes(
+                    initial_payment.recipient_eth_address
+                ),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+                broker_eth_address=str(snapshot["eth_address"]),
+                job_issued_at=(
+                    job_row.opened_at
+                    if job_row.opened_at.tzinfo is not None
+                    else job_row.opened_at.replace(tzinfo=UTC)
+                ),
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        audit["verification"] = {
+            "status": "rejected",
+            "reason": exc.code
+            if isinstance(exc, SettlementVerificationError)
+            else "invalid_snapshot",
+        }
+        job_row.breakdown = {**(job_row.breakdown or {}), "broker_exchange": audit}
+        await db.flush()
+        return
+
+    evidence_digest = hashlib.sha256(rfc8785.dumps(envelope)).hexdigest()
+    audit["verification"] = {
+        "status": "verified",
+        "evidence_digest": evidence_digest,
+        "signing_public_key": verified.signing_public_key,
+        "observed_at": verified.observed_at.isoformat(),
+        "coverage_started_at": verified.coverage_started_at.isoformat(),
+    }
+    job_row.breakdown = {**(job_row.breakdown or {}), "broker_exchange": audit}
+    prior = list(
+        (
+            await db.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == job_row.id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    if not any(
+        isinstance(row.raw_record, dict)
+        and row.raw_record.get("evidence_digest") == evidence_digest
+        for row in prior
+    ):
+        await sessions_service.record_settlement(
+            db,
+            job_row.id,
+            event_type="non_admission_audit",
+            clock=clock,
+            outcome="NOT_ADMITTED",
+            raw_record={"evidence_digest": evidence_digest, **audit},
+        )
+    await db.flush()
+
+
+def _recovered_settlement_claims(
+    exchange: BrokerExchangeResult,
+) -> _RecoveredSettlementClaims | None:
+    settlement = exchange.settlement
+    if settlement is None:
+        return None
+    payload = settlement.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        job_id = payload["job_id"]
+        work_unit = payload["work_unit_name"]
+        actual_units = int(payload["actual_units"])
+        outcome = payload["outcome"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(job_id, str)
+        or not job_id
+        or not isinstance(work_unit, str)
+        or not work_unit
+        or actual_units < 0
+        or not isinstance(outcome, str)
+        or not outcome
+    ):
+        return None
+    return {
+        "job_id": job_id,
+        "work_unit": work_unit,
+        "actual_units": actual_units,
+        "outcome": outcome,
+    }
+
+
+def _exchange_audit_record(exchange: BrokerExchangeResult) -> dict[str, object]:
+    """Persist distinctions without treating unsigned hints as accounting."""
+
+    record: dict[str, object] = {
+        "request_id": exchange.request_id,
+        "outcome": exchange.outcome.value,
+    }
+    for field in (
+        "job_id",
+        "state",
+        "status",
+        "work_units",
+        "unit",
+        "debit_attempts",
+        "deadline",
+        "ended_at",
+        "detail",
+    ):
+        value = getattr(exchange, field)
+        if value is not None:
+            record[field] = value
+    if exchange.non_admission is not None:
+        record["non_admission"] = exchange.non_admission
+    if exchange.settlement is not None:
+        record["settlement"] = exchange.settlement
+    return record
+
+
+async def finalize_conservative_full_charge(
+    db: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    clock: Clock,
+    deadline_seconds: int,
+    evidence: dict[str, object],
+) -> bool:
+    """Atomically close one unresolved job without claiming broker usage.
+
+    Returns ``True`` only for the transaction that wins the open-to-closed
+    transition. A concurrent verified settlement and this fallback serialize
+    on the same row lock, so exactly one terminal accounting record wins.
+    """
+
+    if deadline_seconds <= 0:
+        return False
+    job_row = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        job_row is None
+        or job_row.protocol != PAID_JOB_PROTOCOL
+        or job_row.state != sessions_service.SESSION_STATE_OPEN
+    ):
+        return False
+
+    opened_at = job_row.opened_at
+    if opened_at.tzinfo is None:
+        opened_at = opened_at.replace(tzinfo=clock.now().tzinfo)
+    operational_deadline = opened_at + timedelta(seconds=deadline_seconds)
+    if clock.now() < operational_deadline:
+        return False
+
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment is None:
+        return False
+    validity_snapshot = await db.scalar(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(1)
+    )
+
+    audit = {
+        "terminal_kind": "conservative_full_charge",
+        "reason": "operational_deadline_without_valid_settlement",
+        "job_issued_at": opened_at.isoformat(),
+        "operational_deadline": operational_deadline.isoformat(),
+        "finalized_at": clock.now().isoformat(),
+        "creation_round": initial_payment.creation_round,
+        "expires_after_round": initial_payment.expires_after_round,
+        "mint_ticket_validity_period": initial_payment.ticket_validity_period,
+        "mint_ticket_validity_period_observed_at": (
+            initial_payment.ticket_validity_period_observed_at.isoformat()
+            if initial_payment.ticket_validity_period_observed_at is not None
+            else None
+        ),
+        "observed_current_round": (
+            validity_snapshot.current_round if validity_snapshot is not None else None
+        ),
+        "current_ticket_validity_period": (
+            validity_snapshot.ticket_validity_period if validity_snapshot is not None else None
+        ),
+        "current_ticket_validity_period_observed_at": (
+            validity_snapshot.ticket_validity_period_observed_at.isoformat()
+            if validity_snapshot is not None
+            and validity_snapshot.ticket_validity_period_observed_at is not None
+            else None
+        ),
+        "evidence": evidence,
+    }
+    await sessions_service.transition_state(
+        db,
+        job_id,
+        from_state=sessions_service.SESSION_STATE_OPEN,
+        to_state=sessions_service.SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+    job_row.actual_units = None
+    job_row.billed_value_wei = job_row.funded_value_wei
+    job_row.outcome = "conservative_full_charge"
+    job_row.breakdown = {**(job_row.breakdown or {}), **audit}
+    await db.flush()
+    await sessions_service.record_settlement(
+        db,
+        job_id,
+        event_type="conservative_full_charge",
+        clock=clock,
+        actual_units=None,
+        billed_value_wei=job_row.funded_value_wei,
+        outcome="conservative_full_charge",
+        raw_record=audit,
+    )
+    return True
+
+
+async def get_job_status(
+    db: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> JobStatusResponse:
+    """Return billing state while preserving evidence distinctions."""
+
+    job_row = await db.get(PaymentSession, job_id)
+    if (
+        job_row is None
+        or job_row.user_id != user_id
+        or job_row.protocol != PAID_JOB_PROTOCOL
+        or not job_row.broker_request_id
+    ):
+        raise JobNotFound
+    breakdown = job_row.breakdown or {}
+    exchange = breakdown.get("broker_exchange")
+    exchange_outcome = exchange.get("outcome") if isinstance(exchange, dict) else None
+    if not isinstance(exchange_outcome, str):
+        exchange_outcome = None
+
+    accounting_outcome: Literal[
+        "unresolved",
+        "non_admission_audit",
+        "broker_settled",
+        "conservative_full_charge",
+    ]
+    if job_row.outcome == "conservative_full_charge":
+        accounting_outcome = "conservative_full_charge"
+    elif job_row.state == sessions_service.SESSION_STATE_CLOSED:
+        accounting_outcome = "broker_settled"
+    elif (
+        exchange_outcome == BrokerExchangeOutcome.NOT_ADMITTED.value
+        and isinstance(exchange, dict)
+        and isinstance(exchange.get("verification"), dict)
+        and exchange["verification"].get("status") == "verified"
+    ):
+        accounting_outcome = "non_admission_audit"
+    else:
+        accounting_outcome = "unresolved"
+
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    validity_snapshot = await db.scalar(
+        select(PaymentDaemonDepositSnapshot)
+        .order_by(PaymentDaemonDepositSnapshot.taken_at.desc())
+        .limit(1)
+    )
+
+    return JobStatusResponse(
+        job_id=job_row.id,
+        request_id=job_row.broker_request_id,
+        work_id=job_row.work_id,
+        state=job_row.state,
+        accounting_outcome=accounting_outcome,
+        broker_exchange_outcome=exchange_outcome,
+        actual_units=job_row.actual_units,
+        billed_value_wei=(
+            int(job_row.billed_value_wei) if job_row.billed_value_wei is not None else None
+        ),
+        funded_value_wei=int(job_row.funded_value_wei),
+        creation_round=(initial_payment.creation_round if initial_payment is not None else None),
+        expires_after_round=(
+            initial_payment.expires_after_round if initial_payment is not None else None
+        ),
+        mint_ticket_validity_period=(
+            initial_payment.ticket_validity_period if initial_payment is not None else None
+        ),
+        mint_ticket_validity_period_observed_at=(
+            initial_payment.ticket_validity_period_observed_at
+            if initial_payment is not None
+            else None
+        ),
+        observed_current_round=(
+            validity_snapshot.current_round if validity_snapshot is not None else None
+        ),
+        current_ticket_validity_period=(
+            validity_snapshot.ticket_validity_period if validity_snapshot is not None else None
+        ),
+        current_ticket_validity_period_observed_at=(
+            validity_snapshot.ticket_validity_period_observed_at
+            if validity_snapshot is not None
+            else None
+        ),
+        opened_at=job_row.opened_at,
+        closed_at=job_row.closed_at,
     )

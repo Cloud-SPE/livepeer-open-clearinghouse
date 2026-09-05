@@ -44,6 +44,16 @@ payment_daemon_reserve_wei = Gauge(
     "Current on-chain reserve (wei) of the pooled signing wallet.",
     registry=REGISTRY,
 )
+payment_daemon_current_round = Gauge(
+    "livepeer_open_clearinghouse_payment_daemon_current_round",
+    "Current Livepeer protocol round reported by the pooled payer.",
+    registry=REGISTRY,
+)
+payment_daemon_ticket_validity_period = Gauge(
+    "livepeer_open_clearinghouse_payment_daemon_ticket_validity_period",
+    "Current TicketBroker ticketValidityPeriod reported by the pooled payer.",
+    registry=REGISTRY,
+)
 
 # Auto-replenish — one Counter labeled by trigger so the same metric covers
 # the proactive scheduler path and any future reactive (on-mint) path.
@@ -51,6 +61,19 @@ auto_replenish_total = Counter(
     "livepeer_open_clearinghouse_auto_replenish_total",
     "Auto-replenish events. Labeled by trigger.",
     labelnames=("trigger",),
+    registry=REGISTRY,
+)
+
+job_reconciliation_observations_total = Counter(
+    "livepeer_open_clearinghouse_job_reconciliation_observations_total",
+    "Broker request-ID lookup results observed by LOC.",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+job_terminal_accounting_total = Counter(
+    "livepeer_open_clearinghouse_job_terminal_accounting_total",
+    "Paid jobs finalized by evidence-backed settlement or conservative policy.",
+    labelnames=("terminal_kind",),
     registry=REGISTRY,
 )
 

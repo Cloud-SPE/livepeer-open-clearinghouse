@@ -4,71 +4,76 @@
 # source: livepeer/payments/v1/types.proto
 # Protobuf Python Version: 6.31.1
 """Generated protocol buffer code."""
-
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-
 _runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC, 6, 31, 1, "", "livepeer/payments/v1/types.proto"
+    _runtime_version.Domain.PUBLIC,
+    6,
+    31,
+    1,
+    '',
+    'livepeer/payments/v1/types.proto'
 )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n livepeer/payments/v1/types.proto\x12\x14livepeer.payments.v1"d\n\tPriceInfo\x12\x16\n\x0eprice_per_unit\x18\x01 \x01(\x03\x12\x17\n\x0fpixels_per_unit\x18\x02 \x01(\x03\x12\x12\n\ncapability\x18\x03 \x01(\r\x12\x12\n\nconstraint\x18\x04 \x01(\t"\xd5\x01\n\x0cTicketParams\x12\x11\n\trecipient\x18\x01 \x01(\x0c\x12\x12\n\nface_value\x18\x02 \x01(\x0c\x12\x10\n\x08win_prob\x18\x03 \x01(\x0c\x12\x1b\n\x13recipient_rand_hash\x18\x04 \x01(\x0c\x12\x0c\n\x04seed\x18\x05 \x01(\x0c\x12\x18\n\x10\x65xpiration_block\x18\x06 \x01(\x0c\x12G\n\x11\x65xpiration_params\x18\x07 \x01(\x0b\x32,.livepeer.payments.v1.TicketExpirationParams"7\n\x12TicketSenderParams\x12\x14\n\x0csender_nonce\x18\x01 \x01(\r\x12\x0b\n\x03sig\x18\x02 \x01(\x0c"S\n\x16TicketExpirationParams\x12\x16\n\x0e\x63reation_round\x18\x01 \x01(\x03\x12!\n\x19\x63reation_round_block_hash\x18\x02 \x01(\x0c"\x9e\x02\n\x07Payment\x12\x39\n\rticket_params\x18\x01 \x01(\x0b\x32".livepeer.payments.v1.TicketParams\x12\x0e\n\x06sender\x18\x02 \x01(\x0c\x12G\n\x11\x65xpiration_params\x18\x03 \x01(\x0b\x32,.livepeer.payments.v1.TicketExpirationParams\x12\x46\n\x14ticket_sender_params\x18\x04 \x03(\x0b\x32(.livepeer.payments.v1.TicketSenderParams\x12\x37\n\x0e\x65xpected_price\x18\x05 \x01(\x0b\x32\x1f.livepeer.payments.v1.PriceInfo"P\n\rOfferingPrice\x12\n\n\x02id\x18\x01 \x01(\t\x12\x33\n\nprice_info\x18\x02 \x01(\x0b\x32\x1f.livepeer.payments.v1.PriceInfo"p\n\x0f\x43\x61pabilityEntry\x12\x12\n\ncapability\x18\x01 \x01(\t\x12\x11\n\twork_unit\x18\x02 \x01(\t\x12\x36\n\tofferings\x18\x03 \x03(\x0b\x32#.livepeer.payments.v1.OfferingPrice"\x0f\n\rHealthRequest" \n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t"\x18\n\x07\x42igUInt\x12\r\n\x05value\x18\x01 \x01(\x0c"n\n\x08QuoteRef\x12\x10\n\x08quote_id\x18\x01 \x01(\t\x12\x15\n\rquote_version\x18\x02 \x01(\x04\x12\x1e\n\x16\x63onstraint_fingerprint\x18\x03 \x01(\x0c\x12\x19\n\x11route_fingerprint\x18\x04 \x01(\x0c"\xd4\x01\n\rAcceptedPrice\x12\x39\n\x12price_per_unit_wei\x18\x01 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x17\n\x0funits_per_price\x18\x02 \x01(\x04\x12\x16\n\x0ework_unit_name\x18\x03 \x01(\t\x12\x12\n\ncapability\x18\x04 \x01(\t\x12\x10\n\x08offering\x18\x05 \x01(\t\x12\x31\n\tquote_ref\x18\x06 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef"\x92\x01\n\rFundingIntent\x12\x17\n\x0f\x65stimated_units\x18\x01 \x01(\x04\x12\x37\n\x10\x66unded_value_wei\x18\x02 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x17\n\x0fmax_total_units\x18\x03 \x01(\x04\x12\x16\n\x0etop_up_allowed\x18\x04 \x01(\x08"\xf0\x04\n\x10SettlementRecord\x12:\n\x12\x61\x63\x63\x65pted_quote_ref\x18\x01 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\x12\x16\n\x0ework_unit_name\x18\x02 \x01(\t\x12\x17\n\x0f\x65stimated_units\x18\x03 \x01(\x04\x12\x14\n\x0c\x61\x63tual_units\x18\x04 \x01(\x04\x12\x14\n\x0c\x62illed_units\x18\x05 \x01(\x04\x12\x37\n\x10\x66unded_value_wei\x18\x06 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x37\n\x10\x62illed_value_wei\x18\x07 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12I\n\x07outcome\x18\x08 \x01(\x0e\x32\x38.livepeer.payments.v1.SettlementRecord.SettlementOutcome\x12H\n\tbreakdown\x18\t \x03(\x0b\x32\x35.livepeer.payments.v1.SettlementRecord.BreakdownEntry\x1a\x30\n\x0e\x42reakdownEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01"\x89\x01\n\x11SettlementOutcome\x12"\n\x1eSETTLEMENT_OUTCOME_UNSPECIFIED\x10\x00\x12\t\n\x05\x45XACT\x10\x01\x12\x0f\n\x0bUNDERFUNDED\x10\x02\x12\x0e\n\nOVERFUNDED\x10\x03\x12\x15\n\x11STOPPED_AT_BUDGET\x10\x04\x12\r\n\tTOPPED_UP\x10\x05"\x96\x01\n\x0cTicketStatus\x12\x14\n\x0csender_nonce\x18\x01 \x01(\r\x12\x46\n\x10rejection_reason\x18\x02 \x01(\x0e\x32,.livepeer.payments.v1.PaymentRejectionReason\x12\x13\n\x0b\x63redited_ev\x18\x03 \x01(\x0c\x12\x13\n\x0bwas_winning\x18\x04 \x01(\x08"q\n\x11PendingRedemption\x12\x13\n\x0bticket_hash\x18\x01 \x01(\x0c\x12\x0e\n\x06sender\x18\x02 \x01(\x0c\x12\x12\n\nface_value\x18\x03 \x01(\x0c\x12\x11\n\tqueued_at\x18\x04 \x01(\x03\x12\x10\n\x08\x61ttempts\x18\x05 \x01(\x05*\xa6\x02\n\x16PaymentRejectionReason\x12(\n$PAYMENT_REJECTION_REASON_UNSPECIFIED\x10\x00\x12\x33\n/PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND\x10\x01\x12)\n%PAYMENT_REJECTION_REASON_NONCE_REPLAY\x10\x02\x12.\n*PAYMENT_REJECTION_REASON_NONCE_CAP_REACHED\x10\x03\x12.\n*PAYMENT_REJECTION_REASON_INVALID_SIGNATURE\x10\x04\x12"\n\x1ePAYMENT_REJECTION_REASON_OTHER\x10\x05\x42rZpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1b\x06proto3'
-)
+
+
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n livepeer/payments/v1/types.proto\x12\x14livepeer.payments.v1\"d\n\tPriceInfo\x12\x16\n\x0eprice_per_unit\x18\x01 \x01(\x03\x12\x17\n\x0fpixels_per_unit\x18\x02 \x01(\x03\x12\x12\n\ncapability\x18\x03 \x01(\r\x12\x12\n\nconstraint\x18\x04 \x01(\t\"\xd5\x01\n\x0cTicketParams\x12\x11\n\trecipient\x18\x01 \x01(\x0c\x12\x12\n\nface_value\x18\x02 \x01(\x0c\x12\x10\n\x08win_prob\x18\x03 \x01(\x0c\x12\x1b\n\x13recipient_rand_hash\x18\x04 \x01(\x0c\x12\x0c\n\x04seed\x18\x05 \x01(\x0c\x12\x18\n\x10\x65xpiration_block\x18\x06 \x01(\x0c\x12G\n\x11\x65xpiration_params\x18\x07 \x01(\x0b\x32,.livepeer.payments.v1.TicketExpirationParams\"7\n\x12TicketSenderParams\x12\x14\n\x0csender_nonce\x18\x01 \x01(\r\x12\x0b\n\x03sig\x18\x02 \x01(\x0c\"S\n\x16TicketExpirationParams\x12\x16\n\x0e\x63reation_round\x18\x01 \x01(\x03\x12!\n\x19\x63reation_round_block_hash\x18\x02 \x01(\x0c\"\x9e\x02\n\x07Payment\x12\x39\n\rticket_params\x18\x01 \x01(\x0b\x32\".livepeer.payments.v1.TicketParams\x12\x0e\n\x06sender\x18\x02 \x01(\x0c\x12G\n\x11\x65xpiration_params\x18\x03 \x01(\x0b\x32,.livepeer.payments.v1.TicketExpirationParams\x12\x46\n\x14ticket_sender_params\x18\x04 \x03(\x0b\x32(.livepeer.payments.v1.TicketSenderParams\x12\x37\n\x0e\x65xpected_price\x18\x05 \x01(\x0b\x32\x1f.livepeer.payments.v1.PriceInfo\"P\n\rOfferingPrice\x12\n\n\x02id\x18\x01 \x01(\t\x12\x33\n\nprice_info\x18\x02 \x01(\x0b\x32\x1f.livepeer.payments.v1.PriceInfo\"p\n\x0f\x43\x61pabilityEntry\x12\x12\n\ncapability\x18\x01 \x01(\t\x12\x11\n\twork_unit\x18\x02 \x01(\t\x12\x36\n\tofferings\x18\x03 \x03(\x0b\x32#.livepeer.payments.v1.OfferingPrice\"\x0f\n\rHealthRequest\" \n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\"\x18\n\x07\x42igUInt\x12\r\n\x05value\x18\x01 \x01(\x0c\"n\n\x08QuoteRef\x12\x10\n\x08quote_id\x18\x01 \x01(\t\x12\x15\n\rquote_version\x18\x02 \x01(\x04\x12\x1e\n\x16\x63onstraint_fingerprint\x18\x03 \x01(\x0c\x12\x19\n\x11route_fingerprint\x18\x04 \x01(\x0c\"\xd4\x01\n\rAcceptedPrice\x12\x39\n\x12price_per_unit_wei\x18\x01 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x17\n\x0funits_per_price\x18\x02 \x01(\x04\x12\x16\n\x0ework_unit_name\x18\x03 \x01(\t\x12\x12\n\ncapability\x18\x04 \x01(\t\x12\x10\n\x08offering\x18\x05 \x01(\t\x12\x31\n\tquote_ref\x18\x06 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\"\x92\x01\n\rFundingIntent\x12\x17\n\x0f\x65stimated_units\x18\x01 \x01(\x04\x12\x37\n\x10\x66unded_value_wei\x18\x02 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x17\n\x0fmax_total_units\x18\x03 \x01(\x04\x12\x16\n\x0etop_up_allowed\x18\x04 \x01(\x08\"\x9b\t\n\x10SettlementRecord\x12:\n\x12\x61\x63\x63\x65pted_quote_ref\x18\x01 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\x12\x16\n\x0ework_unit_name\x18\x02 \x01(\t\x12\x17\n\x0f\x65stimated_units\x18\x03 \x01(\x04\x12\x14\n\x0c\x61\x63tual_units\x18\x04 \x01(\x04\x12\x14\n\x0c\x62illed_units\x18\x05 \x01(\x04\x12\x37\n\x10\x66unded_value_wei\x18\x06 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x37\n\x10\x62illed_value_wei\x18\x07 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12I\n\x07outcome\x18\x08 \x01(\x0e\x32\x38.livepeer.payments.v1.SettlementRecord.SettlementOutcome\x12H\n\tbreakdown\x18\t \x03(\x0b\x32\x35.livepeer.payments.v1.SettlementRecord.BreakdownEntry\x12\x12\n\nsession_id\x18\n \x01(\t\x12\x0f\n\x07work_id\x18\x0b \x01(\t\x12\x1b\n\x13predecessor_work_id\x18\x0c \x01(\t\x12\x1b\n\x13rotation_generation\x18\r \x01(\r\x12\x15\n\rclaimed_units\x18\x0e \x01(\x04\x12\x15\n\rdebited_units\x18\x0f \x01(\x04\x12 \n\x18generation_debited_units\x18\x10 \x01(\x04\x12\x42\n\x1bgeneration_billed_value_wei\x18\x11 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x42\n\x1bgeneration_funded_value_wei\x18\x12 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x31\n\namount_wei\x18\x13 \x01(\x0b\x32\x1d.livepeer.payments.v1.BigUInt\x12\x11\n\tper_units\x18\x14 \x01(\x04\x12\x16\n\x0esettlement_seq\x18\x15 \x01(\x04\x12\x11\n\tissued_at\x18\x16 \x01(\t\x12\r\n\x05state\x18\x17 \x01(\t\x12\x0e\n\x06job_id\x18\x18 \x01(\t\x12 \n\x18payment_cumulative_units\x18\x19 \x01(\x04\x12\x1a\n\x12gateway_session_id\x18\x1a \x01(\t\x12\x12\n\nrequest_id\x18\x1b \x01(\t\x1a\x30\n\x0e\x42reakdownEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x9b\x01\n\x11SettlementOutcome\x12\"\n\x1eSETTLEMENT_OUTCOME_UNSPECIFIED\x10\x00\x12\t\n\x05\x45XACT\x10\x01\x12\x0f\n\x0bUNDERFUNDED\x10\x02\x12\x0e\n\nOVERFUNDED\x10\x03\x12\x15\n\x11STOPPED_AT_BUDGET\x10\x04\x12\r\n\tTOPPED_UP\x10\x05\x12\x10\n\x0c\x44\x45\x42IT_FAILED\x10\x06\"\xf1\x02\n\x12NonAdmissionRecord\x12\x10\n\x08protocol\x18\x01 \x01(\t\x12\x12\n\nrequest_id\x18\x02 \x01(\t\x12\x0f\n\x07work_id\x18\x03 \x01(\t\x12\x0e\n\x06sender\x18\x04 \x01(\x0c\x12\x11\n\trecipient\x18\x05 \x01(\x0c\x12:\n\x12\x61\x63\x63\x65pted_quote_ref\x18\x06 \x01(\x0b\x32\x1e.livepeer.payments.v1.QuoteRef\x12\x1a\n\x12\x62roker_eth_address\x18\x07 \x01(\t\x12\x13\n\x0bobserved_at\x18\x08 \x01(\t\x12\x1b\n\x13\x63overage_started_at\x18\t \x01(\t\x12\x41\n\x07outcome\x18\n \x01(\x0e\x32\x30.livepeer.payments.v1.NonAdmissionRecord.Outcome\"4\n\x07Outcome\x12\x17\n\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x10\n\x0cNOT_ADMITTED\x10\x01\"\x96\x01\n\x0cTicketStatus\x12\x14\n\x0csender_nonce\x18\x01 \x01(\r\x12\x46\n\x10rejection_reason\x18\x02 \x01(\x0e\x32,.livepeer.payments.v1.PaymentRejectionReason\x12\x13\n\x0b\x63redited_ev\x18\x03 \x01(\x0c\x12\x13\n\x0bwas_winning\x18\x04 \x01(\x08\"q\n\x11PendingRedemption\x12\x13\n\x0bticket_hash\x18\x01 \x01(\x0c\x12\x0e\n\x06sender\x18\x02 \x01(\x0c\x12\x12\n\nface_value\x18\x03 \x01(\x0c\x12\x11\n\tqueued_at\x18\x04 \x01(\x03\x12\x10\n\x08\x61ttempts\x18\x05 \x01(\x05*\xa6\x02\n\x16PaymentRejectionReason\x12(\n$PAYMENT_REJECTION_REASON_UNSPECIFIED\x10\x00\x12\x33\n/PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND\x10\x01\x12)\n%PAYMENT_REJECTION_REASON_NONCE_REPLAY\x10\x02\x12.\n*PAYMENT_REJECTION_REASON_NONCE_CAP_REACHED\x10\x03\x12.\n*PAYMENT_REJECTION_REASON_INVALID_SIGNATURE\x10\x04\x12\"\n\x1ePAYMENT_REJECTION_REASON_OTHER\x10\x05\x42rZpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "livepeer.payments.v1.types_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'livepeer.payments.v1.types_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-    _globals["DESCRIPTOR"]._loaded_options = None
-    _globals[
-        "DESCRIPTOR"
-    ]._serialized_options = b"Zpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1"
-    _globals["_SETTLEMENTRECORD_BREAKDOWNENTRY"]._loaded_options = None
-    _globals["_SETTLEMENTRECORD_BREAKDOWNENTRY"]._serialized_options = b"8\001"
-    _globals["_PAYMENTREJECTIONREASON"]._serialized_start = 2452
-    _globals["_PAYMENTREJECTIONREASON"]._serialized_end = 2746
-    _globals["_PRICEINFO"]._serialized_start = 58
-    _globals["_PRICEINFO"]._serialized_end = 158
-    _globals["_TICKETPARAMS"]._serialized_start = 161
-    _globals["_TICKETPARAMS"]._serialized_end = 374
-    _globals["_TICKETSENDERPARAMS"]._serialized_start = 376
-    _globals["_TICKETSENDERPARAMS"]._serialized_end = 431
-    _globals["_TICKETEXPIRATIONPARAMS"]._serialized_start = 433
-    _globals["_TICKETEXPIRATIONPARAMS"]._serialized_end = 516
-    _globals["_PAYMENT"]._serialized_start = 519
-    _globals["_PAYMENT"]._serialized_end = 805
-    _globals["_OFFERINGPRICE"]._serialized_start = 807
-    _globals["_OFFERINGPRICE"]._serialized_end = 887
-    _globals["_CAPABILITYENTRY"]._serialized_start = 889
-    _globals["_CAPABILITYENTRY"]._serialized_end = 1001
-    _globals["_HEALTHREQUEST"]._serialized_start = 1003
-    _globals["_HEALTHREQUEST"]._serialized_end = 1018
-    _globals["_HEALTHRESPONSE"]._serialized_start = 1020
-    _globals["_HEALTHRESPONSE"]._serialized_end = 1052
-    _globals["_BIGUINT"]._serialized_start = 1054
-    _globals["_BIGUINT"]._serialized_end = 1078
-    _globals["_QUOTEREF"]._serialized_start = 1080
-    _globals["_QUOTEREF"]._serialized_end = 1190
-    _globals["_ACCEPTEDPRICE"]._serialized_start = 1193
-    _globals["_ACCEPTEDPRICE"]._serialized_end = 1405
-    _globals["_FUNDINGINTENT"]._serialized_start = 1408
-    _globals["_FUNDINGINTENT"]._serialized_end = 1554
-    _globals["_SETTLEMENTRECORD"]._serialized_start = 1557
-    _globals["_SETTLEMENTRECORD"]._serialized_end = 2181
-    _globals["_SETTLEMENTRECORD_BREAKDOWNENTRY"]._serialized_start = 1993
-    _globals["_SETTLEMENTRECORD_BREAKDOWNENTRY"]._serialized_end = 2041
-    _globals["_SETTLEMENTRECORD_SETTLEMENTOUTCOME"]._serialized_start = 2044
-    _globals["_SETTLEMENTRECORD_SETTLEMENTOUTCOME"]._serialized_end = 2181
-    _globals["_TICKETSTATUS"]._serialized_start = 2184
-    _globals["_TICKETSTATUS"]._serialized_end = 2334
-    _globals["_PENDINGREDEMPTION"]._serialized_start = 2336
-    _globals["_PENDINGREDEMPTION"]._serialized_end = 2449
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'Zpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1'
+  _globals['_SETTLEMENTRECORD_BREAKDOWNENTRY']._loaded_options = None
+  _globals['_SETTLEMENTRECORD_BREAKDOWNENTRY']._serialized_options = b'8\001'
+  _globals['_PAYMENTREJECTIONREASON']._serialized_start=3379
+  _globals['_PAYMENTREJECTIONREASON']._serialized_end=3673
+  _globals['_PRICEINFO']._serialized_start=58
+  _globals['_PRICEINFO']._serialized_end=158
+  _globals['_TICKETPARAMS']._serialized_start=161
+  _globals['_TICKETPARAMS']._serialized_end=374
+  _globals['_TICKETSENDERPARAMS']._serialized_start=376
+  _globals['_TICKETSENDERPARAMS']._serialized_end=431
+  _globals['_TICKETEXPIRATIONPARAMS']._serialized_start=433
+  _globals['_TICKETEXPIRATIONPARAMS']._serialized_end=516
+  _globals['_PAYMENT']._serialized_start=519
+  _globals['_PAYMENT']._serialized_end=805
+  _globals['_OFFERINGPRICE']._serialized_start=807
+  _globals['_OFFERINGPRICE']._serialized_end=887
+  _globals['_CAPABILITYENTRY']._serialized_start=889
+  _globals['_CAPABILITYENTRY']._serialized_end=1001
+  _globals['_HEALTHREQUEST']._serialized_start=1003
+  _globals['_HEALTHREQUEST']._serialized_end=1018
+  _globals['_HEALTHRESPONSE']._serialized_start=1020
+  _globals['_HEALTHRESPONSE']._serialized_end=1052
+  _globals['_BIGUINT']._serialized_start=1054
+  _globals['_BIGUINT']._serialized_end=1078
+  _globals['_QUOTEREF']._serialized_start=1080
+  _globals['_QUOTEREF']._serialized_end=1190
+  _globals['_ACCEPTEDPRICE']._serialized_start=1193
+  _globals['_ACCEPTEDPRICE']._serialized_end=1405
+  _globals['_FUNDINGINTENT']._serialized_start=1408
+  _globals['_FUNDINGINTENT']._serialized_end=1554
+  _globals['_SETTLEMENTRECORD']._serialized_start=1557
+  _globals['_SETTLEMENTRECORD']._serialized_end=2736
+  _globals['_SETTLEMENTRECORD_BREAKDOWNENTRY']._serialized_start=2530
+  _globals['_SETTLEMENTRECORD_BREAKDOWNENTRY']._serialized_end=2578
+  _globals['_SETTLEMENTRECORD_SETTLEMENTOUTCOME']._serialized_start=2581
+  _globals['_SETTLEMENTRECORD_SETTLEMENTOUTCOME']._serialized_end=2736
+  _globals['_NONADMISSIONRECORD']._serialized_start=2739
+  _globals['_NONADMISSIONRECORD']._serialized_end=3108
+  _globals['_NONADMISSIONRECORD_OUTCOME']._serialized_start=3056
+  _globals['_NONADMISSIONRECORD_OUTCOME']._serialized_end=3108
+  _globals['_TICKETSTATUS']._serialized_start=3111
+  _globals['_TICKETSTATUS']._serialized_end=3261
+  _globals['_PENDINGREDEMPTION']._serialized_start=3263
+  _globals['_PENDINGREDEMPTION']._serialized_end=3376
 # @@protoc_insertion_point(module_scope)

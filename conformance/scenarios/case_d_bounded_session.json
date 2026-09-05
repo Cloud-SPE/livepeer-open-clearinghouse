@@ -1,42 +1,34 @@
 {
-  "id": "case_d_bounded_session",
-  "description": "Case (d-bounded): ws-realtime@v0 — bounded session. SDK must NOT attempt to refill on Livepeer-Balance-Low; it should surface a winddown warning when cap_status reports the session cap is imminent.",
+  "id": "paid_session_v1_bounded",
+  "description": "paid-session/v1 bounded offering declares no refill path",
   "loc": {
     "responses": {
       "POST /v1/sessions": {
         "status": 200,
         "body": {
           "session_id": "bbbbbbbb-5555-6666-7777-888888888888",
+          "request_id": "loc-bounded-open",
           "work_id": "wid",
           "broker_url": "{BROKER_URL}",
-          "mode": "ws-realtime@v0",
+          "protocol": "paid-session/v1",
+          "session": {
+            "descriptor_schema": "livepeer-session-test/v1",
+            "attachment": "external",
+            "metering": "runner-reported",
+            "refill": "bounded"
+          },
           "payment_envelope": "BASE64ENV",
           "expected_value_wei": 100000,
           "funded_value_wei": 100000,
           "refill_endpoint": "/v1/sessions/bbbbbbbb-5555-6666-7777-888888888888/refill",
           "close_endpoint": "/v1/sessions/bbbbbbbb-5555-6666-7777-888888888888/close",
-          "opened_at": "2026-05-25T12:00:00Z"
+          "opened_at": "2026-08-21T12:00:00Z"
         }
       },
       "POST /v1/sessions/{session_id}/refill": {
         "status": 400,
         "body": {
-          "error": {
-            "code": "refill_not_supported_for_mode",
-            "message": "ws-realtime@v0 is a bounded session — refills are not permitted"
-          }
-        }
-      },
-      "POST /v1/sessions/{session_id}/close": {
-        "status": 200,
-        "body": {
-          "session_id": "bbbbbbbb-5555-6666-7777-888888888888",
-          "work_id": "wid",
-          "actual_units": 30,
-          "billed_value_wei": 30000,
-          "refund_wei": 70000,
-          "outcome": "OK",
-          "closed_at": "2026-05-25T12:15:00Z"
+          "error": { "code": "refill_not_supported", "message": "bounded" }
         }
       },
       "POST /v1/telemetry": {
@@ -45,15 +37,5 @@
       }
     }
   },
-  "broker": {
-    "responses": {
-      "POST /v1/cap": {
-        "status": 200,
-        "body": {
-          "session_id": "bbbbbbbb-5555-6666-7777-888888888888",
-          "control": {}
-        }
-      }
-    }
-  }
+  "broker": { "responses": {} }
 }

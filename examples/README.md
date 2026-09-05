@@ -3,11 +3,11 @@
 Small reference programs that consume the SDKs in [`../sdks/<lang>/`](../sdks/).
 Each scenario is implemented in all four languages.
 
-| Scenario | What it shows |
-|---|---|
-| `one-shot-job/` | Submit a single job via the handoff-mode SDK and read the final settlement. |
-| `streaming-ws/` | Open a long-lived session with WS-topup (`session-control-plus-media@v0`), observe a refill callback, and close. |
-| `streaming-http/` | Open a long-lived session with HTTP-topup (`live-session-remote-runner@v0`), manually trigger `onBalanceLow`, and close. |
+| Scenario          | What it shows                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| `one-shot-job/`   | Submit a single job via the handoff-mode SDK and read the final settlement.                     |
+| `streaming-ws/`   | Open `paid-session/v1` with an optional events WebSocket, observe a refill callback, and close. |
+| `streaming-http/` | Open an extensible `paid-session/v1`, pass a normative low balance to the runner, and close.    |
 
 Each `<scenario>/` directory has its own per-language manifest
 (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) wired to

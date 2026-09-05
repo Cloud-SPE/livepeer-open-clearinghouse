@@ -1,14 +1,16 @@
 //! Tests for the handoff-mode Rust SDK. Uses wiremock to stub both
 //! the LOC gateway and the broker.
 
+use base64::Engine as _;
 use livepeer_open_clearinghouse_sdk::{
     Client, ClientOptions, ErrorKind, JobBody, OpenSessionInput, SubmitJobInput,
 };
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const API_KEY: &str = "pymth_live_test";
+const ENCODED_SETTLEMENT: &str = "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0=";
 
 fn loc_client(loc: &MockServer) -> Client {
     Client::new(ClientOptions::new(loc.uri(), API_KEY)).unwrap()
@@ -17,9 +19,12 @@ fn loc_client(loc: &MockServer) -> Client {
 fn job_open_payload(broker_url: &str) -> serde_json::Value {
     json!({
         "job_id": "00000000-0000-0000-0000-000000000abc",
+        "request_id": "broker-request-1",
         "work_id": "wid-abc",
         "broker_url": broker_url,
-        "mode": "http-reqresp@v0",
+        "protocol": "paid-job/v1",
+        "transport": "unary",
+        "work_unit": "token",
         "payment_envelope": "BASE64ENV",
         "expected_value_wei": 100_000u64,
         "funded_value_wei": 100_000u64,
@@ -67,24 +72,36 @@ async fn submit_job_happy_path() {
 
     Mock::given(method("POST"))
         .and(path("/v1/jobs"))
-        .and(header("Livepeer-Open-Clearinghouse-SDK", "rust/1.3.3/dev"))
+        .and(header("Livepeer-Open-Clearinghouse-SDK", "rust/2.0.0/dev"))
+        .and(header("Idempotency-Key", "loc-id-1"))
         .respond_with(ResponseTemplate::new(201).set_body_json(job_open_payload(&broker_uri)))
         .mount(&loc)
         .await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/cap"))
+        .and(path("/v1/job"))
         .and(header("Livepeer-Payment", "BASE64ENV"))
+        .and(header("Livepeer-Protocol", "paid-job/v1"))
+        .and(header("Livepeer-Request-Id", "broker-request-1"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(json!({ "reply": "ok" }))
-                .insert_header("Livepeer-Work-Units", "42"),
+                .insert_header("Livepeer-Work-Units", "42")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
         )
         .mount(&broker)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .and(body_json(json!({
+            "actual_units": 42,
+            "broker_job_id": "broker-job-1",
+            "work_unit": "token",
+            "settlement": {"payload": {}, "signature": {}}
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(42)))
         .mount(&loc)
         .await;
@@ -97,8 +114,9 @@ async fn submit_job_happy_path() {
             estimated_units: 80,
             max_total_units: Some(100),
             body: JobBody::Json(json!({"prompt": "hello"})),
-            request_id: None,
-            spec_version: None,
+            request_id: Some("loc-id-1".to_string()),
+            transport: None,
+            content_type: None,
         })
         .await
         .expect("submit_job");
@@ -109,7 +127,228 @@ async fn submit_job_happy_path() {
     assert_eq!(result.refund_wei, 58_000);
     assert_eq!(result.outcome, "OVERFUNDED");
     assert_eq!(result.body, Some(json!({"reply": "ok"})));
+    assert_eq!(result.protocol, "paid-job/v1");
+    assert_eq!(result.transport, "unary");
+    assert_eq!(result.work_unit, "token");
+    assert_eq!(result.broker_job_id, "broker-job-1");
+    assert_eq!(result.request_id, "broker-request-1");
     assert!(result.cap_status.session_pct_used > 0.4);
+}
+
+#[tokio::test]
+async fn submit_job_stream_queries_terminal_claim_and_settlement() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let mut open = job_open_payload(&broker.uri());
+    open["transport"] = json!("stream");
+    let settlement = json!({
+        "payload": {"work_id": "wid-abc", "debited_units": "7"},
+        "signature": {
+            "algorithm": "secp256k1",
+            "canonicalization": "jcs",
+            "value": "0xsigned"
+        }
+    });
+    let encoded =
+        base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&settlement).unwrap());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(open))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .and(header("Accept", "text/event-stream"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("data: hello\n\n")
+                .insert_header("Content-Type", "text/event-stream")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Work-Unit", "token"),
+        )
+        .mount(&broker)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/settlement/broker-job-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"job_id": "broker-job-1", "state": "terminal"}))
+                .insert_header("Livepeer-Work-Units", "7")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", encoded.as_str()),
+        )
+        .mount(&broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .and(body_json(json!({
+            "actual_units": 7,
+            "broker_job_id": "broker-job-1",
+            "work_unit": "token",
+            "settlement": settlement
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(7)))
+        .mount(&loc)
+        .await;
+
+    let result = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "gpt-oss-20b",
+            estimated_units: 10,
+            max_total_units: None,
+            body: JobBody::Json(json!({"prompt": "hello"})),
+            request_id: None,
+            transport: Some("stream"),
+            content_type: None,
+        })
+        .await
+        .expect("stream submit");
+
+    assert_eq!(result.body_text, "data: hello\n\n");
+    assert_eq!(result.actual_units, 7);
+    assert_eq!(result.transport, "stream");
+    assert_eq!(result.broker_job_id, "broker-job-1");
+}
+
+#[tokio::test]
+async fn submit_job_multipart_selects_declared_transport() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let mut open = job_open_payload(&broker.uri());
+    open["transport"] = json!("multipart");
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(open))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .and(header(
+            "Content-Type",
+            "multipart/form-data; boundary=boundary",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true}))
+                .insert_header("Livepeer-Work-Units", "2")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .mount(&broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(2)))
+        .mount(&loc)
+        .await;
+    let result = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "x",
+            estimated_units: 2,
+            max_total_units: None,
+            body: JobBody::Bytes(b"--boundary--"),
+            request_id: None,
+            transport: Some("multipart"),
+            content_type: Some("multipart/form-data; boundary=boundary"),
+        })
+        .await
+        .expect("multipart submit");
+    assert_eq!(result.transport, "multipart");
+}
+
+#[tokio::test]
+async fn submit_job_rejects_work_unit_drift() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(job_open_payload(&broker.uri())))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({}))
+                .insert_header("Livepeer-Work-Units", "3")
+                .insert_header("Livepeer-Work-Unit", "frames")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .mount(&broker)
+        .await;
+    let err = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "x",
+            estimated_units: 3,
+            max_total_units: None,
+            body: JobBody::Json(json!({})),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect_err("unit drift must fail");
+    assert!(matches!(
+        err,
+        livepeer_open_clearinghouse_sdk::OpenClearinghouseError::BrokerProtocol { ref code, .. }
+            if code == "work_unit_mismatch"
+    ));
+}
+
+#[tokio::test]
+async fn submit_job_terminal_error_settles_zero() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(job_open_payload(&broker.uri())))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"error": "rate_limited"}))
+                .insert_header("Livepeer-Work-Units", "0")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .mount(&broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .and(body_json(json!({
+            "actual_units": 0,
+            "broker_job_id": "broker-job-1",
+            "work_unit": "token",
+            "settlement": {"payload": {}, "signature": {}}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(0)))
+        .mount(&loc)
+        .await;
+    let result = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "x",
+            offering: "x",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({})),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("terminal error result");
+    assert_eq!(result.status, 429);
+    assert_eq!(result.actual_units, 0);
 }
 
 #[tokio::test]
@@ -136,7 +375,8 @@ async fn submit_job_maps_insufficient_credit() {
             max_total_units: None,
             body: JobBody::Json(json!({})),
             request_id: None,
-            spec_version: None,
+            transport: None,
+            content_type: None,
         })
         .await
         .expect_err("expected error");
@@ -153,7 +393,12 @@ async fn open_session_returns_handle() {
             "session_id": sid,
             "work_id": "wid-sess",
             "broker_url": "https://broker.example/livepeer",
-            "mode": "session-control-plus-media@v0",
+            "request_id": "req-session",
+            "protocol": "paid-session/v1",
+            "session": {
+                "descriptor_schema": "livepeer-session-test/v1",
+                "attachment": "external", "metering": "runner-reported", "refill": "extensible"
+            },
             "payment_envelope": "BASE64SESS",
             "expected_value_wei": 100_000u64,
             "funded_value_wei": 200_000u64,
@@ -169,12 +414,15 @@ async fn open_session_returns_handle() {
         .open_session(OpenSessionInput {
             capability: "livepeer:vtuber-session",
             offering: "vtuber-1080p30",
+            descriptor_schema: "livepeer-session-test/v1",
+            session_params: json!({}),
             estimated_runway_units: 100,
             max_total_units: 200,
+            request_id: None,
         })
         .await
         .expect("open_session");
-    assert_eq!(handle.mode, "session-control-plus-media@v0");
+    assert_eq!(handle.protocol, "paid-session/v1");
     assert_eq!(handle.funded_value_wei, 200_000);
 }
 
@@ -198,7 +446,12 @@ async fn close_session_threads_outcome() {
 
     let client = loc_client(&loc);
     let result = client
-        .close_session(sid, 100, Some("EXACT"), None)
+        .close_session(
+            sid,
+            100,
+            Some("EXACT"),
+            json!({"payload": {}, "signature": {}}),
+        )
         .await
         .expect("close_session");
     assert_eq!(

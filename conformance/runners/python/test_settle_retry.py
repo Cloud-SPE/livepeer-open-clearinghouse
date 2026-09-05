@@ -13,10 +13,9 @@ import pytest
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", ["settle_retry"], indirect=True)
 async def test_settle_retries_on_5xx(sdk_client, call_logs) -> None:
-    # The job will complete because submit_job returns whatever the
-    # settle response says (it doesn't raise on a final 503; LOC
-    # janitor will reconcile via daemon GetSessionDebits). We just
-    # care that the SDK retried before giving up.
+    # The terminal settlement is retained by the broker, so LOC can recover
+    # independently if every SDK-to-LOC settle attempt fails. We only assert
+    # the bounded retry count here.
     try:
         await sdk_client.submit_job(
             capability="cap.example",

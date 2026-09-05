@@ -94,7 +94,9 @@ async def test_payment_session_round_trip(session: AsyncSession) -> None:
         work_id="abc123",
         capability="openai:realtime",
         offering="openai-resale",
-        mode="ws-realtime@v0",
+        protocol="paid-session/v1",
+        broker_request_id="request-1",
+        route_snapshot={"protocol": "paid-session/v1", "axes": {"refill": "bounded"}},
         state="open",
         estimated_units=3600,
         max_total_units=7200,
@@ -107,11 +109,17 @@ async def test_payment_session_round_trip(session: AsyncSession) -> None:
 
     fetched = (await session.scalars(select(PaymentSession))).one()
     assert fetched.work_id == "abc123"
-    assert fetched.mode == "ws-realtime@v0"
+    assert fetched.protocol == "paid-session/v1"
+    assert fetched.broker_request_id == "request-1"
+    assert fetched.route_snapshot == {
+        "protocol": "paid-session/v1",
+        "axes": {"refill": "bounded"},
+    }
     assert fetched.state == "open"
     assert fetched.billed_value_wei is None
     assert fetched.outcome is None
-    assert fetched.last_debit_seq == 0
+    assert fetched.refill_seq == 0
+    assert fetched.rotation_generation == 0
     assert fetched.sdk_identity == "python/0.4.0/abc1234"
 
 
@@ -128,7 +136,7 @@ async def test_payment_settlement_cascades_on_session_delete(
         work_id="w",
         capability="c",
         offering="o",
-        mode="session-control-plus-media@v0",
+        protocol="paid-session/v1",
         state="closed",
         estimated_units=1,
         max_total_units=1,
@@ -171,7 +179,7 @@ async def test_payment_session_id_fk_round_trip(session: AsyncSession) -> None:
         work_id="w",
         capability="c",
         offering="o",
-        mode="ws-realtime@v0",
+        protocol="paid-session/v1",
         state="open",
         estimated_units=1,
         max_total_units=1,

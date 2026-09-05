@@ -95,6 +95,9 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Livepeer-Work-Units", "42")
+		w.Header().Set("Livepeer-Work-Unit", "token")
+		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{"reply":"ok"}`))
 	}))
 	defer broker.Close()
@@ -103,12 +106,13 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_id": "00000000-0000-0000-0000-00000000abcd",
-			"work_id": "wid", "broker_url": broker.URL, "mode": "http-reqresp@v0",
-			"payment_envelope": "ENV",
+			"job_id":     "00000000-0000-0000-0000-00000000abcd",
+			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
+			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
+			"payment_envelope":   "ENV",
 			"expected_value_wei": 100000, "funded_value_wei": 100000,
 			"settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-00000000abcd/settle",
-			"opened_at": "2026-05-25T00:00:00Z",
+			"opened_at":       "2026-05-25T00:00:00Z",
 		})
 	})
 	mux.HandleFunc("/v1/jobs/00000000-0000-0000-0000-00000000abcd/settle", func(w http.ResponseWriter, _ *http.Request) {
@@ -152,6 +156,9 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Livepeer-Work-Units", "5")
+		w.Header().Set("Livepeer-Work-Unit", "token")
+		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer broker.Close()
@@ -160,12 +167,13 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_id": "11111111-1111-1111-1111-111111111111",
-			"work_id": "wid", "broker_url": broker.URL, "mode": "http-reqresp@v0",
-			"payment_envelope": "ENV",
+			"job_id":     "11111111-1111-1111-1111-111111111111",
+			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
+			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
+			"payment_envelope":   "ENV",
 			"expected_value_wei": 100000, "funded_value_wei": 100000,
 			"settle_endpoint": "/v1/jobs/11111111-1111-1111-1111-111111111111/settle",
-			"opened_at": "2026-05-25T00:00:00Z",
+			"opened_at":       "2026-05-25T00:00:00Z",
 		})
 	})
 	mux.HandleFunc("/v1/jobs/11111111-1111-1111-1111-111111111111/settle", func(w http.ResponseWriter, _ *http.Request) {
@@ -210,38 +218,6 @@ func TestParseErrorHandlesDetailString(t *testing.T) {
 	if locErr.Code != "not_found" {
 		t.Fatalf("code: %q", locErr.Code)
 	}
-}
-
-func TestSessionRunnerOpenLiveSessionHttpTopup(t *testing.T) {
-	// Drive openLiveSession by using a live-session-* mode. The mock
-	// broker returns {control: {topup_url: ...}} per the LOC
-	// SessionHandle contract.
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"control": map[string]any{"topup_url": "http://broker.test/topup"},
-		})
-	}))
-	defer broker.Close()
-	// LOC side — no telemetry/refill needed; just need a Client.
-	loca := httptest.NewServer(http.NewServeMux())
-	defer loca.Close()
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: "pymth_live_t"})
-	handle := &loc.SessionHandle{
-		SessionID:       "44444444-4444-4444-4444-444444444444",
-		BrokerURL:       broker.URL,
-		Mode:            "live-session-remote-runner@v0",
-		PaymentEnvelope: "BASE64",
-	}
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: handle,
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	// No assertion beyond "didn't fail" — purpose is coverage of
-	// the openLiveSession + HTTP-topup path.
 }
 
 // errorAs is a tiny helper because errors.As isn't imported widely

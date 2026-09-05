@@ -1,7 +1,7 @@
 """Integration-style tests for jobs.service.open_job + settle_job.
 
-Mirrors the sessions tests but with the http-* mode set (cases
-a/b/c). Verifies parallel behavior: worst-case encumbrance,
+Mirrors the sessions tests for paid-job/v1 transports. Verifies
+parallel behavior: worst-case encumbrance,
 SDK-reported settlement, refund-unused on close.
 """
 
@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -34,20 +36,32 @@ from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
 from livepeer_open_clearinghouse.domains.jobs.service import (
     JobAlreadySettled,
     JobNotFound,
-    ModeNotSupportedForJob,
+    ProtocolNotSupportedForJob,
+    TransportNotSupportedForJob,
 )
+from livepeer_open_clearinghouse.domains.jobs.types import CreateJobResponse, SettlementEnvelope
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
-    ModeNotDeclared,
+    RouteBindingMismatch,
 )
 from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    InsufficientCredit,
+    NoRouteAvailable,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerExchangeOutcome,
+    BrokerExchangeResult,
+    BrokerSettlementQueryError,
+    NonAdmissionQuery,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
@@ -56,6 +70,11 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SelectedRoute,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import (
+    delegated_key,
+    signed_job_settlement,
+    signed_non_admission,
+)
 
 
 @pytest_asyncio.fixture()
@@ -111,8 +130,18 @@ async def _seed(db: AsyncSession, *, balance_wei: int = 10**12) -> tuple[uuid.UU
     return user.id, key.id
 
 
-def _route(mode: str | None) -> SelectedRoute:
-    extra = {"interaction_mode": mode} if mode is not None else {}
+def _route(protocol: str = "paid-job/v1") -> SelectedRoute:
+    is_job = protocol == "paid-job/v1"
+    extra = (
+        {"job": {"transports": ["unary", "stream", "multipart"]}}
+        if is_job
+        else {
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+            }
+        }
+    )
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -125,8 +154,83 @@ def _route(mode: str | None) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol=protocol,
+        settlement_keys=(delegated_key(),),
         extra=extra,
     )
+
+
+def _settlement(
+    response: CreateJobResponse,
+    *,
+    broker_job_id: str,
+    actual_units: int,
+    debited_units: int | None = None,
+    amount_wei: int = 100,
+    per_units: int = 1,
+    work_unit: str = "token",
+    outcome: str = "OVERFUNDED",
+) -> SettlementEnvelope:
+    return SettlementEnvelope.model_validate(
+        signed_job_settlement(
+            request_id=response.request_id,
+            job_id=broker_job_id,
+            work_id=response.work_id,
+            actual_units=actual_units,
+            debited_units=debited_units,
+            amount_wei=amount_wei,
+            per_units=per_units,
+            work_unit=work_unit,
+            outcome=outcome,
+        )
+    )
+
+
+class _StaticExchangeClient:
+    def __init__(
+        self,
+        result: BrokerExchangeResult,
+        *,
+        non_admission_result: BrokerExchangeResult | None = None,
+    ) -> None:
+        self.result = result
+        self.non_admission_result = non_admission_result or result
+        self.calls: list[tuple[str, str]] = []
+        self.non_admission_calls: list[tuple[str, str, NonAdmissionQuery]] = []
+
+    async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
+        self.calls.append((broker_url, request_id))
+        return self.result
+
+    async def request_non_admission(
+        self, *, broker_url: str, request_id: str, query: NonAdmissionQuery
+    ) -> BrokerExchangeResult:
+        self.non_admission_calls.append((broker_url, request_id, query))
+        return self.non_admission_result
+
+    async def get_settlement(
+        self, *, broker_url: str, gateway_session_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        raise AssertionError("job reconciliation must not use the session lookup")
+
+
+class _FailingExchangeClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def get_job_exchange(self, *, broker_url: str, request_id: str) -> BrokerExchangeResult:
+        self.calls.append((broker_url, request_id))
+        raise BrokerSettlementQueryError("broker exchange query failed")
+
+    async def get_settlement(
+        self, *, broker_url: str, gateway_session_id: uuid.UUID
+    ) -> dict[str, Any] | None:
+        raise AssertionError("job reconciliation must not use the session lookup")
+
+    async def request_non_admission(
+        self, *, broker_url: str, request_id: str, query: NonAdmissionQuery
+    ) -> BrokerExchangeResult:
+        raise BrokerSettlementQueryError("broker non-admission query failed")
 
 
 # ---- open_job happy path ----
@@ -136,7 +240,7 @@ def _route(mode: str | None) -> SelectedRoute:
 @pytest.mark.asyncio
 async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     resp = await jobs_service.open_job(
@@ -153,7 +257,9 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
         clock=_clock(),
         settings=_settings(),
     )
-    assert resp.mode == "http-reqresp@v0"
+    assert resp.protocol == "paid-job/v1"
+    assert resp.transport == "unary"
+    assert resp.work_unit == "token"
     assert resp.settle_endpoint == f"/v1/jobs/{resp.job_id}/settle"
     # Worst case = 1000 x 100 = 100_000
     assert resp.funded_value_wei == 100_000
@@ -163,7 +269,16 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     ps = await db_session.get(PaymentSession, resp.job_id)
     assert ps is not None
     assert ps.state == SESSION_STATE_OPEN
-    assert ps.mode == "http-reqresp@v0"
+    assert ps.protocol == "paid-job/v1"
+    assert ps.broker_request_id == resp.request_id
+    assert ps.route_snapshot is not None
+    assert ps.route_snapshot["protocol"] == "paid-job/v1"
+    assert ps.route_snapshot["job"]["transports"] == [
+        "multipart",
+        "stream",
+        "unary",
+    ]
+    assert resp.route_snapshot.model_dump(mode="json") == ps.route_snapshot
     assert ps.max_total_units == 1000
 
     # Payment row tied to the session, funded for the full worst case.
@@ -172,6 +287,126 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
     ).all()
     assert len(payments) == 1
     assert payments[0].funded_value_wei == Decimal(100_000)
+    assert payments[0].mint_request_id == f"loc:{resp.request_id}"
+    assert payments[0].creation_round == 100
+    assert payments[0].expires_after_round == 101
+    assert payments[0].ticket_validity_period == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_uses_exact_authoritative_route_binding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    first = _route()
+    selected = first.model_copy(
+        update={
+            "worker_url": "https://selected-broker.example/livepeer",
+            "eth_address": "0x" + "22" * 20,
+            "quote_id": "q-selected",
+            "constraint_fingerprint": b"\x22" * 32,
+            "route_fingerprint": b"\x33" * 32,
+        }
+    )
+    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+
+    response = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=selected.capability,
+        offering=selected.offering,
+        route_binding=selected.binding,
+        estimated_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[first, selected]),
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert response.broker_url == selected.worker_url
+    assert response.route_snapshot == selected.snapshot_view()
+    assert len(daemon._mint_replays) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_stale_route_binding_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route()
+    daemon = MockPaymentDaemonClient()
+    stale = route.binding.model_copy(update={"route_fingerprint": "ff" * 32})
+
+    with pytest.raises(RouteBindingMismatch):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            route_binding=stale,
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+    assert (await db_session.scalars(select(Payment))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_uses_cumulative_ceiling_for_non_unit_denominator(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route().model_copy(
+        update={"price_per_work_unit_wei": Decimal(1), "units_per_price": 3}
+    )
+    response = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_units=4,
+        max_total_units=4,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    assert response.funded_value_wei == 2  # ceil(4 x 1 / 3)
+
+    settled = await jobs_service.settle_job(
+        db_session,
+        job_id=response.job_id,
+        user_id=user_id,
+        actual_units=1,
+        broker_job_id="broker-job-denominator",
+        work_unit="token",
+        outcome=None,
+        settlement=_settlement(
+            response,
+            broker_job_id="broker-job-denominator",
+            actual_units=1,
+            amount_wei=1,
+            per_units=3,
+        ),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    assert settled.billed_value_wei == 1  # ceil(1 x 1 / 3)
 
 
 @pytest.mark.unit
@@ -179,7 +414,7 @@ async def test_open_job_writes_session_with_http_mode(db_session: AsyncSession) 
 async def test_open_job_defaults_max_to_estimated(db_session: AsyncSession) -> None:
     """Case (a): SDK knows exactly what it needs; omits max_total_units."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     resp = await jobs_service.open_job(
@@ -208,9 +443,9 @@ async def test_open_job_defaults_max_to_estimated(db_session: AsyncSession) -> N
 async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
     """A ws-realtime offering can't be opened via /v1/jobs — use /v1/sessions."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("ws-realtime@v0")])
+    registry = MockRegistryClient(routes=[_route("paid-session/v1")])
     daemon = MockPaymentDaemonClient()
-    with pytest.raises(ModeNotSupportedForJob):
+    with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
             db_session,
             user_id=user_id,
@@ -229,11 +464,11 @@ async def test_open_job_rejects_session_mode(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_job_rejects_mode_not_declared(db_session: AsyncSession) -> None:
+async def test_open_job_rejects_session_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route(None)])
+    registry = MockRegistryClient(routes=[_route("paid-session/v1")])
     daemon = MockPaymentDaemonClient()
-    with pytest.raises(ModeNotDeclared):
+    with pytest.raises(ProtocolNotSupportedForJob):
         await jobs_service.open_job(
             db_session,
             user_id=user_id,
@@ -248,13 +483,43 @@ async def test_open_job_rejects_mode_not_declared(db_session: AsyncSession) -> N
             clock=_clock(),
             settings=_settings(),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_undeclared_transport_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route().model_copy(update={"extra": {"job": {"transports": ["unary"]}}})
+    with pytest.raises(TransportNotSupportedForJob) as exc_info:
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            transport="stream",
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert exc_info.value.details == {
+        "transport": "stream",
+        "declared_transports": ["unary"],
+    }
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_open_job_rejects_max_below_estimated(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(InvalidSessionRequest):
         await jobs_service.open_job(
@@ -271,6 +536,58 @@ async def test_open_job_rejects_max_below_estimated(db_session: AsyncSession) ->
             clock=_clock(),
             settings=_settings(),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_invalid_envelope_expiry(db_session: AsyncSession) -> None:
+    class InvalidExpiryDaemon(MockPaymentDaemonClient):
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            return replace(response, expires_after_round=response.creation_round)
+
+    user_id, key_id = await _seed(db_session)
+    with pytest.raises(DaemonUnavailable, match="invalid payment envelope expiry"):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route()]),
+            daemon=InvalidExpiryDaemon(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_rejects_payment_ev_below_funding_intent(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=30,
+            max_total_units=30,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route()]),
+            daemon=MockPaymentDaemonClient(ev_ratio=Decimal("0.001")),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
 
 
 @pytest.mark.unit
@@ -299,7 +616,7 @@ async def test_open_job_rejects_no_route(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_open_job_rejects_insufficient_balance(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session, balance_wei=50_000)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     with pytest.raises(InsufficientCredit):
         await jobs_service.open_job(
@@ -323,11 +640,109 @@ async def test_open_job_rejects_insufficient_balance(db_session: AsyncSession) -
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_settle_job_keeps_encumbrance_when_broker_debit_failed(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=100,
+        max_total_units=100,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    balance_before = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed) as exc_info:
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=100,
+            broker_job_id="broker-job-debit-failed",
+            work_unit="token",
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-debit-failed",
+                actual_units=100,
+                debited_units=0,
+                outcome="DEBIT_FAILED",
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert exc_info.value.details == {"reason": "debit_failed"}
+    row = await db_session.get(PaymentSession, open_resp.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+    assert balance_after == balance_before
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_signed_usage_above_funded_ceiling(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=100,
+        max_total_units=100,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    balance_before = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed) as exc_info:
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=101,
+            broker_job_id="broker-job-over-ceiling",
+            work_unit="token",
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-over-ceiling",
+                actual_units=101,
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert exc_info.value.details == {"reason": "usage_ceiling_exceeded"}
+    row = await db_session.get(PaymentSession, open_resp.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+    assert balance_after == balance_before
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) -> None:
     """SDK opened with max_total=1000 (funded 100_000); broker actually
     processed 600 units. Settle: billed 60_000, refund 40_000."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
     open_resp = await jobs_service.open_job(
@@ -352,8 +767,14 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
         job_id=open_resp.job_id,
         user_id=user_id,
         actual_units=600,
+        broker_job_id="broker-job-overfunded",
+        work_unit="token",
         outcome=None,
-        settlement={"breakdown": {"prompt_tokens": 200, "completion_tokens": 400}},
+        settlement=_settlement(
+            open_resp,
+            broker_job_id="broker-job-overfunded",
+            actual_units=600,
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -369,9 +790,118 @@ async def test_settle_job_overfunded_refunds_unused(db_session: AsyncSession) ->
     ps = await db_session.get(PaymentSession, open_resp.job_id)
     assert ps is not None
     assert ps.state == SESSION_STATE_CLOSED
+    assert ps.breakdown == {
+        "broker_job_id": "broker-job-overfunded",
+        "work_unit": "token",
+    }
+    event = await db_session.scalar(
+        select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+    )
+    assert event is not None
+    assert event.raw_record["broker_job_id"] == "broker-job-overfunded"
+    assert event.raw_record["work_unit"] == "token"
+    assert event.raw_record["settlement"]["payload"]["job_id"] == "broker-job-overfunded"
 
     balance_after = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     assert balance_after - balance_before == Decimal(40_000)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_work_unit_drift_without_closing(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=10,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    with pytest.raises(jobs_service.WorkUnitMismatch):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=10,
+            broker_job_id="broker-job-drift",
+            work_unit="frames",
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-drift",
+                actual_units=10,
+            ),
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    job = await db_session.get(PaymentSession, open_resp.job_id)
+    assert job is not None
+    assert job.state == SESSION_STATE_OPEN
+    assert (
+        await db_session.scalar(
+            select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_tampered_signature_before_mutation(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=10,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    settlement = _settlement(open_resp, broker_job_id="broker-job-tampered", actual_units=10)
+    settlement.payload["actual_units"] = "9"
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=10,
+            broker_job_id="broker-job-tampered",
+            work_unit="token",
+            outcome=None,
+            settlement=settlement,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    job = await db_session.get(PaymentSession, open_resp.job_id)
+    assert job is not None
+    assert job.state == SESSION_STATE_OPEN
+    assert (
+        await db_session.scalar(
+            select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+        )
+        is None
+    )
 
 
 @pytest.mark.unit
@@ -384,8 +914,18 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
             job_id=uuid.uuid4(),
             user_id=user_id,
             actual_units=0,
+            broker_job_id="broker-job-missing",
+            work_unit="token",
             outcome=None,
-            settlement=None,
+            settlement=SettlementEnvelope.model_validate(
+                signed_job_settlement(
+                    job_id="broker-job-missing",
+                    work_id="missing",
+                    actual_units=0,
+                    amount_wei=100,
+                    per_units=1,
+                )
+            ),
             clock=_clock(),
             settings=_settings(),
         )
@@ -395,7 +935,7 @@ async def test_settle_job_rejects_unknown(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-reqresp@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient()
     open_resp = await jobs_service.open_job(
         db_session,
@@ -416,8 +956,15 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
         job_id=open_resp.job_id,
         user_id=user_id,
         actual_units=10,
+        broker_job_id="broker-job-once",
+        work_unit="token",
         outcome=None,
-        settlement=None,
+        settlement=_settlement(
+            open_resp,
+            broker_job_id="broker-job-once",
+            actual_units=10,
+            outcome="EXACT",
+        ),
         clock=_clock(),
         settings=_settings(),
     )
@@ -427,8 +974,15 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
             job_id=open_resp.job_id,
             user_id=user_id,
             actual_units=10,
+            broker_job_id="broker-job-twice",
+            work_unit="token",
             outcome=None,
-            settlement=None,
+            settlement=_settlement(
+                open_resp,
+                broker_job_id="broker-job-twice",
+                actual_units=10,
+                outcome="EXACT",
+            ),
             clock=_clock(),
             settings=_settings(),
         )
@@ -436,10 +990,10 @@ async def test_settle_job_rejects_second_call(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> None:
-    """Case (c): http-stream@v0 — same shape as http-reqresp."""
+async def test_settle_job_accepts_stream_transport(db_session: AsyncSession) -> None:
+    """A stream job uses the same settlement shape as a unary job."""
     user_id, key_id = await _seed(db_session)
-    registry = MockRegistryClient(routes=[_route("http-stream@v0")])
+    registry = MockRegistryClient(routes=[_route()])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
     resp = await jobs_service.open_job(
         db_session,
@@ -447,6 +1001,7 @@ async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> 
         api_key_id=key_id,
         capability="openai:chat-completions",
         offering="gpt-oss-20b",
+        transport="stream",
         estimated_units=100,
         max_total_units=200,
         sdk_identity=None,
@@ -455,4 +1010,512 @@ async def test_settle_job_accepts_http_stream_mode(db_session: AsyncSession) -> 
         clock=_clock(),
         settings=_settings(),
     )
-    assert resp.mode == "http-stream@v0"
+    assert resp.protocol == "paid-job/v1"
+
+
+# ---- request-ID recovery ----
+
+
+async def _open_recoverable_job(
+    db: AsyncSession,
+) -> tuple[uuid.UUID, CreateJobResponse]:
+    user_id, key_id = await _seed(db)
+    response = await jobs_service.open_job(
+        db,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        transport="stream",
+        estimated_units=10,
+        max_total_units=20,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    return user_id, response
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_open_job_settles_only_embedded_signed_claim(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    settlement = _settlement(response, broker_job_id="broker-recovered", actual_units=7)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.SETTLED,
+            # Deliberately wrong unsigned hints: settlement payload is authoritative.
+            job_id="unsigned-wrong-job",
+            work_units=999,
+            unit="wrong-unit",
+            settlement=settlement.model_dump(mode="json"),
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 1
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.actual_units == 7
+    assert row.breakdown is not None
+    assert row.breakdown["broker_job_id"] == "broker-recovered"
+    assert client.calls == [("https://broker.example/livepeer", response.request_id)]
+    assert row.user_id == user_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        BrokerExchangeOutcome.ACCOUNTING_PENDING,
+        BrokerExchangeOutcome.IN_FLIGHT,
+        BrokerExchangeOutcome.ADMITTED_OUTCOME_UNKNOWN,
+        BrokerExchangeOutcome.ADMITTED_EVIDENCE_EXPIRED,
+        BrokerExchangeOutcome.NOT_ADMITTED,
+        BrokerExchangeOutcome.NO_RECORD,
+    ],
+)
+async def test_reconcile_open_job_keeps_nonsettlement_outcomes_encumbered(
+    db_session: AsyncSession, outcome: BrokerExchangeOutcome
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(request_id=response.request_id, outcome=outcome)
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.billed_value_wei is None
+    assert row.breakdown is not None
+    assert row.breakdown["broker_exchange"]["outcome"] == outcome.value
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_open_job_rejects_cross_request_signed_settlement(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    # Build a valid signature for a different request, not merely a tampered payload.
+    wrong_request = SettlementEnvelope.model_validate(
+        signed_job_settlement(
+            request_id="different-request",
+            job_id="broker-recovered",
+            work_id=response.work_id,
+            actual_units=7,
+            amount_wei=100,
+            per_units=1,
+        )
+    )
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.SETTLED,
+            settlement=wrong_request.model_dump(mode="json"),
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.billed_value_wei is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_finalizes_unresolved_job_as_distinct_full_charge(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(hours=1))
+    settings = _settings().model_copy(update={"job_conservative_charge_after_seconds": 3600})
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NO_RECORD,
+            detail="silence, not non-admission",
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=settings,
+    )
+
+    assert finalized == 1
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.outcome == "conservative_full_charge"
+    assert row.actual_units is None
+    assert row.billed_value_wei == row.funded_value_wei == Decimal(2000)
+    assert row.breakdown is not None
+    assert row.breakdown["terminal_kind"] == "conservative_full_charge"
+    assert row.breakdown["creation_round"] == 100
+    assert row.breakdown["expires_after_round"] == 101
+    assert row.breakdown["mint_ticket_validity_period"] == 2
+    assert row.breakdown["evidence"]["outcome"] == "NO_RECORD"
+    status = await jobs_service.get_job_status(
+        db_session, job_id=response.job_id, user_id=row.user_id
+    )
+    assert status.accounting_outcome == "conservative_full_charge"
+    assert status.actual_units is None
+    assert status.billed_value_wei == 2000
+
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "conservative_full_charge",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+    assert events[0].actual_units is None
+    assert events[0].billed_value_wei == Decimal(2000)
+
+    # Closed jobs are no longer selected; retries cannot double-finalize.
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 0
+    )
+    assert (
+        len(
+            list(
+                (
+                    await db_session.scalars(
+                        select(PaymentSettlement).where(
+                            PaymentSettlement.session_id == response.job_id,
+                            PaymentSettlement.event_type == "conservative_full_charge",
+                        )
+                    )
+                ).all()
+            )
+        )
+        == 1
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_lookup_failure_retries_then_conservatively_charges(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    settings = _settings().model_copy(update={"job_conservative_charge_after_seconds": 3600})
+    client = _FailingExchangeClient()
+
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 0
+    )
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+    assert row.breakdown is not None
+    assert row.breakdown["broker_exchange"] == {
+        "request_id": response.request_id,
+        "outcome": "LOOKUP_FAILED",
+        "detail": "broker exchange query failed",
+    }
+
+    clock.advance(timedelta(hours=1))
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session,
+            settlement_client=client,
+            clock=clock,
+            settings=settings,
+        )
+        == 1
+    )
+    await db_session.refresh(row)
+    assert row.state == SESSION_STATE_CLOSED
+    assert row.actual_units is None
+    assert row.billed_value_wei == row.funded_value_wei
+    assert row.outcome == "conservative_full_charge"
+    assert row.breakdown is not None
+    assert row.breakdown["evidence"]["outcome"] == "LOOKUP_FAILED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [BrokerExchangeOutcome.IN_FLIGHT, BrokerExchangeOutcome.ACCOUNTING_PENDING],
+)
+async def test_reconcile_never_full_charges_active_broker_outcome(
+    db_session: AsyncSession, outcome: BrokerExchangeOutcome
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(days=30))
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=outcome,
+            job_id="broker-active",
+        )
+    )
+
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=_settings().model_copy(update={"job_conservative_charge_after_seconds": 1}),
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_status_exposes_non_admission_as_audit_only(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    balance_before = await billing_service.get_balance(db_session, user_id=user_id)
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NO_RECORD,
+        ),
+        non_admission_result=BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission=signed_non_admission(
+                request_id=response.request_id,
+                work_id=response.work_id,
+            ),
+        ),
+    )
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=_settings(),
+    )
+
+    status = await jobs_service.get_job_status(db_session, job_id=response.job_id, user_id=user_id)
+    assert status.accounting_outcome == "non_admission_audit"
+    assert status.broker_exchange_outcome == "NOT_ADMITTED"
+    assert status.state == SESSION_STATE_OPEN
+    assert status.billed_value_wei is None
+    balance_after = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance_after.amount_wei == balance_before.amount_wei
+    assert len(client.non_admission_calls) == 1
+    query = client.non_admission_calls[0][2]
+    assert query.sender == "0x" + "aa" * 20
+    assert query.recipient == "0x" + "11" * 20
+    assert query.quote_id == "q-1"
+
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+    assert events[0].billed_value_wei is None
+    assert events[0].raw_record["verification"]["status"] == "verified"
+
+    # Replayed evidence remains one append-only audit fact.
+    clock.advance(timedelta(seconds=61))
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=clock,
+        settings=_settings(),
+    )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(
+                    PaymentSettlement.session_id == response.job_id,
+                    PaymentSettlement.event_type == "non_admission_audit",
+                )
+            )
+        ).all()
+    )
+    assert len(events) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_job_reconciliation_rejects_tampered_non_admission(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    envelope = signed_non_admission(request_id=response.request_id, work_id=response.work_id)
+    envelope["payload"]["work_id"] = "cross-job"  # type: ignore[index]
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission=envelope,
+        )
+    )
+    await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=client,
+        clock=_clock(),
+        settings=_settings(),
+    )
+    status = await jobs_service.get_job_status(db_session, job_id=response.job_id, user_id=user_id)
+    assert status.accounting_outcome == "unresolved"
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.breakdown["broker_exchange"]["verification"]["status"] == "rejected"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_conservative_full_charge_waits_for_operational_deadline(
+    db_session: AsyncSession,
+) -> None:
+    _user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(seconds=3599))
+
+    charged = await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+
+    assert charged is False
+    row = await db_session.get(PaymentSession, response.job_id)
+    assert row is not None
+    assert row.state == SESSION_STATE_OPEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_conservative_charge_wins_over_later_signed_settlement(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(hours=1))
+    assert await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+
+    with pytest.raises(JobAlreadySettled):
+        await jobs_service.settle_job(
+            db_session,
+            job_id=response.job_id,
+            user_id=user_id,
+            actual_units=7,
+            broker_job_id="broker-late",
+            work_unit="token",
+            outcome="OVERFUNDED",
+            settlement=_settlement(response, broker_job_id="broker-late", actual_units=7),
+            clock=clock,
+            settings=_settings(),
+        )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(PaymentSettlement.session_id == response.job_id)
+            )
+        ).all()
+    )
+    assert [event.event_type for event in events] == ["conservative_full_charge"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_signed_settlement_wins_over_later_conservative_charge(
+    db_session: AsyncSession,
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    await jobs_service.settle_job(
+        db_session,
+        job_id=response.job_id,
+        user_id=user_id,
+        actual_units=7,
+        broker_job_id="broker-first",
+        work_unit="token",
+        outcome="OVERFUNDED",
+        settlement=_settlement(response, broker_job_id="broker-first", actual_units=7),
+        clock=clock,
+        settings=_settings(),
+    )
+    clock.advance(timedelta(hours=1))
+    assert not await jobs_service.finalize_conservative_full_charge(
+        db_session,
+        job_id=response.job_id,
+        clock=clock,
+        deadline_seconds=3600,
+        evidence={"outcome": "NO_RECORD"},
+    )
+    events = list(
+        (
+            await db_session.scalars(
+                select(PaymentSettlement).where(PaymentSettlement.session_id == response.job_id)
+            )
+        ).all()
+    )
+    assert [event.event_type for event in events] == ["close"]

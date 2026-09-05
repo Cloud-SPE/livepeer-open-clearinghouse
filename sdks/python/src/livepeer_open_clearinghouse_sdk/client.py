@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import platform
 import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -48,7 +50,11 @@ from livepeer_open_clearinghouse_sdk._generated import (
 from livepeer_open_clearinghouse_sdk._generated import (
     RouteView,  # noqa: F401 — re-exported in __init__.py
 )
-from livepeer_open_clearinghouse_sdk.errors import OpenClearinghouseError, from_response
+from livepeer_open_clearinghouse_sdk.errors import (
+    BrokerProtocolError,
+    OpenClearinghouseError,
+    from_response,
+)
 
 
 def _http2_available() -> bool:
@@ -66,7 +72,7 @@ _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
 # SDK identity for the Livepeer-Open-Clearinghouse-SDK header.
 # Operators key per-API-key trust scoring off this string.
 SDK_LANG = "python"
-SDK_VERSION = "1.3.3"
+SDK_VERSION = "2.0.0"
 SDK_GIT_SHA = "dev"  # overwritten at packaging time
 SDK_IDENTITY = f"{SDK_LANG}/{SDK_VERSION}/{SDK_GIT_SHA}"
 
@@ -119,6 +125,10 @@ class JobResult:
     status: int
     job_id: uuid.UUID
     work_id: str
+    broker_job_id: str
+    protocol: str
+    transport: Literal["unary", "stream", "multipart"]
+    work_unit: str
     actual_units: int
     billed_value_wei: int
     refund_wei: int
@@ -129,27 +139,49 @@ class JobResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionAxes:
+    """Paid-session/v1 axes that determine SDK compatibility and refill policy."""
+
+    descriptor_schema: str
+    attachment: Literal["external"]
+    metering: Literal["runner-reported"]
+    refill: Literal["extensible", "bounded"]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SessionAxes:
+        attachment = value.get("attachment", "external")
+        metering = value.get("metering")
+        refill = value.get("refill", "extensible")
+        if attachment != "external":
+            raise BrokerProtocolError(f"invalid session.attachment: {attachment!r}")
+        if metering != "runner-reported":
+            raise BrokerProtocolError(f"invalid session.metering: {metering!r}")
+        if refill not in {"extensible", "bounded"}:
+            raise BrokerProtocolError(f"invalid session.refill: {refill!r}")
+        descriptor_schema = value.get("descriptor_schema")
+        if not isinstance(descriptor_schema, str) or not descriptor_schema:
+            raise BrokerProtocolError("session.descriptor_schema is required")
+        return cls(
+            descriptor_schema=descriptor_schema,
+            attachment=cast(Literal["external"], attachment),
+            metering=cast(Literal["runner-reported"], metering),
+            refill=cast(Literal["extensible", "bounded"], refill),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SessionHandle:
-    """Outbound from ``open_session`` (case d).
-
-    Holds everything the consumer needs to drive the broker-side WS /
-    RTMP wire themselves. The full automatic driver (refill loop,
-    in-band balance-low handling, graceful close) is being built
-    per-mode and will land as a richer ``SessionRunner`` wrapper in a
-    later release.
-
-    For now: ``payment_envelope`` is base64-encoded payment bytes;
-    customer puts it in the ``Livepeer-Payment`` upgrade header.
-    ``refill_endpoint`` / ``close_endpoint`` are LOC-relative paths
-    the SDK uses to mint top-ups or finalize the session — call
-    ``client.refill_session(session_id)`` / ``client.close_session(...)``
-    helpers.
-    """
+    """LOC payment intent plus the inputs needed to open paid-session/v1."""
 
     session_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
+    capability: str
+    offering: str
+    session: SessionAxes
+    session_params: dict[str, Any]
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int
@@ -266,12 +298,13 @@ class OpenClearinghouseClient:
         body: dict[str, Any] | bytes,
         max_total_units: int | None = None,
         request_id: str | None = None,
-        spec_version: str = "0.1",
+        transport: Literal["unary", "stream", "multipart"] = "unary",
+        content_type: str | None = None,
         timeout: httpx.Timeout | float | None = None,
     ) -> JobResult:
         """One-shot mint → broker → settle for cases (a)/(b)/(c).
 
-        Composes ``POST /v1/jobs`` (mint), the broker's ``POST /v1/cap``
+        Composes ``POST /v1/jobs`` (mint), the broker's ``POST /v1/job``
         with the minted envelope, then ``POST /v1/jobs/{id}/settle``
         reading ``Livepeer-Work-Units`` from the broker's response.
 
@@ -295,6 +328,11 @@ class OpenClearinghouseClient:
         """
         req_id = request_id or str(uuid.uuid4())
         timeout = timeout if timeout is not None else httpx.Timeout(60.0)
+        if transport == "multipart":
+            if not isinstance(body, bytes):
+                raise ValueError("multipart transport requires a pre-encoded bytes body")
+            if content_type is None or not content_type.lower().startswith("multipart/form-data"):
+                raise ValueError("multipart transport requires a multipart/form-data content_type")
 
         self._ensure_telemetry_started()
         self._telemetry.emit(
@@ -312,9 +350,11 @@ class OpenClearinghouseClient:
         try:
             open_resp = await self._http.post(
                 "/v1/jobs",
+                headers={"Idempotency-Key": req_id},
                 json={
                     "capability": capability,
                     "offering": offering,
+                    "transport": transport,
                     "estimated_units": estimated_units,
                     "max_total_units": max_total_units,
                 },
@@ -339,13 +379,28 @@ class OpenClearinghouseClient:
                 "latency_ms": (mint_completed_ns - mint_started_ns) // 1_000_000,
                 "loc_status_code": open_resp.status_code,
                 "funded_value_wei": job.get("funded_value_wei"),
-                "mode": job.get("mode"),
+                "protocol": job.get("protocol"),
             },
         )
         job_id = uuid.UUID(job["job_id"])
         broker_url = job["broker_url"]
         envelope = job["payment_envelope"]
-        mode = job["mode"]
+        protocol = job["protocol"]
+        if protocol != "paid-job/v1":
+            raise BrokerProtocolError(
+                f"LOC returned unsupported job protocol {protocol!r}",
+                code="protocol_unsupported",
+                details={"protocol": protocol},
+            )
+        if job["transport"] != transport:
+            raise BrokerProtocolError(
+                f"LOC returned transport {job['transport']!r}; requested {transport!r}",
+                code="protocol_transport_mismatch",
+                details={"expected": transport, "received": job["transport"]},
+            )
+        selected_transport = transport
+        work_unit = str(job["work_unit"])
+        broker_request_id = str(job["request_id"])
         settle_endpoint = job["settle_endpoint"]
 
         # 2. Call the broker directly with the minted envelope
@@ -353,40 +408,135 @@ class OpenClearinghouseClient:
             "Livepeer-Capability": capability,
             "Livepeer-Offering": offering,
             "Livepeer-Payment": envelope,
-            "Livepeer-Mode": mode,
-            "Livepeer-Spec-Version": spec_version,
-            "Livepeer-Request-Id": req_id,
+            "Livepeer-Protocol": protocol,
+            "Livepeer-Request-Id": broker_request_id,
         }
+        if selected_transport == "stream":
+            headers["Accept"] = "text/event-stream"
+        if isinstance(body, dict):
+            headers["Content-Type"] = content_type or "application/json"
+            broker_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+        else:
+            headers["Content-Type"] = content_type or "application/octet-stream"
+            broker_body = body
+
         async with httpx.AsyncClient(timeout=timeout) as broker:
-            if isinstance(body, dict):
-                headers.setdefault("Content-Type", "application/json")
-                resp = await broker.post(
-                    f"{broker_url.rstrip('/')}/v1/cap",
-                    headers=headers,
-                    json=body,
-                )
-            else:
-                headers.setdefault("Content-Type", "application/octet-stream")
-                resp = await broker.post(
-                    f"{broker_url.rstrip('/')}/v1/cap",
-                    headers=headers,
-                    content=body,
+            job_url = f"{broker_url.rstrip('/')}/v1/job"
+            resp = await broker.post(job_url, headers=headers, content=broker_body)
+            claim_resp = resp
+            claim_body: dict[str, Any] | None = None
+            initial_job_id = resp.headers.get("livepeer-job-id")
+            if selected_transport == "stream" and not initial_job_id:
+                raise BrokerProtocolError(
+                    "stream response missing Livepeer-Job-Id",
+                    code="broker_protocol_error",
+                    status=resp.status_code,
+                    details={"missing_headers": ["Livepeer-Job-Id"]},
                 )
 
-        # 3. Read actual_units from the broker's response. For
-        # http-reqresp/http-multipart, this is the Livepeer-Work-Units
-        # response header. For http-stream, it's an HTTP trailer —
-        # httpx merges trailers into resp.headers for HTTP/1.1 chunked
-        # responses once the body is fully consumed (.post() reads
-        # the whole body before returning). On newer httpx versions
-        # trailers ALSO show up under resp.trailing_headers; check
-        # both to be safe.
-        actual_units_str = resp.headers.get("livepeer-work-units")
-        if not actual_units_str:
-            trailing = getattr(resp, "trailing_headers", None)
-            if trailing is not None:
-                actual_units_str = trailing.get("livepeer-work-units")
-        actual_units = int(actual_units_str) if actual_units_str else 0
+            # A unary or multipart response can also finish before its debit.
+            # In that case it has an application response and stable job id,
+            # but no signed terminal claim yet. Request-ID lookup is the one
+            # recovery path the caller cannot withhold and works for streams
+            # whose trailers HTTPX cannot expose, so use it for every
+            # non-terminal initial response.
+            terminal_headers = (
+                resp.headers.get("livepeer-work-units"),
+                resp.headers.get("livepeer-work-unit"),
+                initial_job_id,
+                resp.headers.get("livepeer-settlement"),
+            )
+            if not all(terminal_headers):
+                exchange_url = (
+                    f"{broker_url.rstrip('/')}/v1/exchange/{quote(broker_request_id, safe='')}"
+                )
+                for attempt in range(8):
+                    query = await broker.get(exchange_url)
+                    try:
+                        exchange = query.json()
+                    except ValueError as exc:
+                        raise BrokerProtocolError(
+                            "broker exchange lookup returned malformed JSON",
+                            code="broker_protocol_error",
+                            status=query.status_code,
+                        ) from exc
+                    if exchange.get("request_id") != broker_request_id:
+                        raise BrokerProtocolError(
+                            "broker exchange lookup returned a different request id",
+                            code="broker_request_id_mismatch",
+                            status=query.status_code,
+                        )
+                    outcome = exchange.get("outcome")
+                    if query.status_code == 202 and outcome in {
+                        "IN_FLIGHT",
+                        "ACCOUNTING_PENDING",
+                    }:
+                        if attempt < 7:
+                            await asyncio.sleep(0.05 * (2**attempt))
+                            continue
+                        raise BrokerProtocolError(
+                            f"broker exchange remained {outcome}",
+                            code="broker_exchange_pending",
+                            status=query.status_code,
+                            details={"outcome": outcome},
+                        )
+                    if query.status_code != 200 or outcome != "SETTLED":
+                        raise BrokerProtocolError(
+                            f"broker exchange lookup returned {outcome!r}",
+                            code="broker_exchange_unresolved",
+                            status=query.status_code,
+                            details={"outcome": outcome},
+                        )
+                    claim_resp = query
+                    claim_body = cast("dict[str, Any]", exchange)
+                    break
+
+        # 3. Read the terminal claim. Unary/multipart return it directly;
+        # stream uses the durable settlement query above.
+        actual_units_str = claim_resp.headers.get("livepeer-work-units")
+        broker_work_unit = claim_resp.headers.get("livepeer-work-unit")
+        broker_job_id = claim_resp.headers.get("livepeer-job-id")
+        if claim_body is not None:
+            if actual_units_str is None and claim_body.get("work_units") is not None:
+                actual_units_str = str(claim_body["work_units"])
+            if broker_work_unit is None and claim_body.get("unit") is not None:
+                broker_work_unit = str(claim_body["unit"])
+            if broker_job_id is None and claim_body.get("job_id") is not None:
+                broker_job_id = str(claim_body["job_id"])
+        missing = [
+            name
+            for name, value in (
+                ("Livepeer-Work-Units", actual_units_str),
+                ("Livepeer-Work-Unit", broker_work_unit),
+                ("Livepeer-Job-Id", broker_job_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise BrokerProtocolError(
+                f"terminal broker response missing required headers: {', '.join(missing)}",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+                details={"missing_headers": missing},
+            )
+        assert actual_units_str is not None
+        assert broker_work_unit is not None
+        assert broker_job_id is not None
+        if initial_job_id is not None and broker_job_id != initial_job_id:
+            raise BrokerProtocolError(
+                f"settlement query returned job id {broker_job_id!r}; expected {initial_job_id!r}",
+                code="broker_job_id_mismatch",
+                status=claim_resp.status_code,
+                details={"expected": initial_job_id, "received": broker_job_id},
+            )
+        if broker_work_unit != work_unit:
+            raise BrokerProtocolError(
+                f"broker reported work unit {broker_work_unit!r}; expected {work_unit!r}",
+                code="work_unit_mismatch",
+                status=resp.status_code,
+                details={"expected": work_unit, "received": broker_work_unit},
+            )
+        actual_units = int(actual_units_str)
 
         # Parse body for the caller
         ctype = resp.headers.get("content-type", "")
@@ -395,18 +545,43 @@ class OpenClearinghouseClient:
         else:
             parsed = resp.text
 
-        # 4. Settle. Best-effort — if this fails, the reconciliation
-        # janitor on the LOC side will catch the unclosed session via
-        # GetSessionDebits and finalize it.
-        settlement_payload: dict[str, Any] = {"actual_units": actual_units}
-        livepeer_settlement = resp.headers.get("livepeer-settlement")
-        if livepeer_settlement:
-            try:
-                import json
-
-                settlement_payload["settlement"] = json.loads(base64.b64decode(livepeer_settlement))
-            except (ValueError, KeyError):
-                pass  # malformed — let LOC's daemon reconciliation handle it
+        # 4. Settle. Best-effort for caller compatibility; a failed LOC
+        # settlement remains visible to the caller through telemetry.
+        settlement_payload: dict[str, Any] = {
+            "actual_units": actual_units,
+            "broker_job_id": broker_job_id,
+            "work_unit": broker_work_unit,
+        }
+        livepeer_settlement = claim_resp.headers.get("livepeer-settlement")
+        body_settlement = claim_body.get("settlement") if claim_body is not None else None
+        if livepeer_settlement is not None and body_settlement not in (None, livepeer_settlement):
+            raise BrokerProtocolError(
+                "broker exchange settlement header and body disagree",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+            )
+        livepeer_settlement = (
+            livepeer_settlement
+            or (str(body_settlement) if body_settlement is not None else None)
+            or resp.headers.get("livepeer-settlement")
+        )
+        if not livepeer_settlement:
+            raise BrokerProtocolError(
+                "terminal broker response missing Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+                details={"missing_headers": ["Livepeer-Settlement"]},
+            )
+        try:
+            settlement_payload["settlement"] = json.loads(
+                base64.b64decode(livepeer_settlement, validate=True)
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise BrokerProtocolError(
+                "terminal broker response has malformed Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=claim_resp.status_code,
+            ) from exc
         self._telemetry.emit(
             event_type="request.settle_started",
             correlation_id=req_id,
@@ -443,7 +618,10 @@ class OpenClearinghouseClient:
             payload={
                 "capability": capability,
                 "offering": offering,
-                "mode": mode,
+                "protocol": protocol,
+                "transport": selected_transport,
+                "work_unit": work_unit,
+                "broker_job_id": broker_job_id,
                 "estimated_units": estimated_units,
                 "actual_units": int(settled["actual_units"]),
                 "billed_value_wei": int(settled["billed_value_wei"]),
@@ -458,12 +636,16 @@ class OpenClearinghouseClient:
             status=resp.status_code,
             job_id=job_id,
             work_id=job["work_id"],
+            broker_job_id=broker_job_id,
+            protocol=protocol,
+            transport=selected_transport,
+            work_unit=work_unit,
             actual_units=int(settled["actual_units"]),
             billed_value_wei=int(settled["billed_value_wei"]),
             refund_wei=int(settled["refund_wei"]),
             outcome=settled["outcome"],
             cap_status=CapStatus.from_dict(settled["cap_status"]),
-            request_id=req_id,
+            request_id=broker_request_id,
             raw_headers=dict(resp.headers),
         )
 
@@ -474,55 +656,47 @@ class OpenClearinghouseClient:
         *,
         capability: str,
         offering: str,
+        descriptor_schema: str,
+        session_params: dict[str, Any] | None = None,
         estimated_runway_units: int,
         max_total_units: int,
+        request_id: str | None = None,
     ) -> SessionHandle:
-        """Open a long-running session and return a SessionHandle.
-
-        ``max_total_units`` is the same input across all case-(d)
-        modes, but its operational guarantee differs by mode class:
-
-        For **(d-bounded) modes** (``ws-realtime@v0``):
-            Your session will spend AT MOST ``max_total_units``.
-            It may end earlier; it will end no later than when this
-            much is consumed. The session **cannot be extended**
-            mid-flight — refills are not supported in these modes.
-
-        For **(d-extensible) modes** (``session-control-plus-media@v0``,
-        ``rtmp-ingress-hls-egress@v0``, ``live-session-remote-runner@v0``,
-        ``live-session-gateway-ingest@v0``):
-            Your session will spend AT MOST ``max_total_units``.
-            Refills happen automatically within this ceiling. Refills
-            stop and the session drains if a higher-tier cap
-            (spend-period, operator-pool) is reached before
-            ``max_total_units`` is exhausted.
-
-        ``estimated_runway_units`` is the initial chunk LOC mints
-        toward (a smaller fraction of ``max_total_units``). The
-        SessionRunner refill loop tops up automatically as the broker
-        signals balance-low.
-
-        Returns a :class:`SessionHandle` carrying the broker URL +
-        minted envelope. Use :class:`SessionRunner` for the automatic
-        refill loop, or call :meth:`refill_session` /
-        :meth:`close_session` directly for manual control.
-        """
+        """Create the LOC payment intent for one paid-session/v1 open."""
         self._ensure_telemetry_started()
+        loc_request_id = request_id or str(uuid.uuid4())
+        params = dict(session_params or {})
         r = await self._http.post(
             "/v1/sessions",
+            headers={"Idempotency-Key": loc_request_id},
             json={
                 "capability": capability,
                 "offering": offering,
+                "descriptor_schema": descriptor_schema,
+                "session_params": params,
                 "estimated_runway_units": estimated_runway_units,
                 "max_total_units": max_total_units,
             },
         )
         data = self._unwrap(r)
+        protocol = data.get("protocol")
+        if protocol != "paid-session/v1":
+            raise BrokerProtocolError(f"LOC returned unsupported protocol {protocol!r}")
+        session_axes = SessionAxes.from_dict(data.get("session", {}))
+        if session_axes.descriptor_schema != descriptor_schema:
+            raise BrokerProtocolError(
+                "LOC response descriptor_schema does not match the requested adapter"
+            )
         handle = SessionHandle(
             session_id=uuid.UUID(data["session_id"]),
+            request_id=data["request_id"],
             work_id=data["work_id"],
             broker_url=data["broker_url"],
-            mode=data["mode"],
+            protocol=protocol,
+            capability=capability,
+            offering=offering,
+            session=session_axes,
+            session_params=params,
             payment_envelope=data["payment_envelope"],
             expected_value_wei=int(data["expected_value_wei"]),
             funded_value_wei=int(data["funded_value_wei"]),
@@ -535,7 +709,9 @@ class OpenClearinghouseClient:
             payload={
                 "capability": capability,
                 "offering": offering,
-                "mode": handle.mode,
+                "protocol": handle.protocol,
+                "descriptor_schema": handle.session.descriptor_schema,
+                "refill": handle.session.refill,
                 "max_total_units": max_total_units,
                 "initial_runway_units": estimated_runway_units,
             },
@@ -547,23 +723,26 @@ class OpenClearinghouseClient:
         session_id: uuid.UUID | str,
         *,
         observed_consumed_units: int | None = None,
+        request_id: str | None = None,
+        rebind_from: str | None = None,
+        replaces_request_id: str | None = None,
     ) -> dict[str, Any]:
-        """Mint a top-up bound to an existing session. Returns the new
-        payment_envelope + cap_status. SDK consumer is responsible for
-        delivering the envelope to the broker via the mode-specific
-        channel (``session.topup`` JSON frame for
-        ``session-control-plus-media@v0``, HTTP POST to
-        ``control.topup_url`` for the ``live-session-*`` modes).
-        """
+        """Mint or replay one LOC top-up intent for a paid session."""
         self._telemetry.emit(
             event_type="session.refill_requested",
             correlation_id=str(session_id),
         )
         refill_started_ns = time.monotonic_ns()
+        loc_request_id = request_id or str(uuid.uuid4())
+        body: dict[str, Any] = {"observed_consumed_units": observed_consumed_units}
+        if rebind_from is not None:
+            body["rebind_from"] = rebind_from
+            body["replaces_request_id"] = replaces_request_id
         try:
             r = await self._http.post(
                 f"/v1/sessions/{session_id}/refill",
-                json={"observed_consumed_units": observed_consumed_units},
+                headers={"Idempotency-Key": loc_request_id},
+                json=body,
             )
             result = self._unwrap(r)
         except OpenClearinghouseError as exc:
@@ -607,15 +786,14 @@ class OpenClearinghouseClient:
         session_id: uuid.UUID | str,
         *,
         actual_units: int,
+        settlement: dict[str, Any],
         outcome: str | None = None,
-        settlement: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Explicitly close a session and finalize accounting."""
         body: dict[str, Any] = {"actual_units": actual_units}
         if outcome is not None:
             body["outcome"] = outcome
-        if settlement is not None:
-            body["settlement"] = settlement
+        body["settlement"] = settlement
         try:
             r = await self._http.post(f"/v1/sessions/{session_id}/close", json=body)
             result = self._unwrap(r)
@@ -649,6 +827,11 @@ class OpenClearinghouseClient:
         r = await self._http.get(f"/v1/sessions/{session_id}")
         return self._unwrap(r)
 
+    async def get_job_status(self, job_id: uuid.UUID | str) -> dict[str, Any]:
+        """Read exact, conservative, unresolved, or audit-only job state."""
+        r = await self._http.get(f"/v1/jobs/{job_id}")
+        return self._unwrap(r)
+
     # ---- internals ----
 
     _SETTLE_MAX_RETRIES = 3
@@ -665,9 +848,8 @@ class OpenClearinghouseClient:
         change on retry. Exponential backoff 0.5s / 1s / 2s ...
 
         Used by the settle path so a transient LOC blip doesn't
-        leave a session unsettled; the reconciliation janitor would
-        catch it eventually, but a synchronous retry buys low
-        latency for the common case.
+        leave a job unsettled. A synchronous retry preserves the
+        broker-signed terminal claim across that failure window.
         """
         backoff = 0.5
         last_resp: httpx.Response | None = None

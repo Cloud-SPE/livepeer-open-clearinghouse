@@ -1,6 +1,6 @@
 {
   "name": "@livepeer/open-clearinghouse-sdk",
-  "version": "1.3.3",
+  "version": "2.0.0",
   "description": "Reference TypeScript SDK for the Livepeer Open Clearinghouse payment clearinghouse.",
   "type": "module",
   "license": "MIT",

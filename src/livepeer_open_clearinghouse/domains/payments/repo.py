@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, ForeignKey, PrimaryKeyConstraint
+from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, PrimaryKeyConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -45,6 +45,11 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
         index=True,
     )
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
+    mint_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Parsed from the daemon-returned payment envelope at mint. Nullable only
+    # for pre-0023 rows, whose envelopes were not retained and cannot be
+    # reconstructed safely.
+    sender_eth_address: Mapped[str | None] = mapped_column(nullable=True)
     recipient_eth_address: Mapped[str] = mapped_column(nullable=False)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)
@@ -52,6 +57,12 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     price_per_work_unit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     funded_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
     expected_value_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    # Mint-time validity telemetry. Governance can move or revive this
+    # deadline, so absence or drift never authorizes release.
+    creation_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    expires_after_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period_observed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     reserved_wei: Mapped[Decimal] = mapped_column(nullable=False)
     refunded_wei: Mapped[Decimal] = mapped_column(nullable=False, default=Decimal(0))
     status: Mapped[str] = mapped_column(nullable=False)
@@ -59,20 +70,30 @@ class Payment(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
 
 
 class PaymentIdempotencyKey(Base, TimestampMixin, TableNameFromClassMixin):
-    """Idempotency-key ledger keyed by `(api_key_id, idempotency_key)`.
+    """Durable create-request ledger keyed by account, operation, and key.
 
-    `status` is 'in_flight' until the response is recorded, then 'completed'.
-    `response_payload` carries the prior response body so replays return the
-    same result. Stale 'in_flight' rows past `expires_at` may be reclaimed.
+    The claim is committed before calling the payer daemon.  The completed
+    outcome is committed atomically with the payment/session and balance
+    mutation, so an identical HTTP retry can replay without minting again.
     """
 
     __table_args__ = (
-        PrimaryKeyConstraint("api_key_id", "idempotency_key", name="pk_payment_idempotency_key"),
+        PrimaryKeyConstraint(
+            "user_id",
+            "operation",
+            "idempotency_key",
+            name="pk_payment_idempotency_key",
+        ),
     )
 
-    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_key.id", ondelete="CASCADE"))
-    idempotency_key: Mapped[str] = mapped_column()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"))
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_key.id", ondelete="RESTRICT"))
+    operation: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    broker_request_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     payment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("payment.id", ondelete="SET NULL"), nullable=True
@@ -94,3 +115,6 @@ class PaymentDaemonDepositSnapshot(Base, UuidPkMixin, TimestampMixin, TableNameF
     deposit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     reserve_wei: Mapped[Decimal] = mapped_column(nullable=False)
     withdraw_round: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    current_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ticket_validity_period_observed_at: Mapped[datetime | None] = mapped_column(nullable=True)

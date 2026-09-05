@@ -5,395 +5,289 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"github.com/coder/websocket"
 
 	loc "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
 )
 
-// wsServer spins up an in-process WebSocket server that runs the
-// supplied handler for every connection.
-func wsServer(t *testing.T, handler func(ctx context.Context, conn *websocket.Conn)) (url string, stop func()) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-			InsecureSkipVerify: true,
-		})
-		if err != nil {
-			t.Errorf("ws accept: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "test done") }()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		handler(ctx, conn)
-	}))
-	wsURL := strings.Replace(srv.URL, "http://", "ws://", 1)
-	return wsURL, srv.Close
+func balance(status string, refuse bool) map[string]any {
+	return map[string]any{
+		"status": status, "claimed_units": 80, "debited_units": 80,
+		"unit": "participant_minutes", "runway_units": 20,
+		"runway_seconds_estimate": 1200, "will_refuse_next_refill": refuse,
+	}
 }
 
-func locRefillServer(t *testing.T, sid string) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sessions/"+sid+"/refill", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"work_id":            "wid",
-			"refill_seq":         float64(1),
-			"payment_envelope":   "REFILL-ENV",
-			"expected_value_wei": float64(50000),
-			"funded_value_wei":   float64(50000),
-			"cap_status": map[string]any{
-				"session_pct_used":        float64(0.4),
-				"spend_period_pct_used":   nil,
-				"user_balance_pct_used":   nil,
-				"operator_pool_pct_used":  nil,
-				"will_refuse_next_refill": false,
-				"winddown_reason":         nil,
-			},
-		})
-	})
-	mux.HandleFunc("/v1/sessions/"+sid+"/close", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":       sid,
-			"work_id":          "wid",
-			"actual_units":     float64(80),
-			"billed_value_wei": float64(80000),
-			"refund_wei":       float64(120000),
-			"outcome":          "OVERFUNDED",
-			"closed_at":        "2026-05-24T12:30:00Z",
-		})
-	})
-	return httptest.NewServer(mux)
-}
-
-func locRefuseServer(t *testing.T, sid string) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sessions/"+sid+"/refill", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(402)
-		_, _ = w.Write([]byte(`{"error":{"code":"cap_reached","message":"period cap reached","details":{"which":"spend_period"}}}`))
-	})
-	mux.HandleFunc("/v1/sessions/"+sid+"/close", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":       sid,
-			"work_id":          "wid",
-			"actual_units":     float64(0),
-			"billed_value_wei": float64(0),
-			"refund_wei":       float64(200000),
-			"outcome":          "OVERFUNDED",
-			"closed_at":        "2026-05-24T12:30:00Z",
-		})
-	})
-	return httptest.NewServer(mux)
-}
-
-func TestSessionRunnerRefillsOnBalanceLow(t *testing.T) {
+func sessionHandle(brokerURL, refill string) *loc.SessionHandle {
 	sid := "11111111-1111-1111-1111-111111111111"
-	loca := locRefillServer(t, sid)
-	defer loca.Close()
+	return &loc.SessionHandle{
+		SessionID: sid, RequestID: "open-request", WorkID: "wid", BrokerURL: brokerURL,
+		Protocol: "paid-session/v1", Capability: "livepeer:test", Offering: "default",
+		Session:       loc.SessionAxes{DescriptorSchema: "livepeer-session-test/v1", Attachment: "external", Metering: "runner-reported", Refill: refill},
+		SessionParams: map[string]any{"room": "alpha"}, PaymentEnvelope: "OPEN-ENV",
+		RefillEndpoint: "/v1/sessions/" + sid + "/refill", CloseEndpoint: "/v1/sessions/" + sid + "/close",
+	}
+}
 
-	var (
-		receivedFrames []string
-		mu             sync.Mutex
-	)
-	done := make(chan struct{}, 1)
-	wsURL, stop := wsServer(t, func(ctx context.Context, conn *websocket.Conn) {
-		_ = conn.Write(ctx, websocket.MessageText,
-			[]byte(`{"type":"session.balance.low","observed_consumed_units":80}`))
-		for {
-			_, msg, err := conn.Read(ctx)
-			if err != nil {
+func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
+	var brokerURL string
+	var mu sync.Mutex
+	seen := map[string]http.Header{}
+	topupAttempts := 0
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/session":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "broker-session", "work_id": "wid", "state": "active",
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}, "grants": []any{}},
+				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+				"balance": balance("ok", false),
+				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
+			})
+		case "/topup":
+			topupAttempts++
+			if topupAttempts == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			mu.Lock()
-			receivedFrames = append(receivedFrames, string(msg))
-			mu.Unlock()
-			select {
-			case done <- struct{}{}:
-			default:
-			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"balance": balance("ok", false)})
+		case "/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "active", "balance": balance("ok", false)})
+		case "/end":
+			w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-	})
-	defer stop()
+	}))
+	brokerURL = broker.URL
+	defer broker.Close()
 
-	client, err := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
+	sid := "11111111-1111-1111-1111-111111111111"
+	refillCalls := 0
+	locServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/sessions/" + sid + "/refill":
+			refillCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "refill-request", "refill_seq": 1, "payment_envelope": "REFILL-ENV", "expected_value_wei": 50000, "funded_value_wei": 50000})
+		case "/v1/sessions/" + sid + "/close":
+			_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "EXACT", "billed_value_wei": 150000, "refund_wei": 0})
+		default:
+			w.WriteHeader(http.StatusNoContent) // telemetry
+		}
+	}))
+	defer locServer.Close()
+	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
+	ctx := context.Background()
+	first := loc.NewSessionRunner(loc.SessionRunnerOptions{Client: client, Handle: sessionHandle(brokerURL, "extensible")})
+	if err := first.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{Client: client, Handle: sessionHandle(brokerURL, "extensible")})
+	if err := runner.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, err := runner.Status(ctx)
+	if err != nil || status["state"] != "active" {
+		t.Fatalf("status recovery failed: %v %v", status, err)
+	}
+	runner.OnBalance(ctx, loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	runner.OnBalance(ctx, loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	result, err := runner.Close(ctx, loc.CloseSessionInput{ActualUnits: 150})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var (
-		refillEvent loc.RefillEvent
-		gotRefill   bool
-		evtMu       sync.Mutex
-	)
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: &loc.SessionHandle{
-			SessionID:       sid,
-			BrokerURL:       wsURL,
-			Mode:            "session-control-plus-media@v0",
-			PaymentEnvelope: "BASE64ENV",
-		},
-		OnRefillSucceeded: func(e loc.RefillEvent) {
-			evtMu.Lock()
-			refillEvent = e
-			gotRefill = true
-			evtMu.Unlock()
-		},
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
+	if result["outcome"] != "EXACT" {
+		t.Fatalf("unexpected outcome: %v", result)
 	}
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for topup frame")
+	if seen["/v1/session"].Get("Livepeer-Protocol") != "paid-session/v1" {
+		t.Fatal("missing protocol header")
 	}
-	if _, err := runner.Close(context.Background(), loc.CloseSessionInput{ActualUnits: 0}); err != nil {
-		t.Fatalf("close: %v", err)
+	if seen["/topup"].Get("Livepeer-Request-Id") != "refill-request" {
+		t.Fatal("missing topup request id")
 	}
-
-	evtMu.Lock()
-	defer evtMu.Unlock()
-	if !gotRefill {
-		t.Fatal("onRefillSucceeded was not invoked")
+	if seen["/topup"].Get("Authorization") != "Bearer credential" {
+		t.Fatal("missing bearer credential")
 	}
-	if refillEvent.RefillSeq == nil || *refillEvent.RefillSeq != 1 {
-		t.Errorf("refill_seq mismatch: %+v", refillEvent.RefillSeq)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(receivedFrames) != 1 {
-		t.Fatalf("expected 1 frame, got %d", len(receivedFrames))
-	}
-	var frame map[string]any
-	if err := json.Unmarshal([]byte(receivedFrames[0]), &frame); err != nil {
-		t.Fatalf("frame parse: %v", err)
-	}
-	if frame["type"] != "session.topup" {
-		t.Errorf("frame.type: %v", frame["type"])
-	}
-	body, _ := frame["body"].(map[string]any)
-	if body["payment_header"] != "REFILL-ENV" {
-		t.Errorf("payment_header: %v", body["payment_header"])
+	if refillCalls != 1 || topupAttempts != 2 {
+		t.Fatalf("retry duplicated credit: refill=%d topup=%d", refillCalls, topupAttempts)
 	}
 }
 
-func TestSessionRunnerWSRealtimeBoundedFiresWinddownOnly(t *testing.T) {
-	sid := "22222222-2222-2222-2222-222222222222"
-	refillCalled := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sessions/"+sid+"/refill", func(w http.ResponseWriter, r *http.Request) {
-		refillCalled = true
-		w.WriteHeader(400)
+func TestSessionRunnerDrainsWithoutRefill(t *testing.T) {
+	warnings := []string{}
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Handle:            sessionHandle("http://unused", "bounded"),
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
 	})
-	mux.HandleFunc("/v1/sessions/"+sid+"/close", func(w http.ResponseWriter, r *http.Request) {
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "low"})
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "ok", WillRefuseNextRefill: true})
+	if len(warnings) != 2 || warnings[0] != "bounded_runway_exhausting" || warnings[1] != "broker_will_refuse_next_refill" {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
+	var brokerURL string
+	var topupHeaders []http.Header
+	var warnings []string
+	topupCalls := 0
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/session" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "broker-session", "work_id": "wid", "state": "active",
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}},
+				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+				"balance": balance("ok", false),
+				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
+			})
+			return
+		}
+		if r.URL.Path == "/topup" {
+			topupCalls++
+			topupHeaders = append(topupHeaders, r.Header.Clone())
+			if topupCalls == 1 {
+				w.Header().Set("Livepeer-Error", "recipient_rotated")
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"balance": balance("ok", false)})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	brokerURL = broker.URL
+	defer broker.Close()
+
+	sid := "11111111-1111-1111-1111-111111111111"
+	var refillBodies []map[string]any
+	var refillKeys []string
+	locServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/"+sid+"/refill" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		refillBodies = append(refillBodies, body)
+		refillKeys = append(refillKeys, r.Header.Get("Idempotency-Key"))
+		w.Header().Set("Content-Type", "application/json")
+		if len(refillBodies) == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "wid", "request_id": "rejected", "payment_envelope": "OLD"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "successor", "request_id": "replacement", "payment_envelope": "NEW", "rebind_from": "wid"})
+	}))
+	defer locServer.Close()
+	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
+	})
+	ctx := context.Background()
+	if err := runner.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runner.OnBalance(ctx, loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+
+	if len(refillBodies) != 2 || refillBodies[1]["rebind_from"] != "wid" || refillBodies[1]["replaces_request_id"] != "rejected" {
+		t.Fatalf("rotation binding missing: %v", refillBodies)
+	}
+	if refillKeys[0] == refillKeys[1] {
+		t.Fatal("rotation reused LOC request identity")
+	}
+	if len(topupHeaders) != 2 || topupHeaders[1].Get("Livepeer-Rebind-From") != "wid" || topupHeaders[1].Get("Livepeer-Request-Id") != "replacement" {
+		t.Fatalf("declared broker rebind missing: %v", topupHeaders)
+	}
+	if runner.BrokerSession().WorkID != "successor" {
+		t.Fatalf("work id not advanced: %s", runner.BrokerSession().WorkID)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("successful rotation became customer-visible: %v", warnings)
+	}
+}
+
+func TestSessionRunnerDrainsWhenDeclaredRebindIsRefused(t *testing.T) {
+	var brokerURL string
+	topupCalls := 0
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/session" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "broker-session", "work_id": "wid", "state": "active",
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}},
+				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+				"balance": balance("ok", false),
+				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
+			})
+			return
+		}
+		if r.URL.Path == "/topup" {
+			topupCalls++
+			w.Header().Set("Livepeer-Error", map[bool]string{true: "recipient_rotated", false: "rebind_refused"}[topupCalls == 1])
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	brokerURL = broker.URL
+	defer broker.Close()
+
+	sid := "11111111-1111-1111-1111-111111111111"
+	refillCalls := 0
+	locServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/"+sid+"/refill" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		refillCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if refillCalls == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "wid", "request_id": "rejected", "payment_envelope": "OLD"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "successor", "request_id": "replacement", "payment_envelope": "NEW", "rebind_from": "wid"})
+	}))
+	defer locServer.Close()
+	warnings := []string{}
+	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
+	})
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	if refillCalls != 2 || topupCalls != 2 {
+		t.Fatalf("unexpected retries: refill=%d topup=%d", refillCalls, topupCalls)
+	}
+	if len(warnings) != 1 || warnings[0] != "payment_unrecoverable" {
+		t.Fatalf("unexpected drain signal: %v", warnings)
+	}
+}
+
+func TestSessionRunnerRejectsDescriptorMismatch(t *testing.T) {
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id": sid, "outcome": "OVERFUNDED",
-			"actual_units": float64(0), "billed_value_wei": float64(0),
-			"refund_wei": float64(200000), "closed_at": "2026-05-24T12:30:00Z",
+			"session_id": "broker-session", "work_id": "wid", "state": "active",
+			"runtime":    map[string]any{"schema": "wrong/v1", "public": map[string]any{}},
+			"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+			"balance": balance("ok", false),
+			"control": map[string]any{"status_url": "x", "topup_url": "x", "end_url": "x"},
 		})
-	})
-	loca := httptest.NewServer(mux)
-	defer loca.Close()
-
-	wsURL, stop := wsServer(t, func(ctx context.Context, conn *websocket.Conn) {
-		_ = conn.Write(ctx, websocket.MessageText,
-			[]byte(`{"type":"session.balance.low"}`))
-		// Idle until client closes us
-		_, _, _ = conn.Read(ctx)
-	})
-	defer stop()
-
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-
-	var (
-		wd     loc.WinddownEvent
-		gotWd  bool
-		wdMu   sync.Mutex
-		wdSig  = make(chan struct{}, 1)
-	)
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: &loc.SessionHandle{
-			SessionID:       sid,
-			BrokerURL:       wsURL,
-			Mode:            "ws-realtime@v0",
-			PaymentEnvelope: "BASE64ENV",
-		},
-		OnWinddownWarning: func(e loc.WinddownEvent) {
-			wdMu.Lock()
-			wd = e
-			gotWd = true
-			wdMu.Unlock()
-			select {
-			case wdSig <- struct{}{}:
-			default:
-			}
-		},
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	select {
-	case <-wdSig:
-	case <-time.After(2 * time.Second):
-		t.Fatal("did not see winddown event")
-	}
-	_, _ = runner.Close(context.Background(), loc.CloseSessionInput{ActualUnits: 0})
-
-	wdMu.Lock()
-	defer wdMu.Unlock()
-	if !gotWd {
-		t.Fatal("expected winddown callback")
-	}
-	if wd.Reason != "ws_session_exhausting" {
-		t.Errorf("winddown reason: %q", wd.Reason)
-	}
-	if refillCalled {
-		t.Error("ws-realtime must NOT call refill")
-	}
-}
-
-func TestSessionRunnerUnsupportedModeRaises(t *testing.T) {
-	loca := httptest.NewServer(http.NewServeMux())
-	defer loca.Close()
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: &loc.SessionHandle{
-			SessionID:       "00000000-0000-0000-0000-000000000444",
-			BrokerURL:       "http://broker.test",
-			Mode:            "http-reqresp@v0",
-			PaymentEnvelope: "BASE64ENV",
-		},
-	})
+	}))
+	defer broker.Close()
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{Handle: sessionHandle(broker.URL, "extensible")})
 	if err := runner.Start(context.Background()); err == nil {
-		t.Fatal("expected unsupported mode error")
-	} else if !strings.Contains(err.Error(), "unsupported mode") {
-		t.Errorf("unexpected error %v", err)
-	}
-}
-
-func TestSessionRunnerRefillRefused(t *testing.T) {
-	sid := "33333333-3333-3333-3333-333333333333"
-	loca := locRefuseServer(t, sid)
-	defer loca.Close()
-
-	wsURL, stop := wsServer(t, func(ctx context.Context, conn *websocket.Conn) {
-		_ = conn.Write(ctx, websocket.MessageText,
-			[]byte(`{"type":"session.balance.low"}`))
-		_, _, _ = conn.Read(ctx)
-	})
-	defer stop()
-
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-
-	var (
-		refused   loc.RefillEvent
-		gotRef    bool
-		refMu     sync.Mutex
-		refSig    = make(chan struct{}, 1)
-	)
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: &loc.SessionHandle{
-			SessionID:       sid,
-			BrokerURL:       wsURL,
-			Mode:            "session-control-plus-media@v0",
-			PaymentEnvelope: "BASE64ENV",
-		},
-		OnRefillRefused: func(e loc.RefillEvent) {
-			refMu.Lock()
-			refused = e
-			gotRef = true
-			refMu.Unlock()
-			select {
-			case refSig <- struct{}{}:
-			default:
-			}
-		},
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	select {
-	case <-refSig:
-	case <-time.After(2 * time.Second):
-		t.Fatal("did not see refused event")
-	}
-	_, _ = runner.Close(context.Background(), loc.CloseSessionInput{ActualUnits: 0})
-
-	refMu.Lock()
-	defer refMu.Unlock()
-	if !gotRef {
-		t.Fatal("expected refused callback")
-	}
-	if refused.Error == nil {
-		t.Error("refused event missing error")
-	}
-}
-
-func TestSessionRunnerCloseIsIdempotent(t *testing.T) {
-	sid := "55555555-5555-5555-5555-555555555555"
-	closeCalls := 0
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sessions/"+sid+"/close", func(w http.ResponseWriter, r *http.Request) {
-		closeCalls++
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id": sid, "outcome": "OVERFUNDED",
-			"actual_units": float64(80), "billed_value_wei": float64(80000),
-			"refund_wei": float64(120000), "closed_at": "2026-05-24T12:30:00Z",
-		})
-	})
-	loca := httptest.NewServer(mux)
-	defer loca.Close()
-
-	wsURL, stop := wsServer(t, func(ctx context.Context, conn *websocket.Conn) {
-		_, _, _ = conn.Read(ctx) // idle
-	})
-	defer stop()
-
-	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
-		Client: client,
-		Handle: &loc.SessionHandle{
-			SessionID:       sid,
-			BrokerURL:       wsURL,
-			Mode:            "session-control-plus-media@v0",
-			PaymentEnvelope: "BASE64ENV",
-		},
-	})
-	if err := runner.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if _, err := runner.Close(context.Background(), loc.CloseSessionInput{ActualUnits: 80}); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if _, err := runner.Close(context.Background(), loc.CloseSessionInput{ActualUnits: 80}); err != nil {
-		t.Fatalf("second close: %v", err)
-	}
-	if closeCalls != 1 {
-		t.Errorf("expected close called once, got %d", closeCalls)
-	}
-	if runner.Outcome() != "OVERFUNDED" {
-		t.Errorf("outcome: %q", runner.Outcome())
-	}
-	if runner.BilledValueWei() != 80000 {
-		t.Errorf("billed: %d", runner.BilledValueWei())
-	}
-	if runner.RefundWei() != 120000 {
-		t.Errorf("refund: %d", runner.RefundWei())
+		t.Fatal("expected descriptor mismatch")
 	}
 }

@@ -35,7 +35,6 @@ class Source(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SOURCE_LEGACY: _ClassVar[Source]
     SOURCE_STATIC_OVERLAY: _ClassVar[Source]
     SOURCE_CSV_FALLBACK: _ClassVar[Source]
-
 RESOLVE_MODE_UNSPECIFIED: ResolveMode
 RESOLVE_MODE_WELL_KNOWN: ResolveMode
 RESOLVE_MODE_CSV: ResolveMode
@@ -55,22 +54,32 @@ SOURCE_STATIC_OVERLAY: Source
 SOURCE_CSV_FALLBACK: Source
 
 class Capability(_message.Message):
-    __slots__ = ("name", "work_unit", "offerings", "extra_json")
+    __slots__ = ("name", "work_unit", "offerings", "extra_json", "work_unit_estimator")
     NAME_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_FIELD_NUMBER: _ClassVar[int]
     OFFERINGS_FIELD_NUMBER: _ClassVar[int]
     EXTRA_JSON_FIELD_NUMBER: _ClassVar[int]
+    WORK_UNIT_ESTIMATOR_FIELD_NUMBER: _ClassVar[int]
     name: str
     work_unit: str
     offerings: _containers.RepeatedCompositeFieldContainer[Offering]
     extra_json: bytes
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        work_unit: _Optional[str] = ...,
-        offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ...,
-        extra_json: _Optional[bytes] = ...,
-    ) -> None: ...
+    work_unit_estimator: Estimator
+    def __init__(self, name: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ..., extra_json: _Optional[bytes] = ..., work_unit_estimator: _Optional[_Union[Estimator, _Mapping]] = ...) -> None: ...
+
+class Estimator(_message.Message):
+    __slots__ = ("id", "rounding", "exactness", "package", "fixtures")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    ROUNDING_FIELD_NUMBER: _ClassVar[int]
+    EXACTNESS_FIELD_NUMBER: _ClassVar[int]
+    PACKAGE_FIELD_NUMBER: _ClassVar[int]
+    FIXTURES_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    rounding: str
+    exactness: str
+    package: str
+    fixtures: str
+    def __init__(self, id: _Optional[str] = ..., rounding: _Optional[str] = ..., exactness: _Optional[str] = ..., package: _Optional[str] = ..., fixtures: _Optional[str] = ...) -> None: ...
 
 class Offering(_message.Message):
     __slots__ = ("id", "price_per_work_unit_wei", "constraints_json")
@@ -80,27 +89,10 @@ class Offering(_message.Message):
     id: str
     price_per_work_unit_wei: str
     constraints_json: bytes
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        price_per_work_unit_wei: _Optional[str] = ...,
-        constraints_json: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., price_per_work_unit_wei: _Optional[str] = ..., constraints_json: _Optional[bytes] = ...) -> None: ...
 
 class Node(_message.Message):
-    __slots__ = (
-        "id",
-        "url",
-        "worker_eth_address",
-        "extra_json",
-        "capabilities",
-        "source",
-        "signature_status",
-        "operator_address",
-        "enabled",
-        "tier_allowed",
-        "weight",
-    )
+    __slots__ = ("id", "url", "worker_eth_address", "extra_json", "capabilities", "source", "signature_status", "operator_address", "enabled", "tier_allowed", "weight")
     ID_FIELD_NUMBER: _ClassVar[int]
     URL_FIELD_NUMBER: _ClassVar[int]
     WORKER_ETH_ADDRESS_FIELD_NUMBER: _ClassVar[int]
@@ -123,17 +115,4 @@ class Node(_message.Message):
     enabled: bool
     tier_allowed: _containers.RepeatedScalarFieldContainer[str]
     weight: int
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        url: _Optional[str] = ...,
-        worker_eth_address: _Optional[str] = ...,
-        extra_json: _Optional[bytes] = ...,
-        capabilities: _Optional[_Iterable[_Union[Capability, _Mapping]]] = ...,
-        source: _Optional[_Union[Source, str]] = ...,
-        signature_status: _Optional[_Union[SignatureStatus, str]] = ...,
-        operator_address: _Optional[str] = ...,
-        enabled: bool = ...,
-        tier_allowed: _Optional[_Iterable[str]] = ...,
-        weight: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., url: _Optional[str] = ..., worker_eth_address: _Optional[str] = ..., extra_json: _Optional[bytes] = ..., capabilities: _Optional[_Iterable[_Union[Capability, _Mapping]]] = ..., source: _Optional[_Union[Source, str]] = ..., signature_status: _Optional[_Union[SignatureStatus, str]] = ..., operator_address: _Optional[str] = ..., enabled: bool = ..., tier_allowed: _Optional[_Iterable[str]] = ..., weight: _Optional[int] = ...) -> None: ...

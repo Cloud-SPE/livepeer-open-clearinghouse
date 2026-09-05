@@ -54,6 +54,9 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	brokerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Livepeer-Work-Units", "42")
+		w.Header().Set("Livepeer-Work-Unit", "token")
+		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	t.Cleanup(brokerSrv.Close)
@@ -63,9 +66,12 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"job_id":             "00000000-0000-0000-0000-000000000abc",
+			"request_id":         "broker-request-1",
 			"work_id":            "wid",
 			"broker_url":         brokerSrv.URL,
-			"mode":               "http-reqresp@v0",
+			"protocol":           "paid-job/v1",
+			"transport":          "unary",
+			"work_unit":          "token",
 			"payment_envelope":   "BASE64",
 			"expected_value_wei": 100000,
 			"funded_value_wei":   100000,

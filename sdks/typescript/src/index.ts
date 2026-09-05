@@ -4,23 +4,22 @@ export type {
   CapStatus,
   JobResult,
   RouteView,
+  SessionAxes,
   SessionHandle,
 } from "./client.js";
-export {
-  BOUNDED_MODES,
-  HTTP_TOPUP_MODES,
-  SessionRunner,
-  WS_TOPUP_MODES,
-} from "./session_runner.js";
+export { SessionRunner } from "./session_runner.js";
 export type {
+  BrokerSession,
   RefillCallback,
   RefillEvent,
+  SessionBalance,
   SessionRunnerOptions,
   WinddownCallback,
   WinddownEvent,
 } from "./session_runner.js";
 export {
   AccountNotApproved,
+  BrokerProtocolError,
   DaemonUnavailable,
   DuplicateRequest,
   EmailNotVerified,

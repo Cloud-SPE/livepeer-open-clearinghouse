@@ -9,7 +9,14 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+ARG PYTHON_VERSION=3.13
+ARG UV_VERSION=0.5
+ARG VERSION=dev
+ARG REVISION=unknown
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # uv from the official image, no installer to keep things deterministic.
-COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /usr/local/bin/
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 WORKDIR /build
 
@@ -36,8 +43,7 @@ COPY uv.lock* ./
 # Sync into /opt/venv. --no-install-project so we don't try to install
 # livepeer_open_clearinghouse itself before the source is present.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev || \
-    uv sync --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev
 
 # Layer 2: source. LICENSE + README.md are referenced from pyproject.toml
 # (`license = { file = "LICENSE" }`, `readme = "README.md"`) so hatchling
@@ -52,12 +58,20 @@ COPY alembic.ini ./
 # without it uv installs a .pth pointing at /build/src, which doesn't exist
 # in the runtime stage and Python can't find `livepeer_open_clearinghouse` at startup.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable \
+        --reinstall-package livepeer-open-clearinghouse
+
+# Settlement verification is a billing boundary.  Importing eth-hash alone
+# does not prove a Keccak backend made it into the production dependency set.
+RUN /opt/venv/bin/python -c "from eth_hash.auto import keccak; assert len(keccak(b'')) == 32"
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS runtime
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ARG VERSION
+ARG REVISION
 
 # OCI image metadata — the publish workflow's docker/metadata-action
 # layers more labels on top at release time (revision, version, created).
@@ -66,6 +80,8 @@ FROM python:3.13-slim AS runtime
 LABEL org.opencontainers.image.title="livepeer-open-clearinghouse-gateway" \
       org.opencontainers.image.description="FastAPI clearinghouse gateway for Livepeer probabilistic-payment ticket minting and session settlement." \
       org.opencontainers.image.source="https://github.com/livepeer/livepeer-cloud-spe" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -97,8 +113,8 @@ COPY --chown=65532:65532 alembic.ini ./
 USER 65532:65532
 EXPOSE 8000
 
-# tini -> alembic upgrade head -> uvicorn.
-# Migrations are gated on the DB being reachable, which is enforced via
-# compose's `depends_on: { db: service_healthy }`.
+# Schema migration is an explicit one-shot deployment job. The application
+# refuses readiness on a mismatched revision; it never races Alembic from
+# every gateway replica.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn livepeer_open_clearinghouse.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]
+CMD ["uvicorn", "livepeer_open_clearinghouse.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

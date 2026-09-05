@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from livepeer_open_clearinghouse.domains.sessions.types import CapStatus
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
 
 
 class CreateJobRequest(BaseModel):
@@ -26,8 +27,10 @@ class CreateJobRequest(BaseModel):
 
     capability: str = Field(min_length=1)
     offering: str = Field(min_length=1)
+    transport: Literal["unary", "stream", "multipart"]
     estimated_units: int = Field(gt=0)
     max_total_units: int | None = Field(default=None, gt=0)
+    route_binding: RouteBinding | None = None
 
 
 class CreateJobResponse(BaseModel):
@@ -36,14 +39,18 @@ class CreateJobResponse(BaseModel):
     Carries the broker target + minted envelope so the SDK can issue
     its one-shot call to the broker directly (handoff mode). The
     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
-    the broker's response (``Livepeer-Work-Units`` header for
-    http-reqresp / http-multipart, HTTP trailer for http-stream).
+    the broker's response (terminal headers for unary/multipart, or a
+    terminal settlement lookup when stream trailers are inaccessible).
     """
 
     job_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
-    mode: str
+    protocol: str
+    transport: Literal["unary", "stream", "multipart"]
+    work_unit: str
+    route_snapshot: RouteSnapshot
     payment_envelope: str
     expected_value_wei: int
     funded_value_wei: int
@@ -51,18 +58,35 @@ class CreateJobResponse(BaseModel):
     opened_at: datetime
 
 
+class SettlementSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["secp256k1"]
+    canonicalization: Literal["jcs"]
+    value: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class SettlementEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: dict[str, Any]
+    signature: SettlementSignature
+
+
 class SettleJobRequest(BaseModel):
     """Inbound: ``POST /v1/jobs/{id}/settle``.
 
-    SDK reports the final actual_units read from the broker's
-    ``Livepeer-Work-Units`` header/trailer. Optional outcome +
-    settlement (the parsed ``SettlementRecord`` if the broker emitted
-    one in the ``Livepeer-Settlement`` header).
+    SDK reports the broker's terminal claim and the required signed
+    ``SettlementRecord`` from ``Livepeer-Settlement``. ``outcome`` is
+    only an optional consistency assertion; signed settlement is
+    authoritative for accounting.
     """
 
     actual_units: int = Field(ge=0)
+    broker_job_id: str = Field(min_length=1)
+    work_unit: str = Field(min_length=1)
     outcome: str | None = None
-    settlement: dict[str, Any] | None = None
+    settlement: SettlementEnvelope
 
 
 class SettleJobResponse(BaseModel):
@@ -86,3 +110,31 @@ class SettleJobResponse(BaseModel):
     outcome: str
     closed_at: datetime
     cap_status: CapStatus
+
+
+class JobStatusResponse(BaseModel):
+    """Customer-visible job state without conflating billing evidence."""
+
+    job_id: uuid.UUID
+    request_id: str
+    work_id: str
+    state: str
+    accounting_outcome: Literal[
+        "unresolved",
+        "non_admission_audit",
+        "broker_settled",
+        "conservative_full_charge",
+    ]
+    broker_exchange_outcome: str | None
+    actual_units: int | None
+    billed_value_wei: int | None
+    funded_value_wei: int
+    creation_round: int | None
+    expires_after_round: int | None
+    mint_ticket_validity_period: int | None
+    mint_ticket_validity_period_observed_at: datetime | None
+    observed_current_round: int | None
+    current_ticket_validity_period: int | None
+    current_ticket_validity_period_observed_at: datetime | None
+    opened_at: datetime
+    closed_at: datetime | None
