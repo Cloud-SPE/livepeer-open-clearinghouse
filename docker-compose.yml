@@ -67,12 +67,24 @@ services:
       # - ./.dev/registry/nodes.yaml:/etc/livepeer/nodes.yaml:ro
     restart: unless-stopped
 
+  migrate:
+    image: tztcloud/livepeer-open-clearinghouse-gateway:${OPEN_CLEARINGHOUSE_GATEWAY_TAG:-dev}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://livepeer_open_clearinghouse:livepeer_open_clearinghouse-dev-password@db:5432/livepeer_open_clearinghouse}
+    restart: "no"
+
   livepeer-open-clearinghouse-gateway:
     image: tztcloud/livepeer-open-clearinghouse-gateway:${OPEN_CLEARINGHOUSE_GATEWAY_TAG:-dev}
     container_name: livepeer-open-clearinghouse-gateway
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       payment-daemon:
         condition: service_started
       service-registry-daemon:
@@ -116,6 +128,12 @@ services:
       - livepeer-run:/var/run/livepeer
     ports:
       - "${OPEN_CLEARINGHOUSE_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

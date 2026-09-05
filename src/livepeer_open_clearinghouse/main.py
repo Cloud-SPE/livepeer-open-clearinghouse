@@ -16,7 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from livepeer_open_clearinghouse import __version__
-from livepeer_open_clearinghouse.dependencies import SettingsDep
+from livepeer_open_clearinghouse.dependencies import (
+    PaymentDaemonDep,
+    RegistryDep,
+    SessionDep,
+    SettingsDep,
+)
 from livepeer_open_clearinghouse.domains.accounts import runtime as accounts_runtime
 from livepeer_open_clearinghouse.domains.admin import runtime as admin_runtime
 from livepeer_open_clearinghouse.domains.admin import service as admin_service
@@ -38,10 +43,15 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     HttpBrokerSettlementClient,
 )
 from livepeer_open_clearinghouse.providers.clock import DefaultClock
-from livepeer_open_clearinghouse.providers.db import session_scope
+from livepeer_open_clearinghouse.providers.db import (
+    EXPECTED_ALEMBIC_REVISION,
+    require_compatible_schema,
+    session_scope,
+)
 from livepeer_open_clearinghouse.providers.http.gzip_request import (
     GzipRequestMiddleware,
 )
+from livepeer_open_clearinghouse.providers.readiness import check_readiness
 from livepeer_open_clearinghouse.providers.scheduler import (
     register_interval_job,
     shutdown_scheduler,
@@ -62,6 +72,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
     configure_logging(cfg)
     log = get_logger("livepeer_open_clearinghouse.startup")
     log.info("startup.begin", env=cfg.app_env, version=__version__)
+
+    if cfg.app_env != "dev":
+        async with session_scope() as db:
+            await require_compatible_schema(db)
+        log.info("startup.database_schema.compatible", revision=EXPECTED_ALEMBIC_REVISION)
 
     if cfg.admin_bootstrap_token is not None:
         async with session_scope() as db:
@@ -229,6 +244,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["meta"])
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "version": __version__, "env": cfg.app_env})
+
+    @app.get("/ready", tags=["meta"], include_in_schema=False)
+    async def ready(
+        session: SessionDep,
+        payment_daemon: PaymentDaemonDep,
+        registry: RegistryDep,
+    ) -> JSONResponse:
+        result = await check_readiness(session, payment_daemon, registry)
+        return JSONResponse(
+            {
+                "status": "ready" if result.ready else "not_ready",
+                "version": __version__,
+                "schema_revision": result.revision,
+                "expected_schema_revision": EXPECTED_ALEMBIC_REVISION,
+                "checks": result.checks,
+            },
+            status_code=(
+                status.HTTP_200_OK if result.ready else status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+        )
 
     @app.get("/metrics", tags=["meta"], include_in_schema=False)
     async def metrics_endpoint(

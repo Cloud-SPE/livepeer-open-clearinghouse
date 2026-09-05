@@ -10,8 +10,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_MIN_PRODUCTION_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -130,6 +132,54 @@ class Settings(BaseSettings):
     # Outbound webhook timing knobs.
     webhook_send_timeout_seconds: float = Field(default=10.0, gt=0)
     webhook_send_max_retries: int = Field(default=3, ge=0)
+
+    @model_validator(mode="after")
+    def reject_unsafe_production_defaults(self) -> Settings:
+        """Fail startup instead of silently running production with dev trust."""
+
+        if self.app_env != "prod":
+            return self
+        checks = (
+            (self.public_base_url.scheme != "https", "PUBLIC_BASE_URL must use https"),
+            (self.payment_daemon_mode != "grpc", "PAYMENT_DAEMON_MODE must be grpc"),
+            (self.registry_daemon_mode != "grpc", "REGISTRY_DAEMON_MODE must be grpc"),
+            (
+                not self.database_url.startswith("postgresql+asyncpg://"),
+                "DATABASE_URL must use postgresql+asyncpg",
+            ),
+            (
+                "livepeer_open_clearinghouse-dev-password" in self.database_url,
+                "DATABASE_URL must not use the development password",
+            ),
+            (
+                self.email_provider != "resend" or self.resend_api_key is None,
+                "EMAIL_PROVIDER must be resend with RESEND_API_KEY",
+            ),
+            (
+                self.email_from_address.endswith(".local"),
+                "EMAIL_FROM_ADDRESS must not use a local development domain",
+            ),
+            (self.sdk_manifest_signing_key is None, "SDK_MANIFEST_SIGNING_KEY is required"),
+        )
+        errors = [message for failed, message in checks if failed]
+        production_secrets = {
+            "API_KEY_HASH_PEPPER": self.api_key_hash_pepper,
+            "SESSION_SECRET": self.session_secret,
+            "METRICS_TOKEN": self.metrics_token,
+        }
+        for name, secret in production_secrets.items():
+            value = secret.get_secret_value()
+            if len(value) < _MIN_PRODUCTION_SECRET_LENGTH or "CHANGE-FOR-PROD" in value:
+                errors.append(f"{name} must be a non-development secret of at least 32 characters")
+        if self.admin_bootstrap_token is not None:
+            token = self.admin_bootstrap_token.get_secret_value()
+            if len(token) < _MIN_PRODUCTION_SECRET_LENGTH or "CHANGE-FOR-PROD" in token:
+                errors.append(
+                    "ADMIN_BOOTSTRAP_TOKEN must be at least 32 non-development characters"
+                )
+        if errors:
+            raise ValueError("unsafe production configuration: " + "; ".join(errors))
+        return self
 
 
 @lru_cache(maxsize=1)

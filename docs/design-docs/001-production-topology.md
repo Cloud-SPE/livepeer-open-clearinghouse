@@ -120,11 +120,22 @@ has explicitly approved a nonzero conservative-charge policy.
 
 The production image contains Alembic, but schema migration has one owner. Run
 `alembic upgrade head` once as an observable pre-deployment job using the
-migration credential. Gateway startup then checks schema compatibility and
-starts the application without racing another migration actor. The current
-development image command still performs an automatic migration, so the
-production manifest must override it until the dedicated production entrypoint
-lands under `loc-m7s.10.9.4`.
+migration credential. Gateway startup checks exact schema compatibility and
+refuses to start against an older or newer revision; it never races another
+migration actor.
+
+The portable manifest is
+[`deploy/docker-compose.production.yml`](../../deploy/docker-compose.production.yml).
+Supply digest-pinned image references and production secrets at runtime. Run
+the migration actor explicitly, then start the daemons and gateway without
+restarting its dependency:
+
+```bash
+docker compose -f deploy/docker-compose.production.yml run --rm migrate
+docker compose -f deploy/docker-compose.production.yml up -d --no-deps \
+  payment-daemon service-registry-daemon
+docker compose -f deploy/docker-compose.production.yml up -d --no-deps gateway
+```
 
 Deployment order is PostgreSQL restore/preflight, migration job, payer and
 registry daemons, one gateway, signed canary traffic, then client cutover.

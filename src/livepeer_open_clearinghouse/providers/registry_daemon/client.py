@@ -338,6 +338,8 @@ class RegistryClient(Protocol):
         self, *, capability: str | None = None
     ) -> list[OrchestratorInfo]: ...
 
+    async def health(self) -> bool: ...
+
 
 async def select_bound_route(
     client: RegistryClient,
@@ -511,6 +513,17 @@ class GrpcRegistryClient:
             await self._channel.close()
             self._channel = None
             self._stub = None
+
+    async def health(self) -> bool:
+        import grpc  # noqa: PLC0415
+        from google.protobuf import empty_pb2  # noqa: PLC0415
+
+        stub = await self._ensure_stub()
+        try:
+            response = await stub.Health(empty_pb2.Empty())
+        except grpc.aio.AioRpcError:
+            return False
+        return bool(response.chain_ok and response.manifest_fetcher_ok)
 
     async def select(self, capability: str, offering: str) -> SelectedRoute | None:
         import grpc  # noqa: PLC0415
@@ -726,12 +739,18 @@ class CachingRegistryClient:
         """Drop all cache entries."""
         self._cache.clear()
 
+    async def health(self) -> bool:
+        return await self._inner.health()
+
 
 class MockRegistryClient:
     """Returns a small fixed set of routes. Useful only until Phase 6/7."""
 
     def __init__(self, routes: list[SelectedRoute] | None = None) -> None:
         self._routes = list(routes) if routes is not None else list(_SAMPLE_ROUTES)
+
+    async def health(self) -> bool:
+        return True
 
     async def select(self, capability: str, offering: str) -> SelectedRoute | None:
         for r in self._routes:

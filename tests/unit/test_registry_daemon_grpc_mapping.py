@@ -4,17 +4,34 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
 
 from livepeer_open_clearinghouse import _gen  # noqa: F401  — pulls _gen onto sys.path
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
+    GrpcRegistryClient,
     SelectedRoute,
     WorkUnitEstimator,
     _decode_extra_json,
     _selected_route_proto_to_dataclass,
 )
+
+
+@pytest.mark.unit
+async def test_registry_health_requires_chain_and_manifest_fetcher() -> None:
+    client = GrpcRegistryClient("/var/run/livepeer/registry.sock")
+    stub = SimpleNamespace(
+        Health=AsyncMock(return_value=SimpleNamespace(chain_ok=True, manifest_fetcher_ok=True))
+    )
+    client._ensure_stub = AsyncMock(return_value=stub)  # type: ignore[method-assign]
+
+    assert await client.health() is True
+
+    stub.Health.return_value = SimpleNamespace(chain_ok=True, manifest_fetcher_ok=False)
+    assert await client.health() is False
 
 
 def _route_proto(**overrides):  # type: ignore[no-untyped-def]

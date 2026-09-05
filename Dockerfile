@@ -58,7 +58,8 @@ COPY alembic.ini ./
 # without it uv installs a .pth pointing at /build/src, which doesn't exist
 # in the runtime stage and Python can't find `livepeer_open_clearinghouse` at startup.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable \
+        --reinstall-package livepeer-open-clearinghouse
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
@@ -108,8 +109,8 @@ COPY --chown=65532:65532 alembic.ini ./
 USER 65532:65532
 EXPOSE 8000
 
-# tini -> alembic upgrade head -> uvicorn.
-# Migrations are gated on the DB being reachable, which is enforced via
-# compose's `depends_on: { db: service_healthy }`.
+# Schema migration is an explicit one-shot deployment job. The application
+# refuses readiness on a mismatched revision; it never races Alembic from
+# every gateway replica.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn livepeer_open_clearinghouse.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]
+CMD ["uvicorn", "livepeer_open_clearinghouse.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
