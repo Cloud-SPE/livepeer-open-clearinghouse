@@ -2,6 +2,10 @@
 
 Alembic database migrations for Livepeer Open Clearinghouse.
 
+For the breaking production v1-to-v2 procedure, including the fail-closed
+dump/restore rehearsal and financial reconciliation, see
+[`docs/references/production-database-migration.md`](../docs/references/production-database-migration.md).
+
 ## Usage
 
 ```bash

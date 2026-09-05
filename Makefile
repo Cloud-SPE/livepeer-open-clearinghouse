@@ -1,5 +1,5 @@
 .PHONY: help install install-hooks sync fmt lint lint-layering typecheck check test test-unit test-integration test-e2e test-conformance test-live-registry test-live-stack test-sdks test-release \
-        run dev down logs ps migrate migrate-create clean image-build dev-keystore protoc refresh-openapi
+        run dev down logs ps migrate migrate-create migrate-rehearse clean image-build dev-keystore protoc refresh-openapi
 
 UV ?= uv
 COMPOSE ?= docker compose
@@ -133,6 +133,9 @@ migrate: ## Apply Alembic migrations
 
 migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="add foo")
 	$(UV) run alembic revision --autogenerate -m "$(m)"
+
+migrate-rehearse: ## Restore/audit/migrate a v1 dump (requires SOURCE_DATABASE_URL + ARTIFACT_DIR)
+	./infra/scripts/rehearse-v1-postgres-migration.sh
 
 # ---------------------------------------------------------------------------
 # protobuf
