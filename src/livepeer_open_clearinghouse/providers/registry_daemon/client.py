@@ -88,15 +88,9 @@ class SessionAxes(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
-    attachment: Literal["external", "inband-ws"] = "external"
-    metering: Literal["runner-reported", "broker-observed"]
+    attachment: Literal["external"] = "external"
+    metering: Literal["runner-reported"]
     refill: Literal["extensible", "bounded"] = "extensible"
-
-    @model_validator(mode="after")
-    def broker_metering_requires_inband_attachment(self) -> SessionAxes:
-        if self.metering == "broker-observed" and self.attachment != "inband-ws":
-            raise ValueError("broker-observed metering requires attachment='inband-ws'")
-        return self
 
 
 class SettlementKey(BaseModel):

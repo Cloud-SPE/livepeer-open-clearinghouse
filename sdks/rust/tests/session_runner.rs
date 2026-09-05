@@ -22,9 +22,9 @@ fn handle(broker: &MockServer, refill: &str) -> SessionHandle {
         capability: "livepeer:test".to_string(),
         offering: "default".to_string(),
         session: SessionAxes {
-            descriptor_schema: "livepeer.session.test/v1".to_string(),
+            descriptor_schema: "livepeer-session-test/v1".to_string(),
             attachment: "external".to_string(),
-            metering: "broker-observed".to_string(),
+            metering: "runner-reported".to_string(),
             refill: refill.to_string(),
         },
         session_params: json!({"room": "alpha"}),
@@ -67,7 +67,7 @@ async fn mount_open(broker: &MockServer, schema: &str) {
 #[tokio::test]
 async fn paid_session_v1_open_refill_and_close() {
     let broker = MockServer::start().await;
-    mount_open(&broker, "livepeer.session.test/v1").await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
     let topup_attempts = Arc::new(AtomicUsize::new(0));
     let attempts = topup_attempts.clone();
     Mock::given(method("POST"))
@@ -150,7 +150,7 @@ async fn paid_session_v1_open_refill_and_close() {
 #[tokio::test]
 async fn recipient_rotation_uses_fresh_intent_and_declared_rebind() {
     let broker = MockServer::start().await;
-    mount_open(&broker, "livepeer.session.test/v1").await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
     Mock::given(method("POST"))
         .and(path("/topup"))
         .and(header("Livepeer-Payment", "OLD"))
@@ -214,7 +214,7 @@ async fn recipient_rotation_uses_fresh_intent_and_declared_rebind() {
 #[tokio::test]
 async fn declared_rebind_refusal_drains_once() {
     let broker = MockServer::start().await;
-    mount_open(&broker, "livepeer.session.test/v1").await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
     Mock::given(method("POST"))
         .and(path("/topup"))
         .and(header("Livepeer-Payment", "OLD"))
@@ -271,7 +271,7 @@ async fn declared_rebind_refusal_drains_once() {
 #[tokio::test]
 async fn bounded_and_refusal_warning_balances_drain() {
     let broker = MockServer::start().await;
-    mount_open(&broker, "livepeer.session.test/v1").await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
     let loc = MockServer::start().await;
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let captured = warnings.clone();

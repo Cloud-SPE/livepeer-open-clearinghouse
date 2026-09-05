@@ -143,8 +143,8 @@ class SessionAxes:
     """Paid-session/v1 axes that determine SDK compatibility and refill policy."""
 
     descriptor_schema: str
-    attachment: Literal["external", "inband-ws"]
-    metering: Literal["runner-reported", "broker-observed"]
+    attachment: Literal["external"]
+    metering: Literal["runner-reported"]
     refill: Literal["extensible", "bounded"]
 
     @classmethod
@@ -152,9 +152,9 @@ class SessionAxes:
         attachment = value.get("attachment", "external")
         metering = value.get("metering")
         refill = value.get("refill", "extensible")
-        if attachment not in {"external", "inband-ws"}:
+        if attachment != "external":
             raise BrokerProtocolError(f"invalid session.attachment: {attachment!r}")
-        if metering not in {"runner-reported", "broker-observed"}:
+        if metering != "runner-reported":
             raise BrokerProtocolError(f"invalid session.metering: {metering!r}")
         if refill not in {"extensible", "bounded"}:
             raise BrokerProtocolError(f"invalid session.refill: {refill!r}")
@@ -163,8 +163,8 @@ class SessionAxes:
             raise BrokerProtocolError("session.descriptor_schema is required")
         return cls(
             descriptor_schema=descriptor_schema,
-            attachment=cast(Literal["external", "inband-ws"], attachment),
-            metering=cast(Literal["runner-reported", "broker-observed"], metering),
+            attachment=cast(Literal["external"], attachment),
+            metering=cast(Literal["runner-reported"], metering),
             refill=cast(Literal["extensible", "bounded"], refill),
         )
 

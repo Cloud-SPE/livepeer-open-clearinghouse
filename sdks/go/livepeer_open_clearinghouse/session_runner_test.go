@@ -24,7 +24,7 @@ func sessionHandle(brokerURL, refill string) *loc.SessionHandle {
 	return &loc.SessionHandle{
 		SessionID: sid, RequestID: "open-request", WorkID: "wid", BrokerURL: brokerURL,
 		Protocol: "paid-session/v1", Capability: "livepeer:test", Offering: "default",
-		Session:       loc.SessionAxes{DescriptorSchema: "livepeer.session.test/v1", Attachment: "external", Metering: "broker-observed", Refill: refill},
+		Session:       loc.SessionAxes{DescriptorSchema: "livepeer-session-test/v1", Attachment: "external", Metering: "runner-reported", Refill: refill},
 		SessionParams: map[string]any{"room": "alpha"}, PaymentEnvelope: "OPEN-ENV",
 		RefillEndpoint: "/v1/sessions/" + sid + "/refill", CloseEndpoint: "/v1/sessions/" + sid + "/close",
 	}
@@ -44,7 +44,7 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 		case "/v1/session":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"session_id": "broker-session", "work_id": "wid", "state": "active",
-				"runtime":    map[string]any{"schema": "livepeer.session.test/v1", "public": map[string]any{}, "grants": []any{}},
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}, "grants": []any{}},
 				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
 				"balance": balance("ok", false),
 				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
@@ -143,7 +143,7 @@ func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
 		if r.URL.Path == "/v1/session" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"session_id": "broker-session", "work_id": "wid", "state": "active",
-				"runtime":    map[string]any{"schema": "livepeer.session.test/v1", "public": map[string]any{}},
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}},
 				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
 				"balance": balance("ok", false),
 				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
@@ -222,7 +222,7 @@ func TestSessionRunnerDrainsWhenDeclaredRebindIsRefused(t *testing.T) {
 		if r.URL.Path == "/v1/session" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"session_id": "broker-session", "work_id": "wid", "state": "active",
-				"runtime":    map[string]any{"schema": "livepeer.session.test/v1", "public": map[string]any{}},
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}},
 				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
 				"balance": balance("ok", false),
 				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},

@@ -396,8 +396,8 @@ async fn open_session_returns_handle() {
             "request_id": "req-session",
             "protocol": "paid-session/v1",
             "session": {
-                "descriptor_schema": "livepeer.session.test/v1",
-                "attachment": "direct", "metering": "broker", "refill": "extensible"
+                "descriptor_schema": "livepeer-session-test/v1",
+                "attachment": "external", "metering": "runner-reported", "refill": "extensible"
             },
             "payment_envelope": "BASE64SESS",
             "expected_value_wei": 100_000u64,
@@ -414,7 +414,7 @@ async fn open_session_returns_handle() {
         .open_session(OpenSessionInput {
             capability: "livepeer:vtuber-session",
             offering: "vtuber-1080p30",
-            descriptor_schema: "livepeer.session.test/v1",
+            descriptor_schema: "livepeer-session-test/v1",
             session_params: json!({}),
             estimated_runway_units: 100,
             max_total_units: 200,

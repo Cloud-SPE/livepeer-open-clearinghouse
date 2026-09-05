@@ -208,9 +208,9 @@ async def test_open_session_emits_session_opened() -> None:
         "request_id": "open-request",
         "protocol": "paid-session/v1",
         "session": {
-            "descriptor_schema": "livepeer.session.test/v1",
+            "descriptor_schema": "livepeer-session-test/v1",
             "attachment": "external",
-            "metering": "broker-observed",
+            "metering": "runner-reported",
             "refill": "extensible",
         },
         "payment_envelope": "BASE64",
@@ -227,7 +227,7 @@ async def test_open_session_emits_session_opened() -> None:
         await client.open_session(
             capability="x",
             offering="y",
-            descriptor_schema="livepeer.session.test/v1",
+            descriptor_schema="livepeer-session-test/v1",
             estimated_runway_units=10,
             max_total_units=100,
         )

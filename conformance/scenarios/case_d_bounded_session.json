@@ -12,7 +12,7 @@
           "broker_url": "{BROKER_URL}",
           "protocol": "paid-session/v1",
           "session": {
-            "descriptor_schema": "livepeer.session.test/v1",
+            "descriptor_schema": "livepeer-session-test/v1",
             "attachment": "external",
             "metering": "runner-reported",
             "refill": "bounded"

@@ -114,15 +114,12 @@ func (e RouteSnapshotSchemaVersion) Valid() bool {
 // Defines values for SessionAxesAttachment.
 const (
 	SessionAxesAttachmentExternal SessionAxesAttachment = "external"
-	SessionAxesAttachmentInbandWs SessionAxesAttachment = "inband-ws"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesAttachment enum.
 func (e SessionAxesAttachment) Valid() bool {
 	switch e {
 	case SessionAxesAttachmentExternal:
-		return true
-	case SessionAxesAttachmentInbandWs:
 		return true
 	default:
 		return false
@@ -131,15 +128,12 @@ func (e SessionAxesAttachment) Valid() bool {
 
 // Defines values for SessionAxesMetering.
 const (
-	SessionAxesMeteringBrokerObserved SessionAxesMetering = "broker-observed"
 	SessionAxesMeteringRunnerReported SessionAxesMetering = "runner-reported"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesMetering enum.
 func (e SessionAxesMetering) Valid() bool {
 	switch e {
-	case SessionAxesMeteringBrokerObserved:
-		return true
 	case SessionAxesMeteringRunnerReported:
 		return true
 	default:
@@ -168,15 +162,12 @@ func (e SessionAxesRefill) Valid() bool {
 // Defines values for SessionAxesViewAttachment.
 const (
 	SessionAxesViewAttachmentExternal SessionAxesViewAttachment = "external"
-	SessionAxesViewAttachmentInbandWs SessionAxesViewAttachment = "inband-ws"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesViewAttachment enum.
 func (e SessionAxesViewAttachment) Valid() bool {
 	switch e {
 	case SessionAxesViewAttachmentExternal:
-		return true
-	case SessionAxesViewAttachmentInbandWs:
 		return true
 	default:
 		return false
@@ -185,15 +176,12 @@ func (e SessionAxesViewAttachment) Valid() bool {
 
 // Defines values for SessionAxesViewMetering.
 const (
-	SessionAxesViewMeteringBrokerObserved SessionAxesViewMetering = "broker-observed"
 	SessionAxesViewMeteringRunnerReported SessionAxesViewMetering = "runner-reported"
 )
 
 // Valid indicates whether the value is a known member of the SessionAxesViewMetering enum.
 func (e SessionAxesViewMetering) Valid() bool {
 	switch e {
-	case SessionAxesViewMeteringBrokerObserved:
-		return true
 	case SessionAxesViewMeteringRunnerReported:
 		return true
 	default:

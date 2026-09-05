@@ -22,9 +22,9 @@ function handle(refill: "bounded" | "extensible" = "extensible"): SessionHandle 
     capability: "livepeer:test",
     offering: "default",
     session: {
-      descriptor_schema: "livepeer.session.test/v1",
+      descriptor_schema: "livepeer-session-test/v1",
       attachment: "external",
-      metering: "broker-observed",
+      metering: "runner-reported",
       refill,
     },
     sessionParams: { room: "alpha" },
@@ -49,7 +49,7 @@ function balance(overrides: Partial<SessionBalance> = {}): SessionBalance {
   };
 }
 
-function openResponse(schema = "livepeer.session.test/v1"): unknown {
+function openResponse(schema = "livepeer-session-test/v1"): unknown {
   return {
     session_id: "broker-session",
     work_id: "wid",

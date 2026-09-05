@@ -392,7 +392,7 @@ describe("OpenClearinghouseClient", () => {
             request_id: "req-session",
             protocol: "paid-session/v1",
             session: {
-              descriptor_schema: "livepeer.session.test/v1",
+              descriptor_schema: "livepeer-session-test/v1",
               attachment: "direct",
               metering: "broker",
               refill: "extensible",
@@ -411,7 +411,7 @@ describe("OpenClearinghouseClient", () => {
     const handle = await client.openSession({
       capability: "livepeer:vtuber-session",
       offering: "vtuber-1080p30",
-      descriptorSchema: "livepeer.session.test/v1",
+      descriptorSchema: "livepeer-session-test/v1",
       estimatedRunwayUnits: 100,
       maxTotalUnits: 200,
     });

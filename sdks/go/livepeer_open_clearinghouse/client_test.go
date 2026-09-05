@@ -321,8 +321,8 @@ func TestOpenSession(t *testing.T) {
 			"request_id": "req-session",
 			"protocol":   "paid-session/v1",
 			"session": map[string]any{
-				"descriptor_schema": "livepeer.session.test/v1", "attachment": "direct",
-				"metering": "broker", "refill": "extensible",
+				"descriptor_schema": "livepeer-session-test/v1", "attachment": "external",
+				"metering": "runner-reported", "refill": "extensible",
 			},
 			"payment_envelope":   "BASE64SESS",
 			"expected_value_wei": 100000,
@@ -338,7 +338,7 @@ func TestOpenSession(t *testing.T) {
 	handle, err := client.OpenSession(context.Background(), loc.OpenSessionInput{
 		Capability:           "livepeer:vtuber-session",
 		Offering:             "vtuber-1080p30",
-		DescriptorSchema:     "livepeer.session.test/v1",
+		DescriptorSchema:     "livepeer-session-test/v1",
 		EstimatedRunwayUnits: 100,
 		MaxTotalUnits:        200,
 	})

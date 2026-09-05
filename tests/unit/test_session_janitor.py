@@ -85,8 +85,8 @@ def _route() -> SelectedRoute:
         extra={
             "session": {
                 "descriptor_schema": "meeting/v1",
-                "attachment": "inband-ws",
-                "metering": "broker-observed",
+                "attachment": "external",
+                "metering": "runner-reported",
                 "refill": "extensible",
             }
         },

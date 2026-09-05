@@ -107,7 +107,7 @@ refresh-openapi: ## Snapshot /openapi.json to repo root (requires a running gate
 	@echo "next: re-run codegen in each SDK that needs it"
 	@echo "  ts:     (cd sdks/typescript && pnpm gen:openapi)"
 	@echo "  python: (cd sdks/python && uv run datamodel-codegen --input ../../openapi.json --input-file-type openapi --output src/livepeer_open_clearinghouse_sdk/_generated.py --output-model-type dataclasses.dataclass --use-double-quotes)"
-	@echo "  go:     (cd sdks/go && oapi-codegen -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../../openapi.json)"
+	@echo "  go:     (cd sdks/go && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -package openclearinghouse -generate types -o livepeer_open_clearinghouse/_generated.go ../../openapi.json)"
 
 dev: ## Bring the full stack up (postgres + daemons + gateway)
 	$(COMPOSE) up -d

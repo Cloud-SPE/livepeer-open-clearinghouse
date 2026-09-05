@@ -32,9 +32,9 @@ def _handle(*, refill: str = "extensible") -> SessionHandle:
         capability="livepeer:test",
         offering="default",
         session=SessionAxes(
-            descriptor_schema="livepeer.session.test/v1",
+            descriptor_schema="livepeer-session-test/v1",
             attachment="external",
-            metering="broker-observed",
+            metering="runner-reported",
             refill=refill,
         ),
         session_params={"room": "alpha"},
@@ -66,7 +66,7 @@ def _open_response() -> dict[str, object]:
         "work_id": "wid-sess",
         "state": "active",
         "runtime": {
-            "schema": "livepeer.session.test/v1",
+            "schema": "livepeer-session-test/v1",
             "public": {"url": "https://runtime.test"},
             "grants": [],
         },
@@ -134,7 +134,7 @@ async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> Non
         await runner.on_balance(low)
         result = await runner.close(actual_units=150)
 
-    assert session.runtime_schema == "livepeer.session.test/v1"
+    assert session.runtime_schema == "livepeer-session-test/v1"
     assert result["outcome"] == "EXACT"
     assert broker_open.calls[0].request.headers["Livepeer-Protocol"] == "paid-session/v1"
     assert len(broker_open.calls) == 2

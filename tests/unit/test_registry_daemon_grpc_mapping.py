@@ -198,8 +198,8 @@ def test_extra_json_decoded_into_typed_session_axes() -> None:
             {
                 "session": {
                     "descriptor_schema": "openai-realtime/v1",
-                    "metering": "broker-observed",
-                    "attachment": "inband-ws",
+                    "metering": "runner-reported",
+                    "attachment": "external",
                     "refill": "bounded",
                     "future_axis": True,
                 },

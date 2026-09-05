@@ -74,8 +74,8 @@ export interface SessionHandle {
 
 export interface SessionAxes {
   descriptor_schema: string;
-  attachment: "external" | "inband-ws";
-  metering: "runner-reported" | "broker-observed";
+  attachment: "external";
+  metering: "runner-reported";
   refill: "extensible" | "bounded";
   [key: string]: unknown;
 }

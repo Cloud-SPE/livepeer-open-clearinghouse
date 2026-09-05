@@ -17,8 +17,8 @@ class SessionAxesView(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
-    attachment: Literal["external", "inband-ws"] = "external"
-    metering: Literal["runner-reported", "broker-observed"]
+    attachment: Literal["external"] = "external"
+    metering: Literal["runner-reported"]
     refill: Literal["extensible", "bounded"] = "extensible"
 
 

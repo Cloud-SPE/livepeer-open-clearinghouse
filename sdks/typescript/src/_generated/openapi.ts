@@ -2553,14 +2553,14 @@ export interface components {
             /**
              * Attachment
              * @default external
-             * @enum {string}
+             * @constant
              */
-            attachment: "external" | "inband-ws";
+            attachment: "external";
             /**
              * Metering
-             * @enum {string}
+             * @constant
              */
-            metering: "runner-reported" | "broker-observed";
+            metering: "runner-reported";
             /**
              * Refill
              * @default extensible
@@ -2580,14 +2580,14 @@ export interface components {
             /**
              * Attachment
              * @default external
-             * @enum {string}
+             * @constant
              */
-            attachment: "external" | "inband-ws";
+            attachment: "external";
             /**
              * Metering
-             * @enum {string}
+             * @constant
              */
-            metering: "runner-reported" | "broker-observed";
+            metering: "runner-reported";
             /**
              * Refill
              * @default extensible

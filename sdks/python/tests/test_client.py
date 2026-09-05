@@ -475,9 +475,9 @@ async def test_open_session_returns_handle() -> None:
                 "request_id": "open-request",
                 "protocol": "paid-session/v1",
                 "session": {
-                    "descriptor_schema": "livepeer.session.test/v1",
+                    "descriptor_schema": "livepeer-session-test/v1",
                     "attachment": "external",
-                    "metering": "broker-observed",
+                    "metering": "runner-reported",
                     "refill": "extensible",
                 },
                 "payment_envelope": "BASE64SESSION",
@@ -493,7 +493,7 @@ async def test_open_session_returns_handle() -> None:
         handle = await client.open_session(
             capability="livepeer:vtuber-session",
             offering="vtuber-1080p30",
-            descriptor_schema="livepeer.session.test/v1",
+            descriptor_schema="livepeer-session-test/v1",
             estimated_runway_units=100,
             max_total_units=200,
         )
