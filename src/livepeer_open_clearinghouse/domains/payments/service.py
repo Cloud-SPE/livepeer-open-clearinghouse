@@ -168,7 +168,13 @@ async def complete_create_request(
     retention_seconds: int,
     payment_id: uuid.UUID | None = None,
 ) -> None:
-    """Record success in the same transaction as the business mutation."""
+    """Commit success and its business mutation before the caller responds.
+
+    FastAPI may send a response before request-scoped dependency teardown.
+    A flush here therefore leaves a window where the client has a 201 but an
+    immediate replay still observes the separately committed claim as
+    ``in_flight``. This commit is the response's durability barrier.
+    """
 
     row = await _require_create_request(session, user_id, operation, idempotency_key)
     row.status = "completed"
@@ -176,7 +182,7 @@ async def complete_create_request(
     row.response_payload = response_payload
     row.payment_id = payment_id
     row.expires_at = clock.now() + timedelta(seconds=retention_seconds)
-    await session.flush()
+    await session.commit()
 
 
 async def fail_create_request(

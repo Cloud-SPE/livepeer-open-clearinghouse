@@ -127,7 +127,7 @@ async def test_completed_claim_replays_stable_response(db: AsyncSession) -> None
         clock=clock,
         retention_seconds=3600,
     )
-    await db.commit()
+    assert not db.in_transaction(), "completion must be durable before HTTP returns"
 
     replay = await service.claim_create_request(
         db,
