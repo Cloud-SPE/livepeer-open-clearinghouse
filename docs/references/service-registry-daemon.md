@@ -166,7 +166,7 @@ schema_version: string
 |---|---|---|
 | `--mode=resolver` | — | daemon mode |
 | `--socket` | `/var/run/livepeer-service-registry.sock` | UDS path |
-| `--chain-rpc` | — | Ethereum JSON-RPC; required for chain discovery |
+| `--chain-rpc-urls` | — | Comma-separated Ethereum JSON-RPC endpoints, primary first; required for chain discovery |
 | `--chain-id` | `42161` | sanity-check |
 | `--service-registry-address` | (resolved via Controller) | `ServiceRegistry` contract |
 | `--store-path` | `/var/lib/livepeer/registry-cache.db` | BoltDB cache |

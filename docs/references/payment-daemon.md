@@ -178,10 +178,11 @@ No explicit expiry timestamp on the ticket; freshness is via
 | `--mode=sender` | required | daemon mode |
 | `--socket` | default `/var/run/livepeer/payer-daemon.sock` | UDS path |
 | `--db` | default `/var/lib/livepeer/payment-daemon/sessions.db` | durable mint idempotency, sender nonce watermarks, and session state |
-| `--chain-rpc` | required for prod | Ethereum JSON-RPC (Arbitrum) |
+| `--chain-rpc-urls` | required for prod | Comma-separated Ethereum JSON-RPC endpoints, primary first |
+| `--max-payment-wei` | required for prod | Maximum funded value one payment may authorize; operator circuit breaker |
 | `--keystore-path` | required for prod | V3 keystore file |
 | `--keystore-password-file` *or* `LIVEPEER_KEYSTORE_PASSWORD` | required for prod | keystore password |
-| `--dev-signing-key-hex` | dev only | raw hex key, rejected when `--chain-rpc` is set |
+| `--dev-signing-key-hex` | dev only | raw hex key, rejected when `--chain-rpc-urls` is set |
 | `--orch-address` | optional | cold orch identity (recipient embedded in tickets) |
 | `--chain-controller-address` | optional | override Controller address |
 | `--expected-chain-id` | default Arbitrum One | sanity-check |

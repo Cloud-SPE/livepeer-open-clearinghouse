@@ -6,7 +6,8 @@
 #   an Arbitrum RPC and the V3 keystore at ./.dev/keystore/, service-
 #   registry-daemon resolves orchestrators via the same chain RPC. Mirrors
 #   the wiring in livepeer-modules-openai's docker-compose.yml. To revert
-#   to the daemons' built-in dev keys, drop --chain-rpc and the keystore
+#   to the daemons' built-in dev keys, drop --chain-rpc-urls, the spend
+#   ceiling, and the keystore
 #   mounts from payment-daemon (the daemon will use devkeystore.New()).
 # - Shared `livepeer-run` named volume carries the UDS sockets between
 #   the daemons and the gateway.
@@ -37,12 +38,15 @@ services:
     command:
       - --mode=sender
       - --socket=/var/run/livepeer/payer-daemon.sock
-      - --chain-rpc=${CHAIN_RPC:-https://arb1.arbitrum.io/rpc}
+      - --db=/var/lib/livepeer/payment-daemon/sessions.db
+      - --chain-rpc-urls=${CHAIN_RPC_URLS:?set CHAIN_RPC_URLS to a comma-separated list of Arbitrum RPC endpoints, primary first}
+      - --max-payment-wei=${MAX_PAYMENT_WEI:?set MAX_PAYMENT_WEI to the largest funded value one payment may authorize}
       - --keystore-path=/etc/livepeer/keystore.json
       - --keystore-password-file=/etc/livepeer/keystore-password
     user: "65532:65532"
     volumes:
       - livepeer-run:/var/run/livepeer
+      - payment-daemon-data:/var/lib/livepeer/payment-daemon
       # Mount the whole keystore directory read-only at /etc/livepeer.
       # Provide your own at ./.dev/keystore/ or override LIVEPEER_KEYSTORE_DIR.
       - ${LIVEPEER_KEYSTORE_DIR:-./.dev/keystore}:/etc/livepeer:ro
@@ -54,7 +58,7 @@ services:
     command:
       - --mode=resolver
       - --socket=/var/run/livepeer/service-registry.sock
-      - --chain-rpc=${CHAIN_RPC:-https://arb1.arbitrum.io/rpc}
+      - --chain-rpc-urls=${CHAIN_RPC_URLS:?set CHAIN_RPC_URLS to a comma-separated list of Arbitrum RPC endpoints, primary first}
     user: "65532:65532"
     volumes:
       - livepeer-run:/var/run/livepeer
@@ -117,4 +121,5 @@ services:
 volumes:
   livepeer-open-clearinghouse-pgdata:
   livepeer-run:
+  payment-daemon-data:
   registry-cache:
