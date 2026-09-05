@@ -108,7 +108,7 @@ def build_mock_broker_app(
         }
         return JSONResponse(reply, status_code=default_status, headers=headers)
 
-    @app.post("/v1/cap/{broker_session_id}/topup")
+    @app.post("/v1/session/{broker_session_id}/topup")
     async def handle_topup(
         broker_session_id: str,
         request: Request,
@@ -117,7 +117,7 @@ def build_mock_broker_app(
         body_bytes = await request.body()
         app.state.requests.append(
             {
-                "path": f"/v1/cap/{broker_session_id}/topup",
+                "path": f"/v1/session/{broker_session_id}/topup",
                 "headers": dict(request.headers),
                 "body_bytes": body_bytes,
                 "had_payment_header": livepeer_payment is not None,

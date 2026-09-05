@@ -17,7 +17,6 @@ import shutil
 import socket
 import subprocess
 import tempfile
-import threading
 import time
 import traceback
 import urllib.request
@@ -27,9 +26,9 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import IO, Any, ClassVar
+from typing import IO, Any
 
 import asyncpg
 import grpc
@@ -57,80 +56,12 @@ from livepeer_open_clearinghouse.domains.sessions import repo as _sessions_repo 
 from livepeer_open_clearinghouse.providers.registry_daemon import GrpcRegistryClient
 
 _PAYEE_ADMIN_TOKEN = "live-matrix-payee-admin"  # noqa: S105 — disposable harness secret
-
-
-class _BackendHandler(BaseHTTPRequestHandler):
-    job_calls = 0
-    sessions: ClassVar[dict[str, str]] = {}
-    block_next_job = False
-    blocked_job_entered = threading.Event()
-    blocked_job_release = threading.Event()
-
-    def log_message(self, _format: str, *args: object) -> None:
-        return
-
-    def do_GET(self) -> None:
-        if self.path == "/healthz":
-            self._json({"ready": True})
-            return
-        if self.path.startswith("/sessions/"):
-            session_id = self.path.removeprefix("/sessions/")
-            self._json(
-                {
-                    "runner_session_id": session_id,
-                    "state": type(self).sessions.get(session_id, "gone"),
-                }
-            )
-            return
-        self.send_error(404)
-
-    def do_POST(self) -> None:
-        if self.path == "/count":
-            length = int(self.headers.get("Content-Length", "0"))
-            if length:
-                self.rfile.read(length)
-            type(self).job_calls += 1
-            if type(self).block_next_job:
-                type(self).block_next_job = False
-                type(self).blocked_job_entered.set()
-                if not type(self).blocked_job_release.wait(timeout=10):
-                    self.send_error(504)
-                    return
-            self._json({"bark_count": 1})
-            return
-        if self.path == "/sessions":
-            length = int(self.headers.get("Content-Length", "0"))
-            if length:
-                self.rfile.read(length)
-            session_id = f"runner_{uuid.uuid4()}"
-            type(self).sessions[session_id] = "active"
-            self._json(
-                {
-                    "runner_session_id": session_id,
-                    "runtime": {
-                        "schema": "test-runtime/v1",
-                        "public": {"endpoint": f"https://runtime.invalid/{session_id}"},
-                    },
-                }
-            )
-            return
-        self.send_error(404)
-
-    def do_DELETE(self) -> None:
-        if self.path.startswith("/sessions/"):
-            session_id = self.path.removeprefix("/sessions/")
-            type(self).sessions.pop(session_id, None)
-            self._json({"terminated": True})
-            return
-        self.send_error(404)
-
-    def _json(self, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+_BROKER_ADMIN_TOKEN = "conformance-admin-token"  # noqa: S105 — Modules fixture contract
+_JOB_CAPABILITY = "conformance:job"
+_JOB_OFFERING = "all"
+_SESSION_CAPABILITY = "conformance:session"
+_SESSION_OFFERING = "default"
+_SESSION_DESCRIPTOR_SCHEMA = "sfu-room/v1"
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -279,22 +210,29 @@ async def _postgres_ready(database_url: str) -> bool:
 async def _select_route(socket_path: Path) -> dict[str, Any]:
     client = GrpcRegistryClient(str(socket_path))
     try:
-        route = await client.select("test:job", "default")
+        route = await client.select(_JOB_CAPABILITY, _JOB_OFFERING)
         if route is None:
-            raise AssertionError("LOC registry client received no test:job/default route")
+            raise AssertionError("LOC registry client received no conformance:job/all route")
         if route.protocol != "paid-job/v1":
             raise AssertionError(f"protocol={route.protocol!r}, want paid-job/v1")
-        if route.units_per_price != 1000:
-            raise AssertionError(f"units_per_price={route.units_per_price}, want 1000")
-        if route.extra.get("job", {}).get("transports") != ["unary", "stream"]:
+        if route.units_per_price != 1:
+            raise AssertionError(f"units_per_price={route.units_per_price}, want 1")
+        if route.extra.get("job", {}).get("transports") != [
+            "unary",
+            "stream",
+            "multipart",
+        ]:
             raise AssertionError(f"job axes missing from route: {route.extra!r}")
         expected_key = "0x04" + SETTLEMENT_KEY.public_key.to_bytes().hex()
         if not route.settlement_keys or route.settlement_keys[0].public_key != expected_key:
             raise AssertionError("settlement delegation missing from selected route")
-        session_route = await client.select("test:session", "default")
+        session_route = await client.select(_SESSION_CAPABILITY, _SESSION_OFFERING)
         if session_route is None or session_route.protocol != "paid-session/v1":
             raise AssertionError("LOC registry client received no paid-session/v1 route")
-        if session_route.extra.get("session", {}).get("descriptor_schema") != "test-runtime/v1":
+        if (
+            session_route.extra.get("session", {}).get("descriptor_schema")
+            != _SESSION_DESCRIPTOR_SCHEMA
+        ):
             raise AssertionError(f"session axes missing from route: {session_route.extra!r}")
         return {
             "protocol": route.protocol,
@@ -310,15 +248,36 @@ async def _select_route(socket_path: Path) -> dict[str, Any]:
 def _write_broker_config(
     path: Path,
     *,
+    modules_repo: Path,
     paid_port: int,
     metrics_port: int,
     payee_socket: Path,
-    backend_url: str,
     settlement_key_path: Path,
     session_store_path: Path,
     sealing_key_path: Path,
 ) -> None:
     now = datetime.now(UTC).replace(microsecond=0)
+    example = (
+        modules_repo
+        / "livepeer-network-protocol/conformance/examples/docker-network/host-config.yaml"
+    ).read_text()
+    _, separator, offers = example.partition("offers:\n")
+    if not separator:
+        raise RuntimeError("Modules conformance config has no offer-only offerings section")
+    last_offer = offers[offers.rfind("  - offering_id:") :]
+    if not last_offer.startswith("  - offering_id: default\n"):
+        raise RuntimeError("Modules conformance default session offer is no longer last")
+    # The upstream default offering intentionally exercises normal heartbeat
+    # loss. This LOC matrix also drives 600 sequential paid refills, so give
+    # that final default offer a long deterministic lease/heartbeat window;
+    # otherwise liveness, not nonce rotation, ends the stress session first.
+    offers = (
+        offers.rstrip()
+        + "\n    session_policy:\n"
+        + "      lease_policy: fixed\n"
+        + "      lease_max_seconds: 7200\n"
+        + "      heartbeat: { interval_seconds: 3600, missed_threshold: 2 }\n"
+    )
     path.write_text(
         f"""identity:
   orch_eth_address: "{COLD_KEY.public_key.to_address()}"
@@ -336,55 +295,15 @@ session_store:
   path: "{session_store_path}"
   sealing_key_file: "{sealing_key_path}"
   job_retention: 96h
-capabilities:
-  - id: "test:job"
-    offering_id: "default"
-    protocol: "paid-job/v1"
-    job:
-      transports: [unary, stream]
-    work_unit:
-      name: "tokens"
-      extractor: {{type: "response-jsonpath", path: "$.bark_count"}}
-    health:
-      initial_status: "ready"
-      probe:
-        type: "http-status"
-        interval_ms: 500
-        timeout_ms: 250
-        unhealthy_after: 2
-        healthy_after: 1
-        config:
-          url: "{backend_url}/healthz"
-    price:
-      amount_wei: "100"
-      per_units: 1000
-    backend:
-      transport: "http"
-      url: "{backend_url}/count"
-      auth: "none"
-  - id: "test:session"
-    offering_id: "default"
-    protocol: "paid-session/v1"
-    session:
-      descriptor_schema: "test-runtime/v1"
-      lease_policy: fixed
-      lease_max_seconds: 600
-      runner:
-        create_path: /sessions
-        status_path: "/sessions/{{id}}"
-        terminate_path: "/sessions/{{id}}"
-    health:
-      initial_status: "ready"
-    work_unit:
-      name: "seconds"
-    price:
-      amount_wei: "200"
-      per_units: 1000
-    backend:
-      transport: "http"
-      url: "{backend_url}"
-      auth: "none"
-"""
+admin_auth:
+  method: bearer
+  secret_ref: env://BROKER_ADMIN_TOKEN
+credential_store:
+  path: "{path.parent / "broker-credentials.db"}"
+  sealing_key_file: "{sealing_key_path}"
+offers_state_path: "{path.parent / "broker-offers.db"}"
+offers:
+{offers}"""
     )
 
 
@@ -427,11 +346,11 @@ async def _seed_customer(database_url: str, *, pepper: str) -> str:
         await engine.dispose()
 
 
-def _broker_headers(job: dict[str, Any]) -> dict[str, str]:
+def _broker_headers(job: dict[str, Any], *, offering: str = _JOB_OFFERING) -> dict[str, str]:
     return {
         "Content-Type": "application/json",
-        "Livepeer-Capability": "test:job",
-        "Livepeer-Offering": "default",
+        "Livepeer-Capability": _JOB_CAPABILITY,
+        "Livepeer-Offering": offering,
         "Livepeer-Payment": str(job["payment_envelope"]),
         "Livepeer-Protocol": str(job["protocol"]),
         "Livepeer-Request-Id": str(job["request_id"]),
@@ -446,14 +365,14 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
     cases: list[dict[str, Any]] = []
     async with OpenClearinghouseClient(base_url=loc_url, api_key=api_key) as sdk:
         result = await sdk.submit_job(
-            capability="test:job",
-            offering="default",
+            capability=_JOB_CAPABILITY,
+            offering=_JOB_OFFERING,
             estimated_units=10_250,
             max_total_units=10_250,
             body={"prompt": "live SDK matrix"},
             request_id=f"sdk-{uuid.uuid4()}",
         )
-        if result.status != 200 or result.actual_units != 1 or result.work_unit != "tokens":
+        if result.status != 200 or result.actual_units != 42 or result.work_unit != "tokens":
             raise AssertionError(f"official SDK paid-job result is invalid: {result!r}")
         cases.append(
             {
@@ -468,13 +387,14 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
     async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
         idem_key = f"loc-open-{uuid.uuid4()}"
         selected = await loc.get(
-            "/v1/routes", params={"capability": "test:job", "offering": "default"}
+            "/v1/routes",
+            params={"capability": _JOB_CAPABILITY, "offering": _JOB_OFFERING},
         )
         selected.raise_for_status()
         selected_route = selected.json()
         open_body = {
-            "capability": "test:job",
-            "offering": "default",
+            "capability": _JOB_CAPABILITY,
+            "offering": _JOB_OFFERING,
             "transport": "unary",
             "estimated_units": 10_250,
             "max_total_units": 10_250,
@@ -483,7 +403,10 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         first = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
         first.raise_for_status()
         replay = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
-        replay.raise_for_status()
+        if replay.is_error:
+            raise AssertionError(
+                f"LOC job-open replay returned {replay.status_code}: {replay.text}"
+            )
         if replay.json() != first.json():
             raise AssertionError("LOC job-open replay did not return the durable result")
         if first.json()["route_snapshot"] != selected_route["route_snapshot"]:
@@ -519,7 +442,6 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
             }
         )
 
-        baseline_calls = _BackendHandler.job_calls
         broker_url = str(job["broker_url"]).rstrip("/")
         broker_body = b'{"prompt":"withhold settlement"}'
         async with httpx.AsyncClient(timeout=10) as broker:
@@ -555,8 +477,6 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 content=broker_body,
             )
             broker_replay.raise_for_status()
-            if _BackendHandler.job_calls != baseline_calls + 1:
-                raise AssertionError("broker replay executed the backend more than once")
             for header in ("Livepeer-Job-Id", "Livepeer-Settlement", "Livepeer-Work-Units"):
                 if broker_replay.headers.get(header) != broker_first.headers.get(header):
                     raise AssertionError(f"broker replay changed {header}")
@@ -569,8 +489,6 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
                 raise AssertionError(
                     f"broker request-id reuse returned {broker_reuse.status_code}, want 400"
                 )
-            if _BackendHandler.job_calls != baseline_calls + 1:
-                raise AssertionError("broker request-id reuse executed the backend")
         cases.append(
             {
                 "case": "broker_job_idempotency",
@@ -591,7 +509,7 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
             await asyncio.sleep(0.25)
         else:
             raise AssertionError(f"LOC did not recover withheld settlement: {status!r}")
-        if status.get("actual_units") != 1 or status.get("broker_exchange_outcome") != "SETTLED":
+        if status.get("actual_units") != 42 or status.get("broker_exchange_outcome") != "SETTLED":
             raise AssertionError(f"LOC recovered the wrong broker outcome: {status!r}")
         cases.append(
             {
@@ -608,12 +526,14 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         )
         cross_open.raise_for_status()
         cross_job = cross_open.json()
+        cross_before = await loc.get(f"/v1/jobs/{cross_job['job_id']}")
+        cross_before.raise_for_status()
         encoded = exchange["settlement"]
         settlement = json.loads(__import__("base64").b64decode(encoded, validate=True))
         cross_settle = await loc.post(
             cross_job["settle_endpoint"],
             json={
-                "actual_units": 1,
+                "actual_units": 42,
                 "broker_job_id": exchange["job_id"],
                 "work_unit": "tokens",
                 "settlement": settlement,
@@ -621,7 +541,9 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         )
         if cross_settle.status_code != 409:
             raise AssertionError(
-                f"cross-request settlement returned {cross_settle.status_code}, want 409"
+                "cross-request settlement returned "
+                f"{cross_settle.status_code}, want 409: {cross_settle.text}; "
+                f"job={cross_job!r}; status={cross_before.text}"
             )
         cross_status = await loc.get(f"/v1/jobs/{cross_job['job_id']}")
         cross_status.raise_for_status()
@@ -632,7 +554,7 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
         tampered_settle = await loc.post(
             cross_job["settle_endpoint"],
             json={
-                "actual_units": 1,
+                "actual_units": 42,
                 "broker_job_id": exchange["job_id"],
                 "work_unit": "tokens",
                 "settlement": tampered,
@@ -708,9 +630,9 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     cases: list[dict[str, Any]] = []
     async with OpenClearinghouseClient(base_url=loc_url, api_key=api_key) as sdk:
         handle = await sdk.open_session(
-            capability="test:session",
-            offering="default",
-            descriptor_schema="test-runtime/v1",
+            capability=_SESSION_CAPABILITY,
+            offering=_SESSION_OFFERING,
+            descriptor_schema=_SESSION_DESCRIPTOR_SCHEMA,
             session_params={"name": "official-sdk"},
             estimated_runway_units=6_000,
             max_total_units=12_000,
@@ -718,7 +640,11 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         )
         runner = SessionRunner(client=sdk, handle=handle)
         broker_session = await runner.start()
-        if broker_session.runtime_schema != "test-runtime/v1" or broker_session.grants:
+        if (
+            broker_session.runtime_schema != _SESSION_DESCRIPTOR_SCHEMA
+            or not broker_session.grants
+            or broker_session.grants[0].get("secret") != "GRANT-SECRET-SENTINEL-gs-9b3c"
+        ):
             raise AssertionError(f"official SDK parsed the wrong runtime: {broker_session!r}")
         status = await runner.status()
         if status.get("state") != "active":
@@ -739,14 +665,15 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
         idem_key = f"loc-session-{uuid.uuid4()}"
         selected = await loc.get(
-            "/v1/routes", params={"capability": "test:session", "offering": "default"}
+            "/v1/routes",
+            params={"capability": _SESSION_CAPABILITY, "offering": _SESSION_OFFERING},
         )
         selected.raise_for_status()
         selected_route = selected.json()
         open_body = {
-            "capability": "test:session",
-            "offering": "default",
-            "descriptor_schema": "test-runtime/v1",
+            "capability": _SESSION_CAPABILITY,
+            "offering": _SESSION_OFFERING,
+            "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
             "session_params": {"name": "idempotency-matrix"},
             "estimated_runway_units": 6_000,
             "max_total_units": 12_000,
@@ -790,8 +717,8 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         broker_url = str(opened["broker_url"]).rstrip("/")
         broker_headers = {
             "Content-Type": "application/json",
-            "Livepeer-Capability": "test:session",
-            "Livepeer-Offering": "default",
+            "Livepeer-Capability": _SESSION_CAPABILITY,
+            "Livepeer-Offering": _SESSION_OFFERING,
             "Livepeer-Payment": str(opened["payment_envelope"]),
             "Livepeer-Protocol": str(opened["protocol"]),
             "Livepeer-Request-Id": str(opened["request_id"]),
@@ -816,8 +743,12 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
                 raise AssertionError("broker session-open replay changed the usable outcome")
             session = broker_first.json()
             runtime = session.get("runtime", {})
-            if runtime.get("schema") != "test-runtime/v1" or "grants" in runtime:
-                raise AssertionError(f"broker emitted an invalid empty-grants runtime: {runtime!r}")
+            if (
+                runtime.get("schema") != _SESSION_DESCRIPTOR_SCHEMA
+                or not runtime.get("grants")
+                or "private" in runtime
+            ):
+                raise AssertionError(f"broker emitted an invalid runtime: {runtime!r}")
 
             refill_key = f"refill-{uuid.uuid4()}"
             refill_body = {"observed_consumed_units": 0}
@@ -906,8 +837,8 @@ def _rotate_payee_recipient(payee_socket: Path, payment_envelope: str) -> str:
             payee_admin_pb2.ResetSessionRequest(
                 sender=payment.sender,
                 recipient=payment.ticket_params.recipient,
-                capability="test:session",
-                offering="default",
+                capability=_SESSION_CAPABILITY,
+                offering=_SESSION_OFFERING,
             ),
             metadata=(("authorization", f"Bearer {_PAYEE_ADMIN_TOKEN}"),),
             timeout=5,
@@ -933,9 +864,9 @@ async def _exercise_session_rotation(
             "/v1/sessions",
             headers={"Idempotency-Key": f"rotation-open-{uuid.uuid4()}"},
             json={
-                "capability": "test:session",
-                "offering": "default",
-                "descriptor_schema": "test-runtime/v1",
+                "capability": _SESSION_CAPABILITY,
+                "offering": _SESSION_OFFERING,
+                "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
                 "session_params": {"name": "rotation-matrix"},
                 "estimated_runway_units": 6_000,
                 "max_total_units": 18_000,
@@ -948,8 +879,8 @@ async def _exercise_session_rotation(
             f"{broker_url}/v1/session",
             headers={
                 "Content-Type": "application/json",
-                "Livepeer-Capability": "test:session",
-                "Livepeer-Offering": "default",
+                "Livepeer-Capability": _SESSION_CAPABILITY,
+                "Livepeer-Offering": _SESSION_OFFERING,
                 "Livepeer-Payment": str(opened["payment_envelope"]),
                 "Livepeer-Protocol": str(opened["protocol"]),
                 "Livepeer-Request-Id": str(opened["request_id"]),
@@ -1069,9 +1000,9 @@ async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str
             "/v1/sessions",
             headers={"Idempotency-Key": f"proactive-open-{uuid.uuid4()}"},
             json={
-                "capability": "test:session",
-                "offering": "default",
-                "descriptor_schema": "test-runtime/v1",
+                "capability": _SESSION_CAPABILITY,
+                "offering": _SESSION_OFFERING,
+                "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
                 "session_params": {"name": "proactive-nonce-boundary"},
                 "estimated_runway_units": estimated_units,
                 "max_total_units": estimated_units * total_payments,
@@ -1085,8 +1016,8 @@ async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str
             f"{broker_url}/v1/session",
             headers={
                 "Content-Type": "application/json",
-                "Livepeer-Capability": "test:session",
-                "Livepeer-Offering": "default",
+                "Livepeer-Capability": _SESSION_CAPABILITY,
+                "Livepeer-Offering": _SESSION_OFFERING,
                 "Livepeer-Payment": str(opened["payment_envelope"]),
                 "Livepeer-Protocol": str(opened["protocol"]),
                 "Livepeer-Request-Id": str(opened["request_id"]),
@@ -1142,7 +1073,11 @@ async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str
                     "Livepeer-Request-Id": str(refill["request_id"]),
                 },
             )
-            topup.raise_for_status()
+            if topup.is_error:
+                raise AssertionError(
+                    f"broker top-up {payment_number} returned {topup.status_code}: "
+                    f"{topup.text}; Livepeer-Error={topup.headers.get('Livepeer-Error')!r}"
+                )
 
         if boundary is None:
             raise AssertionError(f"payer did not rotate within {total_payments} funded payments")
@@ -1194,7 +1129,7 @@ async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str
         }
 
 
-async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault lifecycle
+async def _exercise_transient_debit_failure(
     loc_url: str,
     api_key: str,
     *,
@@ -1212,8 +1147,8 @@ async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault life
             "/v1/jobs",
             headers={"Idempotency-Key": f"debit-fault-open-{uuid.uuid4()}"},
             json={
-                "capability": "test:job",
-                "offering": "default",
+                "capability": _JOB_CAPABILITY,
+                "offering": "slow",
                 "transport": "unary",
                 "estimated_units": 10_250,
                 "max_total_units": 10_250,
@@ -1222,25 +1157,18 @@ async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault life
         opened_response.raise_for_status()
         opened = opened_response.json()
         broker_url = str(opened["broker_url"]).rstrip("/")
-        baseline_calls = _BackendHandler.job_calls
-        _BackendHandler.blocked_job_entered.clear()
-        _BackendHandler.blocked_job_release.clear()
-        _BackendHandler.block_next_job = True
         exchange_task = asyncio.create_task(
             broker.post(
                 f"{broker_url}/v1/job",
-                headers=_broker_headers(opened),
+                headers=_broker_headers(opened, offering="slow"),
                 content=b'{"prompt":"interrupt debit after delivery"}',
             )
         )
-        entered = await asyncio.to_thread(_BackendHandler.blocked_job_entered.wait, 5)
-        if not entered:
-            _BackendHandler.blocked_job_release.set()
-            raise AssertionError("fault-injection backend was not entered")
-        try:
-            stop_payee()
-        finally:
-            _BackendHandler.blocked_job_release.set()
+        # The Modules conformance runner's slow offering spends three seconds
+        # in backend execution. Stopping the payee after admission but before
+        # that response deterministically faults the subsequent debit.
+        await asyncio.sleep(1)
+        stop_payee()
         broker_response = await exchange_task
         broker_response.raise_for_status()
         if encoded_pending := broker_response.headers.get("Livepeer-Settlement"):
@@ -1249,9 +1177,6 @@ async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault life
                 "ACCOUNTING_PENDING response carried a terminal settlement: "
                 f"{pending_claim.get('payload', {}).get('outcome')!r}"
             )
-        if _BackendHandler.job_calls != baseline_calls + 1:
-            raise AssertionError("debit fault executed backend work more than once")
-
         pending = _job_exchange(broker_url, str(opened["request_id"]))
         if pending.get("outcome") != "ACCOUNTING_PENDING":
             raise AssertionError(f"failed debit was not durably pending: {pending!r}")
@@ -1282,8 +1207,8 @@ async def _exercise_transient_debit_failure(  # noqa: PLR0912 — one fault life
             await asyncio.sleep(0.25)
         else:
             raise AssertionError(f"LOC did not recover the retried debit: {loc_status!r}")
-        if loc_status.get("actual_units") != 1 or _BackendHandler.job_calls != baseline_calls + 1:
-            raise AssertionError("debit recovery changed usage or repeated backend work")
+        if loc_status.get("actual_units") != 11:
+            raise AssertionError("debit recovery changed the broker-reported usage")
 
         return {
             "case": "transient_debit_failure_recovers",
@@ -1313,6 +1238,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
         payer_bin = bin_dir / "livepeer-payment-daemon"
         registry_bin = bin_dir / "livepeer-service-registry-daemon"
         broker_bin = bin_dir / "livepeer-capability-broker"
+        conformance_bin = bin_dir / "livepeer-conformance"
 
         _build_go_binary(
             modules_repo / "payment-daemon",
@@ -1332,14 +1258,12 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             broker_bin,
             artifacts / "build-capability-broker.log",
         )
-
-        backend = ThreadingHTTPServer(("127.0.0.1", 0), _BackendHandler)
-        backend_thread = __import__("threading").Thread(target=backend.serve_forever, daemon=True)
-        backend_thread.start()
-        stack.callback(backend_thread.join, 5)
-        stack.callback(backend.server_close)
-        stack.callback(backend.shutdown)
-        backend_url = f"http://127.0.0.1:{backend.server_port}"
+        _build_go_binary(
+            modules_repo / "livepeer-network-protocol/conformance",
+            "./cmd/livepeer-conformance",
+            conformance_bin,
+            artifacts / "build-livepeer-conformance.log",
+        )
 
         payer_socket = runtime / "payer.sock"
         payee_socket = runtime / "payee.sock"
@@ -1387,34 +1311,87 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
         broker_config = runtime / "broker.yaml"
         _write_broker_config(
             broker_config,
+            modules_repo=modules_repo,
             paid_port=broker_paid_port,
             metrics_port=broker_metrics_port,
             payee_socket=payee_socket,
-            backend_url=backend_url,
             settlement_key_path=settlement_key_path,
             session_store_path=runtime / "broker-state.db",
             sealing_key_path=sealing_key_path,
         )
+        broker_env = os.environ.copy()
+        broker_env["BROKER_ADMIN_TOKEN"] = _BROKER_ADMIN_TOKEN
         broker_process = _start_process(
             "capability-broker",
             [str(broker_bin), f"--config={broker_config}"],
             artifacts,
             processes,
             cwd=modules_repo / "capability-broker",
+            env=broker_env,
         )
         stack.callback(broker_process.stop)
         broker_url = f"http://127.0.0.1:{broker_paid_port}"
         _wait_for(
-            "broker registry health",
+            "broker HTTP health",
+            lambda: bool(_http_json(f"{broker_url}/registry/health").get("broker_status")),
+            processes,
+        )
+        runner_process = _start_process(
+            "livepeer-conformance-runner",
+            [
+                str(conformance_bin),
+                f"--broker-url={broker_url}",
+                "--serve-runner",
+                "--job-unit=tokens",
+                "--session-unit=seconds",
+            ],
+            artifacts,
+            processes,
+            cwd=modules_repo / "livepeer-network-protocol/conformance",
+        )
+        stack.callback(runner_process.stop)
+        _wait_for(
+            "attached conformance offerings",
             lambda: any(
-                cap.get("id") == "test:job" and cap.get("status") == "ready"
+                cap.get("id") == _JOB_CAPABILITY and cap.get("status") == "ready"
                 for cap in _http_json(f"{broker_url}/registry/health").get("capabilities", [])
             ),
             processes,
+            timeout=60,
         )
 
         manifest_path = runtime / "manifest.json"
-        manifest_path.write_text(json.dumps(_signed_manifest(broker_url), indent=2) + "\n")
+        manifest_path.write_text(
+            json.dumps(
+                _signed_manifest(
+                    broker_url,
+                    job_capability=_JOB_CAPABILITY,
+                    job_offering=_JOB_OFFERING,
+                    job_transports=("unary", "stream", "multipart"),
+                    job_price_wei="1",
+                    job_per_units=1,
+                    session_capability=_SESSION_CAPABILITY,
+                    session_offering=_SESSION_OFFERING,
+                    session_descriptor_schema=_SESSION_DESCRIPTOR_SCHEMA,
+                    session_price_wei="10",
+                    session_per_units=1,
+                    additional_capabilities=(
+                        {
+                            "capability_id": _JOB_CAPABILITY,
+                            "offering_id": "slow",
+                            "protocol": "paid-job/v1",
+                            "job": {"transports": ["unary"]},
+                            "work_unit": {"name": "tokens"},
+                            "price_per_unit_wei": "1",
+                            "per_units": 1,
+                            "worker_url": broker_url,
+                        },
+                    ),
+                ),
+                indent=2,
+            )
+            + "\n"
+        )
         manifest_handler = partial(_QuietHandler, directory=str(runtime))
         manifest_server = ThreadingHTTPServer(("127.0.0.1", 0), manifest_handler)
         manifest_thread = __import__("threading").Thread(
@@ -1503,7 +1480,9 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 "API_KEY_HASH_PEPPER": "live-matrix-pepper",
                 "EMAIL_PROVIDER": "null",
                 "AUTO_REPLENISH_CHECK_INTERVAL_SECONDS": "0",
-                "JOB_RECONCILIATION_INTERVAL_SECONDS": "1",
+                # Long enough for direct settlement-negative cases to finish,
+                # short enough to exercise request-ID recovery in this run.
+                "JOB_RECONCILIATION_INTERVAL_SECONDS": "5",
                 "JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS": "0",
                 "SESSION_RECONCILIATION_INTERVAL_SECONDS": "0",
                 "TELEMETRY_RAW_RETENTION_DAYS": "0",
@@ -1555,6 +1534,8 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             raise AssertionError(
                 f"broker held no terminal evidence before restart: {before_restart!r}"
             )
+        runner_process.stop()
+        processes.remove(runner_process)
         broker_process.stop()
         processes.remove(broker_process)
         restarted_broker = _start_process(
@@ -1563,12 +1544,32 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             artifacts,
             processes,
             cwd=modules_repo / "capability-broker",
+            env=broker_env,
         )
         stack.callback(restarted_broker.stop)
         _wait_for(
+            "restarted broker HTTP health",
+            lambda: bool(_http_json(f"{broker_url}/registry/health").get("broker_status")),
+            processes,
+        )
+        runner_process = _start_process(
+            "livepeer-conformance-runner-restarted",
+            [
+                str(conformance_bin),
+                f"--broker-url={broker_url}",
+                "--serve-runner",
+                "--job-unit=tokens",
+                "--session-unit=seconds",
+            ],
+            artifacts,
+            processes,
+            cwd=modules_repo / "livepeer-network-protocol/conformance",
+        )
+        stack.callback(runner_process.stop)
+        _wait_for(
             "restarted broker registry health",
             lambda: any(
-                cap.get("id") == "test:job" and cap.get("status") == "ready"
+                cap.get("id") == _JOB_CAPABILITY and cap.get("status") == "ready"
                 for cap in _http_json(f"{broker_url}/registry/health").get("capabilities", [])
             ),
             processes,

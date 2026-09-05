@@ -131,6 +131,12 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
             )
         status = int(resp_spec.get("status", 200))
         body = resp_spec.get("body", {})
+        # Scenario files stay port-independent. The mock knows its own bound
+        # URL at request time, so broker-issued control URLs can use the same
+        # placeholder as LOC's canned open response.
+        body = json.loads(
+            json.dumps(body).replace("{BROKER_URL}", str(request.base_url).rstrip("/"))
+        )
         out_headers = {str(k): str(v) for k, v in resp_spec.get("headers", {}).items()}
         return JSONResponse(status_code=status, content=body, headers=out_headers)
 
@@ -146,13 +152,17 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
     async def session_open(request: Request) -> JSONResponse:
         return await _record_and_respond("POST", "/v1/session", request)
 
-    @app.post("/v1/cap/{session_id}/topup")
-    async def cap_topup(session_id: str, request: Request) -> JSONResponse:
-        return await _record_and_respond("POST", f"/v1/cap/{session_id}/topup", request)
+    @app.get("/v1/session/{session_id}")
+    async def session_status(session_id: str, request: Request) -> JSONResponse:
+        return await _record_and_respond("GET", f"/v1/session/{session_id}", request)
 
-    @app.post("/v1/cap/{session_id}/end")
-    async def cap_end(session_id: str, request: Request) -> JSONResponse:
-        return await _record_and_respond("POST", f"/v1/cap/{session_id}/end", request)
+    @app.post("/v1/session/{session_id}/topup")
+    async def session_topup(session_id: str, request: Request) -> JSONResponse:
+        return await _record_and_respond("POST", f"/v1/session/{session_id}/topup", request)
+
+    @app.post("/v1/session/{session_id}/end")
+    async def session_end(session_id: str, request: Request) -> JSONResponse:
+        return await _record_and_respond("POST", f"/v1/session/{session_id}/end", request)
 
     @app.post("/topup")
     async def topup_root(request: Request) -> JSONResponse:

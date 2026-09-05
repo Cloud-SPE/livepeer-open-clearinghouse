@@ -51,7 +51,22 @@ def _sign_personal(payload: bytes, key: PrivateKey) -> str:
     return "0x" + signature.hex()
 
 
-def _signed_manifest(worker_url: str) -> dict[str, Any]:
+def _signed_manifest(
+    worker_url: str,
+    *,
+    job_capability: str = "test:job",
+    job_offering: str = "default",
+    job_transports: tuple[str, ...] = ("unary", "stream"),
+    job_price_wei: str = "100",
+    job_per_units: int = 1000,
+    session_capability: str = "test:session",
+    session_offering: str = "default",
+    session_descriptor_schema: str = "test-runtime/v1",
+    session_price_wei: str = "200",
+    session_per_units: int = 1000,
+    session_work_unit: str = "seconds",
+    additional_capabilities: tuple[dict[str, Any], ...] = (),
+) -> dict[str, Any]:
     now = datetime.now(UTC).replace(microsecond=0)
     manifest: dict[str, Any] = {
         "spec_version": "1.0.0",
@@ -68,30 +83,31 @@ def _signed_manifest(worker_url: str) -> dict[str, Any]:
         ],
         "capabilities": [
             {
-                "capability_id": "test:job",
-                "offering_id": "default",
+                "capability_id": job_capability,
+                "offering_id": job_offering,
                 "protocol": "paid-job/v1",
-                "job": {"transports": ["unary", "stream"]},
+                "job": {"transports": list(job_transports)},
                 "work_unit": {"name": "tokens"},
-                "price_per_unit_wei": "100",
-                "per_units": 1000,
+                "price_per_unit_wei": job_price_wei,
+                "per_units": job_per_units,
                 "worker_url": worker_url,
             },
             {
-                "capability_id": "test:session",
-                "offering_id": "default",
+                "capability_id": session_capability,
+                "offering_id": session_offering,
                 "protocol": "paid-session/v1",
                 "session": {
-                    "descriptor_schema": "test-runtime/v1",
+                    "descriptor_schema": session_descriptor_schema,
                     "attachment": "external",
                     "metering": "runner-reported",
                     "refill": "extensible",
                 },
-                "work_unit": {"name": "seconds"},
-                "price_per_unit_wei": "200",
-                "per_units": 1000,
+                "work_unit": {"name": session_work_unit},
+                "price_per_unit_wei": session_price_wei,
+                "per_units": session_per_units,
                 "worker_url": worker_url,
             },
+            *additional_capabilities,
         ],
     }
     return {

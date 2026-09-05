@@ -12,7 +12,7 @@
           "broker_url": "{BROKER_URL}",
           "protocol": "paid-session/v1",
           "session": {
-            "descriptor_schema": "livepeer.session.test/v1",
+            "descriptor_schema": "livepeer-session-test/v1",
             "attachment": "external",
             "metering": "runner-reported",
             "refill": "extensible"
@@ -63,5 +63,73 @@
       }
     }
   },
-  "broker": { "responses": {} }
+  "broker": {
+    "responses": {
+      "POST /v1/session": {
+        "status": 200,
+        "body": {
+          "session_id": "broker-session",
+          "work_id": "wid",
+          "state": "active",
+          "runtime": {
+            "schema": "livepeer-session-test/v1",
+            "public": { "endpoint": "https://runtime.invalid/broker-session" },
+            "grants": []
+          },
+          "credential": "broker-session-credential",
+          "lease": { "expires_at": "2026-08-21T13:00:00Z" },
+          "balance": {
+            "status": "ok",
+            "claimed_units": 0,
+            "debited_units": 0,
+            "unit": "participant_minutes",
+            "runway_units": 100,
+            "runway_seconds_estimate": 6000,
+            "will_refuse_next_refill": false
+          },
+          "control": {
+            "status_url": "{BROKER_URL}/v1/session/broker-session",
+            "topup_url": "{BROKER_URL}/v1/session/broker-session/topup",
+            "end_url": "{BROKER_URL}/v1/session/broker-session/end"
+          }
+        }
+      },
+      "GET /v1/session/{session_id}": {
+        "status": 200,
+        "body": {
+          "state": "active",
+          "balance": {
+            "status": "ok",
+            "claimed_units": 0,
+            "debited_units": 0,
+            "unit": "participant_minutes",
+            "runway_units": 100,
+            "runway_seconds_estimate": 6000,
+            "will_refuse_next_refill": false
+          }
+        }
+      },
+      "POST /v1/session/{session_id}/topup": {
+        "status": 200,
+        "body": {
+          "balance": {
+            "status": "ok",
+            "claimed_units": 40,
+            "debited_units": 40,
+            "unit": "participant_minutes",
+            "runway_units": 110,
+            "runway_seconds_estimate": 6600,
+            "will_refuse_next_refill": false
+          }
+        }
+      },
+      "POST /v1/session/{session_id}/end": {
+        "status": 200,
+        "headers": {
+          "Livepeer-Settlement": "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0="
+        },
+        "body": {}
+      }
+    }
+  }
 }

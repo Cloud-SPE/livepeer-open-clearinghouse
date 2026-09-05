@@ -54,8 +54,9 @@ process is started) lives in the per-language runner.
   },
   "broker": {
     "responses": {
-      "POST /v1/cap": { ... },
-      "WS /v1/session/stream": { "frames": [...] }
+      "POST /v1/session": { ... },
+      "POST /v1/session/{session_id}/topup": { ... },
+      "POST /v1/session/{session_id}/end": { ... }
     }
   },
   "expected_calls": {
@@ -84,8 +85,8 @@ external services are required.
 - Settle retry on 5xx / 429 / transport errors; fail-fast on 4xx
 - `paid-job/v1` protocol, transport, request identity, work-unit, job-id, and
   signed-settlement wire fields
-- `paid-session/v1` declared descriptor/metering/refill axes and signed close
-  forwarding
+- `paid-session/v1` broker open, status, top-up and end through the SDK's
+  `SessionRunner`, including signed close forwarding to LOC
 - Winddown callback fires for (d-bounded) when cap_status reports imminent
 - All mandatory `session.*` and `request.*` telemetry events emitted
 

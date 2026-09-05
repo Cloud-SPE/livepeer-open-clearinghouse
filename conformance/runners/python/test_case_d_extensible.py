@@ -15,6 +15,7 @@ that the SDK identity header is present on every LOC call.
 from __future__ import annotations
 
 import pytest
+from livepeer_open_clearinghouse_sdk.session_runner import SessionBalance, SessionRunner
 
 
 @pytest.mark.asyncio
@@ -23,24 +24,28 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> Non
     handle = await sdk_client.open_session(
         capability="cap.live",
         offering="off.live",
-        descriptor_schema="livepeer.session.test/v1",
+        descriptor_schema="livepeer-session-test/v1",
         estimated_runway_units=100,
         max_total_units=500,
     )
     assert handle.session_id is not None
 
-    refill_result = await sdk_client.refill_session(
-        session_id=handle.session_id,
-        observed_consumed_units=40,
+    runner = SessionRunner(client=sdk_client, handle=handle)
+    broker_session = await runner.start()
+    assert broker_session.runtime_schema == "livepeer-session-test/v1"
+    assert (await runner.status())["state"] == "active"
+    await runner.on_balance(
+        SessionBalance(
+            status="low",
+            claimed_units=40,
+            debited_units=40,
+            unit="participant_minutes",
+            runway_units=10,
+            runway_seconds_estimate=600,
+            will_refuse_next_refill=False,
+        )
     )
-    assert refill_result is not None
-    assert refill_result["payment_envelope"] == "REFILL-ENV"
-
-    close_result = await sdk_client.close_session(
-        session_id=handle.session_id,
-        actual_units=60,
-        settlement={"payload": {}, "signature": {}},
-    )
+    close_result = await runner.close(actual_units=60)
     assert close_result["outcome"] == "OK"
     assert close_result["actual_units"] == 60
     assert close_result["refund_wei"] == 190000
@@ -64,13 +69,8 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> Non
     # Telemetry was delivered.
     assert any(c["path"] == "/v1/telemetry" for c in loc), "no telemetry batches delivered"
 
-    # The raw ``open_session`` path returns the handle without
-    # contacting the broker — that's the SessionRunner's job for
-    # (d-extensible) modes. A dedicated SessionRunner conformance
-    # scenario would assert the broker handshake separately; here
-    # we record that no broker traffic is expected from open alone.
-    cap_calls = [c for c in broker if c["path"] == "/v1/cap"]
-    assert cap_calls == [], (
-        "raw open_session/refill/close should not contact the broker; "
-        f"got {len(cap_calls)} /v1/cap calls"
-    )
+    broker_paths = [(c["method"], c["path"]) for c in broker]
+    assert ("POST", "/v1/session") in broker_paths
+    assert ("GET", "/v1/session/broker-session") in broker_paths
+    assert ("POST", "/v1/session/broker-session/topup") in broker_paths
+    assert ("POST", "/v1/session/broker-session/end") in broker_paths
