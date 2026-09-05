@@ -39,7 +39,7 @@ dependencies = [
     "resend>=2.4",
     "rfc8785>=0.1.4",
     "eth-keys>=0.7",
-    "eth-hash>=0.7",
+    "eth-hash[pycryptodome]>=0.7",
 ]
 
 [project.urls]

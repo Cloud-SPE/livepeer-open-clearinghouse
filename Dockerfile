@@ -61,6 +61,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable \
         --reinstall-package livepeer-open-clearinghouse
 
+# Settlement verification is a billing boundary.  Importing eth-hash alone
+# does not prove a Keccak backend made it into the production dependency set.
+RUN /opt/venv/bin/python -c "from eth_hash.auto import keccak; assert len(keccak(b'')) == 32"
+
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
