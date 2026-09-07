@@ -657,3 +657,92 @@ async def test_get_session_status_round_trip() -> None:
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
         result = await client.get_session_status(sid)
     assert result["state"] == "open"
+
+
+# ----- model injection from the route -------------------------------
+
+
+def _job_open_with_model(jid: str, model: str | None) -> dict:
+    data = _job_open(jid)
+    extra = {"openai": {"model": model}} if model else {}
+    data["route_snapshot"] = {"schema_version": "route-snapshot/v1", "extra": extra}
+    return data
+
+
+@respx.mock
+async def test_submit_job_fills_model_from_route_for_openai_capabilities() -> None:
+    jid = "00000000-0000-0000-0000-00000000f00d"
+    respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open_with_model(jid, "Qwen3.6-27B"))
+    )
+    broker = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(5))
+    )
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=5))
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await client.submit_job(
+            capability="openai:chat-completions",
+            offering="qwen3.6-27b",
+            estimated_units=10,
+            max_total_units=10,
+            body={"messages": [{"role": "user", "content": "hi"}]},
+        )
+    sent = json.loads(broker.calls[0].request.content)
+    assert sent["model"] == "Qwen3.6-27B"
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+
+
+@respx.mock
+async def test_submit_job_keeps_explicit_model_and_non_openai_bodies() -> None:
+    jid = "00000000-0000-0000-0000-00000000f00e"
+    respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open_with_model(jid, "Qwen3.6-27B"))
+    )
+    broker = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(5))
+    )
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=5))
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await client.submit_job(
+            capability="openai:chat-completions",
+            offering="qwen3.6-27b",
+            estimated_units=10,
+            max_total_units=10,
+            body={"model": "custom", "prompt": "x"},
+        )
+        await client.submit_job(
+            capability="video:transcode.vod",
+            offering="vod-default",
+            estimated_units=10,
+            max_total_units=10,
+            body={"schema": "video-transcode-vod/v2"},
+        )
+    assert json.loads(broker.calls[0].request.content)["model"] == "custom"
+    assert "model" not in json.loads(broker.calls[1].request.content)
+
+
+@respx.mock
+async def test_submit_job_leaves_body_alone_when_route_has_no_model() -> None:
+    jid = "00000000-0000-0000-0000-00000000f00f"
+    respx.post(f"{BASE}/v1/jobs").mock(
+        return_value=httpx.Response(201, json=_job_open_with_model(jid, None))
+    )
+    broker = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(5))
+    )
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=5))
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await client.submit_job(
+            capability="openai:chat-completions",
+            offering="qwen3.6-27b",
+            estimated_units=10,
+            max_total_units=10,
+            body={"prompt": "x"},
+        )
+    assert "model" not in json.loads(broker.calls[0].request.content)

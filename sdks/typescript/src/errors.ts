@@ -131,14 +131,25 @@ export function fromResponse(args: {
   const envCode = envelope.code;
   const envMessage = envelope.message;
   const dictDetail = dict.detail;
+  // FastAPI validation errors (422) carry `detail` as a list of
+  // `{type, loc, msg}` records (occasionally a single object). Those are
+  // not LOC error codes: leave `code` null, surface a compact JSON
+  // rendering as the message, and keep the raw value in `details`.
+  const structuredDetail =
+    dictDetail !== undefined && dictDetail !== null && typeof dictDetail !== "string";
   const code =
     (typeof envCode === "string" ? envCode : null) ??
     (typeof dictDetail === "string" ? dictDetail : null);
   const message =
     (typeof envMessage === "string" ? envMessage : null) ??
     (typeof dictDetail === "string" ? dictDetail : null) ??
+    (structuredDetail ? compactJson(dictDetail) : null) ??
     `HTTP ${String(args.status)}`;
-  const details = isRecord(envelope.details) ? envelope.details : {};
+  const details = isRecord(envelope.details)
+    ? envelope.details
+    : structuredDetail
+      ? { detail: dictDetail }
+      : {};
 
   const body: ErrorBody = {
     status: args.status,
@@ -149,6 +160,20 @@ export function fromResponse(args: {
   };
   const Cls = code ? (CODE_MAP[code] ?? OpenClearinghouseError) : OpenClearinghouseError;
   return new Cls(body);
+}
+
+const MAX_DETAIL_MESSAGE_CHARS = 500;
+
+/** Compact JSON rendering of an arbitrary value, capped for log lines. Never throws. */
+function compactJson(value: unknown): string {
+  let text: string;
+  try {
+    // Inputs come from JSON.parse, so stringify never yields undefined.
+    text = JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  return text.length > MAX_DETAIL_MESSAGE_CHARS ? text.slice(0, MAX_DETAIL_MESSAGE_CHARS) : text;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

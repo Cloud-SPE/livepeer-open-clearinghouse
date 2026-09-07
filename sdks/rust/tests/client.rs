@@ -478,3 +478,224 @@ async fn list_capabilities_unwraps_items() {
     let caps = client.list_capabilities().await.unwrap();
     assert_eq!(caps[0].name, "openai:embeddings");
 }
+
+// ---- model injection from the route (openai:* capabilities) ----
+
+fn job_open_with_route_model(broker_url: &str, model: Option<&str>) -> serde_json::Value {
+    let mut open = job_open_payload(broker_url);
+    let openai = model.map_or_else(|| json!({}), |m| json!({ "model": m }));
+    open["route_snapshot"] = json!({
+        "worker_url": broker_url,
+        "price_per_work_unit_wei": "1000",
+        "extra": { "openai": openai }
+    });
+    open
+}
+
+async fn mount_broker_and_settle(
+    loc: &MockServer,
+    broker: &MockServer,
+    expected_body: serde_json::Value,
+) {
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .and(body_json(expected_body))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "reply": "ok" }))
+                .insert_header("Livepeer-Work-Units", "1")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .expect(1)
+        .mount(broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(1)))
+        .mount(loc)
+        .await;
+}
+
+#[tokio::test]
+async fn submit_job_injects_model_from_route_for_openai() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(job_open_with_route_model(
+                &broker.uri(),
+                Some("qwen3.6-27b"),
+            )),
+        )
+        .mount(&loc)
+        .await;
+    mount_broker_and_settle(
+        &loc,
+        &broker,
+        json!({ "messages": [{ "role": "user", "content": "hi" }], "model": "qwen3.6-27b" }),
+    )
+    .await;
+
+    let result = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "qwen3.6-27b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({ "messages": [{ "role": "user", "content": "hi" }] })),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit with injected model");
+    assert_eq!(result.actual_units, 1);
+}
+
+#[tokio::test]
+async fn submit_job_keeps_caller_supplied_model() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(job_open_with_route_model(
+                &broker.uri(),
+                Some("qwen3.6-27b"),
+            )),
+        )
+        .mount(&loc)
+        .await;
+    mount_broker_and_settle(
+        &loc,
+        &broker,
+        json!({ "prompt": "hi", "model": "my-model" }),
+    )
+    .await;
+
+    loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "qwen3.6-27b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({ "prompt": "hi", "model": "my-model" })),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit with caller model");
+}
+
+#[tokio::test]
+async fn submit_job_does_not_inject_model_for_non_openai_capability() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(job_open_with_route_model(&broker.uri(), Some("vod-model"))),
+        )
+        .mount(&loc)
+        .await;
+    mount_broker_and_settle(&loc, &broker, json!({ "schema": "video-transcode-vod/v2" })).await;
+
+    loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "video:transcode.vod",
+            offering: "vod-default",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({ "schema": "video-transcode-vod/v2" })),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit without injection");
+}
+
+#[tokio::test]
+async fn submit_job_leaves_bytes_body_untouched() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(job_open_with_route_model(
+                &broker.uri(),
+                Some("qwen3.6-27b"),
+            )),
+        )
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .and(wiremock::matchers::body_bytes(
+            b"{\"prompt\":\"raw\"}".to_vec(),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "reply": "ok" }))
+                .insert_header("Livepeer-Work-Units", "1")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .expect(1)
+        .mount(&broker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled_payload(1)))
+        .mount(&loc)
+        .await;
+
+    loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "qwen3.6-27b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Bytes(b"{\"prompt\":\"raw\"}"),
+            request_id: None,
+            transport: None,
+            content_type: Some("application/json"),
+        })
+        .await
+        .expect("bytes body submit");
+}
+
+#[tokio::test]
+async fn submit_job_skips_injection_when_route_has_no_model() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(job_open_with_route_model(&broker.uri(), Some(""))),
+        )
+        .mount(&loc)
+        .await;
+    mount_broker_and_settle(&loc, &broker, json!({ "prompt": "hi" })).await;
+
+    loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "qwen3.6-27b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({ "prompt": "hi" })),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit with empty route model");
+}

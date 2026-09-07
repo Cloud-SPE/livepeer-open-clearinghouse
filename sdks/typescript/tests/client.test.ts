@@ -312,6 +312,111 @@ describe("OpenClearinghouseClient", () => {
     expect(brokerHeaders?.["Livepeer-Request-Id"]).toBe("broker-request-1");
   });
 
+  describe("submitJob model injection from the route", () => {
+    const ROUTED_JOB = {
+      ...JOB_OPEN,
+      route_snapshot: { extra: { openai: { model: "Qwen3.6-27B" } } },
+    };
+
+    function brokerCapture(): {
+      routes: Record<string, (call: FetchCall) => Response>;
+      body: () => unknown;
+    } {
+      let raw: unknown;
+      return {
+        routes: {
+          "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () => jsonResp(settledFor(5)),
+          "/v1/jobs": () => jsonResp(ROUTED_JOB, { status: 201 }),
+          "/v1/job": ({ init }) => {
+            raw = init?.body;
+            return new Response(JSON.stringify({}), {
+              status: 200,
+              headers: { "Content-Type": "application/json", ...paidJobHeaders(5) },
+            });
+          },
+        },
+        body: () => {
+          if (typeof raw !== "string") throw new TypeError("expected JSON broker body");
+          return JSON.parse(raw);
+        },
+      };
+    }
+
+    it("fills model from route_snapshot.extra.openai.model when absent", async () => {
+      const capture = brokerCapture();
+      const { fetch } = makeFetch(capture.routes);
+      const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+      const body = { messages: [{ role: "user", content: "hi" }], max_tokens: 8 };
+      await client.submitJob({
+        capability: "openai:chat-completions",
+        offering: "qwen3.6-27b",
+        estimatedUnits: 5,
+        body,
+      });
+      expect(capture.body()).toEqual({ ...body, model: "Qwen3.6-27B" });
+      // The caller's object is not mutated.
+      expect(body).not.toHaveProperty("model");
+    });
+
+    it("leaves a caller-supplied model untouched", async () => {
+      const capture = brokerCapture();
+      const { fetch } = makeFetch(capture.routes);
+      const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+      await client.submitJob({
+        capability: "openai:chat-completions",
+        offering: "qwen3.6-27b",
+        estimatedUnits: 5,
+        body: { model: "my-model", messages: [] },
+      });
+      expect(capture.body()).toEqual({ model: "my-model", messages: [] });
+    });
+
+    it("does not touch non-openai capabilities", async () => {
+      const capture = brokerCapture();
+      const { fetch } = makeFetch(capture.routes);
+      const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+      await client.submitJob({
+        capability: "video:transcode.vod",
+        offering: "vod-default",
+        estimatedUnits: 5,
+        body: { schema: "video-transcode-vod/v2" },
+      });
+      expect(capture.body()).toEqual({ schema: "video-transcode-vod/v2" });
+    });
+
+    it("does not touch string bodies or routes without a model", async () => {
+      const capture = brokerCapture();
+      capture.routes["/v1/jobs"] = () =>
+        jsonResp(
+          { ...JOB_OPEN, route_snapshot: { extra: { openai: { model: "" } } } },
+          {
+            status: 201,
+          },
+        );
+      const { fetch } = makeFetch(capture.routes);
+      const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+      await client.submitJob({
+        capability: "openai:chat-completions",
+        offering: "qwen3.6-27b",
+        estimatedUnits: 5,
+        body: { messages: [] },
+      });
+      expect(capture.body()).toEqual({ messages: [] });
+
+      const capture2 = brokerCapture();
+      const { fetch: fetch2 } = makeFetch(capture2.routes);
+      const client2 = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch: fetch2 });
+      await client2.submitJob({
+        capability: "openai:chat-completions",
+        offering: "qwen3.6-27b",
+        estimatedUnits: 5,
+        body: '{"messages":[]}',
+        contentType: "application/json",
+      });
+      expect(capture2.body()).toEqual({ messages: [] });
+    });
+  });
+
   it("submitJob maps insufficient_credit error", async () => {
     const { fetch } = makeFetch({
       "/v1/jobs": () =>

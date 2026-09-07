@@ -230,3 +230,125 @@ func TestTelemetryBufferOverflowDropsOldest(t *testing.T) {
 	_ = tem
 	client.Close(context.Background())
 }
+
+// Pinned with:
+//
+//	python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL,'loc-test-chat-abc'))"
+//
+// so the Python, TypeScript, Go and Rust SDKs derive the same id for the
+// same request id.
+const pinnedChatCorrelationID = "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6"
+
+func TestTelemetryCorrelationID(t *testing.T) {
+	t.Parallel()
+	t.Run("uuid passes through lowercased", func(t *testing.T) {
+		t.Parallel()
+		for _, in := range []string{
+			"11111111-2222-3333-4444-555555555555",
+			"6BA7B811-9DAD-11D1-80B4-00C04FD430C8",
+			"ab6ae49d-69c6-579d-8f36-8b7eaeed58a6",
+			"00000000-0000-0000-0000-000000000000",
+		} {
+			if got := loc.TelemetryCorrelationID(in); got != strings.ToLower(in) {
+				t.Errorf("%q -> %q; want lowercased pass-through", in, got)
+			}
+		}
+	})
+	t.Run("non-uuid maps to pinned uuid5", func(t *testing.T) {
+		t.Parallel()
+		first := loc.TelemetryCorrelationID("loc-test-chat-abc")
+		if first != pinnedChatCorrelationID {
+			t.Fatalf("got %q; want %q", first, pinnedChatCorrelationID)
+		}
+		for i := 0; i < 3; i++ {
+			if again := loc.TelemetryCorrelationID("loc-test-chat-abc"); again != first {
+				t.Fatalf("not deterministic: %q vs %q", again, first)
+			}
+		}
+		if loc.TelemetryCorrelationID("loc-test-chat-abd") == first {
+			t.Fatal("different inputs collided")
+		}
+	})
+	t.Run("near-misses are not treated as uuids", func(t *testing.T) {
+		t.Parallel()
+		for _, in := range []string{
+			"11111111-2222-3333-4444-55555555555",   // too short
+			"11111111-2222-3333-4444-5555555555555", // too long
+			"11111111222233334444555555555555",      // no hyphens
+			"1111111g-2222-3333-4444-555555555555",  // non-hex
+			"{11111111-2222-3333-4444-555555555555}",
+		} {
+			got := loc.TelemetryCorrelationID(in)
+			if got == strings.ToLower(in) {
+				t.Errorf("%q passed through; want uuid5 derivation", in)
+			}
+			if len(got) != 36 || got[14] != '5' {
+				t.Errorf("%q -> %q; want a v5 uuid", in, got)
+			}
+		}
+	})
+}
+
+// TestTelemetryEmitSendsUUIDCorrelationID checks the wire: an arbitrary
+// request id given as CorrelationID reaches the gateway as a UUID.
+func TestTelemetryEmitSendsUUIDCorrelationID(t *testing.T) {
+	srv, batches, mu := captureServer(t)
+	client, err := loc.NewClient(loc.Options{BaseURL: srv.URL, APIKey: "pymth_live_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Telemetry().Emit(loc.EmitTelemetryOptions{
+		EventType:     "session.refill_denied", // critical -> immediate flush
+		CorrelationID: "loc-test-chat-abc",
+	})
+	client.Close(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	var got string
+	for _, b := range *batches {
+		events, _ := b["events"].([]any)
+		for _, e := range events {
+			m, _ := e.(map[string]any)
+			if cid, ok := m["correlation_id"].(string); ok {
+				got = cid
+			}
+		}
+	}
+	if got != pinnedChatCorrelationID {
+		t.Fatalf("wire correlation_id = %q; want %q", got, pinnedChatCorrelationID)
+	}
+}
+
+// TestTelemetryEmitNilPayloadEncodesAsObject checks the wire: an Emit
+// without a Payload must send "payload":{} — the gateway schema requires
+// an object and rejects the whole batch on null.
+func TestTelemetryEmitNilPayloadEncodesAsObject(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		raw []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		raw = append(raw, buf...)
+		mu.Unlock()
+		w.WriteHeader(202)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := loc.NewClient(loc.Options{BaseURL: srv.URL, APIKey: "pymth_live_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Telemetry().Emit(loc.EmitTelemetryOptions{EventType: "session.closed"}) // critical -> flush; no Payload
+	client.Close(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(string(raw), `"payload":null`) {
+		t.Fatalf("payload encoded as null: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"payload":{}`) {
+		t.Fatalf(`expected "payload":{} on the wire, got %s`, raw)
+	}
+}

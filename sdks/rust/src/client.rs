@@ -76,6 +76,10 @@ pub struct JobOpenResponse {
     pub funded_value_wei: u64,
     pub settle_endpoint: String,
     pub opened_at: String,
+    /// Route the gateway bound this job to. `extra` carries
+    /// capability-specific hints such as `openai.model`.
+    #[serde(default)]
+    pub route_snapshot: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -192,6 +196,11 @@ pub struct SubmitJobInput<'a> {
     pub offering: &'a str,
     pub estimated_units: u64,
     /// JSON body (will be serialized) or raw bytes.
+    ///
+    /// For `openai:*` capabilities with a JSON object body, the SDK fills
+    /// `model` from the route (`route_snapshot.extra.openai.model`) when
+    /// the caller left it absent. A caller-supplied `model` is never
+    /// overwritten; bytes bodies are sent verbatim.
     pub body: JobBody<'a>,
     /// Optional worst-case ceiling. None defaults to `estimated_units`.
     pub max_total_units: Option<u64>,
@@ -451,9 +460,12 @@ impl Client {
         }
 
         req = match &in_.body {
-            JobBody::Json(v) => req
-                .header("Content-Type", "application/json")
-                .body(serde_json::to_vec(v)?),
+            JobBody::Json(v) => {
+                let body = route_model_for(in_.capability, job.route_snapshot.as_ref())
+                    .map_or_else(|| v.clone(), |model| with_model(v, model));
+                req.header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(&body)?)
+            }
             JobBody::Bytes(b) => {
                 let content_type = in_.content_type.unwrap_or("application/octet-stream");
                 req.header("Content-Type", content_type).body(b.to_vec())
@@ -1019,6 +1031,33 @@ impl Client {
             status.as_u16(),
             body_value,
         ))
+    }
+}
+
+/// `route_snapshot.extra.openai.model` when `capability` is an `openai:*`
+/// capability and the route advertises a non-empty model.
+fn route_model_for<'r>(capability: &str, route_snapshot: Option<&'r Value>) -> Option<&'r str> {
+    if !capability.starts_with("openai:") {
+        return None;
+    }
+    route_snapshot?
+        .get("extra")?
+        .get("openai")?
+        .get("model")?
+        .as_str()
+        .filter(|model| !model.is_empty())
+}
+
+/// Insert `model` into a JSON object body that does not already carry one.
+/// Non-object bodies and bodies with an explicit `model` are returned as-is.
+fn with_model(body: &Value, model: &str) -> Value {
+    match body {
+        Value::Object(map) if !map.contains_key("model") => {
+            let mut map = map.clone();
+            map.insert("model".to_string(), Value::String(model.to_string()));
+            Value::Object(map)
+        }
+        other => other.clone(),
     }
 }
 

@@ -1519,3 +1519,59 @@ async def test_signed_settlement_wins_over_later_conservative_charge(
         ).all()
     )
     assert [event.event_type for event in events] == ["close"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_job_rejects_unsigned_settlement_with_typed_reason(
+    db_session: AsyncSession,
+) -> None:
+    """A broker without a settlement key must surface ``missing_signature``.
+
+    Regression for the live xode run: an unsigned ``Livepeer-Settlement``
+    used to fail pydantic validation and reach SDKs as a raw 422 body.
+    """
+    user_id, key_id = await _seed(db_session)
+    open_resp = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability="openai:chat-completions",
+        offering="gpt-oss-20b",
+        estimated_units=10,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[_route()]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    signed = _settlement(open_resp, broker_job_id="broker-job-unsigned", actual_units=10)
+    unsigned = SettlementEnvelope(payload=signed.payload)
+    assert unsigned.signature is None
+
+    with pytest.raises(jobs_service.SettlementVerificationFailed) as exc_info:
+        await jobs_service.settle_job(
+            db_session,
+            job_id=open_resp.job_id,
+            user_id=user_id,
+            actual_units=10,
+            broker_job_id="broker-job-unsigned",
+            work_unit="token",
+            outcome=None,
+            settlement=unsigned,
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert exc_info.value.code == "settlement_verification_failed"
+    assert exc_info.value.details == {"reason": "missing_signature"}
+
+    job = await db_session.get(PaymentSession, open_resp.job_id)
+    assert job is not None
+    assert job.state == SESSION_STATE_OPEN
+    assert (
+        await db_session.scalar(
+            select(PaymentSettlement).where(PaymentSettlement.session_id == open_resp.job_id)
+        )
+        is None
+    )

@@ -67,10 +67,19 @@ class SettlementSignature(BaseModel):
 
 
 class SettlementEnvelope(BaseModel):
+    """``Livepeer-Settlement`` as decoded by the SDK.
+
+    ``signature`` is optional only at the wire layer so that a broker
+    running without a settlement key produces LOC's typed
+    ``settlement_verification_failed`` / ``missing_signature`` envelope
+    instead of a framework validation error. Accounting still requires
+    a verified signature.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     payload: dict[str, Any]
-    signature: SettlementSignature
+    signature: SettlementSignature | None = None
 
 
 class SettleJobRequest(BaseModel):

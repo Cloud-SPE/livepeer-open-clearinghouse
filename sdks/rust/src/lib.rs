@@ -19,4 +19,4 @@ pub use session_runner::{
     BrokerControl, BrokerSession, RefillCallback, RefillEvent, SessionBalance, SessionOutcome,
     SessionRunner, SessionRunnerOptions, WinddownCallback, WinddownEvent,
 };
-pub use telemetry::{EmitOptions, EmitterConfig, TelemetryEmitter};
+pub use telemetry::{telemetry_correlation_id, EmitOptions, EmitterConfig, TelemetryEmitter};

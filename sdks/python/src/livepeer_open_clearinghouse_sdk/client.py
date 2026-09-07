@@ -189,6 +189,27 @@ class SessionHandle:
     close_endpoint: str
 
 
+def _with_route_model(
+    body: dict[str, Any], *, capability: str, job: dict[str, Any]
+) -> dict[str, Any]:
+    """Return ``body`` with ``model`` filled from the route when absent.
+
+    Runners for ``openai:*`` capabilities validate ``model`` against an
+    allowlist and reject an empty value, while callers are told to route
+    by ``Livepeer-Offering``. The route snapshot LOC returns at job open
+    carries the runner's served model under ``extra.openai.model``.
+    """
+    if not capability.startswith("openai:") or "model" in body:
+        return body
+    snapshot = job.get("route_snapshot")
+    extra = snapshot.get("extra") if isinstance(snapshot, dict) else None
+    openai_extra = extra.get("openai") if isinstance(extra, dict) else None
+    model = openai_extra.get("model") if isinstance(openai_extra, dict) else None
+    if isinstance(model, str) and model:
+        return {**body, "model": model}
+    return body
+
+
 class OpenClearinghouseClient:
     """Async client for Livepeer Open Clearinghouse.
 
@@ -313,10 +334,12 @@ class OpenClearinghouseClient:
         encumbers up front (defaults to ``estimated_units`` for case
         (a) where the SDK knows exactly; pass generous for case (b)).
 
-        ``body`` is forwarded verbatim — dicts get JSON-serialized;
-        raw bytes are sent as-is (use for multipart). **Don't put a
-        ``model`` field in the body** for OpenAI-shaped requests; the
-        orchestrator routes via the ``Livepeer-Offering`` header.
+        ``body`` is forwarded as-is — dicts get JSON-serialized; raw
+        bytes are sent verbatim (use for multipart). For ``openai:*``
+        capabilities the runner expects a ``model`` field matching the
+        route's advertised model. If the dict body has no ``model`` and
+        the selected route advertises ``extra.openai.model``, the SDK
+        fills it in; an explicit ``model`` is left untouched.
 
         Returns a :class:`JobResult` carrying the broker's response
         body + status alongside the LOC settlement (billed, refund,
@@ -414,6 +437,7 @@ class OpenClearinghouseClient:
         if selected_transport == "stream":
             headers["Accept"] = "text/event-stream"
         if isinstance(body, dict):
+            body = _with_route_model(body, capability=capability, job=job)
             headers["Content-Type"] = content_type or "application/json"
             broker_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
         else:

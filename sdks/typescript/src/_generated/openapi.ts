@@ -2597,13 +2597,20 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** SessionSettlementEnvelope */
+        /**
+         * SessionSettlementEnvelope
+         * @description ``Livepeer-Settlement`` as decoded by the SDK.
+         *
+         *     ``signature`` is optional only at the wire layer so an unsigned
+         *     broker record yields the typed ``settlement_verification_failed`` /
+         *     ``missing_signature`` envelope rather than a validation error.
+         */
         SessionSettlementEnvelope: {
             /** Payload */
             payload: {
                 [key: string]: unknown;
             };
-            signature: components["schemas"]["SessionSettlementSignature"];
+            signature?: components["schemas"]["SessionSettlementSignature"] | null;
         };
         /** SessionSettlementSignature */
         SessionSettlementSignature: {
@@ -2777,13 +2784,22 @@ export interface components {
             closed_at: string;
             cap_status: components["schemas"]["CapStatus"];
         };
-        /** SettlementEnvelope */
+        /**
+         * SettlementEnvelope
+         * @description ``Livepeer-Settlement`` as decoded by the SDK.
+         *
+         *     ``signature`` is optional only at the wire layer so that a broker
+         *     running without a settlement key produces LOC's typed
+         *     ``settlement_verification_failed`` / ``missing_signature`` envelope
+         *     instead of a framework validation error. Accounting still requires
+         *     a verified signature.
+         */
         SettlementEnvelope: {
             /** Payload */
             payload: {
                 [key: string]: unknown;
             };
-            signature: components["schemas"]["SettlementSignature"];
+            signature?: components["schemas"]["SettlementSignature"] | null;
         };
         /**
          * SettlementKey

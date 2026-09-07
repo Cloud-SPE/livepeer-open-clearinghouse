@@ -491,6 +491,10 @@ async def settle_job(
             raise SettlementVerificationError(
                 "missing_request_id", "job has no durable broker request id"
             )
+        if settlement.signature is None:
+            raise SettlementVerificationError(
+                "missing_signature", "broker settlement carries no signature"
+            )
         settlement_keys = snapshot["settlement_keys"]
         if not isinstance(settlement_keys, list) or not settlement_keys:
             raise SettlementVerificationError(

@@ -10,6 +10,7 @@
  * with the same universal fields. See exec-plan 002 §"SDK telemetry".
  */
 
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
 export const DEFAULT_BATCH_SIZE = 100;
@@ -27,6 +28,33 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 export function isCriticalEvent(eventType: string): boolean {
   return CRITICAL_EVENT_TYPES.has(eventType) || eventType.endsWith(".error");
+}
+
+/** RFC 4122 URL namespace — shared by every official SDK so a derived
+ * correlation id is identical regardless of which SDK emitted it. */
+export const CORRELATION_ID_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Normalize a caller-supplied correlation value to the UUID the gateway's
+ * telemetry ingest requires. A value that already parses as a UUID (any
+ * version) is passed through lowercased; anything else becomes the
+ * deterministic uuid5 of the string under the URL namespace, matching
+ * `uuid.uuid5(uuid.NAMESPACE_URL, value)` in the Python SDK.
+ */
+export function telemetryCorrelationId(value: string): string {
+  if (UUID_RE.test(value)) {
+    return value.toLowerCase();
+  }
+  const hash = createHash("sha1");
+  hash.update(Buffer.from(CORRELATION_ID_NAMESPACE.replace(/-/g, ""), "hex"));
+  hash.update(Buffer.from(value, "utf8"));
+  const bytes = hash.digest().subarray(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export interface TelemetryEmitOptions {
@@ -103,7 +131,10 @@ export class TelemetryEmitter {
     const event: BufferedEvent = {
       event_type: opts.eventType,
       event_schema_version: opts.eventSchemaVersion ?? 1,
-      correlation_id: opts.correlationId ?? null,
+      correlation_id:
+        opts.correlationId === undefined || opts.correlationId === null
+          ? null
+          : telemetryCorrelationId(opts.correlationId),
       client_ts: opts.clientTs ?? new Date().toISOString(),
       payload: opts.payload ?? {},
     };

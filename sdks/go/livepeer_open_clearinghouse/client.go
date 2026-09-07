@@ -39,6 +39,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // runtimeGoVersion is split out so tests can swap it.
@@ -116,6 +117,9 @@ type JobOpenResponse struct {
 	FundedValueWei   int64  `json:"funded_value_wei"`
 	SettleEndpoint   string `json:"settle_endpoint"`
 	OpenedAt         string `json:"opened_at"`
+	// RouteSnapshot is the route LOC bound the job to (v2 gateways).
+	// SubmitJob reads `extra.openai.model` from it; see SubmitJobInput.Body.
+	RouteSnapshot map[string]any `json:"route_snapshot,omitempty"`
 }
 
 // JobSettleResponse mirrors POST /v1/jobs/{id}/settle response.
@@ -319,12 +323,17 @@ type SubmitJobInput struct {
 	Capability     string
 	Offering       string
 	EstimatedUnits int64
-	Body           []byte // raw bytes; caller marshals JSON if needed
-	ContentType    string // defaults to application/json if Body starts with {/[, else octet-stream
-	MaxTotalUnits  int64  // optional; defaults to EstimatedUnits
-	RequestID      string // optional; SubmitJob generates a UUID if empty
-	Transport      string // unary (default), stream, or multipart
-	Timeout        time.Duration
+	// Body is forwarded to the broker as-is; callers marshal JSON
+	// themselves. For `openai:*` capabilities with a JSON object body
+	// that has no `model` key, SubmitJob fills `model` from the route
+	// LOC selected (route_snapshot.extra.openai.model) — the offering
+	// picks the model, so callers normally leave it out.
+	Body          []byte
+	ContentType   string // defaults to application/json if Body starts with {/[, else octet-stream
+	MaxTotalUnits int64  // optional; defaults to EstimatedUnits
+	RequestID     string // optional; SubmitJob generates a UUID if empty
+	Transport     string // unary (default), stream, or multipart
+	Timeout       time.Duration
 }
 
 func normalizedTransport(transport string) string {
@@ -424,10 +433,11 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		timeout = 60 * time.Second
 	}
 	endpoint := strings.TrimRight(job.BrokerURL, "/") + "/v1/job"
+	brokerBody := injectRouteModel(in.Body, contentType, in.Capability, job.RouteSnapshot)
 
 	brokerCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(brokerCtx, http.MethodPost, endpoint, bytes.NewReader(in.Body))
+	req, err := http.NewRequestWithContext(brokerCtx, http.MethodPost, endpoint, bytes.NewReader(brokerBody))
 	if err != nil {
 		return nil, fmt.Errorf("openclearinghouse: build broker request: %w", err)
 	}
@@ -445,17 +455,70 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if brokerErr != nil {
 		return nil, brokerErr
 	}
+	initialJobID := header.Get("Livepeer-Job-Id")
+	if transport == "stream" && initialJobID == "" {
+		return nil, &BrokerProtocolError{
+			Code: "broker_protocol_error", Message: "stream response missing Livepeer-Job-Id", Status: status,
+			Details: map[string]any{"missing_headers": []string{"Livepeer-Job-Id"}},
+		}
+	}
 
-	// 3. Read Livepeer-Work-Units from the broker response
-	workUnits := header.Get("Livepeer-Work-Units")
-	brokerWorkUnit := header.Get("Livepeer-Work-Unit")
-	brokerJobID := header.Get("Livepeer-Job-Id")
-	if workUnits == "" || brokerWorkUnit == "" || brokerJobID == "" {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response missing Work-Units, Work-Unit, or Job-Id", Status: status}
+	// 3. Read the terminal claim. Unary/multipart usually carry it in the
+	// response headers; streams carry it in trailers, which proxies in
+	// front of brokers frequently strip. Whenever the claim is incomplete,
+	// recover it through the broker's durable request-id lookup — the one
+	// path the caller cannot withhold (mirrors the Python/TS SDKs).
+	claimHeader, claimStatus := header, status
+	var claimBody map[string]any
+	if header.Get("Livepeer-Work-Units") == "" || header.Get("Livepeer-Work-Unit") == "" ||
+		initialJobID == "" || header.Get("Livepeer-Settlement") == "" {
+		exStatus, exHeader, exBody, exErr := c.lookupExchange(ctx, job.BrokerURL, job.RequestID)
+		if exErr != nil {
+			return nil, exErr
+		}
+		claimHeader, claimStatus, claimBody = exHeader, exStatus, exBody
+	}
+	workUnits := claimHeader.Get("Livepeer-Work-Units")
+	brokerWorkUnit := claimHeader.Get("Livepeer-Work-Unit")
+	brokerJobID := claimHeader.Get("Livepeer-Job-Id")
+	if claimBody != nil {
+		if workUnits == "" {
+			workUnits = jsonScalarString(claimBody["work_units"])
+		}
+		if brokerWorkUnit == "" {
+			brokerWorkUnit = jsonScalarString(claimBody["unit"])
+		}
+		if brokerJobID == "" {
+			brokerJobID = jsonScalarString(claimBody["job_id"])
+		}
+	}
+	var missing []string
+	for _, field := range []struct{ name, value string }{
+		{"Livepeer-Work-Units", workUnits},
+		{"Livepeer-Work-Unit", brokerWorkUnit},
+		{"Livepeer-Job-Id", brokerJobID},
+	} {
+		if field.value == "" {
+			missing = append(missing, field.name)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, &BrokerProtocolError{
+			Code: "broker_protocol_error", Status: claimStatus,
+			Message: "terminal broker response missing required headers: " + strings.Join(missing, ", "),
+			Details: map[string]any{"missing_headers": missing},
+		}
+	}
+	if initialJobID != "" && brokerJobID != initialJobID {
+		return nil, &BrokerProtocolError{
+			Code: "broker_job_id_mismatch", Status: claimStatus,
+			Message: fmt.Sprintf("settlement query returned job id %q; expected %q", brokerJobID, initialJobID),
+			Details: map[string]any{"expected": initialJobID, "received": brokerJobID},
+		}
 	}
 	actualUnits, parseErr := strconv.ParseInt(workUnits, 10, 64)
 	if parseErr != nil || actualUnits < 0 {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "invalid Livepeer-Work-Units", Status: status}
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "invalid Livepeer-Work-Units", Status: claimStatus}
 	}
 	if brokerWorkUnit != job.WorkUnit {
 		return nil, &BrokerProtocolError{Code: "work_unit_mismatch", Message: fmt.Sprintf("broker reported work unit %q; expected %q", brokerWorkUnit, job.WorkUnit), Status: status}
@@ -472,17 +535,33 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		"broker_job_id": brokerJobID,
 		"work_unit":     brokerWorkUnit,
 	}
-	encoded := header.Get("Livepeer-Settlement")
+	encoded := claimHeader.Get("Livepeer-Settlement")
+	var bodySettlement string
+	if claimBody != nil {
+		bodySettlement = jsonScalarString(claimBody["settlement"])
+	}
+	if encoded != "" && bodySettlement != "" && encoded != bodySettlement {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "broker exchange settlement header and body disagree", Status: claimStatus}
+	}
 	if encoded == "" {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response missing Livepeer-Settlement", Status: status}
+		encoded = bodySettlement
+	}
+	if encoded == "" {
+		encoded = header.Get("Livepeer-Settlement")
+	}
+	if encoded == "" {
+		return nil, &BrokerProtocolError{
+			Code: "broker_protocol_error", Message: "terminal response missing Livepeer-Settlement", Status: claimStatus,
+			Details: map[string]any{"missing_headers": []string{"Livepeer-Settlement"}},
+		}
 	}
 	raw, decodeErr := base64.StdEncoding.DecodeString(encoded)
 	if decodeErr != nil {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: claimStatus}
 	}
 	var settlement map[string]any
-	if jsonErr := json.Unmarshal(raw, &settlement); jsonErr != nil {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: status}
+	if jsonErr := json.Unmarshal(raw, &settlement); jsonErr != nil || settlement == nil {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "terminal response has malformed Livepeer-Settlement", Status: claimStatus}
 	}
 	settleBody["settlement"] = settlement
 	var settled JobSettleResponse
@@ -548,6 +627,48 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		out.Body = json.RawMessage(payload)
 	}
 	return out, nil
+}
+
+// routeOpenAIModel returns route_snapshot.extra.openai.model when it is a
+// non-empty string, else "".
+func routeOpenAIModel(snapshot map[string]any) string {
+	extra, _ := snapshot["extra"].(map[string]any)
+	openai, _ := extra["openai"].(map[string]any)
+	model, _ := openai["model"].(string)
+	return model
+}
+
+// injectRouteModel returns body with `model` set from the route when the
+// capability is OpenAI-shaped, the body is a JSON object without `model`,
+// and the route advertises one. Anything else is returned untouched.
+func injectRouteModel(body []byte, contentType, capability string, snapshot map[string]any) []byte {
+	if !strings.HasPrefix(capability, "openai:") {
+		return body
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "application/json") {
+		return body
+	}
+	model := routeOpenAIModel(snapshot)
+	if model == "" {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	if _, present := fields["model"]; present {
+		return body
+	}
+	encodedModel, err := json.Marshal(model)
+	if err != nil {
+		return body
+	}
+	fields["model"] = encodedModel
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // ---- sessions (case d) ----
@@ -737,6 +858,86 @@ func (c *Client) GetJobStatus(ctx context.Context, jobID string) (*JobStatusResp
 
 // ---- internals ----
 
+const (
+	exchangeLookupAttempts    = 8
+	exchangeLookupBaseBackoff = 50 * time.Millisecond
+)
+
+// lookupExchange polls GET {broker_url}/v1/exchange/{request_id} until the
+// broker reports a SETTLED outcome (200), backing off 50ms*2^attempt while
+// it is still IN_FLIGHT / ACCOUNTING_PENDING (202). Any other status or
+// outcome is unresolvable.
+func (c *Client) lookupExchange(ctx context.Context, brokerURL, requestID string) (int, http.Header, map[string]any, error) {
+	exchangeURL := strings.TrimRight(brokerURL, "/") + "/v1/exchange/" + url.PathEscape(requestID)
+	for attempt := 0; attempt < exchangeLookupAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, exchangeURL, nil)
+		if err != nil {
+			return 0, nil, nil, fmt.Errorf("openclearinghouse: build broker exchange request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		res, err := c.http.Do(req)
+		if err != nil {
+			return 0, nil, nil, fmt.Errorf("openclearinghouse: broker exchange lookup: %w", err)
+		}
+		raw, readErr := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if readErr != nil {
+			return 0, nil, nil, fmt.Errorf("openclearinghouse: read broker exchange body: %w", readErr)
+		}
+		var exchange map[string]any
+		if json.Unmarshal(raw, &exchange) != nil || exchange == nil {
+			return 0, nil, nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "broker exchange lookup returned malformed JSON", Status: res.StatusCode}
+		}
+		if got, _ := exchange["request_id"].(string); got != requestID {
+			return 0, nil, nil, &BrokerProtocolError{
+				Code: "broker_request_id_mismatch", Message: "broker exchange lookup returned a different request id", Status: res.StatusCode,
+				Details: map[string]any{"expected": requestID, "received": exchange["request_id"]},
+			}
+		}
+		outcome, _ := exchange["outcome"].(string)
+		if res.StatusCode == http.StatusAccepted && (outcome == "IN_FLIGHT" || outcome == "ACCOUNTING_PENDING") {
+			if attempt < exchangeLookupAttempts-1 {
+				select {
+				case <-ctx.Done():
+					return 0, nil, nil, ctx.Err()
+				case <-time.After(exchangeLookupBaseBackoff * (1 << uint(attempt))):
+				}
+				continue
+			}
+			return 0, nil, nil, &BrokerProtocolError{
+				Code: "broker_exchange_pending", Message: "broker exchange remained " + outcome, Status: res.StatusCode,
+				Details: map[string]any{"outcome": outcome},
+			}
+		}
+		if res.StatusCode != http.StatusOK || outcome != "SETTLED" {
+			return 0, nil, nil, &BrokerProtocolError{
+				Code: "broker_exchange_unresolved", Message: fmt.Sprintf("broker exchange lookup returned %q", outcome), Status: res.StatusCode,
+				Details: map[string]any{"outcome": outcome},
+			}
+		}
+		return res.StatusCode, res.Header, exchange, nil
+	}
+	return 0, nil, nil, &BrokerProtocolError{Code: "broker_exchange_pending", Message: "broker exchange lookup exhausted retries"}
+}
+
+// jsonScalarString renders a decoded JSON scalar as the string the
+// equivalent header would carry ("" for nil / non-scalars).
+func jsonScalarString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	case json.Number:
+		return t.String()
+	}
+	return ""
+}
+
 func readBroker(client *http.Client, req *http.Request) (int, http.Header, []byte, error) {
 	res, err := client.Do(req)
 	if err != nil {
@@ -883,9 +1084,20 @@ func parseError(status int, retryAfter string, payload []byte) *Error {
 		if det, ok := envelope["details"].(map[string]any); ok {
 			out.Details = det
 		}
-	} else if d, ok := dict["detail"].(string); ok {
-		out.Code = d
-		out.Message = d
+	} else if d, ok := dict["detail"]; ok && d != nil {
+		if s, ok := d.(string); ok {
+			out.Code = s
+			out.Message = s
+		} else {
+			// FastAPI validation bodies carry `detail` as a list (or an
+			// object): {"detail":[{"type":"missing","loc":[...],"msg":...}]}.
+			// There is no canonical code; surface the compact JSON as the
+			// message and keep the decoded value for callers.
+			out.Details["detail"] = d
+			if enc, err := json.Marshal(d); err == nil {
+				out.Message = truncateRunes(string(enc), errorMessageMaxRunes)
+			}
+		}
 	}
 	if out.Message == "" {
 		out.Message = fmt.Sprintf("HTTP %d", status)
@@ -894,6 +1106,20 @@ func parseError(status int, retryAfter string, payload []byte) *Error {
 		out.RetryAfterSeconds = n
 	}
 	return out
+}
+
+// errorMessageMaxRunes bounds the synthesized message for validation
+// bodies so a huge `detail` list doesn't end up in logs verbatim.
+const errorMessageMaxRunes = 500
+
+// truncateRunes keeps the first max runes, ending with "..." when it cut
+// (same shape as the Python SDK, so messages match across SDKs).
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:max-3]) + "..."
 }
 
 // newUUIDv4 generates a v4 UUID without pulling in google/uuid.

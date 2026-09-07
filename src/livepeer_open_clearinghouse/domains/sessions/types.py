@@ -154,10 +154,17 @@ class SessionSettlementSignature(BaseModel):
 
 
 class SessionSettlementEnvelope(BaseModel):
+    """``Livepeer-Settlement`` as decoded by the SDK.
+
+    ``signature`` is optional only at the wire layer so an unsigned
+    broker record yields the typed ``settlement_verification_failed`` /
+    ``missing_signature`` envelope rather than a validation error.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     payload: dict[str, Any]
-    signature: SessionSettlementSignature
+    signature: SessionSettlementSignature | None = None
 
 
 class CloseSessionRequest(BaseModel):

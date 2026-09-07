@@ -11,6 +11,7 @@ OpenClearinghouseError so callers can still log + retry sensibly.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -90,14 +91,44 @@ _CODE_MAP: dict[str, type[OpenClearinghouseError]] = {
 }
 
 
+_DETAIL_MESSAGE_MAX_CHARS = 500
+
+
+def _compact_detail(detail: Any) -> str:
+    """Render a non-string ``detail`` (FastAPI validation list) as one line."""
+    try:
+        text = json.dumps(detail, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        text = str(detail)
+    if len(text) > _DETAIL_MESSAGE_MAX_CHARS:
+        text = text[: _DETAIL_MESSAGE_MAX_CHARS - 3] + "..."
+    return text
+
+
 def from_response(
     *, status: int, body: dict[str, Any], retry_after: int | None
 ) -> OpenClearinghouseError:
     """Build the right exception subclass from a parsed JSON error body."""
     envelope = body.get("error") or {}
-    code = envelope.get("code") or body.get("detail")
-    message = envelope.get("message") or body.get("detail") or f"HTTP {status}"
+    if not isinstance(envelope, dict):
+        envelope = {}
+    detail = body.get("detail")
+    # FastAPI validation errors carry ``detail`` as a list of objects.
+    # Only a string detail can act as a code/message; anything else is
+    # surfaced verbatim under ``details["detail"]`` so nothing is lost
+    # and nothing here can raise.
+    detail_str = detail if isinstance(detail, str) else None
+    code = envelope.get("code") or detail_str
+    if not isinstance(code, str):
+        code = None
+    message = envelope.get("message") or detail_str
+    if not isinstance(message, str):
+        message = _compact_detail(detail) if detail is not None else f"HTTP {status}"
     details = envelope.get("details") or {}
+    if not isinstance(details, dict):
+        details = {"details": details}
+    if detail is not None and detail_str is None:
+        details = {**details, "detail": detail}
     cls = _CODE_MAP.get(code or "", OpenClearinghouseError)
     if cls is RateLimited:
         return RateLimited(

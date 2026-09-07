@@ -337,3 +337,31 @@ async def test_janitor_retries_after_query_failure(db_session: AsyncSession) -> 
     row = await db_session.get(PaymentSession, response.session_id)
     assert row is not None
     assert row.last_polled_at is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_janitor_skips_paid_job_rows(db_session: AsyncSession) -> None:
+    """Paid jobs share the table but settle via the request-ID exchange path.
+
+    Regression for the live xode run: the janitor queried the broker's
+    ``/v1/settlement/{loc_job_id}`` for every open job and got 401s.
+    """
+    clock = _clock()
+    response = await _open(db_session, clock)
+    row = await db_session.get(PaymentSession, response.session_id)
+    assert row is not None
+    row.protocol = "paid-job/v1"
+    await db_session.flush()
+    clock.advance(timedelta(seconds=61))
+    client = _SettlementClient({response.session_id: _signed(response)})
+
+    finalized = await sessions_service.reconcile_open_sessions(
+        db_session, settlement_client=client, clock=clock
+    )
+
+    assert finalized == 0
+    assert client.calls == []
+    row = await db_session.get(PaymentSession, response.session_id)
+    assert row is not None
+    assert row.state == sessions_service.SESSION_STATE_OPEN

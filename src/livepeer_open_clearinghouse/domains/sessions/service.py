@@ -1260,6 +1260,8 @@ async def _verify_close_settlement(
 
     if settlement is None:
         raise SessionSettlementVerificationFailed(reason="missing_settlement")
+    if settlement.get("signature") is None:
+        raise SessionSettlementVerificationFailed(reason="missing_signature")
     snapshot = session_row.route_snapshot or {}
     settlement_keys = snapshot.get("settlement_keys")
     if not isinstance(settlement_keys, list) or not settlement_keys:
@@ -1444,6 +1446,11 @@ async def reconcile_open_sessions(
             await db.scalars(
                 select(PaymentSession)
                 .where(
+                    # Paid jobs share this table but settle through the
+                    # request-ID exchange lookup in jobs.service; brokers
+                    # key GET /v1/settlement by broker job id, so asking
+                    # with a LOC job id only produces 401s.
+                    PaymentSession.protocol == PAID_SESSION_PROTOCOL,
                     PaymentSession.state.in_((SESSION_STATE_OPEN, SESSION_STATE_DRAINING)),
                     (PaymentSession.last_polled_at.is_(None))
                     | (PaymentSession.last_polled_at < cutoff),

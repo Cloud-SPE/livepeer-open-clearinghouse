@@ -467,3 +467,24 @@ async def test_close_rejects_missing_signed_settlement(
             clock=_clock(),
         )
     assert exc_info.value.details == {"reason": "missing_settlement"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_rejects_unsigned_settlement_with_typed_reason(
+    db_session: AsyncSession,
+) -> None:
+    """An unsigned broker record is a typed ``missing_signature`` failure."""
+    user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
+    unsigned = {"payload": _settlement(open_resp, actual_units=400)["payload"]}
+    with pytest.raises(SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=400,
+            outcome=None,
+            settlement=unsigned,
+            clock=_clock(),
+        )
+    assert exc_info.value.details == {"reason": "missing_signature"}

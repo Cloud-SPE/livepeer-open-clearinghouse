@@ -17,6 +17,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 pub const DEFAULT_BATCH_SIZE: usize = 100;
 pub const DEFAULT_FLUSH_INTERVAL_MS: u64 = 5_000;
@@ -29,6 +30,22 @@ const CRITICAL_EVENT_TYPES: &[&str] = &["session.refill_denied", "session.closed
 #[inline]
 fn is_critical_event(event_type: &str) -> bool {
     CRITICAL_EVENT_TYPES.iter().any(|&t| t == event_type) || event_type.ends_with(".error")
+}
+
+/// Normalise a caller-supplied correlation value into the UUID the gateway
+/// requires on `POST /v1/telemetry`.
+///
+/// A value that already parses as a UUID is returned lowercase and
+/// hyphenated. Anything else (for example a caller-chosen `request_id`
+/// such as `loc-test-chat-abc`) is mapped deterministically to
+/// UUID v5 under `Uuid::NAMESPACE_URL`, so every SDK derives the same
+/// correlation id for the same input.
+#[must_use]
+pub fn telemetry_correlation_id(value: &str) -> String {
+    Uuid::parse_str(value)
+        .unwrap_or_else(|_| Uuid::new_v5(&Uuid::NAMESPACE_URL, value.as_bytes()))
+        .hyphenated()
+        .to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,7 +150,7 @@ impl TelemetryEmitter {
         let event = BufferedEvent {
             event_type: event_type.clone(),
             event_schema_version: opts.event_schema_version.unwrap_or(1),
-            correlation_id: opts.correlation_id,
+            correlation_id: opts.correlation_id.as_deref().map(telemetry_correlation_id),
             client_ts: opts.client_ts.unwrap_or_else(now_rfc3339),
             payload: opts
                 .payload

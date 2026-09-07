@@ -121,33 +121,50 @@ impl From<serde_json::Error> for OpenClearinghouseError {
     }
 }
 
+/// Longest `message` the mapper produces for a `FastAPI` validation body.
+const VALIDATION_MESSAGE_MAX_CHARS: usize = 500;
+
 pub fn from_response(
     status: u16,
     retry_after: Option<u64>,
     body: Option<Value>,
 ) -> OpenClearinghouseError {
     let body = body.unwrap_or(Value::Null);
-    let envelope = body.get("error");
+    let envelope = body.get("error").filter(|e| e.is_object());
+    let detail = body.get("detail").filter(|d| !d.is_null());
+
+    // FastAPI validation bodies (`{"detail": [...]}` or `{"detail": {...}}`)
+    // carry no LOC code. Surface the raw validation payload compactly in
+    // `message` and verbatim under `details.detail` so callers can inspect
+    // it without re-parsing the wire body.
+    if envelope.is_none() {
+        if let Some(raw) = detail.filter(|d| !d.is_string()) {
+            let compact = serde_json::to_string(raw).unwrap_or_else(|_| raw.to_string());
+            let message: String = compact.chars().take(VALIDATION_MESSAGE_MAX_CHARS).collect();
+            return OpenClearinghouseError::Api {
+                status,
+                code: None,
+                kind: ErrorKind::Other,
+                message,
+                details: serde_json::json!({ "detail": raw.clone() }),
+                retry_after_seconds: retry_after,
+            };
+        }
+    }
+
+    let detail_str = detail.and_then(Value::as_str).map(str::to_string);
 
     let code = envelope
         .and_then(|e| e.get("code"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| {
-            body.get("detail")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+        .or_else(|| detail_str.clone());
 
     let message = envelope
         .and_then(|e| e.get("message"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| {
-            body.get("detail")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
+        .or(detail_str)
         .unwrap_or_else(|| format!("HTTP {status}"));
 
     let details = envelope

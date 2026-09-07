@@ -418,9 +418,15 @@ type CapabilityView struct {
 // reported units and optional outcome are consistency assertions;
 // signed settlement fields are authoritative for accounting.
 type CloseSessionRequest struct {
-	ActualUnits int                       `json:"actual_units"`
-	Outcome     *string                   `json:"outcome,omitempty"`
-	Settlement  SessionSettlementEnvelope `json:"settlement"`
+	ActualUnits int     `json:"actual_units"`
+	Outcome     *string `json:"outcome,omitempty"`
+
+	// Settlement ``Livepeer-Settlement`` as decoded by the SDK.
+	//
+	// ``signature`` is optional only at the wire layer so an unsigned
+	// broker record yields the typed ``settlement_verification_failed`` /
+	// ``missing_signature`` envelope rather than a validation error.
+	Settlement SessionSettlementEnvelope `json:"settlement"`
 }
 
 // CloseSessionResponse Outbound: “POST /v1/sessions/{id}/close“.
@@ -1066,10 +1072,14 @@ type SessionAxesViewMetering string
 // SessionAxesViewRefill defines model for SessionAxesView.Refill.
 type SessionAxesViewRefill string
 
-// SessionSettlementEnvelope defines model for SessionSettlementEnvelope.
+// SessionSettlementEnvelope “Livepeer-Settlement“ as decoded by the SDK.
+//
+// “signature“ is optional only at the wire layer so an unsigned
+// broker record yields the typed “settlement_verification_failed“ /
+// “missing_signature“ envelope rather than a validation error.
 type SessionSettlementEnvelope struct {
-	Payload   map[string]interface{}     `json:"payload"`
-	Signature SessionSettlementSignature `json:"signature"`
+	Payload   map[string]interface{}      `json:"payload"`
+	Signature *SessionSettlementSignature `json:"signature,omitempty"`
 }
 
 // SessionSettlementSignature defines model for SessionSettlementSignature.
@@ -1144,11 +1154,19 @@ type SessionWithSdkView struct {
 // only an optional consistency assertion; signed settlement is
 // authoritative for accounting.
 type SettleJobRequest struct {
-	ActualUnits int                `json:"actual_units"`
-	BrokerJobId string             `json:"broker_job_id"`
-	Outcome     *string            `json:"outcome,omitempty"`
-	Settlement  SettlementEnvelope `json:"settlement"`
-	WorkUnit    string             `json:"work_unit"`
+	ActualUnits int     `json:"actual_units"`
+	BrokerJobId string  `json:"broker_job_id"`
+	Outcome     *string `json:"outcome,omitempty"`
+
+	// Settlement ``Livepeer-Settlement`` as decoded by the SDK.
+	//
+	// ``signature`` is optional only at the wire layer so that a broker
+	// running without a settlement key produces LOC's typed
+	// ``settlement_verification_failed`` / ``missing_signature`` envelope
+	// instead of a framework validation error. Accounting still requires
+	// a verified signature.
+	Settlement SettlementEnvelope `json:"settlement"`
+	WorkUnit   string             `json:"work_unit"`
 }
 
 // SettleJobResponse Outbound: “POST /v1/jobs/{id}/settle“.
@@ -1188,10 +1206,16 @@ type SettleJobResponse struct {
 	WorkId    string             `json:"work_id"`
 }
 
-// SettlementEnvelope defines model for SettlementEnvelope.
+// SettlementEnvelope “Livepeer-Settlement“ as decoded by the SDK.
+//
+// “signature“ is optional only at the wire layer so that a broker
+// running without a settlement key produces LOC's typed
+// “settlement_verification_failed“ / “missing_signature“ envelope
+// instead of a framework validation error. Accounting still requires
+// a verified signature.
 type SettlementEnvelope struct {
 	Payload   map[string]interface{} `json:"payload"`
-	Signature SettlementSignature    `json:"signature"`
+	Signature *SettlementSignature   `json:"signature,omitempty"`
 }
 
 // SettlementKey Cold-key-authorized broker key accepted for settlement signatures.

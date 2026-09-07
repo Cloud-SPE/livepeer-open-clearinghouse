@@ -8,6 +8,7 @@ export type {
   SessionHandle,
 } from "./client.js";
 export { SessionRunner } from "./session_runner.js";
+export { telemetryCorrelationId } from "./telemetry.js";
 export type {
   BrokerSession,
   RefillCallback,

@@ -12,6 +12,41 @@ function errorProperty(error: unknown, key: string): unknown {
     : undefined;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Uint8Array)
+  );
+}
+
+/**
+ * Fill `model` for `openai:*` capabilities from the route LOC selected.
+ *
+ * Only applies when the body is a JSON object with no own `model` key
+ * and the job's `route_snapshot.extra.openai.model` is a non-empty
+ * string; every other body is returned as-is.
+ */
+function withRouteModel(
+  capability: string,
+  body: unknown,
+  routeSnapshot: { extra?: Record<string, unknown> } | undefined,
+): unknown {
+  if (!capability.startsWith("openai:") || !isPlainObject(body)) {
+    return body;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "model")) {
+    return body;
+  }
+  const openai = routeSnapshot?.extra?.openai;
+  const model = isPlainObject(openai) ? openai.model : undefined;
+  if (typeof model !== "string" || model.length === 0) {
+    return body;
+  }
+  return { ...body, model };
+}
+
 // ---- Generated-from-OpenAPI types ----------------------------------------
 //
 // The gateway's OpenAPI document at /openapi.json is the source of truth
@@ -189,6 +224,11 @@ export class OpenClearinghouseClient {
    *
    * Broker-level non-2xx is returned in JobResult.status, not raised —
    * only LOC-side errors raise OpenClearinghouseError.
+   *
+   * For `openai:*` capabilities you don't need a `model` field in a JSON
+   * `body`: when it is absent the SDK fills it from the route selected
+   * by LOC (`route_snapshot.extra.openai.model`). A caller-supplied
+   * `model` is always sent untouched.
    */
   async submitJob(args: {
     capability: string;
@@ -239,6 +279,7 @@ export class OpenClearinghouseClient {
       funded_value_wei: number;
       settle_endpoint: string;
       opened_at: string;
+      route_snapshot?: { extra?: Record<string, unknown> };
     };
     try {
       job = await this.request<typeof job>(
@@ -292,6 +333,7 @@ export class OpenClearinghouseClient {
     }
 
     // 2. Call the broker directly with the minted envelope
+    const brokerBody = withRouteModel(args.capability, args.body, job.route_snapshot);
     let payload: string | Uint8Array;
     const baseHeaders: Record<string, string> = {
       "Livepeer-Capability": args.capability,
@@ -300,14 +342,14 @@ export class OpenClearinghouseClient {
       "Livepeer-Protocol": job.protocol,
       "Livepeer-Request-Id": job.request_id,
     };
-    if (args.body instanceof Uint8Array) {
-      payload = args.body;
+    if (brokerBody instanceof Uint8Array) {
+      payload = brokerBody;
       baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
-    } else if (typeof args.body === "string") {
-      payload = args.body;
+    } else if (typeof brokerBody === "string") {
+      payload = brokerBody;
       baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
     } else {
-      payload = JSON.stringify(args.body);
+      payload = JSON.stringify(brokerBody);
       baseHeaders["Content-Type"] = "application/json";
     }
     if (requestedTransport === "stream") {
