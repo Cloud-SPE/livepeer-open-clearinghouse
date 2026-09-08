@@ -55,13 +55,23 @@ telemetry events when a job settle or session close is refused, so a broker
 that signs with an undelegated key shows up on the overview instead of only
 in the customer's SDK error.
 
+## Operator recourse
+
+`POST /v1/admin/jobs/{id}/resolve` with `action` of `refund_hold`,
+`accept_reported` or `charge_full` (and an optional `note`) closes a job or
+session that cannot settle on its own. Each usage row and each attention entry
+carries `blocked_reason` when the reconciler has stopped retrying a record
+that can never verify against the pinned snapshot; those rows are the ones to
+resolve. Every resolution writes a settlement event and an operator audit row.
+
 ## Accounting outcome
 
 Every job row carries one of:
 
 - `open` — funds held, work may still be running
-- `unresolved` — open for longer than the stale threshold; the SDK never
-  settled and reconciliation has not recovered it
+- `unresolved` — open for longer than the stale threshold, or blocked on a
+  record that cannot verify (`blocked_reason` says why); the SDK never settled
+  and reconciliation cannot recover it
 - `broker_settled` — closed on a verified broker settlement
 - `conservative_full_charge` — closed by the operational deadline without a
   settlement; the full funded value was charged
@@ -81,5 +91,7 @@ The same serializer now covers balance, ledger, payment and admin views.
 
 ## Changelog
 
+- 2026-09-08 — operator resolve action and `blocked_reason` added; wei on job and
+  session responses became integer strings.
 - 2026-09-08 — first shipped version; replaced the never-written
   `usage_record` table (migration 0024) with reads over `payment_session`.

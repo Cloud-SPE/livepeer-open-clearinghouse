@@ -44,8 +44,10 @@ from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaem
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key
 
 
 @pytest_asyncio.fixture()
@@ -114,6 +116,7 @@ async def test_mint_refused_fires_on_insufficient_credit(
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
                 protocol="paid-session/v1",
+                settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
                     "session": {
                         "descriptor_schema": "test-runtime/v1",
@@ -175,6 +178,7 @@ async def test_mint_served_fires_on_open_session_success(
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
                 protocol="paid-session/v1",
+                settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
                     "session": {
                         "descriptor_schema": "test-runtime/v1",
@@ -240,6 +244,7 @@ async def test_sdk_sha_mismatch_fires_when_identity_unknown(
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
                 protocol="paid-session/v1",
+                settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
                     "session": {
                         "descriptor_schema": "test-runtime/v1",
@@ -321,6 +326,7 @@ async def test_sdk_sha_mismatch_silent_when_identity_approved(
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
                 protocol="paid-session/v1",
+                settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
                     "session": {
                         "descriptor_schema": "test-runtime/v1",

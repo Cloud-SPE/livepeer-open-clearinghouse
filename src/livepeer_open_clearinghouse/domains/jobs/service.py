@@ -26,7 +26,7 @@ import time
 import uuid
 from datetime import UTC, timedelta
 from decimal import Decimal
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 import rfc8785
 from sqlalchemy import select
@@ -50,6 +50,7 @@ from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
+    NoSettlementDelegation,
     OpenClearinghouseError,
     SpendCapExceeded,
 )
@@ -173,6 +174,11 @@ async def _select_job_route(
             transport=transport,
             declared=frozenset(job_axes.transports),
         )
+    if not route.settlement_keys:
+        # A snapshot without delegation pins a job that can never verify a
+        # settlement; the funds would sit encumbered until an operator
+        # intervenes. Fail closed here instead of at settle time.
+        raise NoSettlementDelegation(capability=capability, offering=offering)
     return route
 
 
@@ -727,7 +733,11 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
         settled = False
         if exchange.outcome is BrokerExchangeOutcome.SETTLED:
             claims = _recovered_settlement_claims(exchange)
-            if claims is not None and exchange.settlement is not None:
+            if (
+                claims is not None
+                and exchange.settlement is not None
+                and not _settlement_is_blocked(job_row, exchange.settlement)
+            ):
                 try:
                     await settle_job(
                         db,
@@ -742,12 +752,21 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
                         settings=settings,
                     )
                     settled = True
-                except (
-                    JobAlreadySettled,
-                    SettlementVerificationFailed,
-                    WorkUnitMismatch,
-                    ValueError,
-                ):
+                except (SettlementVerificationFailed, WorkUnitMismatch) as exc:
+                    # Verification of a fixed record against an immutable
+                    # snapshot cannot succeed on retry. Remember the record so
+                    # the next pass skips it (one failure event, not one per
+                    # minute) and the operator attention view shows why.
+                    reason = (
+                        str(exc.details.get("reason", exc.code))
+                        if isinstance(exc, SettlementVerificationFailed)
+                        else "work_unit_mismatch"
+                    )
+                    _record_settlement_block(
+                        job_row, exchange.settlement, reason=reason, clock=clock
+                    )
+                    await db.flush()
+                except (JobAlreadySettled, ValueError):
                     # Keep the encumbrance intact. The audit snapshot makes a bad
                     # broker claim observable without granting it financial authority.
                     pass
@@ -927,6 +946,46 @@ async def _retain_verified_non_admission(
             raw_record={"evidence_digest": evidence_digest, **audit},
         )
     await db.flush()
+
+
+def _settlement_signature(settlement: dict[str, Any]) -> str | None:
+    signature = settlement.get("signature")
+    if isinstance(signature, dict):
+        value = signature.get("value")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _settlement_is_blocked(job_row: PaymentSession, settlement: dict[str, Any]) -> bool:
+    """True when this exact broker record already failed verification."""
+    block = (job_row.breakdown or {}).get("settlement_block")
+    if not isinstance(block, dict):
+        return False
+    return block.get("signature") == _settlement_signature(settlement)
+
+
+def _record_settlement_block(
+    job_row: PaymentSession, settlement: dict[str, Any], *, reason: str, clock: Clock
+) -> None:
+    existing = (job_row.breakdown or {}).get("settlement_block")
+    attempts = int(existing.get("attempts", 0)) + 1 if isinstance(existing, dict) else 1
+    first_seen = (
+        existing.get("first_seen")
+        if isinstance(existing, dict)
+        and existing.get("signature") == _settlement_signature(settlement)
+        else clock.now().isoformat()
+    )
+    job_row.breakdown = {
+        **(job_row.breakdown or {}),
+        "settlement_block": {
+            "reason": reason,
+            "signature": _settlement_signature(settlement),
+            "first_seen": first_seen,
+            "last_seen": clock.now().isoformat(),
+            "attempts": attempts,
+        },
+    }
 
 
 def _recovered_settlement_claims(

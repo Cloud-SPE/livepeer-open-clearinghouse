@@ -50,8 +50,8 @@ def _job_open(
         "transport": transport,
         "work_unit": "token",
         "payment_envelope": "BASE64ENVELOPE",
-        "expected_value_wei": 100_000,
-        "funded_value_wei": 100_000,
+        "expected_value_wei": "100000",
+        "funded_value_wei": "100000",
         "settle_endpoint": f"/v1/jobs/{job_id}/settle",
         "opened_at": "2026-05-24T12:00:00Z",
     }
@@ -71,8 +71,8 @@ def _job_settled(job_id: str, actual: int = 42) -> dict:
         "job_id": job_id,
         "work_id": "wid-abc",
         "actual_units": actual,
-        "billed_value_wei": actual * 1000,
-        "refund_wei": 100_000 - actual * 1000,
+        "billed_value_wei": str(actual * 1000),
+        "refund_wei": str(100_000 - actual * 1000),
         "outcome": "OVERFUNDED",
         "closed_at": "2026-05-24T12:00:30Z",
         "cap_status": {
@@ -746,3 +746,31 @@ async def test_submit_job_leaves_body_alone_when_route_has_no_model() -> None:
             body={"prompt": "x"},
         )
     assert "model" not in json.loads(broker.calls[0].request.content)
+
+
+# ----- wei precision ------------------------------------------------
+
+
+@respx.mock
+async def test_submit_job_keeps_wei_above_2_53_exact() -> None:
+    """LOC sends wei as integer strings; values above 2**53 must survive intact."""
+    jid = "00000000-0000-0000-0000-00000000bee5"
+    big_funded = "12345678901234567890"
+    big_billed = "12345678901234567000"
+    open_body = {**_job_open(jid), "expected_value_wei": big_funded, "funded_value_wei": big_funded}
+    respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=open_body))
+    respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(5))
+    )
+    settled = {**_job_settled(jid, actual=5), "billed_value_wei": big_billed, "refund_wei": "890"}
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(return_value=httpx.Response(200, json=settled))
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        result = await client.submit_job(
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=5,
+            max_total_units=5,
+            body={"prompt": "x"},
+        )
+    assert result.billed_value_wei == 12345678901234567000
+    assert result.refund_wei == 890

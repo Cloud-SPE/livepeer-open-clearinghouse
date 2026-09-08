@@ -59,6 +59,7 @@ export class CcUsageAdmin extends LitElement {
     _loadingSummary: { state: true },
     _loadingJobs: { state: true },
     _error: { state: true },
+    _resolveTarget: { state: true },
   };
 
   constructor() {
@@ -79,6 +80,7 @@ export class CcUsageAdmin extends LitElement {
     this._loadingSummary = false;
     this._loadingJobs = false;
     this._error = null;
+    this._resolveTarget = null;
   }
 
   createRenderRoot() {
@@ -189,6 +191,19 @@ export class CcUsageAdmin extends LitElement {
     this._offset = 0;
     this._loadJobs();
     this.querySelector("#jobs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // --- resolve ------------------------------------------------------------
+
+  _onResolveRequest(ev) {
+    this._resolveTarget = ev.detail.job;
+  }
+
+  _onJobResolved() {
+    // The row changed state and the fleet totals moved (held -> billed or
+    // refunded): reload both without touching the operator's filters.
+    this._loadJobs();
+    this._loadSummary();
   }
 
   _page(delta) {
@@ -511,6 +526,7 @@ export class CcUsageAdmin extends LitElement {
           .items=${visible}
           show-user
           ?loading=${this._loadingJobs}
+          @cc-resolve-request=${this._onResolveRequest}
           empty-text=${clientFiltered && (this._jobs.items?.length || 0) > 0
             ? "No jobs on this page match the email/outcome filter."
             : "No jobs in this window."}
@@ -544,6 +560,13 @@ export class CcUsageAdmin extends LitElement {
       ${this._renderByUser()}
       ${this._renderByOffering()}
       ${this._renderJobs()}
+      ${this._resolveTarget
+        ? html`<cc-resolve-job
+            .job=${this._resolveTarget}
+            @cc-job-resolved=${this._onJobResolved}
+            @cc-resolve-close=${() => (this._resolveTarget = null)}
+          ></cc-resolve-job>`
+        : null}
     `;
   }
 }

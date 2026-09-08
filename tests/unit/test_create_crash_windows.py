@@ -50,8 +50,10 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key
 
 INITIAL_BALANCE = Decimal(1_000_000)
 ENCUMBERED = Decimal(1_000)
@@ -90,6 +92,7 @@ def _route(protocol: Literal["paid-job/v1", "paid-session/v1"]) -> SelectedRoute
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol=protocol,
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra=extra,
     )
 

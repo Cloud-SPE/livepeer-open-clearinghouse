@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from livepeer_open_clearinghouse.domains.sessions.types import CapStatus
 from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 
 
 class CreateJobRequest(BaseModel):
@@ -52,8 +53,8 @@ class CreateJobResponse(BaseModel):
     work_unit: str
     route_snapshot: RouteSnapshot
     payment_envelope: str
-    expected_value_wei: int
-    funded_value_wei: int
+    expected_value_wei: WeiDecimal
+    funded_value_wei: WeiDecimal
     settle_endpoint: str
     opened_at: datetime
 
@@ -114,8 +115,8 @@ class SettleJobResponse(BaseModel):
     job_id: uuid.UUID
     work_id: str
     actual_units: int
-    billed_value_wei: int
-    refund_wei: int
+    billed_value_wei: WeiDecimal
+    refund_wei: WeiDecimal
     outcome: str
     closed_at: datetime
     cap_status: CapStatus
@@ -136,8 +137,8 @@ class JobStatusResponse(BaseModel):
     ]
     broker_exchange_outcome: str | None
     actual_units: int | None
-    billed_value_wei: int | None
-    funded_value_wei: int
+    billed_value_wei: WeiDecimal | None
+    funded_value_wei: WeiDecimal
     creation_round: int | None
     expires_after_round: int | None
     mint_ticket_validity_period: int | None

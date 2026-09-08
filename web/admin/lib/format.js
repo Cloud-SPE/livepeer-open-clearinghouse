@@ -158,3 +158,20 @@ export function jobStatus(job) {
   if (state === "closed") return { label: "closed", pill: "" };
   return { label: state || outcome || "unknown", pill: "" };
 }
+
+/**
+ * Whether an operator may resolve this row: the reconciler gave up on it
+ * (blocked_reason set) or it has been open past the stale window
+ * (accounting_outcome "unresolved"). Closed rows are never resolvable.
+ */
+export function isResolvable(job) {
+  if (!job) return false;
+  if (job.state === "closed") return false;
+  return job.blocked_reason != null || job.accounting_outcome === "unresolved";
+}
+
+/** "missing_delegation" -> "missing delegation" for the muted tag. */
+export function blockedReasonLabel(reason) {
+  if (!reason) return "";
+  return String(reason).replace(/_/g, " ");
+}

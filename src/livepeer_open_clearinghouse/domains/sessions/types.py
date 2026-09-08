@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 
 
 class SessionAxesView(BaseModel):
@@ -107,8 +108,8 @@ class RefillSessionResponse(BaseModel):
     request_id: str
     refill_seq: int
     payment_envelope: str
-    expected_value_wei: int
-    funded_value_wei: int
+    expected_value_wei: WeiDecimal
+    funded_value_wei: WeiDecimal
     cap_status: CapStatus
     rebind_from: str | None = None
 
@@ -135,8 +136,10 @@ class SessionStatusResponse(BaseModel):
     state: str
     estimated_units: int
     max_total_units: int
-    funded_value_wei: int
-    billed_value_wei: int  # cumulative across all minted tickets (live) OR final billed (closed)
+    funded_value_wei: WeiDecimal
+    billed_value_wei: (
+        WeiDecimal  # cumulative across all minted tickets (live) OR final billed (closed)
+    )
     refill_count: int
     cap_status: CapStatus | None
     opened_at: datetime
@@ -191,8 +194,8 @@ class CloseSessionResponse(BaseModel):
     session_id: uuid.UUID
     work_id: str
     actual_units: int
-    billed_value_wei: int
-    refund_wei: int
+    billed_value_wei: WeiDecimal
+    refund_wei: WeiDecimal
     outcome: str
     closed_at: datetime
 
@@ -221,8 +224,8 @@ class CreateSessionResponse(BaseModel):
     session: SessionAxesView
     route_snapshot: RouteSnapshot
     payment_envelope: str
-    expected_value_wei: int
-    funded_value_wei: int
+    expected_value_wei: WeiDecimal
+    funded_value_wei: WeiDecimal
     refill_endpoint: str
     close_endpoint: str
     opened_at: datetime

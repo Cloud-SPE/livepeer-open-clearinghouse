@@ -8,6 +8,7 @@ mod client;
 mod errors;
 mod session_runner;
 mod telemetry;
+pub mod wei;
 
 pub use client::{
     CapStatus, Capability, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,

@@ -47,6 +47,10 @@ async function api(path, { method = "GET", body } = {}) {
       `HTTP ${res.status}`;
     const err = new Error(message);
     err.status = res.status;
+    // Keep the structured envelope: callers such as the resolve dialog turn
+    // `details.reason` into plain language instead of echoing the message.
+    err.code = payload?.error?.code ?? null;
+    err.details = payload?.error?.details ?? null;
     throw err;
   }
   return payload;
@@ -111,3 +115,15 @@ export const listFleetUsageJobs = (params = {}) =>
   api(`/usage/jobs${qs(params)}`);
 export const getUsageAttention = (params = {}) =>
   api(`/usage/attention${qs(params)}`);
+
+// --- Settlement recourse ----------------------------------------------------
+//
+// POST /v1/admin/jobs/{id}/resolve closes a job the reconciler could not
+// settle. `action` is one of refund_hold | accept_reported | charge_full.
+// A 409 carries `details.reason` (already_closed | no_broker_report |
+// not_found) on the thrown error.
+export const resolveJob = (jobId, action, note = null) =>
+  api(`/jobs/${encodeURIComponent(jobId)}/resolve`, {
+    method: "POST",
+    body: { action, note: note && note.trim() ? note.trim() : null },
+  });

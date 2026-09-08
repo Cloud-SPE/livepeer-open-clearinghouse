@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -55,9 +55,9 @@ class BillingConfigView(BaseModel):
 
     user_id: uuid.UUID
     spend_period_seconds: int | None
-    spend_period_cap_wei: int | None
-    auto_replenish_increment_wei: int | None
-    auto_replenish_threshold_wei: int | None
+    spend_period_cap_wei: WeiDecimal | None
+    auto_replenish_increment_wei: WeiDecimal | None
+    auto_replenish_threshold_wei: WeiDecimal | None
 
 
 class BillingConfigUpdate(BaseModel):
@@ -68,18 +68,18 @@ class BillingConfigUpdate(BaseModel):
     """
 
     spend_period_seconds: int | None = None
-    spend_period_cap_wei: int | None = None
-    auto_replenish_increment_wei: int | None = None
-    auto_replenish_threshold_wei: int | None = None
+    spend_period_cap_wei: WeiDecimal | None = None
+    auto_replenish_increment_wei: WeiDecimal | None = None
+    auto_replenish_threshold_wei: WeiDecimal | None = None
 
 
 class EffectiveBillingConfigView(BaseModel):
     """The values that would be applied right now (overrides + defaults)."""
 
     spend_period_seconds: int
-    spend_period_cap_wei: int
-    auto_replenish_increment_wei: int
-    auto_replenish_threshold_wei: int
+    spend_period_cap_wei: WeiDecimal
+    auto_replenish_increment_wei: WeiDecimal
+    auto_replenish_threshold_wei: WeiDecimal
 
 
 class BillingConfigResponse(BaseModel):
@@ -275,3 +275,32 @@ class SdkDistributionEntry(BaseModel):
 
 class SdkDistributionResponse(BaseModel):
     items: list[SdkDistributionEntry]
+
+
+ResolveAction = Literal["refund_hold", "accept_reported", "charge_full"]
+
+
+class ResolveJobRequest(BaseModel):
+    """Inbound: ``POST /v1/admin/jobs/{id}/resolve``.
+
+    An operator's explicit decision for a job or session that cannot settle
+    on its own. ``refund_hold`` releases the encumbrance, ``accept_reported``
+    charges the broker-reported units at the snapshot price, ``charge_full``
+    charges the funded value.
+    """
+
+    action: ResolveAction
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ResolveJobResponse(BaseModel):
+    job_id: uuid.UUID
+    protocol: str
+    action: ResolveAction
+    state: str
+    outcome: str
+    actual_units: int | None
+    funded_value_wei: WeiDecimal
+    billed_value_wei: WeiDecimal
+    refund_wei: WeiDecimal
+    resolved_at: datetime

@@ -96,7 +96,9 @@ func callLLM(ctx context.Context, prompt string) error {
         }
         return err
     }
-    log.Printf("billed %d wei for %d units, outcome=%s",
+    // Wei amounts are exact decimal strings (big.Int-backed) and may
+    // exceed int64; use .String() / .Cmp() / .Int64().
+    log.Printf("billed %s wei for %d units, outcome=%s",
         result.BilledValueWei, result.ActualUnits, result.Outcome)
     return nil
 }

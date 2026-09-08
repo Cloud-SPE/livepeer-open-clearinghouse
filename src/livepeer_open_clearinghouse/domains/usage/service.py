@@ -116,8 +116,45 @@ def accounting_outcome_for(
         if row.outcome == "conservative_full_charge":
             return "conservative_full_charge"
         return "broker_settled"
+    if blocked_reason_for(row) is not None:
+        return "unresolved"
     age = (_naive(now) - _naive(row.opened_at)).total_seconds()
     return "unresolved" if age > stale_after_seconds else "open"
+
+
+def reported_units_for(row: PaymentSession) -> int | None:
+    """Units the broker reported for this row through the exchange lookup, if any.
+
+    This is broker-asserted, not verified: it tells an operator what
+    ``accept_reported`` would bill, nothing more.
+    """
+    exchange = (row.breakdown or {}).get("broker_exchange")
+    if not isinstance(exchange, dict):
+        return None
+    units = exchange.get("work_units")
+    if isinstance(units, int) and not isinstance(units, bool) and units >= 0:
+        return units
+    settlement = exchange.get("settlement")
+    payload = settlement.get("payload") if isinstance(settlement, dict) else None
+    if isinstance(payload, dict):
+        for key in ("actual_units", "debited_units"):
+            try:
+                value = int(payload[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+    return None
+
+
+def blocked_reason_for(row: PaymentSession) -> str | None:
+    """Why the reconciler stopped trying to settle this row, if it did."""
+    block = (row.breakdown or {}).get("settlement_block")
+    if isinstance(block, dict):
+        reason = block.get("reason")
+        if isinstance(reason, str):
+            return reason
+    return None
 
 
 def _work_unit(row: PaymentSession) -> str:
@@ -174,6 +211,8 @@ def job_view(
         opened_at=opened_at,
         closed_at=closed_at,
         duration_seconds=duration,
+        blocked_reason=blocked_reason_for(row) if row.state in OPEN_STATES else None,
+        reported_units=reported_units_for(row) if row.state in OPEN_STATES else None,
         user_id=row.user_id if include_user else None,
         user_email=user_email if include_user else None,
     )
@@ -524,6 +563,8 @@ async def attention(
             funded_value_wei=Decimal(r.funded_value_wei),
             opened_at=_aware(r.opened_at),
             age_seconds=(_naive(now) - _naive(r.opened_at)).total_seconds(),
+            blocked_reason=blocked_reason_for(r),
+            reported_units=reported_units_for(r),
         )
         for r in stale_rows
     ]

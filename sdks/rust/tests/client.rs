@@ -26,8 +26,8 @@ fn job_open_payload(broker_url: &str) -> serde_json::Value {
         "transport": "unary",
         "work_unit": "token",
         "payment_envelope": "BASE64ENV",
-        "expected_value_wei": 100_000u64,
-        "funded_value_wei": 100_000u64,
+        "expected_value_wei": "100000",
+        "funded_value_wei": "100000",
         "settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
         "opened_at": "2026-05-24T12:00:00Z"
     })
@@ -40,8 +40,8 @@ fn settled_payload(actual: u64) -> serde_json::Value {
         "job_id": "00000000-0000-0000-0000-000000000abc",
         "work_id": "wid-abc",
         "actual_units": actual,
-        "billed_value_wei": actual * 1000,
-        "refund_wei": 100_000u64 - actual * 1000,
+        "billed_value_wei": (actual * 1000).to_string(),
+        "refund_wei": (100_000u64 - actual * 1000).to_string(),
         "outcome": "OVERFUNDED",
         "closed_at": "2026-05-24T12:00:30Z",
         "cap_status": {
@@ -400,8 +400,8 @@ async fn open_session_returns_handle() {
                 "attachment": "external", "metering": "runner-reported", "refill": "extensible"
             },
             "payment_envelope": "BASE64SESS",
-            "expected_value_wei": 100_000u64,
-            "funded_value_wei": 200_000u64,
+            "expected_value_wei": "100000",
+            "funded_value_wei": "200000",
             "refill_endpoint": format!("/v1/sessions/{sid}/refill"),
             "close_endpoint": format!("/v1/sessions/{sid}/close"),
             "opened_at": "2026-05-24T12:00:00Z"
@@ -436,8 +436,8 @@ async fn close_session_threads_outcome() {
             "session_id": sid,
             "work_id": "w",
             "actual_units": 100,
-            "billed_value_wei": 100_000u64,
-            "refund_wei": 0u64,
+            "billed_value_wei": "100000",
+            "refund_wei": "0",
             "outcome": "EXACT",
             "closed_at": "2026-05-24T12:30:00Z"
         })))
@@ -698,4 +698,228 @@ async fn submit_job_skips_injection_when_route_has_no_model() {
         })
         .await
         .expect("submit with empty route model");
+}
+
+/// Every `*_wei` field on the wire is a decimal integer string that may
+/// exceed `u64`; the SDK must carry it as an exact `u128`. This value sits
+/// past 2^53, where a JSON-number decoder would already have lost digits.
+const BIG_WEI: &str = "12345678901234567890";
+const BIG_WEI_U128: u128 = 12_345_678_901_234_567_890;
+
+fn telemetry_bodies(requests: &[wiremock::Request]) -> String {
+    use std::io::Read as _;
+    requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/telemetry")
+        .map(|r| {
+            let gzipped = r
+                .headers
+                .get("content-encoding")
+                .is_some_and(|v| v.to_str().unwrap_or("").contains("gzip"));
+            if gzipped {
+                let mut out = String::new();
+                flate2::read::GzDecoder::new(r.body.as_slice())
+                    .read_to_string(&mut out)
+                    .expect("gunzip telemetry body");
+                out
+            } else {
+                String::from_utf8_lossy(&r.body).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn wei_fields_beyond_u64_round_trip_exactly() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let mut open = job_open_payload(&broker.uri());
+    open["expected_value_wei"] = json!(BIG_WEI);
+    open["funded_value_wei"] = json!(BIG_WEI);
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(open))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "reply": "ok" }))
+                .insert_header("Livepeer-Work-Units", "1")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .mount(&broker)
+        .await;
+    let mut settled = settled_payload(1);
+    settled["billed_value_wei"] = json!(BIG_WEI);
+    settled["refund_wei"] = json!(u128::MAX.to_string());
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/telemetry"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&loc)
+        .await;
+
+    let client = loc_client(&loc);
+    let result = client
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "gpt-oss-20b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({"prompt": "hello"})),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit_job");
+    assert_eq!(result.billed_value_wei, BIG_WEI_U128);
+    assert_eq!(result.refund_wei, u128::MAX);
+    assert!(result.refund_wei > u128::from(u64::MAX));
+    assert_eq!(result.billed_value_wei.to_string(), BIG_WEI);
+    client.close().await;
+
+    // Telemetry payloads carry the same string form, never a JSON number.
+    let bodies = telemetry_bodies(&loc.received_requests().await.unwrap_or_default());
+    assert!(
+        bodies.contains(&format!("\"billed_value_wei\":\"{BIG_WEI}\"")),
+        "telemetry should carry billed_value_wei as a string: {bodies}"
+    );
+    assert!(
+        bodies.contains(&format!("\"funded_value_wei\":\"{BIG_WEI}\"")),
+        "telemetry should carry funded_value_wei as a string: {bodies}"
+    );
+    assert!(!bodies.contains(&format!("\"billed_value_wei\":{BIG_WEI}")));
+}
+
+#[tokio::test]
+async fn legacy_bare_number_wei_fields_still_parse() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let mut open = job_open_payload(&broker.uri());
+    open["expected_value_wei"] = json!(100_000u64);
+    open["funded_value_wei"] = json!(100_000u64);
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(open))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/job"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "reply": "ok" }))
+                .insert_header("Livepeer-Work-Units", "42")
+                .insert_header("Livepeer-Work-Unit", "token")
+                .insert_header("Livepeer-Job-Id", "broker-job-1")
+                .insert_header("Livepeer-Settlement", ENCODED_SETTLEMENT),
+        )
+        .mount(&broker)
+        .await;
+    let mut settled = settled_payload(42);
+    settled["billed_value_wei"] = json!(42_000u64);
+    settled["refund_wei"] = json!(58_000u64);
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settled))
+        .mount(&loc)
+        .await;
+
+    let result = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "gpt-oss-20b",
+            estimated_units: 42,
+            max_total_units: None,
+            body: JobBody::Json(json!({"prompt": "hello"})),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect("submit_job with legacy numeric wei");
+    assert_eq!(result.billed_value_wei, 42_000);
+    assert_eq!(result.refund_wei, 58_000);
+}
+
+#[tokio::test]
+async fn open_session_parses_wei_beyond_u64() {
+    let loc = MockServer::start().await;
+    let sid = "33333333-3333-3333-3333-333333333333";
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "session_id": sid,
+            "work_id": "wid-sess",
+            "broker_url": "https://broker.example/livepeer",
+            "request_id": "req-session",
+            "protocol": "paid-session/v1",
+            "session": {
+                "descriptor_schema": "livepeer-session-test/v1",
+                "attachment": "external", "metering": "runner-reported", "refill": "extensible"
+            },
+            "payment_envelope": "BASE64SESS",
+            "expected_value_wei": BIG_WEI,
+            "funded_value_wei": BIG_WEI,
+            "refill_endpoint": format!("/v1/sessions/{sid}/refill"),
+            "close_endpoint": format!("/v1/sessions/{sid}/close"),
+            "opened_at": "2026-05-24T12:00:00Z"
+        })))
+        .mount(&loc)
+        .await;
+
+    let handle = loc_client(&loc)
+        .open_session(OpenSessionInput {
+            capability: "livepeer:vtuber-session",
+            offering: "vtuber-1080p30",
+            descriptor_schema: "livepeer-session-test/v1",
+            session_params: json!({}),
+            estimated_runway_units: 100,
+            max_total_units: 200,
+            request_id: None,
+        })
+        .await
+        .expect("open_session");
+    assert_eq!(handle.expected_value_wei, BIG_WEI_U128);
+    assert_eq!(handle.funded_value_wei, BIG_WEI_U128);
+}
+
+#[tokio::test]
+async fn submit_job_rejects_malformed_wei_string() {
+    let loc = MockServer::start().await;
+    let broker = MockServer::start().await;
+    let mut open = job_open_payload(&broker.uri());
+    open["funded_value_wei"] = json!("1e18");
+    Mock::given(method("POST"))
+        .and(path("/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(open))
+        .mount(&loc)
+        .await;
+
+    let err = loc_client(&loc)
+        .submit_job(SubmitJobInput {
+            capability: "openai:chat-completions",
+            offering: "gpt-oss-20b",
+            estimated_units: 1,
+            max_total_units: None,
+            body: JobBody::Json(json!({"prompt": "hello"})),
+            request_id: None,
+            transport: None,
+            content_type: None,
+        })
+        .await
+        .expect_err("non-integer wei string must not parse");
+    assert!(
+        err.to_string().contains("wei"),
+        "error should name the wei field contract: {err}"
+    );
 }

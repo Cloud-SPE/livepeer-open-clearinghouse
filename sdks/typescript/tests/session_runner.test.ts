@@ -87,8 +87,8 @@ describe("SessionRunner paid-session/v1", () => {
             request_id: "refill-request",
             refill_seq: 1,
             payment_envelope: "REFILL-ENV",
-            expected_value_wei: 50_000,
-            funded_value_wei: 50_000,
+            expected_value_wei: "50000",
+            funded_value_wei: "50000",
             cap_status: null,
           }),
         );
@@ -113,7 +113,7 @@ describe("SessionRunner paid-session/v1", () => {
       }
       if (url === `${LOC}/v1/sessions/${SID}/close`) {
         return Promise.resolve(
-          json({ outcome: "EXACT", billed_value_wei: 150_000, refund_wei: 0 }),
+          json({ outcome: "EXACT", billed_value_wei: "150000", refund_wei: "0" }),
         );
       }
       return Promise.resolve(json({ detail: "unmatched" }, 404));
@@ -133,6 +133,8 @@ describe("SessionRunner paid-session/v1", () => {
     const result = await runner.close({ actualUnits: 150 });
 
     expect(result.outcome).toBe("EXACT");
+    expect(runner.billedValueWei).toBe(150_000n);
+    expect(runner.refundWei).toBe(0n);
     const closeCall = calls.find((call) => call.url.endsWith(`/sessions/${SID}/close`));
     const closeBody = closeCall?.init?.body;
     if (typeof closeBody !== "string") throw new Error("missing close body");

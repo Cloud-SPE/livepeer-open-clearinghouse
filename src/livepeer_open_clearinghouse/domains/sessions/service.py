@@ -42,6 +42,7 @@ from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
+    NoSettlementDelegation,
     OpenClearinghouseError,
     SpendCapExceeded,
 )
@@ -392,7 +393,7 @@ def _close_endpoint_for(session_id: uuid.UUID) -> str:
     return f"/v1/sessions/{session_id}/close"
 
 
-async def open_session(
+async def open_session(  # noqa: PLR0915 — explicit open-time guards
     db: AsyncSession,
     *,
     user_id: uuid.UUID,
@@ -457,6 +458,8 @@ async def open_session(
     protocol = route.protocol
     if protocol != PAID_SESSION_PROTOCOL:
         raise ProtocolNotSupportedForSession(protocol=protocol)
+    if not route.settlement_keys:
+        raise NoSettlementDelegation(capability=capability, offering=offering)
     session_axes = route.session
     if session_axes is None:  # pragma: no cover - SelectedRoute validates this
         raise InvalidSessionRequest(message="session route declaration is unavailable")
@@ -1499,6 +1502,13 @@ async def reconcile_open_sessions(
         )
         if initial_payment is None:
             continue
+        block = (session_row.breakdown or {}).get("settlement_block")
+        signature = settlement.get("signature") if isinstance(settlement, dict) else None
+        signature_value = signature.get("value") if isinstance(signature, dict) else None
+        if isinstance(block, dict) and block.get("signature") == signature_value:
+            # Same broker record that already failed against this snapshot;
+            # nothing changed, so do not re-verify or re-report it.
+            continue
         try:
             verified = await _verify_close_settlement(
                 db,
@@ -1507,7 +1517,33 @@ async def reconcile_open_sessions(
                 settlement=settlement,
                 require_terminal=False,
             )
-        except SessionSettlementVerificationFailed:
+        except SessionSettlementVerificationFailed as exc:
+            reason = str(exc.details.get("reason", "unknown"))
+            if reason == "settlement_replay":
+                # The broker's latest record is one LOC already applied
+                # (the open or a refill). Nothing newer to verify yet; the
+                # SDK close will bring the terminal record.
+                continue
+            session_row.breakdown = {
+                **(session_row.breakdown or {}),
+                "settlement_block": {
+                    "reason": reason,
+                    "signature": signature_value,
+                    "first_seen": clock.now().isoformat(),
+                    "last_seen": clock.now().isoformat(),
+                    "attempts": 1,
+                },
+            }
+            await db.flush()
+            await telemetry_events.emit_settlement_verification_failed(
+                db,
+                api_key_id=session_row.api_key_id,
+                user_id=session_row.user_id,
+                session_id=session_row.id,
+                protocol=session_row.protocol,
+                reason=reason,
+                clock=clock,
+            )
             continue
         if verified.state != "closed":
             continue
@@ -1534,8 +1570,8 @@ async def reconcile_open_sessions(
             user_id=session_row.user_id,
             session_id=session_row.id,
             actual_units=close_response.actual_units,
-            billed_value_wei=close_response.billed_value_wei,
-            refund_wei=close_response.refund_wei,
+            billed_value_wei=int(close_response.billed_value_wei),
+            refund_wei=int(close_response.refund_wei),
             outcome=close_response.outcome,
             silence_duration_seconds=max(int((clock.now() - opened_at).total_seconds()), 0),
             clock=clock,

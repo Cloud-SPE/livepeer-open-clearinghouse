@@ -107,8 +107,8 @@ async fn paid_session_v1_open_refill_and_close() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "work_id": "wid",
             "request_id": "refill-request", "refill_seq": 1u64,
-            "payment_envelope": "REFILL-ENV", "expected_value_wei": 50_000u64,
-            "funded_value_wei": 50_000u64, "cap_status": null
+            "payment_envelope": "REFILL-ENV", "expected_value_wei": "50000",
+            "funded_value_wei": "50000", "cap_status": null
         })))
         .expect(1)
         .mount(&loc)
@@ -116,7 +116,7 @@ async fn paid_session_v1_open_refill_and_close() {
     Mock::given(method("POST"))
         .and(path(format!("/v1/sessions/{SID}/close")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "outcome": "EXACT", "billed_value_wei": 150_000u64, "refund_wei": 0u64
+            "outcome": "EXACT", "billed_value_wei": "150000", "refund_wei": "0"
         })))
         .mount(&loc)
         .await;

@@ -78,6 +78,48 @@ func (e JobStatusResponseAccountingOutcome) Valid() bool {
 	}
 }
 
+// Defines values for ResolveJobRequestAction.
+const (
+	ResolveJobRequestActionAcceptReported ResolveJobRequestAction = "accept_reported"
+	ResolveJobRequestActionChargeFull     ResolveJobRequestAction = "charge_full"
+	ResolveJobRequestActionRefundHold     ResolveJobRequestAction = "refund_hold"
+)
+
+// Valid indicates whether the value is a known member of the ResolveJobRequestAction enum.
+func (e ResolveJobRequestAction) Valid() bool {
+	switch e {
+	case ResolveJobRequestActionAcceptReported:
+		return true
+	case ResolveJobRequestActionChargeFull:
+		return true
+	case ResolveJobRequestActionRefundHold:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResolveJobResponseAction.
+const (
+	ResolveJobResponseActionAcceptReported ResolveJobResponseAction = "accept_reported"
+	ResolveJobResponseActionChargeFull     ResolveJobResponseAction = "charge_full"
+	ResolveJobResponseActionRefundHold     ResolveJobResponseAction = "refund_hold"
+)
+
+// Valid indicates whether the value is a known member of the ResolveJobResponseAction enum.
+func (e ResolveJobResponseAction) Valid() bool {
+	switch e {
+	case ResolveJobResponseActionAcceptReported:
+		return true
+	case ResolveJobResponseActionChargeFull:
+		return true
+	case ResolveJobResponseActionRefundHold:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RouteSnapshotProtocol.
 const (
 	PaidJobv1     RouteSnapshotProtocol = "paid-job/v1"
@@ -452,17 +494,59 @@ type BillingConfigResponse struct {
 // Send `null` to clear an override and inherit the default; send an
 // integer to set/replace it.
 type BillingConfigUpdate struct {
-	AutoReplenishIncrementWei *int `json:"auto_replenish_increment_wei,omitempty"`
-	AutoReplenishThresholdWei *int `json:"auto_replenish_threshold_wei,omitempty"`
-	SpendPeriodCapWei         *int `json:"spend_period_cap_wei,omitempty"`
-	SpendPeriodSeconds        *int `json:"spend_period_seconds,omitempty"`
+	AutoReplenishIncrementWei *BillingConfigUpdate_AutoReplenishIncrementWei `json:"auto_replenish_increment_wei,omitempty"`
+	AutoReplenishThresholdWei *BillingConfigUpdate_AutoReplenishThresholdWei `json:"auto_replenish_threshold_wei,omitempty"`
+	SpendPeriodCapWei         *BillingConfigUpdate_SpendPeriodCapWei         `json:"spend_period_cap_wei,omitempty"`
+	SpendPeriodSeconds        *int                                           `json:"spend_period_seconds,omitempty"`
+}
+
+// BillingConfigUpdateAutoReplenishIncrementWei0 defines model for BillingConfigUpdate.AutoReplenishIncrementWei.0.
+type BillingConfigUpdateAutoReplenishIncrementWei0 = float32
+
+// BillingConfigUpdateAutoReplenishIncrementWei1 defines model for BillingConfigUpdate.AutoReplenishIncrementWei.1.
+type BillingConfigUpdateAutoReplenishIncrementWei1 = string
+
+// BillingConfigUpdateAutoReplenishIncrementWei2 defines model for BillingConfigUpdate.AutoReplenishIncrementWei.2.
+type BillingConfigUpdateAutoReplenishIncrementWei2 = int
+
+// BillingConfigUpdate_AutoReplenishIncrementWei defines model for BillingConfigUpdate.AutoReplenishIncrementWei.
+type BillingConfigUpdate_AutoReplenishIncrementWei struct {
+	union json.RawMessage
+}
+
+// BillingConfigUpdateAutoReplenishThresholdWei0 defines model for BillingConfigUpdate.AutoReplenishThresholdWei.0.
+type BillingConfigUpdateAutoReplenishThresholdWei0 = float32
+
+// BillingConfigUpdateAutoReplenishThresholdWei1 defines model for BillingConfigUpdate.AutoReplenishThresholdWei.1.
+type BillingConfigUpdateAutoReplenishThresholdWei1 = string
+
+// BillingConfigUpdateAutoReplenishThresholdWei2 defines model for BillingConfigUpdate.AutoReplenishThresholdWei.2.
+type BillingConfigUpdateAutoReplenishThresholdWei2 = int
+
+// BillingConfigUpdate_AutoReplenishThresholdWei defines model for BillingConfigUpdate.AutoReplenishThresholdWei.
+type BillingConfigUpdate_AutoReplenishThresholdWei struct {
+	union json.RawMessage
+}
+
+// BillingConfigUpdateSpendPeriodCapWei0 defines model for BillingConfigUpdate.SpendPeriodCapWei.0.
+type BillingConfigUpdateSpendPeriodCapWei0 = float32
+
+// BillingConfigUpdateSpendPeriodCapWei1 defines model for BillingConfigUpdate.SpendPeriodCapWei.1.
+type BillingConfigUpdateSpendPeriodCapWei1 = string
+
+// BillingConfigUpdateSpendPeriodCapWei2 defines model for BillingConfigUpdate.SpendPeriodCapWei.2.
+type BillingConfigUpdateSpendPeriodCapWei2 = int
+
+// BillingConfigUpdate_SpendPeriodCapWei defines model for BillingConfigUpdate.SpendPeriodCapWei.
+type BillingConfigUpdate_SpendPeriodCapWei struct {
+	union json.RawMessage
 }
 
 // BillingConfigView Per-user billing config (null = inherit default).
 type BillingConfigView struct {
-	AutoReplenishIncrementWei *int               `json:"auto_replenish_increment_wei"`
-	AutoReplenishThresholdWei *int               `json:"auto_replenish_threshold_wei"`
-	SpendPeriodCapWei         *int               `json:"spend_period_cap_wei"`
+	AutoReplenishIncrementWei *string            `json:"auto_replenish_increment_wei"`
+	AutoReplenishThresholdWei *string            `json:"auto_replenish_threshold_wei"`
+	SpendPeriodCapWei         *string            `json:"spend_period_cap_wei"`
 	SpendPeriodSeconds        *int               `json:"spend_period_seconds"`
 	UserId                    openapi_types.UUID `json:"user_id"`
 }
@@ -528,10 +612,10 @@ type CloseSessionRequest struct {
 // back to their balance, and the settlement outcome string.
 type CloseSessionResponse struct {
 	ActualUnits    int                `json:"actual_units"`
-	BilledValueWei int                `json:"billed_value_wei"`
+	BilledValueWei string             `json:"billed_value_wei"`
 	ClosedAt       time.Time          `json:"closed_at"`
 	Outcome        string             `json:"outcome"`
-	RefundWei      int                `json:"refund_wei"`
+	RefundWei      string             `json:"refund_wei"`
 	SessionId      openapi_types.UUID `json:"session_id"`
 	WorkId         string             `json:"work_id"`
 }
@@ -587,8 +671,8 @@ type CreateJobRequestTransport string
 // terminal settlement lookup when stream trailers are inaccessible).
 type CreateJobResponse struct {
 	BrokerUrl        string             `json:"broker_url"`
-	ExpectedValueWei int                `json:"expected_value_wei"`
-	FundedValueWei   int                `json:"funded_value_wei"`
+	ExpectedValueWei string             `json:"expected_value_wei"`
+	FundedValueWei   string             `json:"funded_value_wei"`
 	JobId            openapi_types.UUID `json:"job_id"`
 	OpenedAt         time.Time          `json:"opened_at"`
 	PaymentEnvelope  string             `json:"payment_envelope"`
@@ -657,8 +741,8 @@ type CreateSessionRequest struct {
 type CreateSessionResponse struct {
 	BrokerUrl        string    `json:"broker_url"`
 	CloseEndpoint    string    `json:"close_endpoint"`
-	ExpectedValueWei int       `json:"expected_value_wei"`
-	FundedValueWei   int       `json:"funded_value_wei"`
+	ExpectedValueWei string    `json:"expected_value_wei"`
+	FundedValueWei   string    `json:"funded_value_wei"`
 	OpenedAt         time.Time `json:"opened_at"`
 	PaymentEnvelope  string    `json:"payment_envelope"`
 	Protocol         string    `json:"protocol"`
@@ -700,10 +784,10 @@ type DepositSnapshotView struct {
 
 // EffectiveBillingConfigView The values that would be applied right now (overrides + defaults).
 type EffectiveBillingConfigView struct {
-	AutoReplenishIncrementWei int `json:"auto_replenish_increment_wei"`
-	AutoReplenishThresholdWei int `json:"auto_replenish_threshold_wei"`
-	SpendPeriodCapWei         int `json:"spend_period_cap_wei"`
-	SpendPeriodSeconds        int `json:"spend_period_seconds"`
+	AutoReplenishIncrementWei string `json:"auto_replenish_increment_wei"`
+	AutoReplenishThresholdWei string `json:"auto_replenish_threshold_wei"`
+	SpendPeriodCapWei         string `json:"spend_period_cap_wei"`
+	SpendPeriodSeconds        int    `json:"spend_period_seconds"`
 }
 
 // EmailEventList defines model for EmailEventList.
@@ -783,14 +867,14 @@ type JobAxes struct {
 type JobStatusResponse struct {
 	AccountingOutcome                     JobStatusResponseAccountingOutcome `json:"accounting_outcome"`
 	ActualUnits                           *int                               `json:"actual_units"`
-	BilledValueWei                        *int                               `json:"billed_value_wei"`
+	BilledValueWei                        *string                            `json:"billed_value_wei"`
 	BrokerExchangeOutcome                 *string                            `json:"broker_exchange_outcome"`
 	ClosedAt                              *time.Time                         `json:"closed_at"`
 	CreationRound                         *int                               `json:"creation_round"`
 	CurrentTicketValidityPeriod           *int                               `json:"current_ticket_validity_period"`
 	CurrentTicketValidityPeriodObservedAt *time.Time                         `json:"current_ticket_validity_period_observed_at"`
 	ExpiresAfterRound                     *int                               `json:"expires_after_round"`
-	FundedValueWei                        int                                `json:"funded_value_wei"`
+	FundedValueWei                        string                             `json:"funded_value_wei"`
 	JobId                                 openapi_types.UUID                 `json:"job_id"`
 	MintTicketValidityPeriod              *int                               `json:"mint_ticket_validity_period"`
 	MintTicketValidityPeriodObservedAt    *time.Time                         `json:"mint_ticket_validity_period_observed_at"`
@@ -996,8 +1080,8 @@ type RefillSessionResponse struct {
 	// ``"spend_period_cap_imminent"``, ``"user_balance_imminent"``,
 	// ``"operator_pool_cap_imminent"``. ``None`` otherwise.
 	CapStatus        CapStatus `json:"cap_status"`
-	ExpectedValueWei int       `json:"expected_value_wei"`
-	FundedValueWei   int       `json:"funded_value_wei"`
+	ExpectedValueWei string    `json:"expected_value_wei"`
+	FundedValueWei   string    `json:"funded_value_wei"`
 	PaymentEnvelope  string    `json:"payment_envelope"`
 	RebindFrom       *string   `json:"rebind_from,omitempty"`
 	RefillSeq        int       `json:"refill_seq"`
@@ -1014,6 +1098,37 @@ type RequestPasswordResetRequest struct {
 type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
+
+// ResolveJobRequest Inbound: “POST /v1/admin/jobs/{id}/resolve“.
+//
+// An operator's explicit decision for a job or session that cannot settle
+// on its own. “refund_hold“ releases the encumbrance, “accept_reported“
+// charges the broker-reported units at the snapshot price, “charge_full“
+// charges the funded value.
+type ResolveJobRequest struct {
+	Action ResolveJobRequestAction `json:"action"`
+	Note   *string                 `json:"note,omitempty"`
+}
+
+// ResolveJobRequestAction defines model for ResolveJobRequest.Action.
+type ResolveJobRequestAction string
+
+// ResolveJobResponse defines model for ResolveJobResponse.
+type ResolveJobResponse struct {
+	Action         ResolveJobResponseAction `json:"action"`
+	ActualUnits    *int                     `json:"actual_units"`
+	BilledValueWei string                   `json:"billed_value_wei"`
+	FundedValueWei string                   `json:"funded_value_wei"`
+	JobId          openapi_types.UUID       `json:"job_id"`
+	Outcome        string                   `json:"outcome"`
+	Protocol       string                   `json:"protocol"`
+	RefundWei      string                   `json:"refund_wei"`
+	ResolvedAt     time.Time                `json:"resolved_at"`
+	State          string                   `json:"state"`
+}
+
+// ResolveJobResponseAction defines model for ResolveJobResponse.Action.
+type ResolveJobResponseAction string
 
 // RouteBinding Compact caller-stable identity for one signed selected route.
 type RouteBinding struct {
@@ -1219,12 +1334,12 @@ type SessionSettlementSignatureCanonicalization string
 // is omitted (irrelevant) and the close fields are populated.
 type SessionStatusResponse struct {
 	ActualUnits    *int               `json:"actual_units"`
-	BilledValueWei int                `json:"billed_value_wei"`
+	BilledValueWei string             `json:"billed_value_wei"`
 	CapStatus      *CapStatus         `json:"cap_status"`
 	Capability     string             `json:"capability"`
 	ClosedAt       *time.Time         `json:"closed_at"`
 	EstimatedUnits int                `json:"estimated_units"`
-	FundedValueWei int                `json:"funded_value_wei"`
+	FundedValueWei string             `json:"funded_value_wei"`
 	MaxTotalUnits  int                `json:"max_total_units"`
 	Offering       string             `json:"offering"`
 	OpenedAt       time.Time          `json:"opened_at"`
@@ -1291,8 +1406,8 @@ type SettleJobRequest struct {
 // after this settlement). SDKs use it to surface "you're at N%
 // of your monthly cap" UX after each completed job.
 type SettleJobResponse struct {
-	ActualUnits    int `json:"actual_units"`
-	BilledValueWei int `json:"billed_value_wei"`
+	ActualUnits    int    `json:"actual_units"`
+	BilledValueWei string `json:"billed_value_wei"`
 
 	// CapStatus Cap headroom snapshot returned with every successful refill.
 	//
@@ -1313,7 +1428,7 @@ type SettleJobResponse struct {
 	ClosedAt  time.Time          `json:"closed_at"`
 	JobId     openapi_types.UUID `json:"job_id"`
 	Outcome   string             `json:"outcome"`
-	RefundWei int                `json:"refund_wei"`
+	RefundWei string             `json:"refund_wei"`
 	WorkId    string             `json:"work_id"`
 }
 
@@ -1378,8 +1493,22 @@ type SignupResponse struct {
 
 // TopupRequest Admin-side topup body.
 type TopupRequest struct {
-	AmountWei int     `json:"amount_wei"`
-	Kind      *string `json:"kind,omitempty"`
+	AmountWei TopupRequest_AmountWei `json:"amount_wei"`
+	Kind      *string                `json:"kind,omitempty"`
+}
+
+// TopupRequestAmountWei0 defines model for TopupRequest.AmountWei.0.
+type TopupRequestAmountWei0 = float32
+
+// TopupRequestAmountWei1 defines model for TopupRequest.AmountWei.1.
+type TopupRequestAmountWei1 = string
+
+// TopupRequestAmountWei2 defines model for TopupRequest.AmountWei.2.
+type TopupRequestAmountWei2 = int
+
+// TopupRequest_AmountWei defines model for TopupRequest.AmountWei.
+type TopupRequest_AmountWei struct {
+	union json.RawMessage
 }
 
 // TopupView Admin-side topup result.
@@ -1392,12 +1521,14 @@ type TopupView struct {
 // UnresolvedJob defines model for UnresolvedJob.
 type UnresolvedJob struct {
 	AgeSeconds     float32            `json:"age_seconds"`
+	BlockedReason  *string            `json:"blocked_reason,omitempty"`
 	Capability     string             `json:"capability"`
 	FundedValueWei string             `json:"funded_value_wei"`
 	JobId          openapi_types.UUID `json:"job_id"`
 	Offering       string             `json:"offering"`
 	OpenedAt       time.Time          `json:"opened_at"`
 	Protocol       string             `json:"protocol"`
+	ReportedUnits  *int               `json:"reported_units,omitempty"`
 	UserEmail      *string            `json:"user_email"`
 	UserId         openapi_types.UUID `json:"user_id"`
 }
@@ -1443,6 +1574,7 @@ type UsageJobView struct {
 	ApiKeyId          openapi_types.UUID            `json:"api_key_id"`
 	ApiKeyLabel       *string                       `json:"api_key_label"`
 	BilledValueWei    *string                       `json:"billed_value_wei"`
+	BlockedReason     *string                       `json:"blocked_reason,omitempty"`
 	Capability        string                        `json:"capability"`
 	ClosedAt          *time.Time                    `json:"closed_at"`
 	DurationSeconds   *float32                      `json:"duration_seconds"`
@@ -1455,6 +1587,7 @@ type UsageJobView struct {
 	OpenedAt          time.Time                     `json:"opened_at"`
 	Protocol          string                        `json:"protocol"`
 	RefundedWei       *string                       `json:"refunded_wei"`
+	ReportedUnits     *int                          `json:"reported_units,omitempty"`
 	SdkIdentity       *string                       `json:"sdk_identity"`
 	State             string                        `json:"state"`
 	UserEmail         *string                       `json:"user_email,omitempty"`
@@ -1702,6 +1835,11 @@ type AdminListOrchestratorsEndpointV1AdminDiscoveryOrchestratorsGetParams struct
 // ListEmailEventsV1AdminEmailEventsGetParams defines parameters for ListEmailEventsV1AdminEmailEventsGet.
 type ListEmailEventsV1AdminEmailEventsGetParams struct {
 	Limit         *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	Authorization *string `json:"authorization,omitempty"`
+}
+
+// ResolveJobEndpointV1AdminJobsJobIdResolvePostParams defines parameters for ResolveJobEndpointV1AdminJobsJobIdResolvePost.
+type ResolveJobEndpointV1AdminJobsJobIdResolvePostParams struct {
 	Authorization *string `json:"authorization,omitempty"`
 }
 
@@ -2050,6 +2188,9 @@ type SignupEndpointV1AccountsSignupPostJSONRequestBody = SignupRequest
 // VerifyEmailEndpointV1AccountsVerifyEmailPostJSONRequestBody defines body for VerifyEmailEndpointV1AccountsVerifyEmailPost for application/json ContentType.
 type VerifyEmailEndpointV1AccountsVerifyEmailPostJSONRequestBody = VerifyEmailRequest
 
+// ResolveJobEndpointV1AdminJobsJobIdResolvePostJSONRequestBody defines body for ResolveJobEndpointV1AdminJobsJobIdResolvePost for application/json ContentType.
+type ResolveJobEndpointV1AdminJobsJobIdResolvePostJSONRequestBody = ResolveJobRequest
+
 // CreateOperatorEndpointV1AdminOperatorsPostJSONRequestBody defines body for CreateOperatorEndpointV1AdminOperatorsPost for application/json ContentType.
 type CreateOperatorEndpointV1AdminOperatorsPostJSONRequestBody = CreateOperatorRequest
 
@@ -2388,6 +2529,358 @@ func (a SessionAxesView) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(object)
+}
+
+// AsBillingConfigUpdateAutoReplenishIncrementWei0 returns the union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as a BillingConfigUpdateAutoReplenishIncrementWei0
+func (t BillingConfigUpdate_AutoReplenishIncrementWei) AsBillingConfigUpdateAutoReplenishIncrementWei0() (BillingConfigUpdateAutoReplenishIncrementWei0, error) {
+	var body BillingConfigUpdateAutoReplenishIncrementWei0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishIncrementWei0 overwrites any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as the provided BillingConfigUpdateAutoReplenishIncrementWei0
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) FromBillingConfigUpdateAutoReplenishIncrementWei0(v BillingConfigUpdateAutoReplenishIncrementWei0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishIncrementWei0 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei, using the provided BillingConfigUpdateAutoReplenishIncrementWei0
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) MergeBillingConfigUpdateAutoReplenishIncrementWei0(v BillingConfigUpdateAutoReplenishIncrementWei0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateAutoReplenishIncrementWei1 returns the union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as a BillingConfigUpdateAutoReplenishIncrementWei1
+func (t BillingConfigUpdate_AutoReplenishIncrementWei) AsBillingConfigUpdateAutoReplenishIncrementWei1() (BillingConfigUpdateAutoReplenishIncrementWei1, error) {
+	var body BillingConfigUpdateAutoReplenishIncrementWei1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishIncrementWei1 overwrites any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as the provided BillingConfigUpdateAutoReplenishIncrementWei1
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) FromBillingConfigUpdateAutoReplenishIncrementWei1(v BillingConfigUpdateAutoReplenishIncrementWei1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishIncrementWei1 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei, using the provided BillingConfigUpdateAutoReplenishIncrementWei1
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) MergeBillingConfigUpdateAutoReplenishIncrementWei1(v BillingConfigUpdateAutoReplenishIncrementWei1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateAutoReplenishIncrementWei2 returns the union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as a BillingConfigUpdateAutoReplenishIncrementWei2
+func (t BillingConfigUpdate_AutoReplenishIncrementWei) AsBillingConfigUpdateAutoReplenishIncrementWei2() (BillingConfigUpdateAutoReplenishIncrementWei2, error) {
+	var body BillingConfigUpdateAutoReplenishIncrementWei2
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishIncrementWei2 overwrites any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei as the provided BillingConfigUpdateAutoReplenishIncrementWei2
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) FromBillingConfigUpdateAutoReplenishIncrementWei2(v BillingConfigUpdateAutoReplenishIncrementWei2) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishIncrementWei2 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishIncrementWei, using the provided BillingConfigUpdateAutoReplenishIncrementWei2
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) MergeBillingConfigUpdateAutoReplenishIncrementWei2(v BillingConfigUpdateAutoReplenishIncrementWei2) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t BillingConfigUpdate_AutoReplenishIncrementWei) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *BillingConfigUpdate_AutoReplenishIncrementWei) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsBillingConfigUpdateAutoReplenishThresholdWei0 returns the union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as a BillingConfigUpdateAutoReplenishThresholdWei0
+func (t BillingConfigUpdate_AutoReplenishThresholdWei) AsBillingConfigUpdateAutoReplenishThresholdWei0() (BillingConfigUpdateAutoReplenishThresholdWei0, error) {
+	var body BillingConfigUpdateAutoReplenishThresholdWei0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishThresholdWei0 overwrites any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as the provided BillingConfigUpdateAutoReplenishThresholdWei0
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) FromBillingConfigUpdateAutoReplenishThresholdWei0(v BillingConfigUpdateAutoReplenishThresholdWei0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishThresholdWei0 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei, using the provided BillingConfigUpdateAutoReplenishThresholdWei0
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) MergeBillingConfigUpdateAutoReplenishThresholdWei0(v BillingConfigUpdateAutoReplenishThresholdWei0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateAutoReplenishThresholdWei1 returns the union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as a BillingConfigUpdateAutoReplenishThresholdWei1
+func (t BillingConfigUpdate_AutoReplenishThresholdWei) AsBillingConfigUpdateAutoReplenishThresholdWei1() (BillingConfigUpdateAutoReplenishThresholdWei1, error) {
+	var body BillingConfigUpdateAutoReplenishThresholdWei1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishThresholdWei1 overwrites any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as the provided BillingConfigUpdateAutoReplenishThresholdWei1
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) FromBillingConfigUpdateAutoReplenishThresholdWei1(v BillingConfigUpdateAutoReplenishThresholdWei1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishThresholdWei1 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei, using the provided BillingConfigUpdateAutoReplenishThresholdWei1
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) MergeBillingConfigUpdateAutoReplenishThresholdWei1(v BillingConfigUpdateAutoReplenishThresholdWei1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateAutoReplenishThresholdWei2 returns the union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as a BillingConfigUpdateAutoReplenishThresholdWei2
+func (t BillingConfigUpdate_AutoReplenishThresholdWei) AsBillingConfigUpdateAutoReplenishThresholdWei2() (BillingConfigUpdateAutoReplenishThresholdWei2, error) {
+	var body BillingConfigUpdateAutoReplenishThresholdWei2
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateAutoReplenishThresholdWei2 overwrites any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei as the provided BillingConfigUpdateAutoReplenishThresholdWei2
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) FromBillingConfigUpdateAutoReplenishThresholdWei2(v BillingConfigUpdateAutoReplenishThresholdWei2) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateAutoReplenishThresholdWei2 performs a merge with any union data inside the BillingConfigUpdate_AutoReplenishThresholdWei, using the provided BillingConfigUpdateAutoReplenishThresholdWei2
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) MergeBillingConfigUpdateAutoReplenishThresholdWei2(v BillingConfigUpdateAutoReplenishThresholdWei2) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t BillingConfigUpdate_AutoReplenishThresholdWei) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *BillingConfigUpdate_AutoReplenishThresholdWei) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsBillingConfigUpdateSpendPeriodCapWei0 returns the union data inside the BillingConfigUpdate_SpendPeriodCapWei as a BillingConfigUpdateSpendPeriodCapWei0
+func (t BillingConfigUpdate_SpendPeriodCapWei) AsBillingConfigUpdateSpendPeriodCapWei0() (BillingConfigUpdateSpendPeriodCapWei0, error) {
+	var body BillingConfigUpdateSpendPeriodCapWei0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateSpendPeriodCapWei0 overwrites any union data inside the BillingConfigUpdate_SpendPeriodCapWei as the provided BillingConfigUpdateSpendPeriodCapWei0
+func (t *BillingConfigUpdate_SpendPeriodCapWei) FromBillingConfigUpdateSpendPeriodCapWei0(v BillingConfigUpdateSpendPeriodCapWei0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateSpendPeriodCapWei0 performs a merge with any union data inside the BillingConfigUpdate_SpendPeriodCapWei, using the provided BillingConfigUpdateSpendPeriodCapWei0
+func (t *BillingConfigUpdate_SpendPeriodCapWei) MergeBillingConfigUpdateSpendPeriodCapWei0(v BillingConfigUpdateSpendPeriodCapWei0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateSpendPeriodCapWei1 returns the union data inside the BillingConfigUpdate_SpendPeriodCapWei as a BillingConfigUpdateSpendPeriodCapWei1
+func (t BillingConfigUpdate_SpendPeriodCapWei) AsBillingConfigUpdateSpendPeriodCapWei1() (BillingConfigUpdateSpendPeriodCapWei1, error) {
+	var body BillingConfigUpdateSpendPeriodCapWei1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateSpendPeriodCapWei1 overwrites any union data inside the BillingConfigUpdate_SpendPeriodCapWei as the provided BillingConfigUpdateSpendPeriodCapWei1
+func (t *BillingConfigUpdate_SpendPeriodCapWei) FromBillingConfigUpdateSpendPeriodCapWei1(v BillingConfigUpdateSpendPeriodCapWei1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateSpendPeriodCapWei1 performs a merge with any union data inside the BillingConfigUpdate_SpendPeriodCapWei, using the provided BillingConfigUpdateSpendPeriodCapWei1
+func (t *BillingConfigUpdate_SpendPeriodCapWei) MergeBillingConfigUpdateSpendPeriodCapWei1(v BillingConfigUpdateSpendPeriodCapWei1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBillingConfigUpdateSpendPeriodCapWei2 returns the union data inside the BillingConfigUpdate_SpendPeriodCapWei as a BillingConfigUpdateSpendPeriodCapWei2
+func (t BillingConfigUpdate_SpendPeriodCapWei) AsBillingConfigUpdateSpendPeriodCapWei2() (BillingConfigUpdateSpendPeriodCapWei2, error) {
+	var body BillingConfigUpdateSpendPeriodCapWei2
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBillingConfigUpdateSpendPeriodCapWei2 overwrites any union data inside the BillingConfigUpdate_SpendPeriodCapWei as the provided BillingConfigUpdateSpendPeriodCapWei2
+func (t *BillingConfigUpdate_SpendPeriodCapWei) FromBillingConfigUpdateSpendPeriodCapWei2(v BillingConfigUpdateSpendPeriodCapWei2) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBillingConfigUpdateSpendPeriodCapWei2 performs a merge with any union data inside the BillingConfigUpdate_SpendPeriodCapWei, using the provided BillingConfigUpdateSpendPeriodCapWei2
+func (t *BillingConfigUpdate_SpendPeriodCapWei) MergeBillingConfigUpdateSpendPeriodCapWei2(v BillingConfigUpdateSpendPeriodCapWei2) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t BillingConfigUpdate_SpendPeriodCapWei) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *BillingConfigUpdate_SpendPeriodCapWei) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsTopupRequestAmountWei0 returns the union data inside the TopupRequest_AmountWei as a TopupRequestAmountWei0
+func (t TopupRequest_AmountWei) AsTopupRequestAmountWei0() (TopupRequestAmountWei0, error) {
+	var body TopupRequestAmountWei0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTopupRequestAmountWei0 overwrites any union data inside the TopupRequest_AmountWei as the provided TopupRequestAmountWei0
+func (t *TopupRequest_AmountWei) FromTopupRequestAmountWei0(v TopupRequestAmountWei0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTopupRequestAmountWei0 performs a merge with any union data inside the TopupRequest_AmountWei, using the provided TopupRequestAmountWei0
+func (t *TopupRequest_AmountWei) MergeTopupRequestAmountWei0(v TopupRequestAmountWei0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTopupRequestAmountWei1 returns the union data inside the TopupRequest_AmountWei as a TopupRequestAmountWei1
+func (t TopupRequest_AmountWei) AsTopupRequestAmountWei1() (TopupRequestAmountWei1, error) {
+	var body TopupRequestAmountWei1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTopupRequestAmountWei1 overwrites any union data inside the TopupRequest_AmountWei as the provided TopupRequestAmountWei1
+func (t *TopupRequest_AmountWei) FromTopupRequestAmountWei1(v TopupRequestAmountWei1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTopupRequestAmountWei1 performs a merge with any union data inside the TopupRequest_AmountWei, using the provided TopupRequestAmountWei1
+func (t *TopupRequest_AmountWei) MergeTopupRequestAmountWei1(v TopupRequestAmountWei1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTopupRequestAmountWei2 returns the union data inside the TopupRequest_AmountWei as a TopupRequestAmountWei2
+func (t TopupRequest_AmountWei) AsTopupRequestAmountWei2() (TopupRequestAmountWei2, error) {
+	var body TopupRequestAmountWei2
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTopupRequestAmountWei2 overwrites any union data inside the TopupRequest_AmountWei as the provided TopupRequestAmountWei2
+func (t *TopupRequest_AmountWei) FromTopupRequestAmountWei2(v TopupRequestAmountWei2) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTopupRequestAmountWei2 performs a merge with any union data inside the TopupRequest_AmountWei, using the provided TopupRequestAmountWei2
+func (t *TopupRequest_AmountWei) MergeTopupRequestAmountWei2(v TopupRequestAmountWei2) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t TopupRequest_AmountWei) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *TopupRequest_AmountWei) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
 }
 
 // AsValidationErrorLoc0 returns the union data inside the ValidationError_Loc_Item as a ValidationErrorLoc0

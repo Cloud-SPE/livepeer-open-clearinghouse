@@ -72,8 +72,10 @@ pub struct JobOpenResponse {
     pub transport: String,
     pub work_unit: String,
     pub payment_envelope: String,
-    pub expected_value_wei: u64,
-    pub funded_value_wei: u64,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub expected_value_wei: u128,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub funded_value_wei: u128,
     pub settle_endpoint: String,
     pub opened_at: String,
     /// Route the gateway bound this job to. `extra` carries
@@ -87,8 +89,10 @@ pub struct JobSettleResponse {
     pub job_id: String,
     pub work_id: String,
     pub actual_units: u64,
-    pub billed_value_wei: u64,
-    pub refund_wei: u64,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub billed_value_wei: u128,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub refund_wei: u128,
     pub outcome: String,
     pub closed_at: String,
     pub cap_status: CapStatus,
@@ -107,8 +111,8 @@ pub struct JobResult {
     pub transport: String,
     pub work_unit: String,
     pub actual_units: u64,
-    pub billed_value_wei: u64,
-    pub refund_wei: u64,
+    pub billed_value_wei: u128,
+    pub refund_wei: u128,
     pub outcome: String,
     pub cap_status: CapStatus,
     pub request_id: String,
@@ -130,8 +134,10 @@ pub struct SessionHandle {
     #[serde(skip)]
     pub session_params: Value,
     pub payment_envelope: String,
-    pub expected_value_wei: u64,
-    pub funded_value_wei: u64,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub expected_value_wei: u128,
+    #[serde(deserialize_with = "crate::wei::deserialize_wei")]
+    pub funded_value_wei: u128,
     pub refill_endpoint: String,
     pub close_endpoint: String,
     pub opened_at: String,
@@ -418,7 +424,7 @@ impl Client {
                     #[allow(clippy::cast_possible_truncation)]
                     payload: Some(serde_json::json!({
                         "latency_ms": mint_started.elapsed().as_millis() as u64,
-                        "funded_value_wei": job.funded_value_wei,
+                        "funded_value_wei": job.funded_value_wei.to_string(),
                         "protocol": job.protocol,
                     })),
                     ..Default::default()
@@ -661,8 +667,8 @@ impl Client {
                     correlation_id: Some(request_id.clone()),
                     payload: Some(serde_json::json!({
                         "latency_ms": settle_latency_ms,
-                        "refund_wei": settled.refund_wei,
-                        "billed_value_wei": settled.billed_value_wei,
+                        "refund_wei": settled.refund_wei.to_string(),
+                        "billed_value_wei": settled.billed_value_wei.to_string(),
                         "outcome": settled.outcome,
                     })),
                     ..Default::default()
@@ -683,8 +689,8 @@ impl Client {
                         "broker_job_id": broker_job_id,
                         "estimated_units": in_.estimated_units,
                         "actual_units": settled.actual_units,
-                        "billed_value_wei": settled.billed_value_wei,
-                        "refund_wei": settled.refund_wei,
+                        "billed_value_wei": settled.billed_value_wei.to_string(),
+                        "refund_wei": settled.refund_wei.to_string(),
                         "outcome": settled.outcome,
                         "broker_url": job.broker_url,
                     })),

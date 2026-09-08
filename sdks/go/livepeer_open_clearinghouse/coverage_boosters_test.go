@@ -110,7 +110,7 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
 			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
 			"payment_envelope":   "ENV",
-			"expected_value_wei": 100000, "funded_value_wei": 100000,
+			"expected_value_wei": "100000", "funded_value_wei": "100000",
 			"settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-00000000abcd/settle",
 			"opened_at":       "2026-05-25T00:00:00Z",
 		})
@@ -124,7 +124,7 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"job_id": "00000000-0000-0000-0000-00000000abcd", "work_id": "wid",
-			"actual_units": 42, "billed_value_wei": 42000, "refund_wei": 58000,
+			"actual_units": 42, "billed_value_wei": "42000", "refund_wei": "58000",
 			"outcome": "OVERFUNDED", "closed_at": "2026-05-25T00:00:30Z",
 			"cap_status": map[string]any{
 				"session_pct_used": 0.5, "spend_period_pct_used": nil,
@@ -171,7 +171,7 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
 			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
 			"payment_envelope":   "ENV",
-			"expected_value_wei": 100000, "funded_value_wei": 100000,
+			"expected_value_wei": "100000", "funded_value_wei": "100000",
 			"settle_endpoint": "/v1/jobs/11111111-1111-1111-1111-111111111111/settle",
 			"opened_at":       "2026-05-25T00:00:00Z",
 		})

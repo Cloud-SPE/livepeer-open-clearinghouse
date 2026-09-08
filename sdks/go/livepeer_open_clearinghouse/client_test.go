@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,8 +56,8 @@ func locOpenJobWithRoute(t *testing.T, brokerURL, transport string, routeSnapsho
 			"transport":          transport,
 			"work_unit":          "token",
 			"payment_envelope":   "BASE64ENV",
-			"expected_value_wei": 100000,
-			"funded_value_wei":   100000,
+			"expected_value_wei": "100000",
+			"funded_value_wei":   "100000",
 			"settle_endpoint":    "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
 			"opened_at":          "2026-05-24T12:00:00Z",
 		}
@@ -80,8 +81,8 @@ func locOpenJobWithRoute(t *testing.T, brokerURL, transport string, routeSnapsho
 			"job_id":           "00000000-0000-0000-0000-000000000abc",
 			"work_id":          "wid-abc",
 			"actual_units":     au,
-			"billed_value_wei": au * 1000,
-			"refund_wei":       100000 - au*1000,
+			"billed_value_wei": strconv.FormatInt(int64(au)*1000, 10),
+			"refund_wei":       strconv.FormatInt(100000-int64(au)*1000, 10),
 			"outcome":          "OVERFUNDED",
 			"closed_at":        "2026-05-24T12:00:30Z",
 			"cap_status": map[string]any{
@@ -154,11 +155,11 @@ func TestSubmitJobHappyPath(t *testing.T) {
 	if result.ActualUnits != 42 {
 		t.Errorf("actual_units: got %d, want 42", result.ActualUnits)
 	}
-	if result.BilledValueWei != 42000 {
-		t.Errorf("billed: got %d, want 42000", result.BilledValueWei)
+	if result.BilledValueWei.Cmp(loc.NewWei(42000)) != 0 {
+		t.Errorf("billed: got %s, want 42000", result.BilledValueWei)
 	}
-	if result.RefundWei != 58000 {
-		t.Errorf("refund: got %d, want 58000", result.RefundWei)
+	if result.RefundWei.Cmp(loc.NewWei(58000)) != 0 {
+		t.Errorf("refund: got %s, want 58000", result.RefundWei)
 	}
 	if result.Outcome != "OVERFUNDED" {
 		t.Errorf("outcome: got %q, want OVERFUNDED", result.Outcome)
@@ -337,8 +338,8 @@ func TestOpenSession(t *testing.T) {
 				"metering": "runner-reported", "refill": "extensible",
 			},
 			"payment_envelope":   "BASE64SESS",
-			"expected_value_wei": 100000,
-			"funded_value_wei":   200000,
+			"expected_value_wei": "100000",
+			"funded_value_wei":   "200000",
 			"refill_endpoint":    "/v1/sessions/11111111-1111-1111-1111-111111111111/refill",
 			"close_endpoint":     "/v1/sessions/11111111-1111-1111-1111-111111111111/close",
 			"opened_at":          "2026-05-24T12:00:00Z",
@@ -360,8 +361,8 @@ func TestOpenSession(t *testing.T) {
 	if handle.Protocol != "paid-session/v1" {
 		t.Errorf("protocol: got %q", handle.Protocol)
 	}
-	if handle.FundedValueWei != 200000 {
-		t.Errorf("funded: got %d", handle.FundedValueWei)
+	if handle.FundedValueWei.Cmp(loc.NewWei(200000)) != 0 {
+		t.Errorf("funded: got %s", handle.FundedValueWei)
 	}
 }
 
@@ -374,8 +375,8 @@ func TestCloseSessionThreadsOutcome(t *testing.T) {
 			"session_id":       "22222222-2222-2222-2222-222222222222",
 			"work_id":          "w",
 			"actual_units":     100,
-			"billed_value_wei": 100000,
-			"refund_wei":       0,
+			"billed_value_wei": "100000",
+			"refund_wei":       "0",
 			"outcome":          "EXACT",
 			"closed_at":        "2026-05-24T12:30:00Z",
 		})

@@ -68,11 +68,11 @@ func run() error {
 			if e.RefillSeq != nil {
 				seq = fmt.Sprintf("%d", *e.RefillSeq)
 			}
-			funded := int64(0)
-			if e.FundedValueWei != nil {
-				funded = *e.FundedValueWei
+			funded := "0"
+			if !e.FundedValueWei.IsNil() {
+				funded = e.FundedValueWei.String()
 			}
-			fmt.Printf("refill #%s: +%d wei\n", seq, funded)
+			fmt.Printf("refill #%s: +%s wei\n", seq, funded)
 		},
 		OnRefillRefused: func(e loc.RefillEvent) {
 			fmt.Printf("refill refused: %v\n", e.Error)

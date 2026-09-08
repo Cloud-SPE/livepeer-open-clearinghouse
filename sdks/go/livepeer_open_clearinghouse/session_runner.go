@@ -50,10 +50,12 @@ type BrokerSession struct {
 	Control BrokerControl  `json:"control"`
 }
 
+// RefillEvent describes one refill attempt. ExpectedValueWei and
+// FundedValueWei are nil (Wei.IsNil) when LOC did not report them.
 type RefillEvent struct {
 	RefillSeq        *int
-	ExpectedValueWei *int64
-	FundedValueWei   *int64
+	ExpectedValueWei Wei
+	FundedValueWei   Wei
 	CapStatus        *CapStatus
 	Error            error
 }
@@ -350,13 +352,11 @@ func refillEvent(refill map[string]any) RefillEvent {
 		value := int(n)
 		event.RefillSeq = &value
 	}
-	if n, ok := refill["expected_value_wei"].(float64); ok {
-		value := int64(n)
-		event.ExpectedValueWei = &value
+	if w, ok := weiFromAny(refill["expected_value_wei"]); ok {
+		event.ExpectedValueWei = w
 	}
-	if n, ok := refill["funded_value_wei"].(float64); ok {
-		value := int64(n)
-		event.FundedValueWei = &value
+	if w, ok := weiFromAny(refill["funded_value_wei"]); ok {
+		event.FundedValueWei = w
 	}
 	if raw, ok := refill["cap_status"].(map[string]any); ok {
 		event.CapStatus = mapToCapStatus(raw)
@@ -459,13 +459,20 @@ func (r *SessionRunner) Outcome() string {
 	value, _ := r.finalSettle["outcome"].(string)
 	return value
 }
-func (r *SessionRunner) BilledValueWei() int64 { return r.finalInt("billed_value_wei") }
-func (r *SessionRunner) RefundWei() int64      { return r.finalInt("refund_wei") }
-func (r *SessionRunner) finalInt(key string) int64 {
+
+// BilledValueWei is the final billed amount; nil (Wei.IsNil) until Close
+// has completed.
+func (r *SessionRunner) BilledValueWei() Wei { return r.finalWei("billed_value_wei") }
+
+// RefundWei is the final refund amount; nil (Wei.IsNil) until Close has
+// completed.
+func (r *SessionRunner) RefundWei() Wei { return r.finalWei("refund_wei") }
+
+func (r *SessionRunner) finalWei(key string) Wei {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	value, _ := r.finalSettle[key].(float64)
-	return int64(value)
+	value, _ := weiFromAny(r.finalSettle[key])
+	return value
 }
 
 func (r *SessionRunner) WaitClosed(ctx context.Context) error {

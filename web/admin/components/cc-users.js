@@ -35,6 +35,7 @@ export class CcUsers extends LitElement {
     _drawerJobs: { state: true },
     _drawerLoading: { state: true },
     _drawerError: { state: true },
+    _resolveTarget: { state: true },
   };
 
   constructor() {
@@ -57,6 +58,7 @@ export class CcUsers extends LitElement {
     this._drawerJobs = null;
     this._drawerLoading = false;
     this._drawerError = null;
+    this._resolveTarget = null;
   }
 
   createRenderRoot() {
@@ -66,7 +68,8 @@ export class CcUsers extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this._onKey = (e) => {
-      if (e.key === "Escape" && this._drawerUser) this._closeDrawer();
+      // The resolve dialog owns Escape while it is open.
+      if (e.key === "Escape" && this._drawerUser && !this._resolveTarget) this._closeDrawer();
     };
     window.addEventListener("keydown", this._onKey);
     this._refresh();
@@ -132,7 +135,26 @@ export class CcUsers extends LitElement {
     this._drawerLoading = false;
   }
 
+  _onResolveRequest(ev) {
+    // Per-user rows omit user_id/user_email; fill them from the drawer's
+    // user once here so the dialog gets a stable object across re-renders.
+    const user = this._drawerUser;
+    this._resolveTarget = {
+      ...ev.detail.job,
+      user_email: ev.detail.job.user_email || user?.email || null,
+      user_id: ev.detail.job.user_id || user?.id || null,
+    };
+  }
+
+  _onJobResolved() {
+    // Held funds moved on the user's balance and the row closed: reload the
+    // drawer in place and the roster behind it.
+    if (this._drawerUser) this._openDrawer(this._drawerUser);
+    this._refresh();
+  }
+
   _closeDrawer() {
+    this._resolveTarget = null;
     this._drawerUser = null;
     this._drawerOverview = null;
     this._drawerJobs = null;
@@ -228,9 +250,17 @@ export class CcUsers extends LitElement {
             .items=${this._drawerJobs?.items || []}
             ?loading=${this._drawerLoading}
             empty-text="No jobs recorded for this user."
+            @cc-resolve-request=${this._onResolveRequest}
           ></cc-usage-jobs-table>
         </div>
       </aside>
+      ${this._resolveTarget
+        ? html`<cc-resolve-job
+            .job=${this._resolveTarget}
+            @cc-job-resolved=${this._onJobResolved}
+            @cc-resolve-close=${() => (this._resolveTarget = null)}
+          ></cc-resolve-job>`
+        : null}
     `;
   }
 

@@ -856,6 +856,137 @@
     padding: 12px 0;
   }
 
+  /* --- Settlement recourse -------------------------------------------- */
+  /* Muted tag: why the reconciler stopped (missing_delegation, ...). */
+  .tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  /* The dialog must sit above the users drawer (z 31) and its backdrop. */
+  .resolve-dialog {
+    z-index: 40;
+  }
+  .resolve-card {
+    width: min(560px, 92vw);
+    min-width: 0;
+  }
+  .resolve-card .close {
+    padding: 4px;
+    border-radius: var(--radius);
+    color: var(--muted);
+  }
+  .resolve-card .close:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--surface-hover);
+  }
+  .resolve-card textarea {
+    resize: vertical;
+    font-family: var(--font-sans);
+  }
+  .resolve-actions {
+    justify-content: flex-end;
+  }
+  /* Key/value facts about the job. */
+  .kv {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 16px;
+    margin: 0 0 16px;
+    font-size: 13px;
+  }
+  .kv dt {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    align-self: baseline;
+    padding-top: 2px;
+  }
+  .kv dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  /* Radio group: one card per outcome, the whole card is the hit target. */
+  .choice-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: none;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+  .choice-group legend {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    margin-bottom: 8px;
+    padding: 0;
+  }
+  .choice {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: 14px;
+    color: var(--fg);
+    transition: border-color 80ms ease, background 80ms ease;
+  }
+  .choice:hover {
+    border-color: var(--border-strong);
+  }
+  .choice.selected {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+  }
+  .choice:has(input:focus-visible) {
+    box-shadow: 0 0 0 2px var(--accent-tint-strong);
+  }
+  .choice input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--accent);
+  }
+  .choice-group:disabled .choice {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .choice-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .choice-title {
+    font-weight: 500;
+  }
+  .choice-explain {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .choice.selected .choice-explain {
+    color: var(--fg);
+    opacity: 0.85;
+  }
+
 }
 
 @layer utilities {

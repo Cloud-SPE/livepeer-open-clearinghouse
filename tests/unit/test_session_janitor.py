@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import event as sa_event
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from livepeer_open_clearinghouse.domains.accounts import repo as _accounts  # noqa: F401
@@ -364,3 +365,34 @@ async def test_janitor_skips_paid_job_rows(db_session: AsyncSession) -> None:
     row = await db_session.get(PaymentSession, response.session_id)
     assert row is not None
     assert row.state == sessions_service.SESSION_STATE_OPEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_janitor_ignores_records_it_already_applied(db_session: AsyncSession) -> None:
+    """A not-newer record (settlement_replay) is 'nothing new yet', not a failure."""
+    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
+
+    clock = _clock()
+    response = await _open(db_session, clock)
+    row = await db_session.get(PaymentSession, response.session_id)
+    assert row is not None
+    row.last_settlement_seq = 5  # a later refill already advanced the sequence
+    await db_session.flush()
+    client = _SettlementClient({response.session_id: _signed(response, state="active")})
+
+    finalized = await sessions_service.reconcile_open_sessions(
+        db_session, settlement_client=client, clock=clock
+    )
+
+    assert finalized == 0
+    row = await db_session.get(PaymentSession, response.session_id)
+    assert row is not None
+    assert row.state == sessions_service.SESSION_STATE_OPEN
+    assert "settlement_block" not in (row.breakdown or {})
+    events = await db_session.scalar(
+        select(func.count()).where(
+            TelemetryEvent.event_type == "server.settlement_verification_failed"
+        )
+    )
+    assert events == 0

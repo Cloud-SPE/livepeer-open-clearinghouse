@@ -53,8 +53,10 @@ from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaem
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key
 
 
 @pytest_asyncio.fixture()
@@ -136,6 +138,7 @@ def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> Selecte
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
         protocol=protocol,
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra=extra,
     )
 

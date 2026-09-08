@@ -5,6 +5,7 @@ import {
   NoRouteAvailable,
   OpenClearinghouseClient,
 } from "../src/index.js";
+import { parseWei } from "../src/client.js";
 
 // --- helpers --------------------------------------------------------------
 
@@ -60,8 +61,8 @@ const JOB_OPEN = {
   transport: "unary" as const,
   work_unit: "token",
   payment_envelope: "BASE64ENV",
-  expected_value_wei: 100_000,
-  funded_value_wei: 100_000,
+  expected_value_wei: "100000",
+  funded_value_wei: "100000",
   settle_endpoint: "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
   opened_at: "2026-05-24T12:00:00Z",
 };
@@ -80,8 +81,8 @@ function settledFor(actual: number) {
     job_id: JOB_OPEN.job_id,
     work_id: JOB_OPEN.work_id,
     actual_units: actual,
-    billed_value_wei: actual * 1000,
-    refund_wei: 100_000 - actual * 1000,
+    billed_value_wei: String(actual * 1000),
+    refund_wei: String(100_000 - actual * 1000),
     outcome: "OVERFUNDED",
     closed_at: "2026-05-24T12:00:30Z",
     cap_status: {
@@ -503,8 +504,8 @@ describe("OpenClearinghouseClient", () => {
               refill: "extensible",
             },
             payment_envelope: "BASE64SESS",
-            expected_value_wei: 100_000,
-            funded_value_wei: 200_000,
+            expected_value_wei: "100000",
+            funded_value_wei: "200000",
             refill_endpoint: `/v1/sessions/${sid}/refill`,
             close_endpoint: `/v1/sessions/${sid}/close`,
             opened_at: "2026-05-24T12:00:00Z",
@@ -535,8 +536,8 @@ describe("OpenClearinghouseClient", () => {
           session_id: sid,
           work_id: "w",
           actual_units: 100,
-          billed_value_wei: 100_000,
-          refund_wei: 0,
+          billed_value_wei: "100000",
+          refund_wei: "0",
           outcome: "EXACT",
           closed_at: "2026-05-24T12:30:00Z",
         });
@@ -568,8 +569,8 @@ describe("OpenClearinghouseClient", () => {
           state: "open",
           estimated_units: 100,
           max_total_units: 1000,
-          funded_value_wei: 1_000_000,
-          billed_value_wei: 100_000,
+          funded_value_wei: "1000000",
+          billed_value_wei: "100000",
           refill_count: 0,
           cap_status: null,
           opened_at: "2026-05-24T12:00:00Z",
@@ -583,6 +584,119 @@ describe("OpenClearinghouseClient", () => {
     expect(status.state).toBe("open");
   });
 
+  it("parses wei above 2**53 exactly as bigint", async () => {
+    const big = "12345678901234567890";
+    const { fetch } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp({ ...settledFor(42), billed_value_wei: big, refund_wei: "0" }),
+      "/v1/jobs": () =>
+        jsonResp({ ...JOB_OPEN, expected_value_wei: big, funded_value_wei: big }, { status: 201 }),
+      "/v1/job": () =>
+        new Response(JSON.stringify({ reply: "ok" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...paidJobHeaders(42) },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const result = await client.submitJob({
+      capability: "openai:chat",
+      offering: "gpt-4o-mini",
+      estimatedUnits: 100,
+      body: { prompt: "hi" },
+    });
+    expect(result.billedValueWei).toBe(12345678901234567890n);
+    expect(result.billedValueWei).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+    expect(result.billedValueWei.toString()).toBe(big);
+    expect(result.refundWei).toBe(0n);
+  });
+
+  it("still accepts legacy numeric wei fields", async () => {
+    const { fetch } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp({ ...settledFor(42), billed_value_wei: 42_000, refund_wei: 58_000 }),
+      "/v1/jobs": () =>
+        jsonResp(
+          { ...JOB_OPEN, expected_value_wei: 100_000, funded_value_wei: 100_000 },
+          { status: 201 },
+        ),
+      "/v1/job": () =>
+        new Response(JSON.stringify({ reply: "ok" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...paidJobHeaders(42) },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const result = await client.submitJob({
+      capability: "openai:chat",
+      offering: "gpt-4o-mini",
+      estimatedUnits: 100,
+      body: { prompt: "hi" },
+    });
+    expect(result.billedValueWei).toBe(42_000n);
+    expect(result.refundWei).toBe(58_000n);
+  });
+
+  it("rejects a malformed wei field with a BrokerProtocolError", async () => {
+    const { fetch } = makeFetch({
+      "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle": () =>
+        jsonResp({ ...settledFor(42), billed_value_wei: "1.5e3" }),
+      "/v1/jobs": () => jsonResp(JOB_OPEN, { status: 201 }),
+      "/v1/job": () =>
+        new Response(JSON.stringify({ reply: "ok" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...paidJobHeaders(42) },
+        }),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    await expect(
+      client.submitJob({
+        capability: "openai:chat",
+        offering: "gpt-4o-mini",
+        estimatedUnits: 100,
+        body: { prompt: "hi" },
+      }),
+    ).rejects.toMatchObject({ name: "BrokerProtocolError", code: "wei_malformed" });
+  });
+
+  it("openSession parses string wei above 2**53 exactly", async () => {
+    const sid = "44444444-4444-4444-4444-444444444444";
+    const { fetch } = makeFetch({
+      "/v1/sessions": () =>
+        jsonResp(
+          {
+            session_id: sid,
+            work_id: "wid-sess",
+            broker_url: BROKER,
+            request_id: "req-session",
+            protocol: "paid-session/v1",
+            session: {
+              descriptor_schema: "livepeer-session-test/v1",
+              attachment: "direct",
+              metering: "broker",
+              refill: "extensible",
+            },
+            payment_envelope: "BASE64SESS",
+            expected_value_wei: "12345678901234567890",
+            funded_value_wei: "98765432109876543210",
+            refill_endpoint: `/v1/sessions/${sid}/refill`,
+            close_endpoint: `/v1/sessions/${sid}/close`,
+            opened_at: "2026-05-24T12:00:00Z",
+          },
+          { status: 201 },
+        ),
+    });
+    const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
+    const handle = await client.openSession({
+      capability: "livepeer:vtuber-session",
+      offering: "vtuber-1080p30",
+      descriptorSchema: "livepeer-session-test/v1",
+      estimatedRunwayUnits: 100,
+      maxTotalUnits: 200,
+    });
+    expect(handle.expectedValueWei).toBe(12345678901234567890n);
+    expect(handle.fundedValueWei).toBe(98765432109876543210n);
+  });
+
   it("listCapabilities unwraps items", async () => {
     const { fetch } = makeFetch({
       "/v1/capabilities": () =>
@@ -593,5 +707,37 @@ describe("OpenClearinghouseClient", () => {
     const client = new OpenClearinghouseClient({ baseUrl: BASE, apiKey: KEY, fetch });
     const caps = await client.listCapabilities();
     expect(caps[0]?.name).toBe("openai:embeddings");
+  });
+});
+
+describe("parseWei", () => {
+  it("parses canonical integer strings, including values above 2**53", () => {
+    expect(parseWei("0")).toBe(0n);
+    expect(parseWei("12345678901234567890")).toBe(12345678901234567890n);
+    expect(parseWei("-5")).toBe(-5n);
+  });
+
+  it("accepts legacy safe-integer numbers", () => {
+    expect(parseWei(100_000)).toBe(100_000n);
+    expect(parseWei(0)).toBe(0n);
+  });
+
+  it("rejects everything else", () => {
+    for (const bad of [
+      null,
+      undefined,
+      "",
+      "1.5",
+      "1e3",
+      " 12",
+      "0x10",
+      "abc",
+      1.5,
+      NaN,
+      2 ** 53,
+    ]) {
+      expect(() => parseWei(bad)).toThrow(BrokerProtocolError);
+    }
+    expect(() => parseWei("nope")).toThrow(/malformed wei/);
   });
 });

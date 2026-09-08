@@ -43,6 +43,8 @@ class UsageJobView(BaseModel):
     opened_at: datetime
     closed_at: datetime | None
     duration_seconds: float | None
+    blocked_reason: str | None = None
+    reported_units: int | None = None
     # Present on operator views only.
     user_id: uuid.UUID | None = None
     user_email: str | None = None
@@ -137,6 +139,8 @@ class UnresolvedJob(BaseModel):
     funded_value_wei: WeiDecimal
     opened_at: datetime
     age_seconds: float
+    blocked_reason: str | None = None
+    reported_units: int | None = None
 
 
 class SettlementFailure(BaseModel):

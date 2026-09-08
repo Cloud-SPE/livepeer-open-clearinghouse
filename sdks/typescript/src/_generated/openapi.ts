@@ -627,6 +627,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/jobs/{job_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Job Endpoint
+         * @description Operator recourse for a job or session that cannot settle on its own.
+         *
+         *     Idempotent per row: a second call answers 409 ``job_not_resolvable``
+         *     with ``reason: already_closed``. Every resolution writes a settlement
+         *     event and an operator audit entry.
+         */
+        post: operations["resolve_job_endpoint_v1_admin_jobs__job_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sdk/manifest": {
         parameters: {
             query?: never;
@@ -1621,11 +1645,11 @@ export interface components {
             /** Spend Period Seconds */
             spend_period_seconds?: number | null;
             /** Spend Period Cap Wei */
-            spend_period_cap_wei?: number | null;
+            spend_period_cap_wei?: number | string | null;
             /** Auto Replenish Increment Wei */
-            auto_replenish_increment_wei?: number | null;
+            auto_replenish_increment_wei?: number | string | null;
             /** Auto Replenish Threshold Wei */
-            auto_replenish_threshold_wei?: number | null;
+            auto_replenish_threshold_wei?: number | string | null;
         };
         /**
          * BillingConfigView
@@ -1640,11 +1664,11 @@ export interface components {
             /** Spend Period Seconds */
             spend_period_seconds: number | null;
             /** Spend Period Cap Wei */
-            spend_period_cap_wei: number | null;
+            spend_period_cap_wei: string | null;
             /** Auto Replenish Increment Wei */
-            auto_replenish_increment_wei: number | null;
+            auto_replenish_increment_wei: string | null;
             /** Auto Replenish Threshold Wei */
-            auto_replenish_threshold_wei: number | null;
+            auto_replenish_threshold_wei: string | null;
         };
         /**
          * CapStatus
@@ -1727,9 +1751,9 @@ export interface components {
             /** Actual Units */
             actual_units: number;
             /** Billed Value Wei */
-            billed_value_wei: number;
+            billed_value_wei: string;
             /** Refund Wei */
-            refund_wei: number;
+            refund_wei: string;
             /** Outcome */
             outcome: string;
             /**
@@ -1832,9 +1856,9 @@ export interface components {
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
-            expected_value_wei: number;
+            expected_value_wei: string;
             /** Funded Value Wei */
-            funded_value_wei: number;
+            funded_value_wei: string;
             /** Settle Endpoint */
             settle_endpoint: string;
             /**
@@ -1944,9 +1968,9 @@ export interface components {
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
-            expected_value_wei: number;
+            expected_value_wei: string;
             /** Funded Value Wei */
-            funded_value_wei: number;
+            funded_value_wei: string;
             /** Refill Endpoint */
             refill_endpoint: string;
             /** Close Endpoint */
@@ -2007,11 +2031,11 @@ export interface components {
             /** Spend Period Seconds */
             spend_period_seconds: number;
             /** Spend Period Cap Wei */
-            spend_period_cap_wei: number;
+            spend_period_cap_wei: string;
             /** Auto Replenish Increment Wei */
-            auto_replenish_increment_wei: number;
+            auto_replenish_increment_wei: string;
             /** Auto Replenish Threshold Wei */
-            auto_replenish_threshold_wei: number;
+            auto_replenish_threshold_wei: string;
         };
         /** EmailEventList */
         EmailEventList: {
@@ -2173,9 +2197,9 @@ export interface components {
             /** Actual Units */
             actual_units: number | null;
             /** Billed Value Wei */
-            billed_value_wei: number | null;
+            billed_value_wei: string | null;
             /** Funded Value Wei */
-            funded_value_wei: number;
+            funded_value_wei: string;
             /** Creation Round */
             creation_round: number | null;
             /** Expires After Round */
@@ -2509,9 +2533,9 @@ export interface components {
             /** Payment Envelope */
             payment_envelope: string;
             /** Expected Value Wei */
-            expected_value_wei: number;
+            expected_value_wei: string;
             /** Funded Value Wei */
-            funded_value_wei: number;
+            funded_value_wei: string;
             cap_status: components["schemas"]["CapStatus"];
             /** Rebind From */
             rebind_from?: string | null;
@@ -2537,6 +2561,56 @@ export interface components {
              * Format: email
              */
             email: string;
+        };
+        /**
+         * ResolveJobRequest
+         * @description Inbound: ``POST /v1/admin/jobs/{id}/resolve``.
+         *
+         *     An operator's explicit decision for a job or session that cannot settle
+         *     on its own. ``refund_hold`` releases the encumbrance, ``accept_reported``
+         *     charges the broker-reported units at the snapshot price, ``charge_full``
+         *     charges the funded value.
+         */
+        ResolveJobRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "refund_hold" | "accept_reported" | "charge_full";
+            /** Note */
+            note?: string | null;
+        };
+        /** ResolveJobResponse */
+        ResolveJobResponse: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Protocol */
+            protocol: string;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "refund_hold" | "accept_reported" | "charge_full";
+            /** State */
+            state: string;
+            /** Outcome */
+            outcome: string;
+            /** Actual Units */
+            actual_units: number | null;
+            /** Funded Value Wei */
+            funded_value_wei: string;
+            /** Billed Value Wei */
+            billed_value_wei: string;
+            /** Refund Wei */
+            refund_wei: string;
+            /**
+             * Resolved At
+             * Format: date-time
+             */
+            resolved_at: string;
         };
         /**
          * RouteBinding
@@ -2879,9 +2953,9 @@ export interface components {
             /** Max Total Units */
             max_total_units: number;
             /** Funded Value Wei */
-            funded_value_wei: number;
+            funded_value_wei: string;
             /** Billed Value Wei */
-            billed_value_wei: number;
+            billed_value_wei: string;
             /** Refill Count */
             refill_count: number;
             cap_status: components["schemas"]["CapStatus"] | null;
@@ -2989,9 +3063,9 @@ export interface components {
             /** Actual Units */
             actual_units: number;
             /** Billed Value Wei */
-            billed_value_wei: number;
+            billed_value_wei: string;
             /** Refund Wei */
-            refund_wei: number;
+            refund_wei: string;
             /** Outcome */
             outcome: string;
             /**
@@ -3107,7 +3181,7 @@ export interface components {
          */
         TopupRequest: {
             /** Amount Wei */
-            amount_wei: number;
+            amount_wei: number | string;
             /**
              * Kind
              * @default manual
@@ -3161,6 +3235,10 @@ export interface components {
             opened_at: string;
             /** Age Seconds */
             age_seconds: number;
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Reported Units */
+            reported_units?: number | null;
         };
         /**
          * UpdateNotificationPrefRequest
@@ -3270,6 +3348,10 @@ export interface components {
             closed_at: string | null;
             /** Duration Seconds */
             duration_seconds: number | null;
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Reported Units */
+            reported_units?: number | null;
             /** User Id */
             user_id?: string | null;
             /** User Email */
@@ -4754,6 +4836,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SdkDistributionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_job_endpoint_v1_admin_jobs__job_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveJobResponse"];
                 };
             };
             /** @description Validation Error */

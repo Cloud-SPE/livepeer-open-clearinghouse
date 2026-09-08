@@ -113,8 +113,8 @@ type JobOpenResponse struct {
 	Transport        string `json:"transport"`
 	WorkUnit         string `json:"work_unit"`
 	PaymentEnvelope  string `json:"payment_envelope"`
-	ExpectedValueWei int64  `json:"expected_value_wei"`
-	FundedValueWei   int64  `json:"funded_value_wei"`
+	ExpectedValueWei Wei    `json:"expected_value_wei"`
+	FundedValueWei   Wei    `json:"funded_value_wei"`
 	SettleEndpoint   string `json:"settle_endpoint"`
 	OpenedAt         string `json:"opened_at"`
 	// RouteSnapshot is the route LOC bound the job to (v2 gateways).
@@ -127,8 +127,8 @@ type JobSettleResponse struct {
 	JobID          string    `json:"job_id"`
 	WorkID         string    `json:"work_id"`
 	ActualUnits    int64     `json:"actual_units"`
-	BilledValueWei int64     `json:"billed_value_wei"`
-	RefundWei      int64     `json:"refund_wei"`
+	BilledValueWei Wei       `json:"billed_value_wei"`
+	RefundWei      Wei       `json:"refund_wei"`
 	Outcome        string    `json:"outcome"`
 	ClosedAt       string    `json:"closed_at"`
 	CapStatus      CapStatus `json:"cap_status"`
@@ -136,6 +136,7 @@ type JobSettleResponse struct {
 
 // JobStatusResponse preserves LOC's four accounting outcomes without
 // representing a conservative charge or non-admission as broker settlement.
+// BilledValueWei is nil (Wei.IsNil) until LOC has billed the job.
 type JobStatusResponse struct {
 	JobID                                 string  `json:"job_id"`
 	RequestID                             string  `json:"request_id"`
@@ -144,8 +145,8 @@ type JobStatusResponse struct {
 	AccountingOutcome                     string  `json:"accounting_outcome"`
 	BrokerExchangeOutcome                 *string `json:"broker_exchange_outcome"`
 	ActualUnits                           *int64  `json:"actual_units"`
-	BilledValueWei                        *int64  `json:"billed_value_wei"`
-	FundedValueWei                        int64   `json:"funded_value_wei"`
+	BilledValueWei                        Wei     `json:"billed_value_wei"`
+	FundedValueWei                        Wei     `json:"funded_value_wei"`
 	OpenedAt                              string  `json:"opened_at"`
 	ClosedAt                              *string `json:"closed_at"`
 	CreationRound                         *int64  `json:"creation_round"`
@@ -172,8 +173,8 @@ type JobResult struct {
 	Transport      string
 	WorkUnit       string
 	ActualUnits    int64
-	BilledValueWei int64
-	RefundWei      int64
+	BilledValueWei Wei
+	RefundWei      Wei
 	Outcome        string
 	CapStatus      CapStatus
 	RequestID      string
@@ -194,8 +195,8 @@ type SessionHandle struct {
 	Session          SessionAxes    `json:"session"`
 	SessionParams    map[string]any `json:"-"`
 	PaymentEnvelope  string         `json:"payment_envelope"`
-	ExpectedValueWei int64          `json:"expected_value_wei"`
-	FundedValueWei   int64          `json:"funded_value_wei"`
+	ExpectedValueWei Wei            `json:"expected_value_wei"`
+	FundedValueWei   Wei            `json:"funded_value_wei"`
 	RefillEndpoint   string         `json:"refill_endpoint"`
 	CloseEndpoint    string         `json:"close_endpoint"`
 	OpenedAt         string         `json:"opened_at"`
@@ -408,7 +409,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		CorrelationID: requestID,
 		Payload: map[string]interface{}{
 			"latency_ms":       time.Since(mintStarted).Milliseconds(),
-			"funded_value_wei": job.FundedValueWei,
+			"funded_value_wei": weiTelemetry(job.FundedValueWei),
 			"protocol":         job.Protocol,
 		},
 	})
@@ -582,8 +583,8 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		CorrelationID: requestID,
 		Payload: map[string]interface{}{
 			"latency_ms":       time.Since(settleStarted).Milliseconds(),
-			"refund_wei":       settled.RefundWei,
-			"billed_value_wei": settled.BilledValueWei,
+			"refund_wei":       weiTelemetry(settled.RefundWei),
+			"billed_value_wei": weiTelemetry(settled.BilledValueWei),
 			"outcome":          settled.Outcome,
 		},
 	})
@@ -599,8 +600,8 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 			"broker_job_id":    brokerJobID,
 			"estimated_units":  in.EstimatedUnits,
 			"actual_units":     settled.ActualUnits,
-			"billed_value_wei": settled.BilledValueWei,
-			"refund_wei":       settled.RefundWei,
+			"billed_value_wei": weiTelemetry(settled.BilledValueWei),
+			"refund_wei":       weiTelemetry(settled.RefundWei),
 			"outcome":          settled.Outcome,
 			"broker_url":       job.BrokerURL,
 		},
@@ -794,7 +795,7 @@ func (c *Client) RefillSession(ctx context.Context, sessionID string, observedCo
 		Payload: map[string]interface{}{
 			"latency_ms":       time.Since(refillStarted).Milliseconds(),
 			"refill_seq":       out["refill_seq"],
-			"funded_value_wei": out["funded_value_wei"],
+			"funded_value_wei": weiTelemetryAny(out["funded_value_wei"]),
 			"cap_status":       out["cap_status"],
 		},
 	})
@@ -829,8 +830,8 @@ func (c *Client) CloseSession(ctx context.Context, sessionID string, actualUnits
 		CorrelationID: sessionID,
 		Payload: map[string]interface{}{
 			"actual_units":     out["actual_units"],
-			"billed_value_wei": out["billed_value_wei"],
-			"refund_wei":       out["refund_wei"],
+			"billed_value_wei": weiTelemetryAny(out["billed_value_wei"]),
+			"refund_wei":       weiTelemetryAny(out["refund_wei"]),
 			"outcome":          out["outcome"],
 			"closed_by":        "customer",
 		},

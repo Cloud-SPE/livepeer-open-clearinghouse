@@ -56,7 +56,7 @@ async def admin_topup_user(
     topup_row, balance = await service.topup(
         db,
         user_id=user_id,
-        amount_wei=body.amount_wei,
+        amount_wei=int(body.amount_wei),
         kind=body.kind,
         operator_id=operator.id,
     )

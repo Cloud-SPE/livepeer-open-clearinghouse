@@ -92,6 +92,21 @@ class NoRouteAvailable(OpenClearinghouseError):
         )
 
 
+class NoSettlementDelegation(OpenClearinghouseError):
+    """The route advertises no delegated settlement keys, so it can never settle."""
+
+    def __init__(self, *, capability: str, offering: str) -> None:
+        super().__init__(
+            status_code=400,
+            code="no_settlement_delegation",
+            message=(
+                f"route for capability={capability!r}, offering={offering!r} publishes no "
+                "settlement_keys; refusing to fund work that could never settle"
+            ),
+            details={"capability": capability, "offering": offering},
+        )
+
+
 class DaemonUnavailable(OpenClearinghouseError):
     def __init__(self, *, daemon: str, reason: str) -> None:
         super().__init__(

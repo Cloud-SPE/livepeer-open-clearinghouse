@@ -2,6 +2,7 @@ import { LitElement, html } from "lit";
 import * as api from "/admin/lib/api.js";
 import { icon } from "/admin/lib/icons.js";
 import {
+  blockedReasonLabel,
   eth,
   formatCount,
   formatDateTime,
@@ -30,6 +31,7 @@ export class CcOverview extends LitElement {
     _usageLoading: { state: true },
     _showUnresolved: { state: true },
     _showFailures: { state: true },
+    _resolveTarget: { state: true },
   };
 
   constructor() {
@@ -48,6 +50,7 @@ export class CcOverview extends LitElement {
     this._usageLoading = true;
     this._showUnresolved = false;
     this._showFailures = false;
+    this._resolveTarget = null;
   }
 
   createRenderRoot() {
@@ -105,6 +108,12 @@ export class CcOverview extends LitElement {
 
   // --- attention ----------------------------------------------------------
 
+  _onJobResolved() {
+    // Held funds moved: the attention counters and fleet held/billed totals
+    // both change, and _loadUsage fetches exactly those two.
+    this._loadUsage();
+  }
+
   _renderAttention() {
     const a = this._attention;
     const counts = a?.counts || {};
@@ -151,6 +160,13 @@ export class CcOverview extends LitElement {
       </div>
       ${this._showUnresolved ? this._renderUnresolvedList() : null}
       ${this._showFailures ? this._renderFailuresList() : null}
+      ${this._resolveTarget
+        ? html`<cc-resolve-job
+            .job=${this._resolveTarget}
+            @cc-job-resolved=${this._onJobResolved}
+            @cc-resolve-close=${() => (this._resolveTarget = null)}
+          ></cc-resolve-job>`
+        : null}
     `;
   }
 
@@ -175,6 +191,7 @@ export class CcOverview extends LitElement {
                       <th class="num">Age</th>
                       <th>Opened</th>
                       <th>Job</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -184,12 +201,20 @@ export class CcOverview extends LitElement {
                           <td title=${j.user_id}>${j.user_email || html`<span class="mono small">${j.user_id}</span>`}</td>
                           <td>
                             <span class="cap-path">${j.capability}<span class="off">/${j.offering}</span></span>
-                            <div class="muted small">${j.protocol}</div>
+                            <div class="muted small">
+                              ${j.protocol}
+                              ${j.blocked_reason
+                                ? html` <span class="tag" title="reconciler stopped: ${j.blocked_reason}">${blockedReasonLabel(j.blocked_reason)}</span>`
+                                : null}
+                            </div>
                           </td>
                           <td class="num">${eth(j.funded_value_wei, "danger-text")}</td>
                           <td class="num danger-text">${formatDuration(j.age_seconds)}</td>
                           <td class="nowrap" title=${j.opened_at}>${formatDateTime(j.opened_at)}</td>
                           <td class="mono small truncate" title=${j.job_id}>${j.job_id}</td>
+                          <td class="actions">
+                            <button type="button" class="warn" @click=${() => (this._resolveTarget = j)}>Resolve</button>
+                          </td>
                         </tr>
                       `,
                     )}

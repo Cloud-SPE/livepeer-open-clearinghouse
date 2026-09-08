@@ -2,7 +2,7 @@
 
 import { WebSocket } from "ws";
 
-import { OpenClearinghouseClient, type SessionHandle } from "./client.js";
+import { OpenClearinghouseClient, parseWei, type SessionHandle } from "./client.js";
 import { BrokerProtocolError, OpenClearinghouseError } from "./errors.js";
 
 export interface SessionBalance {
@@ -61,10 +61,11 @@ export interface SessionRunnerOptions {
   fetch?: typeof fetch;
 }
 
+/** LOC's `POST /v1/sessions/{id}/close` response; wei fields are integer strings. */
 interface FinalSettle {
   outcome: string;
-  billed_value_wei: number;
-  refund_wei: number;
+  billed_value_wei: string;
+  refund_wei: string;
 }
 
 export class SessionRunner {
@@ -80,6 +81,7 @@ export class SessionRunner {
   private pendingRefillKey: string | null = null;
   private pendingRefill: Record<string, unknown> | null = null;
   private finalSettle: FinalSettle | null = null;
+  private finalWei: { billedValueWei: bigint; refundWei: bigint } | null = null;
   private closedResolve: (() => void) | null = null;
   private readonly closedPromise: Promise<void>;
 
@@ -105,11 +107,11 @@ export class SessionRunner {
   }
 
   get billedValueWei(): bigint | null {
-    return this.finalSettle ? BigInt(this.finalSettle.billed_value_wei) : null;
+    return this.finalWei?.billedValueWei ?? null;
   }
 
   get refundWei(): bigint | null {
-    return this.finalSettle ? BigInt(this.finalSettle.refund_wei) : null;
+    return this.finalWei?.refundWei ?? null;
   }
 
   async start(): Promise<BrokerSession> {
@@ -251,8 +253,8 @@ export class SessionRunner {
     }
     await this.onRefillSucceeded?.({
       refillSeq: numberOrNull(acceptedRefill.refill_seq),
-      expectedValueWei: bigintOrNull(acceptedRefill.expected_value_wei),
-      fundedValueWei: bigintOrNull(acceptedRefill.funded_value_wei),
+      expectedValueWei: weiOrNull(acceptedRefill.expected_value_wei),
+      fundedValueWei: weiOrNull(acceptedRefill.funded_value_wei),
       capStatus: (acceptedRefill.cap_status as Record<string, unknown> | undefined) ?? null,
       error: null,
     });
@@ -334,10 +336,17 @@ export class SessionRunner {
       throw protocolError("broker end response has malformed Livepeer-Settlement");
     }
     this.ws?.close();
-    this.finalSettle = (await this.client.closeSession(this.handle.sessionId, {
+    const finalSettle = (await this.client.closeSession(this.handle.sessionId, {
       ...args,
       settlement,
     })) as FinalSettle;
+    // Validate the wei fields eagerly so a malformed close surfaces here
+    // rather than on a later getter access.
+    this.finalWei = {
+      billedValueWei: parseWei(finalSettle.billed_value_wei),
+      refundWei: parseWei(finalSettle.refund_wei),
+    };
+    this.finalSettle = finalSettle;
     this.closedResolve?.();
     return this.finalSettle;
   }
@@ -420,6 +429,6 @@ function numberOrNull(value: unknown): number | null {
   return value == null ? null : Number(value);
 }
 
-function bigintOrNull(value: unknown): bigint | null {
-  return value == null ? null : BigInt(value as string | number);
+function weiOrNull(value: unknown): bigint | null {
+  return value == null ? null : parseWei(value as string | number);
 }

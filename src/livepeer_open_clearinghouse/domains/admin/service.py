@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,9 +17,14 @@ from livepeer_open_clearinghouse.domains.admin.repo import (
     OperatorAudit,
     SdkApproval,
 )
+from livepeer_open_clearinghouse.domains.admin.types import ResolveJobResponse
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
+from livepeer_open_clearinghouse.domains.payments.repo import Payment
+from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.usage import service as usage_service
+from livepeer_open_clearinghouse.errors import OpenClearinghouseError
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.email import EmailProvider, templates
 from livepeer_open_clearinghouse.providers.telemetry import get_logger
@@ -703,3 +709,160 @@ async def sdk_distribution(session: AsyncSession, *, limit: int = 50) -> list[tu
         status = await evaluate_sdk_identity(session, sdk_identity=ident or None)
         out.append((ident or "", int(count), status))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Operator recourse — resolve a job or session that cannot settle
+# ---------------------------------------------------------------------------
+
+
+class JobNotResolvable(OpenClearinghouseError):
+    def __init__(self, *, reason: str, current_state: str | None = None) -> None:
+        super().__init__(
+            code="job_not_resolvable",
+            message=f"job cannot be resolved: {reason}",
+            status_code=409,
+            details={"reason": reason, "state": current_state},
+        )
+
+
+def _ceil_bill(units: int, amount_wei: Decimal, per_units: int) -> Decimal:
+    per_units = max(1, per_units)
+    return Decimal((units * int(amount_wei) + per_units - 1) // per_units)
+
+
+async def resolve_stuck_work(
+    session: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    operator: Operator,
+    action: str,
+    note: str | None,
+    clock: Clock,
+) -> ResolveJobResponse:
+    """Close an open job or session on the operator's explicit decision.
+
+    Money moves exactly as a verified settlement would, through the same
+    encumbrance release and settlement event, so the ledger, usage views
+    and audit log all agree on what happened and who decided it.
+    """
+    row = await session.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise JobNotResolvable(reason="not_found")
+    if row.state not in (
+        sessions_service.SESSION_STATE_OPEN,
+        sessions_service.SESSION_STATE_DRAINING,
+    ):
+        raise JobNotResolvable(reason="already_closed", current_state=row.state)
+    initial_payment = await session.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment is None:
+        raise JobNotResolvable(reason="no_payment", current_state=row.state)
+
+    funded = Decimal(row.funded_value_wei)
+    snapshot = row.route_snapshot or {}
+    actual_units: int | None
+    if action == "refund_hold":
+        billed = Decimal(0)
+        actual_units = None
+    elif action == "charge_full":
+        billed = funded
+        actual_units = None
+    elif action == "accept_reported":
+        reported = usage_service.reported_units_for(row)
+        if reported is None:
+            raise JobNotResolvable(reason="no_broker_report", current_state=row.state)
+        try:
+            per_units = int(snapshot.get("units_per_price", 1))
+        except (TypeError, ValueError):
+            per_units = 1
+        billed = min(
+            funded,
+            _ceil_bill(reported, Decimal(initial_payment.price_per_work_unit_wei), per_units),
+        )
+        actual_units = reported
+    else:
+        raise JobNotResolvable(reason="unknown_action", current_state=row.state)
+    refund = funded - billed
+
+    await sessions_service.transition_state(
+        session,
+        job_id,
+        from_state=row.state,
+        to_state=sessions_service.SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+    if refund > 0:
+        await billing_service.release_session_encumbrance(
+            session,
+            user_id=row.user_id,
+            payment_id=initial_payment.id,
+            amount_wei=refund,
+        )
+    outcome = f"operator_{action}"
+    resolved_at = clock.now()
+    row.actual_units = actual_units
+    row.billed_value_wei = billed
+    row.outcome = outcome
+    breakdown = dict(row.breakdown or {})
+    breakdown.pop("settlement_block", None)
+    breakdown["operator_resolution"] = {
+        "action": action,
+        "operator_id": str(operator.id),
+        "operator_email": operator.email,
+        "note": note,
+        "billed_value_wei": str(int(billed)),
+        "refund_wei": str(int(refund)),
+        "resolved_at": resolved_at.isoformat(),
+    }
+    row.breakdown = breakdown
+    await session.flush()
+    await sessions_service.record_settlement(
+        session,
+        job_id,
+        event_type="operator_resolve",
+        clock=clock,
+        actual_units=actual_units,
+        billed_value_wei=billed,
+        outcome=outcome,
+        raw_record=breakdown["operator_resolution"],
+    )
+    session.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="resolve_job",
+            target_user_id=row.user_id,
+            params={
+                "job_id": str(job_id),
+                "protocol": row.protocol,
+                "capability": row.capability,
+                "offering": row.offering,
+                "action": action,
+                "billed_value_wei": str(int(billed)),
+                "refund_wei": str(int(refund)),
+                "note": note,
+            },
+        )
+    )
+    await session.flush()
+    return ResolveJobResponse(
+        job_id=job_id,
+        protocol=row.protocol,
+        action=action,  # type: ignore[arg-type]
+        state=row.state,
+        outcome=outcome,
+        actual_units=actual_units,
+        funded_value_wei=funded,
+        billed_value_wei=billed,
+        refund_wei=refund,
+        resolved_at=resolved_at,
+    )

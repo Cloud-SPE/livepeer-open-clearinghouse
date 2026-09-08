@@ -71,8 +71,8 @@ func run() error {
 		fmt.Println()
 		fmt.Println("==== final accounting ====")
 		fmt.Printf("actual units consumed: %d\n", result.ActualUnits)
-		fmt.Printf("billed:                %d wei\n", result.BilledValueWei)
-		fmt.Printf("refund:                %d wei\n", result.RefundWei)
+		fmt.Printf("billed:                %s wei\n", result.BilledValueWei)
+		fmt.Printf("refund:                %s wei\n", result.RefundWei)
 		fmt.Printf("outcome:               %s\n", result.Outcome)
 		if result.CapStatus.WillRefuseNextRefill {
 			reason := "unknown"

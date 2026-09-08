@@ -40,7 +40,7 @@ class TopupRequest(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    amount_wei: int = Field(gt=0)
+    amount_wei: WeiDecimal = Field(gt=0)
     kind: str = Field(default="manual", pattern=r"^(manual|initial|auto_replenish)$")
 
 

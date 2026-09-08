@@ -38,6 +38,8 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     OperatorWithToken,
     PendingUserList,
     PendingUserView,
+    ResolveJobRequest,
+    ResolveJobResponse,
     SdkApprovalList,
     SdkApprovalView,
     SdkDistributionEntry,
@@ -194,9 +196,15 @@ async def put_billing_config_endpoint(
         user_id=user_id,
         operator_id=operator.id,
         spend_period_seconds=body.spend_period_seconds,
-        spend_period_cap_wei=body.spend_period_cap_wei,
-        auto_replenish_increment_wei=body.auto_replenish_increment_wei,
-        auto_replenish_threshold_wei=body.auto_replenish_threshold_wei,
+        spend_period_cap_wei=int(body.spend_period_cap_wei)
+        if body.spend_period_cap_wei is not None
+        else None,
+        auto_replenish_increment_wei=int(body.auto_replenish_increment_wei)
+        if body.auto_replenish_increment_wei is not None
+        else None,
+        auto_replenish_threshold_wei=int(body.auto_replenish_threshold_wei)
+        if body.auto_replenish_threshold_wei is not None
+        else None,
     )
     db.add(
         OperatorAudit(
@@ -667,3 +675,27 @@ def _maybe_load_signing_keypair(settings: Settings):  # type: ignore[no-untyped-
     except Exception:
         # Bad config; serve unsigned. Operator should see this in logs.
         return None
+
+
+@router.post("/jobs/{job_id}/resolve", response_model=ResolveJobResponse)
+async def resolve_job_endpoint(
+    job_id: uuid.UUID,
+    body: ResolveJobRequest,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+) -> ResolveJobResponse:
+    """Operator recourse for a job or session that cannot settle on its own.
+
+    Idempotent per row: a second call answers 409 ``job_not_resolvable``
+    with ``reason: already_closed``. Every resolution writes a settlement
+    event and an operator audit entry.
+    """
+    return await service.resolve_stuck_work(
+        db,
+        job_id=job_id,
+        operator=operator,
+        action=body.action,
+        note=body.note,
+        clock=clock,
+    )

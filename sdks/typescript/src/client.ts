@@ -47,6 +47,38 @@ function withRouteModel(
   return { ...body, model };
 }
 
+// ---- Wei parsing ---------------------------------------------------------
+//
+// LOC emits every `*_wei` field as a decimal integer string so values above
+// 2**53 survive JSON intact. Older gateways emitted JSON numbers; those are
+// still accepted as long as they are safe integers.
+
+const CANONICAL_WEI = /^-?\d+$/;
+
+/**
+ * Parse a wei amount from an LOC response into a `bigint`.
+ *
+ * Accepts the canonical integer string (`"12345678901234567890"`) or a
+ * legacy safe-integer JSON number. Anything else — `null`, `undefined`,
+ * fractional or unsafe numbers, non-integer strings — throws a
+ * `BrokerProtocolError` with code `wei_malformed`.
+ */
+export function parseWei(value: string | number | null | undefined): bigint {
+  if (typeof value === "string") {
+    if (CANONICAL_WEI.test(value)) {
+      return BigInt(value);
+    }
+  } else if (typeof value === "number") {
+    if (Number.isSafeInteger(value)) {
+      return BigInt(value);
+    }
+  }
+  throw new BrokerProtocolError("LOC returned a malformed wei amount", {
+    code: "wei_malformed",
+    details: { value: value === undefined ? null : value, type: typeof value },
+  });
+}
+
 // ---- Generated-from-OpenAPI types ----------------------------------------
 //
 // The gateway's OpenAPI document at /openapi.json is the source of truth
@@ -275,8 +307,8 @@ export class OpenClearinghouseClient {
       transport: "unary" | "stream" | "multipart";
       work_unit: string;
       payment_envelope: string;
-      expected_value_wei: number;
-      funded_value_wei: number;
+      expected_value_wei: string;
+      funded_value_wei: string;
       settle_endpoint: string;
       opened_at: string;
       route_snapshot?: { extra?: Record<string, unknown> };
@@ -487,8 +519,8 @@ export class OpenClearinghouseClient {
       job_id: string;
       work_id: string;
       actual_units: number;
-      billed_value_wei: number;
-      refund_wei: number;
+      billed_value_wei: string;
+      refund_wei: string;
       outcome: string;
       closed_at: string;
       cap_status: CapStatus;
@@ -565,8 +597,8 @@ export class OpenClearinghouseClient {
       transport: job.transport,
       workUnit: terminalClaim.brokerWorkUnit,
       actualUnits: settled.actual_units,
-      billedValueWei: BigInt(settled.billed_value_wei),
-      refundWei: BigInt(settled.refund_wei),
+      billedValueWei: parseWei(settled.billed_value_wei),
+      refundWei: parseWei(settled.refund_wei),
       outcome: settled.outcome,
       capStatus: settled.cap_status,
       requestId: job.request_id,
@@ -608,8 +640,8 @@ export class OpenClearinghouseClient {
       protocol: string;
       session: SessionAxes;
       payment_envelope: string;
-      expected_value_wei: number;
-      funded_value_wei: number;
+      expected_value_wei: string;
+      funded_value_wei: string;
       refill_endpoint: string;
       close_endpoint: string;
       opened_at: string;
@@ -656,8 +688,8 @@ export class OpenClearinghouseClient {
       session: data.session,
       sessionParams,
       paymentEnvelope: data.payment_envelope,
-      expectedValueWei: BigInt(data.expected_value_wei),
-      fundedValueWei: BigInt(data.funded_value_wei),
+      expectedValueWei: parseWei(data.expected_value_wei),
+      fundedValueWei: parseWei(data.funded_value_wei),
       refillEndpoint: data.refill_endpoint,
       closeEndpoint: data.close_endpoint,
     };
@@ -766,8 +798,8 @@ export class OpenClearinghouseClient {
       correlationId: sessionId,
       payload: {
         actual_units: Number(result.actual_units ?? 0),
-        billed_value_wei: Number(result.billed_value_wei ?? 0),
-        refund_wei: Number(result.refund_wei ?? 0),
+        billed_value_wei: result.billed_value_wei ?? null,
+        refund_wei: result.refund_wei ?? null,
         outcome: result.outcome ?? null,
         closed_by: "customer",
       },

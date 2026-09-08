@@ -75,9 +75,9 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/sessions/" + sid + "/refill":
 			refillCalls++
-			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "refill-request", "refill_seq": 1, "payment_envelope": "REFILL-ENV", "expected_value_wei": 50000, "funded_value_wei": 50000})
+			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "refill-request", "refill_seq": 1, "payment_envelope": "REFILL-ENV", "expected_value_wei": "50000", "funded_value_wei": "50000"})
 		case "/v1/sessions/" + sid + "/close":
-			_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "EXACT", "billed_value_wei": 150000, "refund_wei": 0})
+			_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "EXACT", "billed_value_wei": "150000", "refund_wei": "0"})
 		default:
 			w.WriteHeader(http.StatusNoContent) // telemetry
 		}
@@ -89,7 +89,11 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 	if err := first.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{Client: client, Handle: sessionHandle(brokerURL, "extensible")})
+	var refills []loc.RefillEvent
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
+		OnRefillSucceeded: func(event loc.RefillEvent) { refills = append(refills, event) },
+	})
 	if err := runner.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +109,12 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 	}
 	if result["outcome"] != "EXACT" {
 		t.Fatalf("unexpected outcome: %v", result)
+	}
+	if runner.BilledValueWei().Cmp(loc.NewWei(150000)) != 0 || runner.RefundWei().Cmp(loc.NewWei(0)) != 0 {
+		t.Fatalf("final wei: billed=%s refund=%s", runner.BilledValueWei(), runner.RefundWei())
+	}
+	if len(refills) != 1 || refills[0].FundedValueWei.String() != "50000" || refills[0].ExpectedValueWei.String() != "50000" {
+		t.Fatalf("refill events: %+v", refills)
 	}
 	if seen["/v1/session"].Get("Livepeer-Protocol") != "paid-session/v1" {
 		t.Fatal("missing protocol header")

@@ -1,9 +1,11 @@
 import { LitElement, html } from "lit";
 import {
+  blockedReasonLabel,
   eth,
   formatCount,
   formatDateTime,
   formatDuration,
+  isResolvable,
   jobStatus,
   timeAgo,
 } from "/admin/lib/format.js";
@@ -11,6 +13,10 @@ import {
 // One jobs table used by the Usage page (fleet, with a User column) and the
 // per-user drawer in Users (without). Same columns everywhere so operators
 // learn the layout once.
+//
+// Rows the reconciler gave up on get a Resolve button; clicking it emits
+// `cc-resolve-request` with the row so the host can open <cc-resolve-job>
+// and refresh its own data afterwards.
 export class CcUsageJobsTable extends LitElement {
   static properties = {
     items: { attribute: false },
@@ -73,6 +79,9 @@ export class CcUsageJobsTable extends LitElement {
           <span class="pill ${status.pill}" title="state: ${job.state} · outcome: ${job.accounting_outcome}">
             ${status.label}
           </span>
+          ${job.blocked_reason
+            ? html`<div><span class="tag" title="reconciler stopped: ${job.blocked_reason}">${blockedReasonLabel(job.blocked_reason)}</span></div>`
+            : null}
         </td>
         <td class="num">${this._units(job)}</td>
         <td class="num">${eth(job.billed_value_wei)}</td>
@@ -86,8 +95,19 @@ export class CcUsageJobsTable extends LitElement {
               ? html`<span class="muted">${formatDuration((Date.now() - new Date(job.opened_at).getTime()) / 1000)}…</span>`
               : "—"}
         </td>
+        <td class="actions">
+          ${isResolvable(job)
+            ? html`<button type="button" class="warn" @click=${() => this._requestResolve(job)}>Resolve</button>`
+            : null}
+        </td>
       </tr>
     `;
+  }
+
+  _requestResolve(job) {
+    this.dispatchEvent(
+      new CustomEvent("cc-resolve-request", { detail: { job }, bubbles: true, composed: false }),
+    );
   }
 
   render() {
@@ -113,6 +133,7 @@ export class CcUsageJobsTable extends LitElement {
               <th class="num">Funded</th>
               <th class="num">Refunded</th>
               <th class="num">Duration</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>

@@ -94,8 +94,10 @@ struct RefillResponse {
     request_id: String,
     refill_seq: Option<u64>,
     payment_envelope: String,
-    expected_value_wei: Option<u64>,
-    funded_value_wei: Option<u64>,
+    #[serde(default, deserialize_with = "crate::wei::deserialize_opt_wei")]
+    expected_value_wei: Option<u128>,
+    #[serde(default, deserialize_with = "crate::wei::deserialize_opt_wei")]
+    funded_value_wei: Option<u128>,
     cap_status: Option<CapStatus>,
     rebind_from: Option<String>,
 }
@@ -103,8 +105,8 @@ struct RefillResponse {
 #[derive(Debug, Clone)]
 pub struct RefillEvent {
     pub refill_seq: Option<u64>,
-    pub expected_value_wei: Option<u64>,
-    pub funded_value_wei: Option<u64>,
+    pub expected_value_wei: Option<u128>,
+    pub funded_value_wei: Option<u128>,
     pub cap_status: Option<CapStatus>,
     pub error: Option<Arc<OpenClearinghouseError>>,
 }
@@ -144,8 +146,8 @@ impl SessionRunnerOptions {
 #[derive(Debug, Clone)]
 pub struct SessionOutcome {
     pub outcome: String,
-    pub billed_value_wei: u64,
-    pub refund_wei: u64,
+    pub billed_value_wei: u128,
+    pub refund_wei: u128,
 }
 
 struct Inner {
@@ -649,11 +651,11 @@ fn parse_outcome(response: &Value) -> SessionOutcome {
             .to_string(),
         billed_value_wei: response
             .get("billed_value_wei")
-            .and_then(Value::as_u64)
+            .and_then(crate::wei::from_value)
             .unwrap_or_default(),
         refund_wei: response
             .get("refund_wei")
-            .and_then(Value::as_u64)
+            .and_then(crate::wei::from_value)
             .unwrap_or_default(),
     }
 }

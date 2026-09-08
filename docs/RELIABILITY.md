@@ -137,6 +137,24 @@ LOC-observed `LOOKUP_FAILED` result: it is not broker evidence, but it also must
 not bypass an operator's configured deadline forever. LOC retries it before the
 deadline and applies the same distinct conservative outcome after the deadline.
 
+Two rules keep the reconciler honest about what it cannot fix. A route
+whose snapshot carries no `settlement_keys` is refused at open
+(`no_settlement_delegation`), because nothing minted against it could ever
+verify. And when a recovered broker record fails verification against the
+immutable snapshot, the reconciler records a `settlement_block` (reason, the
+record's signature, first/last seen) on the row, emits one
+`server.settlement_verification_failed` event, and stops re-verifying that
+record; only a different record, or an operator, changes the outcome.
+
+**Operator recourse.** `POST /v1/admin/jobs/{id}/resolve` closes an open job
+or session on an explicit operator decision: `refund_hold` releases the
+encumbrance, `accept_reported` charges the broker-reported units at the
+snapshot price (the fair outcome when the broker did the work but the record
+cannot be verified, e.g. a snapshot pinned before delegation), `charge_full`
+charges the funded value. It writes the same settlement event and encumbrance
+release a verified close would, plus an `operator_audit` row, and is
+idempotent per row. The admin console exposes it on unresolved rows.
+
 There is deliberately no customer-authorized `abandon` endpoint. A broker
 refusal may improve telemetry but cannot release money because a broker that
 received the envelope could retain it and submit it later. Neither chain
@@ -151,9 +169,8 @@ billing error because it can overfund by up to one wei per refill.
 
 ### Usage reports
 
-`POST /v1/usage/report` is keyed on `(api_key_id, payment_work_id)`. A
-duplicate report for the same `work_id` is a no-op (returns the first
-report's reconciled state). The first report wins.
+There is no customer usage-report endpoint. Usage is derived from settled
+`payment_session` rows (see `docs/product-specs/006-usage-visibility.md`).
 
 ## State machines
 
