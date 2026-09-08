@@ -1,39 +1,14 @@
 import { LitElement, html } from "lit";
 import * as api from "/portal/lib/api.js";
 import { icon } from "/portal/lib/icons.js";
-
-function reasonLabel(reason) {
-  switch (reason) {
-    case "topup":
-      return "Topup";
-    case "auto_replenish":
-      return "Auto replenish";
-    case "payment_charge":
-      return "Payment";
-    case "payment_refund":
-      return "Refund";
-    case "admin_adjustment":
-      return "Adjustment";
-    default:
-      return reason;
-  }
-}
-
-function reasonPill(reason) {
-  switch (reason) {
-    case "topup":
-    case "auto_replenish":
-      return "ok";
-    case "payment_charge":
-      return "info";
-    case "payment_refund":
-      return "warn";
-    case "admin_adjustment":
-      return "role";
-    default:
-      return "";
-  }
-}
+import {
+  formatDateTime,
+  formatEth,
+  formatWeiExact,
+  ledgerReasonLabel,
+  ledgerReasonTone,
+  toWei,
+} from "/portal/lib/format.js";
 
 export class CcActivity extends LitElement {
   static properties = {
@@ -77,11 +52,6 @@ export class CcActivity extends LitElement {
     }
   }
 
-  _formatWei(wei) {
-    if (wei == null) return "—";
-    return String(wei).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  }
-
   render() {
     return html`
       <h1>Activity</h1>
@@ -89,8 +59,11 @@ export class CcActivity extends LitElement {
 
       <div class="metric-grid">
         <div class="metric accent">
-          <div class="label">Current balance (wei)</div>
-          <div class="value mono">${this._formatWei(this._balance?.amount_wei)}</div>
+          <div class="label">Current balance</div>
+          <div class="value eth num" title=${formatWeiExact(this._balance?.amount_wei)}>
+            ${formatEth(this._balance?.amount_wei)}
+          </div>
+          <div class="sub">Includes funds held by open jobs — see <a href="#/usage">Usage</a>.</div>
         </div>
       </div>
 
@@ -110,24 +83,27 @@ export class CcActivity extends LitElement {
                   <thead>
                     <tr>
                       <th>When</th>
-                      <th>Reason</th>
-                      <th class="right">Δ (wei)</th>
+                      <th>What</th>
+                      <th class="right">Amount</th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._ledger.map(
-                      (e) => html`
+                    ${this._ledger.map((e) => {
+                      const w = toWei(e.delta_wei);
+                      return html`
                         <tr>
-                          <td>${new Date(e.created_at).toLocaleString()}</td>
+                          <td class="nowrap">${formatDateTime(e.created_at)}</td>
                           <td>
-                            <span class="pill ${reasonPill(e.reason)}">
-                              ${reasonLabel(e.reason)}
+                            <span class="pill ${ledgerReasonTone(e.reason)}">
+                              ${ledgerReasonLabel(e.reason)}
                             </span>
                           </td>
-                          <td class="right mono">${e.delta_wei}</td>
+                          <td class="right num" title=${formatWeiExact(e.delta_wei)}>
+                            ${w != null && w > 0n ? "+" : ""}${formatEth(e.delta_wei)}
+                          </td>
                         </tr>
-                      `,
-                    )}
+                      `;
+                    })}
                   </tbody>
                 </table>
               `}

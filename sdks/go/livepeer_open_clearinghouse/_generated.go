@@ -56,22 +56,22 @@ func (e CreateJobResponseTransport) Valid() bool {
 
 // Defines values for JobStatusResponseAccountingOutcome.
 const (
-	BrokerSettled          JobStatusResponseAccountingOutcome = "broker_settled"
-	ConservativeFullCharge JobStatusResponseAccountingOutcome = "conservative_full_charge"
-	NonAdmissionAudit      JobStatusResponseAccountingOutcome = "non_admission_audit"
-	Unresolved             JobStatusResponseAccountingOutcome = "unresolved"
+	JobStatusResponseAccountingOutcomeBrokerSettled          JobStatusResponseAccountingOutcome = "broker_settled"
+	JobStatusResponseAccountingOutcomeConservativeFullCharge JobStatusResponseAccountingOutcome = "conservative_full_charge"
+	JobStatusResponseAccountingOutcomeNonAdmissionAudit      JobStatusResponseAccountingOutcome = "non_admission_audit"
+	JobStatusResponseAccountingOutcomeUnresolved             JobStatusResponseAccountingOutcome = "unresolved"
 )
 
 // Valid indicates whether the value is a known member of the JobStatusResponseAccountingOutcome enum.
 func (e JobStatusResponseAccountingOutcome) Valid() bool {
 	switch e {
-	case BrokerSettled:
+	case JobStatusResponseAccountingOutcomeBrokerSettled:
 		return true
-	case ConservativeFullCharge:
+	case JobStatusResponseAccountingOutcomeConservativeFullCharge:
 		return true
-	case NonAdmissionAudit:
+	case JobStatusResponseAccountingOutcomeNonAdmissionAudit:
 		return true
-	case Unresolved:
+	case JobStatusResponseAccountingOutcomeUnresolved:
 		return true
 	default:
 		return false
@@ -267,6 +267,84 @@ func (e SettlementSignatureCanonicalization) Valid() bool {
 	}
 }
 
+// Defines values for UsageJobViewAccountingOutcome.
+const (
+	UsageJobViewAccountingOutcomeBrokerSettled          UsageJobViewAccountingOutcome = "broker_settled"
+	UsageJobViewAccountingOutcomeConservativeFullCharge UsageJobViewAccountingOutcome = "conservative_full_charge"
+	UsageJobViewAccountingOutcomeOpen                   UsageJobViewAccountingOutcome = "open"
+	UsageJobViewAccountingOutcomeUnresolved             UsageJobViewAccountingOutcome = "unresolved"
+)
+
+// Valid indicates whether the value is a known member of the UsageJobViewAccountingOutcome enum.
+func (e UsageJobViewAccountingOutcome) Valid() bool {
+	switch e {
+	case UsageJobViewAccountingOutcomeBrokerSettled:
+		return true
+	case UsageJobViewAccountingOutcomeConservativeFullCharge:
+		return true
+	case UsageJobViewAccountingOutcomeOpen:
+		return true
+	case UsageJobViewAccountingOutcomeUnresolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MyUsageJobsV1AccountsMeUsageJobsGetParamsState.
+const (
+	MyUsageJobsV1AccountsMeUsageJobsGetParamsStateClosed MyUsageJobsV1AccountsMeUsageJobsGetParamsState = "closed"
+	MyUsageJobsV1AccountsMeUsageJobsGetParamsStateOpen   MyUsageJobsV1AccountsMeUsageJobsGetParamsState = "open"
+)
+
+// Valid indicates whether the value is a known member of the MyUsageJobsV1AccountsMeUsageJobsGetParamsState enum.
+func (e MyUsageJobsV1AccountsMeUsageJobsGetParamsState) Valid() bool {
+	switch e {
+	case MyUsageJobsV1AccountsMeUsageJobsGetParamsStateClosed:
+		return true
+	case MyUsageJobsV1AccountsMeUsageJobsGetParamsStateOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminFleetUsageJobsV1AdminUsageJobsGetParamsState.
+const (
+	AdminFleetUsageJobsV1AdminUsageJobsGetParamsStateClosed AdminFleetUsageJobsV1AdminUsageJobsGetParamsState = "closed"
+	AdminFleetUsageJobsV1AdminUsageJobsGetParamsStateOpen   AdminFleetUsageJobsV1AdminUsageJobsGetParamsState = "open"
+)
+
+// Valid indicates whether the value is a known member of the AdminFleetUsageJobsV1AdminUsageJobsGetParamsState enum.
+func (e AdminFleetUsageJobsV1AdminUsageJobsGetParamsState) Valid() bool {
+	switch e {
+	case AdminFleetUsageJobsV1AdminUsageJobsGetParamsStateClosed:
+		return true
+	case AdminFleetUsageJobsV1AdminUsageJobsGetParamsStateOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState.
+const (
+	AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsStateClosed AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState = "closed"
+	AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsStateOpen   AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState = "open"
+)
+
+// Valid indicates whether the value is a known member of the AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState enum.
+func (e AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState) Valid() bool {
+	switch e {
+	case AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsStateClosed:
+		return true
+	case AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsStateOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryEventsEndpointV1TelemetryEventsGetParamsFormat.
 const (
 	Json   QueryEventsEndpointV1TelemetryEventsGetParamsFormat = "json"
@@ -294,7 +372,7 @@ type AdminUserList struct {
 // AdminUserView Admin listing row: identity + approval + balance, no secrets.
 type AdminUserView struct {
 	Approved        bool               `json:"approved"`
-	BalanceWei      int                `json:"balance_wei"`
+	BalanceWei      string             `json:"balance_wei"`
 	CreatedAt       time.Time          `json:"created_at"`
 	Email           string             `json:"email"`
 	EmailVerifiedAt *time.Time         `json:"email_verified_at"`
@@ -304,6 +382,14 @@ type AdminUserView struct {
 // ApiKeyList Outbound: list of a user's keys.
 type ApiKeyList struct {
 	Items []ApiKeyView `json:"items"`
+}
+
+// ApiKeyUsage defines model for ApiKeyUsage.
+type ApiKeyUsage struct {
+	ApiKeyId  openapi_types.UUID `json:"api_key_id"`
+	BilledWei string             `json:"billed_wei"`
+	Jobs      int                `json:"jobs"`
+	Label     *string            `json:"label"`
 }
 
 // ApiKeyView The non-secret view of a key.
@@ -321,6 +407,12 @@ type ApprovedUserView struct {
 	ApprovedAt time.Time          `json:"approved_at"`
 	OperatorId openapi_types.UUID `json:"operator_id"`
 	UserId     openapi_types.UUID `json:"user_id"`
+}
+
+// AttentionCounts defines model for AttentionCounts.
+type AttentionCounts struct {
+	SettlementFailures24h int `json:"settlement_failures_24h"`
+	Unresolved            int `json:"unresolved"`
 }
 
 // AuditEntryList defines model for AuditEntryList.
@@ -582,6 +674,13 @@ type CreateSessionResponse struct {
 	WorkId    string             `json:"work_id"`
 }
 
+// DayUsage defines model for DayUsage.
+type DayUsage struct {
+	BilledWei string `json:"billed_wei"`
+	Day       string `json:"day"`
+	Jobs      int    `json:"jobs"`
+}
+
 // DepositSnapshotList defines model for DepositSnapshotList.
 type DepositSnapshotList struct {
 	Items []DepositSnapshotView `json:"items"`
@@ -590,9 +689,9 @@ type DepositSnapshotList struct {
 // DepositSnapshotView One row from the periodic payment-daemon deposit poll.
 type DepositSnapshotView struct {
 	CurrentRound                   *int               `json:"current_round"`
-	DepositWei                     int                `json:"deposit_wei"`
+	DepositWei                     string             `json:"deposit_wei"`
 	Id                             openapi_types.UUID `json:"id"`
-	ReserveWei                     int                `json:"reserve_wei"`
+	ReserveWei                     string             `json:"reserve_wei"`
 	TakenAt                        time.Time          `json:"taken_at"`
 	TicketValidityPeriod           *int               `json:"ticket_validity_period"`
 	TicketValidityPeriodObservedAt *time.Time         `json:"ticket_validity_period_observed_at"`
@@ -745,6 +844,18 @@ type NotificationPrefView struct {
 // NotificationPrefsResponse Full resolved-preferences matrix for the calling user.
 type NotificationPrefsResponse struct {
 	Items []NotificationPrefView `json:"items"`
+}
+
+// OfferingUsage defines model for OfferingUsage.
+type OfferingUsage struct {
+	BilledWei  string `json:"billed_wei"`
+	Capability string `json:"capability"`
+	HeldWei    string `json:"held_wei"`
+	Jobs       int    `json:"jobs"`
+	Offering   string `json:"offering"`
+	Protocol   string `json:"protocol"`
+	Units      int    `json:"units"`
+	WorkUnit   string `json:"work_unit"`
 }
 
 // OfferingView defines model for OfferingView.
@@ -1218,6 +1329,17 @@ type SettlementEnvelope struct {
 	Signature *SettlementSignature   `json:"signature,omitempty"`
 }
 
+// SettlementFailure defines model for SettlementFailure.
+type SettlementFailure struct {
+	At        time.Time           `json:"at"`
+	Code      string              `json:"code"`
+	Protocol  *string             `json:"protocol"`
+	Reason    *string             `json:"reason"`
+	SessionId *string             `json:"session_id"`
+	UserEmail *string             `json:"user_email"`
+	UserId    *openapi_types.UUID `json:"user_id"`
+}
+
 // SettlementKey Cold-key-authorized broker key accepted for settlement signatures.
 type SettlementKey struct {
 	ExpiresAt time.Time `json:"expires_at"`
@@ -1267,6 +1389,19 @@ type TopupView struct {
 	TopupId       openapi_types.UUID `json:"topup_id"`
 }
 
+// UnresolvedJob defines model for UnresolvedJob.
+type UnresolvedJob struct {
+	AgeSeconds     float32            `json:"age_seconds"`
+	Capability     string             `json:"capability"`
+	FundedValueWei string             `json:"funded_value_wei"`
+	JobId          openapi_types.UUID `json:"job_id"`
+	Offering       string             `json:"offering"`
+	OpenedAt       time.Time          `json:"opened_at"`
+	Protocol       string             `json:"protocol"`
+	UserEmail      *string            `json:"user_email"`
+	UserId         openapi_types.UUID `json:"user_id"`
+}
+
 // UpdateNotificationPrefRequest Inbound: “PUT /v1/notifications/config“. One row at a time.
 type UpdateNotificationPrefRequest struct {
 	Channel string `json:"channel"`
@@ -1286,6 +1421,91 @@ type UpdateSdkApprovalRequest struct {
 	Status *string `json:"status,omitempty"`
 }
 
+// UsageAttention defines model for UsageAttention.
+type UsageAttention struct {
+	Counts             AttentionCounts     `json:"counts"`
+	SettlementFailures []SettlementFailure `json:"settlement_failures"`
+	Unresolved         []UnresolvedJob     `json:"unresolved"`
+}
+
+// UsageJobPage defines model for UsageJobPage.
+type UsageJobPage struct {
+	Items  []UsageJobView `json:"items"`
+	Limit  int            `json:"limit"`
+	Offset int            `json:"offset"`
+	Total  int            `json:"total"`
+}
+
+// UsageJobView One paid job or session as the customer experiences it.
+type UsageJobView struct {
+	AccountingOutcome UsageJobViewAccountingOutcome `json:"accounting_outcome"`
+	ActualUnits       *int                          `json:"actual_units"`
+	ApiKeyId          openapi_types.UUID            `json:"api_key_id"`
+	ApiKeyLabel       *string                       `json:"api_key_label"`
+	BilledValueWei    *string                       `json:"billed_value_wei"`
+	Capability        string                        `json:"capability"`
+	ClosedAt          *time.Time                    `json:"closed_at"`
+	DurationSeconds   *float32                      `json:"duration_seconds"`
+	EstimatedUnits    int                           `json:"estimated_units"`
+	FundedValueWei    string                        `json:"funded_value_wei"`
+	HeldWei           string                        `json:"held_wei"`
+	Id                openapi_types.UUID            `json:"id"`
+	MaxTotalUnits     int                           `json:"max_total_units"`
+	Offering          string                        `json:"offering"`
+	OpenedAt          time.Time                     `json:"opened_at"`
+	Protocol          string                        `json:"protocol"`
+	RefundedWei       *string                       `json:"refunded_wei"`
+	SdkIdentity       *string                       `json:"sdk_identity"`
+	State             string                        `json:"state"`
+	UserEmail         *string                       `json:"user_email,omitempty"`
+	UserId            *openapi_types.UUID           `json:"user_id,omitempty"`
+	WorkUnit          string                        `json:"work_unit"`
+}
+
+// UsageJobViewAccountingOutcome defines model for UsageJobView.AccountingOutcome.
+type UsageJobViewAccountingOutcome string
+
+// UsageOverview The three figures a customer needs: available, held, spent.
+type UsageOverview struct {
+	AvailableWei   string      `json:"available_wei"`
+	ByDay          []DayUsage  `json:"by_day"`
+	HeldWei        string      `json:"held_wei"`
+	OpenJobs       int         `json:"open_jobs"`
+	Period         UsagePeriod `json:"period"`
+	Spent30dWei    string      `json:"spent_30d_wei"`
+	SpentPeriodWei string      `json:"spent_period_wei"`
+}
+
+// UsagePeriod defines model for UsagePeriod.
+type UsagePeriod struct {
+	CapWei  *string   `json:"cap_wei"`
+	End     time.Time `json:"end"`
+	PctUsed *float32  `json:"pct_used"`
+	Seconds int       `json:"seconds"`
+	Start   time.Time `json:"start"`
+}
+
+// UsageSummary defines model for UsageSummary.
+type UsageSummary struct {
+	ByApiKey   []ApiKeyUsage   `json:"by_api_key"`
+	ByDay      []DayUsage      `json:"by_day"`
+	ByOffering []OfferingUsage `json:"by_offering"`
+	ByUser     *[]UserUsage    `json:"by_user,omitempty"`
+	Since      time.Time       `json:"since"`
+	Totals     UsageTotals     `json:"totals"`
+	Until      time.Time       `json:"until"`
+}
+
+// UsageTotals defines model for UsageTotals.
+type UsageTotals struct {
+	BilledWei   string `json:"billed_wei"`
+	ClosedJobs  int    `json:"closed_jobs"`
+	HeldWei     string `json:"held_wei"`
+	Jobs        int    `json:"jobs"`
+	OpenJobs    int    `json:"open_jobs"`
+	RefundedWei string `json:"refunded_wei"`
+}
+
 // UserResponse Outbound: the public view of a user.
 type UserResponse struct {
 	Approved        bool                `json:"approved"`
@@ -1293,6 +1513,15 @@ type UserResponse struct {
 	Email           openapi_types.Email `json:"email"`
 	EmailVerifiedAt *time.Time          `json:"email_verified_at"`
 	Id              openapi_types.UUID  `json:"id"`
+}
+
+// UserUsage defines model for UserUsage.
+type UserUsage struct {
+	BilledWei string             `json:"billed_wei"`
+	Email     *string            `json:"email"`
+	HeldWei   string             `json:"held_wei"`
+	Jobs      int                `json:"jobs"`
+	UserId    openapi_types.UUID `json:"user_id"`
 }
 
 // ValidationError defines model for ValidationError.
@@ -1416,6 +1645,37 @@ type PortalQueryEventsEndpointV1AccountsMeTelemetryEventsGetParams struct {
 	OpenClearinghouseSession *string `form:"open_clearinghouse_session,omitempty" json:"open_clearinghouse_session,omitempty"`
 }
 
+// MyUsageJobsV1AccountsMeUsageJobsGetParams defines parameters for MyUsageJobsV1AccountsMeUsageJobsGet.
+type MyUsageJobsV1AccountsMeUsageJobsGetParams struct {
+	Limit                    *int                                            `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset                   *int                                            `form:"offset,omitempty" json:"offset,omitempty"`
+	Capability               *string                                         `form:"capability,omitempty" json:"capability,omitempty"`
+	Offering                 *string                                         `form:"offering,omitempty" json:"offering,omitempty"`
+	ApiKeyId                 *openapi_types.UUID                             `form:"api_key_id,omitempty" json:"api_key_id,omitempty"`
+	State                    *MyUsageJobsV1AccountsMeUsageJobsGetParamsState `form:"state,omitempty" json:"state,omitempty"`
+	Since                    *time.Time                                      `form:"since,omitempty" json:"since,omitempty"`
+	Until                    *time.Time                                      `form:"until,omitempty" json:"until,omitempty"`
+	XAPIKey                  *string                                         `json:"X-API-Key,omitempty"`
+	OpenClearinghouseSession *string                                         `form:"open_clearinghouse_session,omitempty" json:"open_clearinghouse_session,omitempty"`
+}
+
+// MyUsageJobsV1AccountsMeUsageJobsGetParamsState defines parameters for MyUsageJobsV1AccountsMeUsageJobsGet.
+type MyUsageJobsV1AccountsMeUsageJobsGetParamsState string
+
+// MyUsageOverviewV1AccountsMeUsageOverviewGetParams defines parameters for MyUsageOverviewV1AccountsMeUsageOverviewGet.
+type MyUsageOverviewV1AccountsMeUsageOverviewGetParams struct {
+	XAPIKey                  *string `json:"X-API-Key,omitempty"`
+	OpenClearinghouseSession *string `form:"open_clearinghouse_session,omitempty" json:"open_clearinghouse_session,omitempty"`
+}
+
+// MyUsageSummaryV1AccountsMeUsageSummaryGetParams defines parameters for MyUsageSummaryV1AccountsMeUsageSummaryGet.
+type MyUsageSummaryV1AccountsMeUsageSummaryGetParams struct {
+	Since                    *time.Time `form:"since,omitempty" json:"since,omitempty"`
+	Until                    *time.Time `form:"until,omitempty" json:"until,omitempty"`
+	XAPIKey                  *string    `json:"X-API-Key,omitempty"`
+	OpenClearinghouseSession *string    `form:"open_clearinghouse_session,omitempty" json:"open_clearinghouse_session,omitempty"`
+}
+
 // ListAuditEntriesEndpointV1AdminAuditGetParams defines parameters for ListAuditEntriesEndpointV1AdminAuditGet.
 type ListAuditEntriesEndpointV1AdminAuditGetParams struct {
 	Limit         *int    `form:"limit,omitempty" json:"limit,omitempty"`
@@ -1520,6 +1780,35 @@ type AdminPurgeUserEndpointV1AdminTelemetryUsersUserIdDeleteParams struct {
 	Authorization *string `json:"authorization,omitempty"`
 }
 
+// AdminUsageAttentionV1AdminUsageAttentionGetParams defines parameters for AdminUsageAttentionV1AdminUsageAttentionGet.
+type AdminUsageAttentionV1AdminUsageAttentionGetParams struct {
+	StaleAfterSeconds *int    `form:"stale_after_seconds,omitempty" json:"stale_after_seconds,omitempty"`
+	Authorization     *string `json:"authorization,omitempty"`
+}
+
+// AdminFleetUsageJobsV1AdminUsageJobsGetParams defines parameters for AdminFleetUsageJobsV1AdminUsageJobsGet.
+type AdminFleetUsageJobsV1AdminUsageJobsGetParams struct {
+	Limit         *int                                               `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset        *int                                               `form:"offset,omitempty" json:"offset,omitempty"`
+	UserId        *openapi_types.UUID                                `form:"user_id,omitempty" json:"user_id,omitempty"`
+	Capability    *string                                            `form:"capability,omitempty" json:"capability,omitempty"`
+	Offering      *string                                            `form:"offering,omitempty" json:"offering,omitempty"`
+	State         *AdminFleetUsageJobsV1AdminUsageJobsGetParamsState `form:"state,omitempty" json:"state,omitempty"`
+	Since         *time.Time                                         `form:"since,omitempty" json:"since,omitempty"`
+	Until         *time.Time                                         `form:"until,omitempty" json:"until,omitempty"`
+	Authorization *string                                            `json:"authorization,omitempty"`
+}
+
+// AdminFleetUsageJobsV1AdminUsageJobsGetParamsState defines parameters for AdminFleetUsageJobsV1AdminUsageJobsGet.
+type AdminFleetUsageJobsV1AdminUsageJobsGetParamsState string
+
+// AdminFleetUsageSummaryV1AdminUsageSummaryGetParams defines parameters for AdminFleetUsageSummaryV1AdminUsageSummaryGet.
+type AdminFleetUsageSummaryV1AdminUsageSummaryGetParams struct {
+	Since         *time.Time `form:"since,omitempty" json:"since,omitempty"`
+	Until         *time.Time `form:"until,omitempty" json:"until,omitempty"`
+	Authorization *string    `json:"authorization,omitempty"`
+}
+
 // ListAllUsersEndpointV1AdminUsersGetParams defines parameters for ListAllUsersEndpointV1AdminUsersGet.
 type ListAllUsersEndpointV1AdminUsersGetParams struct {
 	Limit         *int    `form:"limit,omitempty" json:"limit,omitempty"`
@@ -1555,6 +1844,33 @@ type ResendVerificationEndpointV1AdminUsersUserIdResendVerificationPostParams st
 // AdminTopupUserV1AdminUsersUserIdTopupPostParams defines parameters for AdminTopupUserV1AdminUsersUserIdTopupPost.
 type AdminTopupUserV1AdminUsersUserIdTopupPostParams struct {
 	Authorization *string `json:"authorization,omitempty"`
+}
+
+// AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParams defines parameters for AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGet.
+type AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParams struct {
+	Limit         *int                                                         `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset        *int                                                         `form:"offset,omitempty" json:"offset,omitempty"`
+	Capability    *string                                                      `form:"capability,omitempty" json:"capability,omitempty"`
+	Offering      *string                                                      `form:"offering,omitempty" json:"offering,omitempty"`
+	State         *AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState `form:"state,omitempty" json:"state,omitempty"`
+	Since         *time.Time                                                   `form:"since,omitempty" json:"since,omitempty"`
+	Until         *time.Time                                                   `form:"until,omitempty" json:"until,omitempty"`
+	Authorization *string                                                      `json:"authorization,omitempty"`
+}
+
+// AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState defines parameters for AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGet.
+type AdminUserUsageJobsV1AdminUsersUserIdUsageJobsGetParamsState string
+
+// AdminUserUsageOverviewV1AdminUsersUserIdUsageOverviewGetParams defines parameters for AdminUserUsageOverviewV1AdminUsersUserIdUsageOverviewGet.
+type AdminUserUsageOverviewV1AdminUsersUserIdUsageOverviewGetParams struct {
+	Authorization *string `json:"authorization,omitempty"`
+}
+
+// AdminUserUsageSummaryV1AdminUsersUserIdUsageSummaryGetParams defines parameters for AdminUserUsageSummaryV1AdminUsersUserIdUsageSummaryGet.
+type AdminUserUsageSummaryV1AdminUsersUserIdUsageSummaryGetParams struct {
+	Since         *time.Time `form:"since,omitempty" json:"since,omitempty"`
+	Until         *time.Time `form:"until,omitempty" json:"until,omitempty"`
+	Authorization *string    `json:"authorization,omitempty"`
 }
 
 // LogoutEndpointV1AuthLogoutPostParams defines parameters for LogoutEndpointV1AuthLogoutPost.

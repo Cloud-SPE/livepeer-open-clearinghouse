@@ -1347,14 +1347,26 @@ async def close_session(
     if initial_payment_row is None:
         raise SessionNotFound  # defensive — open writes one
 
-    verified = await _verify_close_settlement(
-        db,
-        session_row=session_row,
-        initial_payment_row=initial_payment_row,
-        settlement=settlement,
-    )
-    if actual_units != verified.debited_units:
-        raise SessionSettlementVerificationFailed(reason="work_units_mismatch")
+    try:
+        verified = await _verify_close_settlement(
+            db,
+            session_row=session_row,
+            initial_payment_row=initial_payment_row,
+            settlement=settlement,
+        )
+        if actual_units != verified.debited_units:
+            raise SessionSettlementVerificationFailed(reason="work_units_mismatch")
+    except SessionSettlementVerificationFailed as exc:
+        await telemetry_events.emit_settlement_verification_failed(
+            db,
+            api_key_id=session_row.api_key_id,
+            user_id=user_id,
+            session_id=session_id,
+            protocol=session_row.protocol,
+            reason=str(exc.details.get("reason", "unknown")),
+            clock=clock,
+        )
+        raise
     billed_value_wei = Decimal(verified.billed_value_wei)
     refund_wei = session_row.funded_value_wei - billed_value_wei
 

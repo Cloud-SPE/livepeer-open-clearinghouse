@@ -4,6 +4,7 @@ import { icon } from "/admin/lib/icons.js";
 const ITEMS = [
   { key: "overview", label: "Overview", icon: "home" },
   { key: "users", label: "Users", icon: "users" },
+  { key: "usage", label: "Usage", icon: "chart" },
   { key: "pending", label: "Pending", icon: "hourglass" },
   { key: "operators", label: "Operators", icon: "shield" },
   { key: "catalog", label: "Catalog", icon: "search" },

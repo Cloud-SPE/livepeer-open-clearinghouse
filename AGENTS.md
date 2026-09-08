@@ -79,7 +79,7 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 | `billing` | Wei-denominated credit pool; topup; auto-replenish; spend-cap windows |
 | `discovery` | Thin auth-aware proxy over `service-registry-daemon` (returns raw routes) |
 | `payments` | Orchestrates `registry.Select` + `payment-daemon.CreatePayment`; charges EV at issuance |
-| `usage` | Per-key usage tally; app-dev-reported reconciliation for variable-cost jobs |
+| `usage` | Read-only usage views over settled payment sessions: per-job list, period summary, available/held/spent, operator attention |
 | `admin` | Operator approval, cap setting, manual topup |
 
 ## Quick commands

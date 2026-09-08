@@ -37,7 +37,6 @@ from livepeer_open_clearinghouse.domains.payments import repo as _payments  # no
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.telemetry import server_events
 from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import InsufficientCredit
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base

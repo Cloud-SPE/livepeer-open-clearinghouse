@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response, status
@@ -82,7 +83,7 @@ async def list_all_users_endpoint(
                 email=u.email,
                 email_verified_at=u.email_verified_at,
                 approved=approved,
-                balance_wei=balance_wei,
+                balance_wei=Decimal(balance_wei),
                 created_at=u.created_at,
             )
             for (u, approved, balance_wei) in rows
@@ -230,8 +231,8 @@ async def list_deposit_snapshots_endpoint(
             DepositSnapshotView(
                 id=r.id,
                 taken_at=r.taken_at,
-                deposit_wei=int(r.deposit_wei),
-                reserve_wei=int(r.reserve_wei),
+                deposit_wei=Decimal(r.deposit_wei),
+                reserve_wei=Decimal(r.reserve_wei),
                 withdraw_round=r.withdraw_round,
                 current_round=r.current_round,
                 ticket_validity_period=r.ticket_validity_period,

@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
+
 
 class PendingUserView(BaseModel):
     """A user not yet approved."""
@@ -39,7 +41,7 @@ class AdminUserView(BaseModel):
     email: str
     email_verified_at: datetime | None
     approved: bool
-    balance_wei: int
+    balance_wei: WeiDecimal
     created_at: datetime
 
 
@@ -92,8 +94,8 @@ class DepositSnapshotView(BaseModel):
 
     id: uuid.UUID
     taken_at: datetime
-    deposit_wei: int
-    reserve_wei: int
+    deposit_wei: WeiDecimal
+    reserve_wei: WeiDecimal
     withdraw_round: int
     current_round: int | None
     ticket_validity_period: int | None

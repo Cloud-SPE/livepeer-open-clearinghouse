@@ -25,7 +25,6 @@ from livepeer_open_clearinghouse.domains.payments import repo as _payments  # no
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.sessions.types import CreateSessionResponse
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerSettlementQueryError,
 )

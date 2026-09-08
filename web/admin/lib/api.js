@@ -85,3 +85,29 @@ export const revokeOperator = (id) =>
   api(`/operators/${id}/revoke`, { method: "POST" });
 export const rotateOperatorToken = (id) =>
   api(`/operators/${id}/rotate-token`, { method: "POST" });
+
+// --- Usage visibility -------------------------------------------------------
+//
+// All wei figures in these payloads are integer strings; feed them to
+// lib/format.js (BigInt) rather than Number.
+
+function qs(params) {
+  const parts = [];
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v == null || v === "") continue;
+    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  }
+  return parts.length ? `?${parts.join("&")}` : "";
+}
+
+export const getUserUsageOverview = (id) => api(`/users/${id}/usage/overview`);
+export const listUserUsageJobs = (id, params = {}) =>
+  api(`/users/${id}/usage/jobs${qs(params)}`);
+export const getUserUsageSummary = (id, params = {}) =>
+  api(`/users/${id}/usage/summary${qs(params)}`);
+export const getFleetUsageSummary = (params = {}) =>
+  api(`/usage/summary${qs(params)}`);
+export const listFleetUsageJobs = (params = {}) =>
+  api(`/usage/jobs${qs(params)}`);
+export const getUsageAttention = (params = {}) =>
+  api(`/usage/attention${qs(params)}`);

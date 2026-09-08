@@ -521,8 +521,26 @@ async def settle_job(
         )
     except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
         reason = exc.code if isinstance(exc, SettlementVerificationError) else "invalid_snapshot"
+        await telemetry_events.emit_settlement_verification_failed(
+            db,
+            api_key_id=job_row.api_key_id,
+            user_id=user_id,
+            session_id=job_id,
+            protocol=job_row.protocol,
+            reason=reason,
+            clock=clock,
+        )
         raise SettlementVerificationFailed(reason=reason) from exc
     if outcome is not None and outcome != verified.outcome:
+        await telemetry_events.emit_settlement_verification_failed(
+            db,
+            api_key_id=job_row.api_key_id,
+            user_id=user_id,
+            session_id=job_id,
+            protocol=job_row.protocol,
+            reason="outcome_mismatch",
+            clock=clock,
+        )
         raise SettlementVerificationFailed(reason="outcome_mismatch")
     billed_value_wei = Decimal(verified.billed_value_wei)
     refund_wei = job_row.funded_value_wei - billed_value_wei

@@ -32,7 +32,7 @@ do." The Beads graph says what must happen to build or change it.
 | 003 | Credit and billing | `billing` | draft |
 | 004 | Discovery API | `discovery` | draft |
 | 005 | Ticket mint | `payments` | draft |
-| 006 | Usage reconciliation | `usage` | draft |
+| 006 | [Usage visibility](006-usage-visibility.md) | `usage` | shipped |
 | 007 | Operator admin console | `admin` | draft |
 
 Spec files for each of these will be filled in as part of Phase 2 or as

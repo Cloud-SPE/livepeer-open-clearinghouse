@@ -33,7 +33,6 @@ from livepeer_open_clearinghouse.domains.sessions import repo as _sessions  # no
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.sessions.runtime import open_session_endpoint
 from livepeer_open_clearinghouse.domains.sessions.types import CreateSessionRequest
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     IdempotencyInProgress,

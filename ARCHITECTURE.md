@@ -99,7 +99,7 @@ The migration files at `migrations/versions/*` are authoritative.
 | `billing` | `credit_balance`, `credit_topup`, `credit_ledger`, `spend_window`, `user_billing_config` |
 | `discovery` | (no tables — pure proxy via service-registry-daemon; in-process TTL cache around the gRPC client) |
 | `payments` | `payment` (a row per `CreatePayment` call), `payment_idempotency_key`, `payment_daemon_deposit_snapshot` (periodic poller) |
-| `usage` | `usage_record` (idempotent on `(api_key_id, request_id)`), reconciliation deltas |
+| `usage` | none — reads `payment_session` (+ `api_key`, `user`, `spend_window`, `telemetry_event`) |
 | `admin` | `operator`, `operator_audit`; aggregates over the above; operator config (default credit grant, period caps) |
 
 ## External integration shape

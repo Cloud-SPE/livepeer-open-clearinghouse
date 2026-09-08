@@ -38,6 +38,7 @@ from livepeer_open_clearinghouse.domains.sessions import runtime as sessions_run
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.telemetry import runtime as telemetry_runtime
 from livepeer_open_clearinghouse.domains.telemetry import service as telemetry_service
+from livepeer_open_clearinghouse.domains.usage import runtime as usage_runtime
 from livepeer_open_clearinghouse.errors import register_handlers
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     HttpBrokerSettlementClient,
@@ -290,6 +291,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(telemetry_runtime.portal_router)
     app.include_router(telemetry_runtime.privacy_router)
     app.include_router(telemetry_runtime.admin_router)
+    app.include_router(usage_runtime.router)
+    app.include_router(usage_runtime.admin_router)
 
     # Static SPAs — mounted under their URL prefix so hash routing works
     # and assets resolve cleanly (e.g., /portal/portal.css).

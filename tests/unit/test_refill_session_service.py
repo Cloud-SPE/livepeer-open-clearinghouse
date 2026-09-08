@@ -52,7 +52,6 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     SessionNotOpen,
 )
 from livepeer_open_clearinghouse.domains.sessions.types import RefillSessionRequest
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     OpenClearinghouseError,

@@ -1274,6 +1274,174 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/me/usage/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Usage Overview
+         * @description Available, held and spent credit for the current user, plus 30 days by day.
+         */
+        get: operations["my_usage_overview_v1_accounts_me_usage_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/me/usage/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Usage Jobs
+         * @description Paid jobs and sessions for the current user, newest first.
+         */
+        get: operations["my_usage_jobs_v1_accounts_me_usage_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/me/usage/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Usage Summary
+         * @description Totals by offering, key and day for a window (default: last 30 days).
+         */
+        get: operations["my_usage_summary_v1_accounts_me_usage_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{user_id}/usage/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin User Usage Overview */
+        get: operations["admin_user_usage_overview_v1_admin_users__user_id__usage_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{user_id}/usage/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin User Usage Jobs */
+        get: operations["admin_user_usage_jobs_v1_admin_users__user_id__usage_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{user_id}/usage/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin User Usage Summary */
+        get: operations["admin_user_usage_summary_v1_admin_users__user_id__usage_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/usage/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Fleet Usage Summary
+         * @description Fleet-wide totals with a by-user breakdown.
+         */
+        get: operations["admin_fleet_usage_summary_v1_admin_usage_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/usage/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Fleet Usage Jobs */
+        get: operations["admin_fleet_usage_jobs_v1_admin_usage_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/usage/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Usage Attention
+         * @description What an operator should look at: jobs still holding funds, and refused settlements.
+         */
+        get: operations["admin_usage_attention_v1_admin_usage_attention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1302,7 +1470,7 @@ export interface components {
             /** Approved */
             approved: boolean;
             /** Balance Wei */
-            balance_wei: number;
+            balance_wei: string;
             /**
              * Created At
              * Format: date-time
@@ -1316,6 +1484,20 @@ export interface components {
         ApiKeyList: {
             /** Items */
             items: components["schemas"]["ApiKeyView"][];
+        };
+        /** ApiKeyUsage */
+        ApiKeyUsage: {
+            /**
+             * Api Key Id
+             * Format: uuid
+             */
+            api_key_id: string;
+            /** Label */
+            label: string | null;
+            /** Jobs */
+            jobs: number;
+            /** Billed Wei */
+            billed_wei: string;
         };
         /**
          * ApiKeyView
@@ -1361,6 +1543,13 @@ export interface components {
              * Format: uuid
              */
             operator_id: string;
+        };
+        /** AttentionCounts */
+        AttentionCounts: {
+            /** Unresolved */
+            unresolved: number;
+            /** Settlement Failures 24H */
+            settlement_failures_24h: number;
         };
         /** AuditEntryList */
         AuditEntryList: {
@@ -1768,6 +1957,15 @@ export interface components {
              */
             opened_at: string;
         };
+        /** DayUsage */
+        DayUsage: {
+            /** Day */
+            day: string;
+            /** Jobs */
+            jobs: number;
+            /** Billed Wei */
+            billed_wei: string;
+        };
         /** DepositSnapshotList */
         DepositSnapshotList: {
             /** Items */
@@ -1789,9 +1987,9 @@ export interface components {
              */
             taken_at: string;
             /** Deposit Wei */
-            deposit_wei: number;
+            deposit_wei: string;
             /** Reserve Wei */
-            reserve_wei: number;
+            reserve_wei: string;
             /** Withdraw Round */
             withdraw_round: number;
             /** Current Round */
@@ -2072,6 +2270,25 @@ export interface components {
         NotificationPrefsResponse: {
             /** Items */
             items: components["schemas"]["NotificationPrefView"][];
+        };
+        /** OfferingUsage */
+        OfferingUsage: {
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Protocol */
+            protocol: string;
+            /** Work Unit */
+            work_unit: string;
+            /** Jobs */
+            jobs: number;
+            /** Units */
+            units: number;
+            /** Billed Wei */
+            billed_wei: string;
+            /** Held Wei */
+            held_wei: string;
         };
         /** OfferingView */
         OfferingView: {
@@ -2801,6 +3018,26 @@ export interface components {
             };
             signature?: components["schemas"]["SettlementSignature"] | null;
         };
+        /** SettlementFailure */
+        SettlementFailure: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** User Id */
+            user_id: string | null;
+            /** User Email */
+            user_email: string | null;
+            /** Protocol */
+            protocol: string | null;
+            /** Session Id */
+            session_id: string | null;
+            /** Code */
+            code: string;
+            /** Reason */
+            reason: string | null;
+        };
         /**
          * SettlementKey
          * @description Cold-key-authorized broker key accepted for settlement signatures.
@@ -2895,6 +3132,36 @@ export interface components {
              */
             created_at: string;
         };
+        /** UnresolvedJob */
+        UnresolvedJob: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** User Email */
+            user_email: string | null;
+            /** Protocol */
+            protocol: string;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Funded Value Wei */
+            funded_value_wei: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Age Seconds */
+            age_seconds: number;
+        };
         /**
          * UpdateNotificationPrefRequest
          * @description Inbound: ``PUT /v1/notifications/config``. One row at a time.
@@ -2927,6 +3194,162 @@ export interface components {
             /** Notes */
             notes?: string | null;
         };
+        /** UsageAttention */
+        UsageAttention: {
+            counts: components["schemas"]["AttentionCounts"];
+            /** Unresolved */
+            unresolved: components["schemas"]["UnresolvedJob"][];
+            /** Settlement Failures */
+            settlement_failures: components["schemas"]["SettlementFailure"][];
+        };
+        /** UsageJobPage */
+        UsageJobPage: {
+            /** Items */
+            items: components["schemas"]["UsageJobView"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * UsageJobView
+         * @description One paid job or session as the customer experiences it.
+         */
+        UsageJobView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Protocol */
+            protocol: string;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /**
+             * Api Key Id
+             * Format: uuid
+             */
+            api_key_id: string;
+            /** Api Key Label */
+            api_key_label: string | null;
+            /** Sdk Identity */
+            sdk_identity: string | null;
+            /** State */
+            state: string;
+            /**
+             * Accounting Outcome
+             * @enum {string}
+             */
+            accounting_outcome: "open" | "unresolved" | "broker_settled" | "conservative_full_charge";
+            /** Work Unit */
+            work_unit: string;
+            /** Estimated Units */
+            estimated_units: number;
+            /** Max Total Units */
+            max_total_units: number;
+            /** Actual Units */
+            actual_units: number | null;
+            /** Funded Value Wei */
+            funded_value_wei: string;
+            /** Billed Value Wei */
+            billed_value_wei: string | null;
+            /** Refunded Wei */
+            refunded_wei: string | null;
+            /** Held Wei */
+            held_wei: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Closed At */
+            closed_at: string | null;
+            /** Duration Seconds */
+            duration_seconds: number | null;
+            /** User Id */
+            user_id?: string | null;
+            /** User Email */
+            user_email?: string | null;
+        };
+        /**
+         * UsageOverview
+         * @description The three figures a customer needs: available, held, spent.
+         */
+        UsageOverview: {
+            /** Available Wei */
+            available_wei: string;
+            /** Held Wei */
+            held_wei: string;
+            /** Spent Period Wei */
+            spent_period_wei: string;
+            /** Spent 30D Wei */
+            spent_30d_wei: string;
+            /** Open Jobs */
+            open_jobs: number;
+            period: components["schemas"]["UsagePeriod"];
+            /** By Day */
+            by_day: components["schemas"]["DayUsage"][];
+        };
+        /** UsagePeriod */
+        UsagePeriod: {
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Seconds */
+            seconds: number;
+            /** Cap Wei */
+            cap_wei: string | null;
+            /** Pct Used */
+            pct_used: number | null;
+        };
+        /** UsageSummary */
+        UsageSummary: {
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /**
+             * Until
+             * Format: date-time
+             */
+            until: string;
+            totals: components["schemas"]["UsageTotals"];
+            /** By Offering */
+            by_offering: components["schemas"]["OfferingUsage"][];
+            /** By Api Key */
+            by_api_key: components["schemas"]["ApiKeyUsage"][];
+            /** By Day */
+            by_day: components["schemas"]["DayUsage"][];
+            /** By User */
+            by_user?: components["schemas"]["UserUsage"][] | null;
+        };
+        /** UsageTotals */
+        UsageTotals: {
+            /** Jobs */
+            jobs: number;
+            /** Open Jobs */
+            open_jobs: number;
+            /** Closed Jobs */
+            closed_jobs: number;
+            /** Billed Wei */
+            billed_wei: string;
+            /** Refunded Wei */
+            refunded_wei: string;
+            /** Held Wei */
+            held_wei: string;
+        };
         /**
          * UserResponse
          * @description Outbound: the public view of a user.
@@ -2951,6 +3374,22 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** UserUsage */
+        UserUsage: {
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Email */
+            email: string | null;
+            /** Jobs */
+            jobs: number;
+            /** Billed Wei */
+            billed_wei: string;
+            /** Held Wei */
+            held_wei: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -5400,6 +5839,334 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_usage_overview_v1_accounts_me_usage_overview_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_usage_jobs_v1_accounts_me_usage_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                capability?: string | null;
+                offering?: string | null;
+                api_key_id?: string | null;
+                state?: ("open" | "closed") | null;
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageJobPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_usage_summary_v1_accounts_me_usage_summary_get: {
+        parameters: {
+            query?: {
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: {
+                open_clearinghouse_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_user_usage_overview_v1_admin_users__user_id__usage_overview_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_user_usage_jobs_v1_admin_users__user_id__usage_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                capability?: string | null;
+                offering?: string | null;
+                state?: ("open" | "closed") | null;
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageJobPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_user_usage_summary_v1_admin_users__user_id__usage_summary_get: {
+        parameters: {
+            query?: {
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_fleet_usage_summary_v1_admin_usage_summary_get: {
+        parameters: {
+            query?: {
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_fleet_usage_jobs_v1_admin_usage_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                user_id?: string | null;
+                capability?: string | null;
+                offering?: string | null;
+                state?: ("open" | "closed") | null;
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageJobPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_usage_attention_v1_admin_usage_attention_get: {
+        parameters: {
+            query?: {
+                stale_after_seconds?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageAttention"];
                 };
             };
             /** @description Validation Error */

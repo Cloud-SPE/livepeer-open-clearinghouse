@@ -47,7 +47,6 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSettlement,
 )
 from livepeer_open_clearinghouse.domains.sessions.service import SESSION_STATE_CLOSED
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient

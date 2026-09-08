@@ -26,7 +26,6 @@ from livepeer_open_clearinghouse.domains.payments import repo as _payments  # no
 from livepeer_open_clearinghouse.domains.payments import service
 from livepeer_open_clearinghouse.domains.payments.repo import PaymentIdempotencyKey
 from livepeer_open_clearinghouse.domains.sessions import repo as _sessions  # noqa: F401
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.errors import (
     IdempotencyInProgress,
     IdempotencyKeyReuse,

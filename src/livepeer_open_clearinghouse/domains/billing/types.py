@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 
 
 class BalanceView(BaseModel):
     """The user-facing snapshot of credit state."""
 
     user_id: uuid.UUID
-    amount_wei: Decimal
+    amount_wei: WeiDecimal
     updated_at: datetime
 
 
@@ -23,7 +24,7 @@ class LedgerEntryView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    delta_wei: Decimal
+    delta_wei: WeiDecimal
     reason: str
     related_payment_id: uuid.UUID | None
     related_topup_id: uuid.UUID | None
@@ -47,5 +48,5 @@ class TopupView(BaseModel):
     """Admin-side topup result."""
 
     topup_id: uuid.UUID
-    new_balance_wei: Decimal
+    new_balance_wei: WeiDecimal
     created_at: datetime

@@ -1,11 +1,19 @@
 import { LitElement, html } from "lit";
 import * as api from "/admin/lib/api.js";
+import { icon } from "/admin/lib/icons.js";
+import {
+  eth,
+  formatCount,
+  formatDateTime,
+  formatDuration,
+  formatEth,
+  formatWei,
+  timeAgo,
+  toWei,
+} from "/admin/lib/format.js";
 
-function formatWei(wei) {
-  if (wei == null) return "—";
-  const s = String(wei);
-  return s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
+const SPENT_DAYS = 30;
+const DRAWER_JOBS = 50;
 
 export class CcUsers extends LitElement {
   static properties = {
@@ -19,6 +27,14 @@ export class CcUsers extends LitElement {
     _configTarget: { state: true },
     _configForm: { state: true },
     _configEffective: { state: true },
+    _usageByUser: { state: true },
+    _usageError: { state: true },
+    _lastActivity: { state: true },
+    _drawerUser: { state: true },
+    _drawerOverview: { state: true },
+    _drawerJobs: { state: true },
+    _drawerLoading: { state: true },
+    _drawerError: { state: true },
   };
 
   constructor() {
@@ -33,6 +49,14 @@ export class CcUsers extends LitElement {
     this._configTarget = null;
     this._configForm = null;
     this._configEffective = null;
+    this._usageByUser = new Map(); // user_id -> { billed_wei, held_wei, jobs }
+    this._usageError = null;
+    this._lastActivity = new Map(); // user_id -> opened_at of most recent job
+    this._drawerUser = null;
+    this._drawerOverview = null;
+    this._drawerJobs = null;
+    this._drawerLoading = false;
+    this._drawerError = null;
   }
 
   createRenderRoot() {
@@ -41,20 +65,180 @@ export class CcUsers extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    this._onKey = (e) => {
+      if (e.key === "Escape" && this._drawerUser) this._closeDrawer();
+    };
+    window.addEventListener("keydown", this._onKey);
     this._refresh();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("keydown", this._onKey);
+    super.disconnectedCallback();
   }
 
   async _refresh() {
     this._loading = true;
     this._error = null;
-    try {
-      const list = await api.listUsers(100, 0);
-      this._users = list.items;
-    } catch (err) {
-      this._error = err.message;
-    } finally {
-      this._loading = false;
+    this._usageError = null;
+    const until = new Date();
+    const since = new Date(until.getTime() - SPENT_DAYS * 24 * 3600 * 1000);
+    // Roster and usage load independently: a usage-API outage still leaves
+    // the roster (and its approve/top-up actions) usable.
+    const [roster, usage] = await Promise.allSettled([
+      api.listUsers(100, 0),
+      api.getFleetUsageSummary({ since: since.toISOString(), until: until.toISOString() }),
+    ]);
+    if (roster.status === "fulfilled") this._users = roster.value.items;
+    else this._error = roster.reason?.message || String(roster.reason);
+    if (usage.status === "fulfilled") {
+      const map = new Map();
+      for (const row of usage.value.by_user || []) map.set(row.user_id, row);
+      this._usageByUser = map;
+    } else {
+      this._usageError = usage.reason?.message || String(usage.reason);
     }
+    this._loading = false;
+  }
+
+  // --- usage drawer ---------------------------------------------------------
+
+  async _openDrawer(user) {
+    this._drawerUser = user;
+    this._drawerOverview = null;
+    this._drawerJobs = null;
+    this._drawerError = null;
+    this._drawerLoading = true;
+    const [ov, jobs] = await Promise.allSettled([
+      api.getUserUsageOverview(user.id),
+      api.listUserUsageJobs(user.id, { limit: DRAWER_JOBS, offset: 0 }),
+    ]);
+    if (this._drawerUser?.id !== user.id) return; // closed or switched meanwhile
+    if (ov.status === "fulfilled") this._drawerOverview = ov.value;
+    if (jobs.status === "fulfilled") {
+      this._drawerJobs = jobs.value;
+      const latest = (jobs.value.items || []).reduce(
+        (best, j) => (j.opened_at && (!best || j.opened_at > best) ? j.opened_at : best),
+        null,
+      );
+      const next = new Map(this._lastActivity);
+      next.set(user.id, latest || "none");
+      this._lastActivity = next;
+    }
+    const failed = [ov, jobs].filter((r) => r.status === "rejected");
+    if (failed.length) {
+      this._drawerError = failed.map((r) => r.reason?.message || String(r.reason)).join(" · ");
+    }
+    this._drawerLoading = false;
+  }
+
+  _closeDrawer() {
+    this._drawerUser = null;
+    this._drawerOverview = null;
+    this._drawerJobs = null;
+    this._drawerError = null;
+    this._drawerLoading = false;
+  }
+
+  _renderDrawer() {
+    const user = this._drawerUser;
+    if (!user) return null;
+    const ov = this._drawerOverview;
+    const period = ov?.period;
+    const heldNonZero = (toWei(ov?.held_wei) ?? 0n) > 0n;
+    // Derive the cap percentage from the two wei figures (exact, BigInt) and
+    // only fall back to the API's pct_used, whose scale (0..1 vs 0..100) the
+    // contract leaves open.
+    const cap = toWei(period?.cap_wei);
+    const spent = toWei(ov?.spent_period_wei) ?? 0n;
+    const capPct =
+      cap != null && cap > 0n
+        ? Number((spent * 10000n) / cap) / 100
+        : period?.pct_used != null
+          ? Number(period.pct_used) <= 1
+            ? Number(period.pct_used) * 100
+            : Number(period.pct_used)
+          : null;
+    const overCap = capPct != null && capPct >= 100;
+    return html`
+      <div class="drawer-backdrop" @click=${this._closeDrawer}></div>
+      <aside class="drawer" role="dialog" aria-modal="true" aria-label="Usage for ${user.email}">
+        <div class="drawer-head">
+          <div>
+            <h2>${user.email}</h2>
+            <div class="muted small mono">${user.id}</div>
+          </div>
+          <button class="close" aria-label="Close" @click=${this._closeDrawer}>${icon.x()}</button>
+        </div>
+        <div class="drawer-body">
+          ${this._drawerError ? html`<div class="msg error mb-2">${this._drawerError}</div>` : null}
+          ${ov
+            ? html`
+                <div class="summary-strip">
+                  <div class="stat accent">
+                    <div class="label">Available</div>
+                    <div class="value">${eth(ov.available_wei)}</div>
+                  </div>
+                  <div class="stat ${heldNonZero ? "warn" : ""}">
+                    <div class="label">Held</div>
+                    <div class="value">${eth(ov.held_wei)}</div>
+                  </div>
+                  <div class="stat ${overCap ? "bad" : ""}">
+                    <div class="label">Spent this period</div>
+                    <div class="value">${eth(ov.spent_period_wei)}</div>
+                    <div class="muted small">
+                      ${period?.cap_wei != null
+                        ? html`of ${formatEth(period.cap_wei)} cap · ${capPct == null ? "—" : `${capPct.toFixed(capPct < 10 ? 1 : 0)}%`}`
+                        : "no cap"}
+                      ${period?.seconds ? html` · ${formatDuration(period.seconds)} window` : null}
+                    </div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">Spent (30d)</div>
+                    <div class="value">${eth(ov.spent_30d_wei)}</div>
+                  </div>
+                  <div class="stat ${Number(ov.open_jobs) > 0 ? "warn" : ""}">
+                    <div class="label">Open jobs</div>
+                    <div class="value num">${formatCount(ov.open_jobs)}</div>
+                  </div>
+                </div>
+                ${period
+                  ? html`<p class="muted small">
+                      Period ${formatDateTime(period.start)} → ${formatDateTime(period.end)}
+                    </p>`
+                  : null}
+                ${(ov.by_day || []).length
+                  ? html`<div class="card card-tight">
+                      <cc-usage-chart .byDay=${ov.by_day} .start=${null} .end=${null}></cc-usage-chart>
+                    </div>`
+                  : null}
+              `
+            : this._drawerLoading
+              ? html`<p class="muted">Loading overview…</p>`
+              : null}
+          <div class="card-head">
+            <h3>Last ${DRAWER_JOBS} jobs</h3>
+            ${this._drawerJobs
+              ? html`<span class="muted small">
+                  ${formatCount(Math.min(DRAWER_JOBS, this._drawerJobs.items?.length || 0))} of ${formatCount(this._drawerJobs.total)}
+                </span>`
+              : null}
+          </div>
+          <cc-usage-jobs-table
+            .items=${this._drawerJobs?.items || []}
+            ?loading=${this._drawerLoading}
+            empty-text="No jobs recorded for this user."
+          ></cc-usage-jobs-table>
+        </div>
+      </aside>
+    `;
+  }
+
+  _renderLastActivity(user) {
+    const v = this._lastActivity.get(user.id);
+    if (!v) return html`<span class="muted" title="Open Usage to load">—</span>`;
+    if (v === "none") return html`<span class="muted">never</span>`;
+    return html`<span title=${v}>${timeAgo(v)}</span>`;
   }
 
   async _approve(id) {
@@ -322,6 +506,9 @@ export class CcUsers extends LitElement {
       </div>
 
       ${this._error ? html`<div class="msg error mt-2">${this._error}</div>` : null}
+      ${this._usageError
+        ? html`<div class="msg warn mt-2">Usage columns unavailable: ${this._usageError}</div>`
+        : null}
 
       <div class="card">
         ${this._loading
@@ -329,20 +516,26 @@ export class CcUsers extends LitElement {
           : this._users.length === 0
             ? html`<p class="muted">No users yet.</p>`
             : html`
+                <div class="table-scroll">
                 <table>
                   <thead>
                     <tr>
                       <th>Email</th>
                       <th>Verified</th>
                       <th>Approved</th>
-                      <th style="text-align: right;">Balance (wei)</th>
+                      <th class="num">Balance (ETH)</th>
+                      <th class="num">Spent (${SPENT_DAYS}d)</th>
+                      <th class="num">Held</th>
+                      <th>Last activity</th>
                       <th>Signed up</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._users.map(
-                      (u) => html`
+                    ${this._users.map((u) => {
+                      const usage = this._usageByUser.get(u.id);
+                      const held = toWei(usage?.held_wei) ?? 0n;
+                      return html`
                         <tr>
                           <td>${u.email}</td>
                           <td>
@@ -355,12 +548,29 @@ export class CcUsers extends LitElement {
                               ? html`<span class="pill">approved</span>`
                               : html`<span class="pill warn">pending</span>`}
                           </td>
-                          <td style="text-align: right; font-family: var(--font-mono);">
-                            ${formatWei(u.balance_wei)}
+                          <td class="num">${eth(u.balance_wei)}</td>
+                          <td class="num">
+                            ${usage
+                              ? eth(usage.billed_wei)
+                              : html`<span class="muted" title=${this._usageError || "no billed work in window"}>—</span>`}
                           </td>
+                          <td class="num">
+                            ${usage
+                              ? eth(usage.held_wei, held > 0n ? "warn-text" : "muted")
+                              : html`<span class="muted">—</span>`}
+                          </td>
+                          <td>${this._renderLastActivity(u)}</td>
                           <td>${new Date(u.created_at).toLocaleDateString()}</td>
-                          <td>
+                          <td class="actions">
                             <div class="row">
+                              <button
+                                class="ghost"
+                                title="Balances, held funds and the last ${DRAWER_JOBS} jobs"
+                                ?disabled=${this._busy}
+                                @click=${() => this._openDrawer(u)}
+                              >
+                                Usage
+                              </button>
                               ${!u.approved && u.email_verified_at
                                 ? html`<button
                                     class="primary"
@@ -411,15 +621,17 @@ export class CcUsers extends LitElement {
                             </div>
                           </td>
                         </tr>
-                      `,
-                    )}
+                      `;
+                    })}
                   </tbody>
                 </table>
+                </div>
               `}
       </div>
 
       ${this._renderTopupModal()}
       ${this._renderConfigModal()}
+      ${this._renderDrawer()}
     `;
   }
 }

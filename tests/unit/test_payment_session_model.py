@@ -38,7 +38,6 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
 )
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.db.base import Base
 
 

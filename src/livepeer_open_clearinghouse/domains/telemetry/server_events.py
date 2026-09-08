@@ -350,6 +350,42 @@ async def emit_refill_denied(
     )
 
 
+async def emit_settlement_verification_failed(
+    db: AsyncSession,
+    *,
+    api_key_id: uuid.UUID | None,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    protocol: str,
+    reason: str,
+    clock: Clock,
+    independent_session_factory: IndependentSessionFactory | None = None,
+) -> None:
+    """Record ``server.settlement_verification_failed``.
+
+    Raised paths roll the request transaction back, so this writes through
+    an independent session like the other refusal events. The operator
+    attention view reads these rows: a broker signing with an undelegated
+    key, or not signing at all, shows up here instead of only in a 4xx the
+    customer's SDK saw.
+    """
+    await _safe_emit_independent(
+        event_type="server.settlement_verification_failed",
+        payload={
+            "session_id": str(session_id),
+            "protocol": protocol,
+            "code": "settlement_verification_failed",
+            "reason": reason,
+        },
+        api_key_id=api_key_id,
+        user_id=user_id,
+        correlation_id=session_id,
+        clock=clock,
+        factory=independent_session_factory,
+        bound_session=db,
+    )
+
+
 async def emit_session_janitor_finalized(
     db: AsyncSession,
     *,
