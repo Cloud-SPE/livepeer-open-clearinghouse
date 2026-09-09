@@ -32,6 +32,8 @@ class CreateJobRequest(BaseModel):
     estimated_units: int = Field(gt=0)
     max_total_units: int | None = Field(default=None, gt=0)
     route_binding: RouteBinding | None = None
+    workload_request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    caller_public_key: str | None = Field(default=None, pattern=r"^(02|03)[0-9a-f]{64}$")
 
 
 class CreateJobResponse(BaseModel):
@@ -52,7 +54,9 @@ class CreateJobResponse(BaseModel):
     transport: Literal["unary", "stream", "multipart"]
     work_unit: str
     route_snapshot: RouteSnapshot
-    payment_envelope: str
+    payment_envelope: str | None = None
+    spend_authorization: str | None = None
+    accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
     expected_value_wei: WeiDecimal
     funded_value_wei: WeiDecimal
     settle_endpoint: str

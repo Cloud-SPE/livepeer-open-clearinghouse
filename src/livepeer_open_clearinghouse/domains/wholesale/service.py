@@ -158,6 +158,41 @@ async def claim_account_funding(
     return funding
 
 
+async def plan_observed_account_shortfall(
+    db: AsyncSession,
+    *,
+    observation: WholesaleAccountObservation,
+    limits: WholesaleFundingLimits,
+) -> WholesaleFundingPlan:
+    """Plan against LOC's current aggregate view before taking the claim lock.
+
+    ``claim_account_funding`` repeats this calculation under row locks and
+    rejects a stale plan.  This first pass therefore supplies the exact input
+    for the uncontended case without weakening concurrent cap enforcement.
+    """
+
+    budget = await db.get(WholesaleExposureBudget, "global")
+    if budget is None:
+        raise WholesaleFundingPolicyError("wholesale exposure budget is not initialized")
+    account = await db.scalar(
+        select(WholesaleAccount).where(
+            WholesaleAccount.chain_id == observation.chain_id,
+            WholesaleAccount.payer_eth_address == observation.payer,
+            WholesaleAccount.payee_eth_address == observation.payee,
+            WholesaleAccount.denomination == observation.denomination,
+        )
+    )
+    prior_available = Decimal(0) if account is None else account.available_value_wei
+    synchronized_aggregate = (
+        budget.projected_available_wei - prior_available + observation.available_value_wei
+    )
+    return plan_account_shortfall(
+        observation=observation,
+        aggregate_available_wei=synchronized_aggregate,
+        limits=limits,
+    )
+
+
 async def record_minted_funding(
     db: AsyncSession, *, mint_request_id: str, response: CreatePaymentResponse
 ) -> WholesaleFunding:

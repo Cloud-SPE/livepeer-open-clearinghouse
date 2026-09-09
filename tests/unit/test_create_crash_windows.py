@@ -214,6 +214,7 @@ async def _invoke(
         "db": db,
         "registry": MockRegistryClient(routes=[case.route]),
         "daemon": daemon,
+        "broker_wholesale": None,
         "clock": clock,
         "settings": _settings(),
         "idempotency_key": idempotency_key,

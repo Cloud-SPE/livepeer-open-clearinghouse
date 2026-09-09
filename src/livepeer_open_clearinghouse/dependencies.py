@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Annotated
 
+import httpx
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,10 @@ from livepeer_open_clearinghouse.domains.admin.repo import Operator
 from livepeer_open_clearinghouse.domains.api_keys import service as api_keys_service
 from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
 from livepeer_open_clearinghouse.providers.auth import session as session_helper
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerWholesaleAccountClient,
+    HttpBrokerSettlementClient,
+)
 from livepeer_open_clearinghouse.providers.clock import Clock, DefaultClock
 from livepeer_open_clearinghouse.providers.db import session_dependency
 from livepeer_open_clearinghouse.providers.email import (
@@ -120,6 +125,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield s
 
 
+async def get_broker_wholesale_client() -> AsyncIterator[BrokerWholesaleAccountClient]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        yield HttpBrokerSettlementClient(client)
+
+
 # ---------------------------------------------------------------------------
 # Rate-limit dependency factory
 # ---------------------------------------------------------------------------
@@ -168,6 +178,7 @@ ClockDep = Annotated[Clock, Depends(get_clock)]
 EmailDep = Annotated[EmailProvider, Depends(get_email)]
 RegistryDep = Annotated[RegistryClient, Depends(get_registry)]
 PaymentDaemonDep = Annotated[PaymentDaemonClient, Depends(get_payment_daemon)]
+BrokerWholesaleDep = Annotated[BrokerWholesaleAccountClient, Depends(get_broker_wholesale_client)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 

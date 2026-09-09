@@ -33,12 +33,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobResponse,
     JobStatusResponse,
     SettleJobResponse,
     SettlementEnvelope,
 )
+from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.payments.repo import (
     Payment,
     PaymentDaemonDepositSnapshot,
@@ -46,6 +48,8 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
+from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
+from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
@@ -59,6 +63,7 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeResult,
     BrokerSettlementClient,
     BrokerSettlementQueryError,
+    BrokerWholesaleAccountClient,
     NonAdmissionQuery,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
@@ -210,6 +215,175 @@ def _settle_endpoint_for(job_id: uuid.UUID) -> str:
     return f"/v1/jobs/{job_id}/settle"
 
 
+async def _open_wholesale_job(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    route: SelectedRoute,
+    estimated_units: int,
+    max_total_units: int,
+    max_debit_wei: Decimal,
+    request_id: str,
+    request_digest: bytes,
+    caller_public_key: bytes,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+    sdk_identity: str | None,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+    transport: Literal["unary", "stream", "multipart"],
+) -> CreateJobResponse:
+    """Create one account-authorized job without exposing funding tickets."""
+
+    pricing = CustomerPricingSnapshot(
+        plan_id="wholesale-pass-through",
+        kind="wholesale_pass_through",
+        work_unit=route.work_unit,
+    )
+    job = await sessions_service.create_session(
+        db,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        work_id="",
+        capability=route.capability,
+        offering=route.offering,
+        protocol=route.protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=request_id,
+        estimated_units=estimated_units,
+        max_total_units=max_total_units,
+        funded_value_wei=max_debit_wei,
+        clock=clock,
+        sdk_identity=sdk_identity,
+        accounting_mode="wholesale_account",
+        customer_pricing=pricing.model_dump(mode="json"),
+        customer_max_debit_wei=max_debit_wei,
+    )
+    await billing_service.encumber_customer_engagement(
+        db,
+        user_id=user_id,
+        engagement_id=job.id,
+        amount_wei=max_debit_wei,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
+    )
+    await db.commit()
+    now = clock.now()
+    authorization_id = f"loc-auth:{request_id}"
+    auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+        daemon=daemon,
+        route=route,
+        authorization_id=authorization_id,
+        request_id=request_id,
+        session_id="",
+        request_digest=request_digest,
+        caller_public_key=caller_public_key,
+        max_debit_wei=max_debit_wei,
+        max_total_units=max_total_units,
+        not_before=now,
+        expires_at=now + timedelta(minutes=5),
+        chain_id=settings.wholesale_chain_id,
+    )
+    await sessions_service.record_spend_authorization_grant(
+        db,
+        engagement_id=job.id,
+        user_id=user_id,
+        route=route,
+        request=auth_request,
+        response=auth_response,
+    )
+    await db.commit()
+    payer = "0x" + auth_response.payer.hex()
+    observation = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer,
+        payee_eth_address=route.eth_address,
+        chain_id=settings.wholesale_chain_id,
+    )
+    limits = WholesaleFundingLimits(
+        target_available_wei=Decimal(settings.wholesale_target_available_wei),
+        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
+        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
+        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
+    )
+    plan = await wholesale_service.plan_observed_account_shortfall(
+        db,
+        observation=observation,
+        limits=limits,
+    )
+    mint_id = f"loc-account:{request_id}"
+    funding = await wholesale_service.claim_account_funding(
+        db,
+        route=route,
+        observation=observation,
+        plan=plan,
+        limits=limits,
+        mint_request_id=mint_id,
+        correlation_id=str(job.id),
+        protocol_version="wholesale-account/1.0.0-draft",
+    )
+    if funding is not None and funding.status != "acknowledged":
+        mint_request = wholesale_service.create_account_funding_request(
+            route=route,
+            observation=observation,
+            plan=plan,
+            mint_request_id=mint_id,
+        )
+        mint_response = validate_funding_response(
+            mint_request, await daemon.create_payment(mint_request)
+        )
+        if "0x" + mint_response.sender.hex() != payer:
+            raise DaemonUnavailable(
+                daemon="payment-daemon", reason="funding payer differs from authorization payer"
+            )
+        await wholesale_service.record_minted_funding(
+            db, mint_request_id=mint_id, response=mint_response
+        )
+        funded = await broker.fund_wholesale_account(
+            broker_url=route.worker_url,
+            capability=route.capability,
+            offering=route.offering,
+            payment_bytes=mint_response.payment_bytes,
+            payer_eth_address=payer,
+            payee_eth_address=route.eth_address,
+            expected_credited_value_wei=plan.shortfall_wei,
+        )
+        after = await broker.get_wholesale_account(
+            broker_url=route.worker_url,
+            payer_eth_address=payer,
+            payee_eth_address=route.eth_address,
+            chain_id=settings.wholesale_chain_id,
+        )
+        await wholesale_service.acknowledge_account_funding(
+            db,
+            mint_request_id=mint_id,
+            result=funded,
+            observation=after,
+            acknowledged_at=clock.now(),
+        )
+    return CreateJobResponse(
+        job_id=job.id,
+        request_id=request_id,
+        work_id="",
+        broker_url=route.worker_url,
+        protocol=route.protocol,
+        transport=transport,
+        work_unit=route.work_unit,
+        route_snapshot=route.snapshot_view(),
+        payment_envelope=None,
+        spend_authorization=auth_response.authorization_b64,
+        accounting_mode="wholesale_account",
+        expected_value_wei=int(plan.shortfall_wei),
+        funded_value_wei=int(plan.shortfall_wei),
+        settle_endpoint=_settle_endpoint_for(job.id),
+        opened_at=job.opened_at,
+    )
+
+
 async def open_job(
     db: AsyncSession,
     *,
@@ -227,6 +401,9 @@ async def open_job(
     transport: Literal["unary", "stream", "multipart"] = "unary",
     route_binding: RouteBinding | None = None,
     request_id: str | None = None,
+    workload_request_digest: bytes | None = None,
+    caller_public_key: bytes | None = None,
+    broker_wholesale: BrokerWholesaleAccountClient | None = None,
 ) -> CreateJobResponse:
     """Open a one-shot job (cases a/b/c) under handoff mode.
 
@@ -256,6 +433,15 @@ async def open_job(
         binding=route_binding,
     )
     protocol = route.protocol
+    if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
+        if workload_request_digest is None or caller_public_key is None:
+            raise sessions_service.InvalidSessionRequest(
+                message="wholesale route requires workload_request_digest and caller_public_key"
+            )
+        if broker_wholesale is None:
+            raise DaemonUnavailable(
+                daemon="wholesale-account", reason="broker account client is unavailable"
+            )
 
     # Worst case = full max_total_units (jobs have no refills, so the
     # initial mint funds the entire envelope).
@@ -282,6 +468,31 @@ async def open_job(
         raise InsufficientCredit(
             available_wei=int(balance.amount_wei),
             required_wei=int(worst_case_value_wei),
+        )
+
+    if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
+        assert workload_request_digest is not None
+        assert caller_public_key is not None
+        assert broker_wholesale is not None
+        return await _open_wholesale_job(
+            db,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            route=route,
+            estimated_units=estimated_units,
+            max_total_units=effective_max,
+            max_debit_wei=worst_case_value_wei,
+            request_id=broker_request_id,
+            request_digest=workload_request_digest,
+            caller_public_key=caller_public_key,
+            broker=broker_wholesale,
+            daemon=daemon,
+            clock=clock,
+            settings=settings,
+            sdk_identity=sdk_identity,
+            spend_period_seconds=cfg.spend_period_seconds,
+            spend_period_cap_wei=cfg.spend_period_cap_wei,
+            transport=transport,
         )
 
     # Daemon mint sized for the full worst case (one ticket covers

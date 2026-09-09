@@ -24,6 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
+from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
@@ -39,6 +41,8 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     SessionStatusResponse,
 )
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
+from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
+from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
@@ -50,6 +54,7 @@ from livepeer_open_clearinghouse.errors import (
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerSettlementClient,
     BrokerSettlementQueryError,
+    BrokerWholesaleAccountClient,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -69,6 +74,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon import (
     RegistryClient,
     RouteBinding,
     SelectedRoute,
+    SessionAxes,
     select_bound_route,
 )
 from livepeer_open_clearinghouse.providers.settlement_verification import (
@@ -260,7 +266,8 @@ async def record_spend_authorization_grant(
         raise InvalidSessionRequest(message="authorization route differs from locked engagement")
     if response.authorization_id != request.authorization_id:
         raise InvalidSessionRequest(message="authorization signer changed identity")
-    if request.session_id != str(engagement_id):
+    expected_session_id = str(engagement_id) if request.protocol == PAID_SESSION_PROTOCOL else ""
+    if request.session_id != expected_session_id:
         raise InvalidSessionRequest(message="authorization session identity changed")
     if engagement.broker_request_id != request.request_id:
         raise InvalidSessionRequest(message="authorization request identity changed")
@@ -361,6 +368,9 @@ async def create_session(
     funded_value_wei: Decimal,
     clock: Clock,
     sdk_identity: str | None = None,
+    accounting_mode: str = "legacy_ticket",
+    customer_pricing: dict[str, Any] | None = None,
+    customer_max_debit_wei: Decimal | None = None,
 ) -> PaymentSession:
     """Create a new session in the ``open`` state and return it.
 
@@ -381,6 +391,9 @@ async def create_session(
         estimated_units=estimated_units,
         max_total_units=max_total_units,
         funded_value_wei=funded_value_wei,
+        accounting_mode=accounting_mode,
+        customer_pricing=customer_pricing,
+        customer_max_debit_wei=customer_max_debit_wei,
         opened_at=now,
         sdk_identity=sdk_identity,
     )
@@ -507,7 +520,179 @@ def _close_endpoint_for(session_id: uuid.UUID) -> str:
     return f"/v1/sessions/{session_id}/close"
 
 
-async def open_session(  # noqa: PLR0915 — explicit open-time guards
+async def _open_wholesale_session(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    route: SelectedRoute,
+    session_axes: SessionAxes,
+    estimated_runway_units: int,
+    max_total_units: int,
+    max_debit_wei: Decimal,
+    request_id: str,
+    request_digest: bytes,
+    caller_public_key: bytes,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+    sdk_identity: str | None,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+) -> CreateSessionResponse:
+    """Create a cumulative-cap session and replenish only shared runway."""
+
+    pricing = CustomerPricingSnapshot(
+        plan_id="wholesale-pass-through",
+        kind="wholesale_pass_through",
+        work_unit=route.work_unit,
+    )
+    session_row = await create_session(
+        db,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        work_id="",
+        capability=route.capability,
+        offering=route.offering,
+        protocol=route.protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=request_id,
+        estimated_units=estimated_runway_units,
+        max_total_units=max_total_units,
+        funded_value_wei=max_debit_wei,
+        clock=clock,
+        sdk_identity=sdk_identity,
+        accounting_mode="wholesale_account",
+        customer_pricing=pricing.model_dump(mode="json"),
+        customer_max_debit_wei=max_debit_wei,
+    )
+    await billing_service.encumber_customer_engagement(
+        db,
+        user_id=user_id,
+        engagement_id=session_row.id,
+        amount_wei=max_debit_wei,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
+    )
+    await db.commit()
+
+    now = clock.now()
+    authorization_id = f"loc-auth:{request_id}"
+    auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+        daemon=daemon,
+        route=route,
+        authorization_id=authorization_id,
+        request_id=request_id,
+        session_id=str(session_row.id),
+        request_digest=request_digest,
+        caller_public_key=caller_public_key,
+        max_debit_wei=max_debit_wei,
+        max_total_units=max_total_units,
+        not_before=now,
+        expires_at=now + timedelta(minutes=5),
+        chain_id=settings.wholesale_chain_id,
+    )
+    await record_spend_authorization_grant(
+        db,
+        engagement_id=session_row.id,
+        user_id=user_id,
+        route=route,
+        request=auth_request,
+        response=auth_response,
+    )
+    await db.commit()
+
+    payer = "0x" + auth_response.payer.hex()
+    observation = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer,
+        payee_eth_address=route.eth_address,
+        chain_id=settings.wholesale_chain_id,
+    )
+    limits = WholesaleFundingLimits(
+        target_available_wei=Decimal(settings.wholesale_target_available_wei),
+        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
+        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
+        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
+    )
+    plan = await wholesale_service.plan_observed_account_shortfall(
+        db,
+        observation=observation,
+        limits=limits,
+    )
+    mint_id = f"loc-account:{request_id}"
+    funding = await wholesale_service.claim_account_funding(
+        db,
+        route=route,
+        observation=observation,
+        plan=plan,
+        limits=limits,
+        mint_request_id=mint_id,
+        correlation_id=str(session_row.id),
+        protocol_version="wholesale-account/1.0.0-draft",
+    )
+    if funding is not None and funding.status != "acknowledged":
+        mint_request = wholesale_service.create_account_funding_request(
+            route=route,
+            observation=observation,
+            plan=plan,
+            mint_request_id=mint_id,
+        )
+        mint_response = validate_funding_response(
+            mint_request, await daemon.create_payment(mint_request)
+        )
+        if "0x" + mint_response.sender.hex() != payer:
+            raise DaemonUnavailable(
+                daemon="payment-daemon", reason="funding payer differs from authorization payer"
+            )
+        await wholesale_service.record_minted_funding(
+            db, mint_request_id=mint_id, response=mint_response
+        )
+        funded = await broker.fund_wholesale_account(
+            broker_url=route.worker_url,
+            capability=route.capability,
+            offering=route.offering,
+            payment_bytes=mint_response.payment_bytes,
+            payer_eth_address=payer,
+            payee_eth_address=route.eth_address,
+            expected_credited_value_wei=plan.shortfall_wei,
+        )
+        after = await broker.get_wholesale_account(
+            broker_url=route.worker_url,
+            payer_eth_address=payer,
+            payee_eth_address=route.eth_address,
+            chain_id=settings.wholesale_chain_id,
+        )
+        await wholesale_service.acknowledge_account_funding(
+            db,
+            mint_request_id=mint_id,
+            result=funded,
+            observation=after,
+            acknowledged_at=clock.now(),
+        )
+
+    return CreateSessionResponse(
+        session_id=session_row.id,
+        request_id=request_id,
+        work_id="",
+        broker_url=route.worker_url,
+        protocol=route.protocol,
+        session=SessionAxesView.model_validate(session_axes.model_dump(mode="json")),
+        route_snapshot=route.snapshot_view(),
+        payment_envelope=None,
+        spend_authorization=auth_response.authorization_b64,
+        accounting_mode="wholesale_account",
+        expected_value_wei=int(plan.shortfall_wei),
+        funded_value_wei=int(plan.shortfall_wei),
+        refill_endpoint=_refill_endpoint_for(session_row.id),
+        close_endpoint=_close_endpoint_for(session_row.id),
+        opened_at=session_row.opened_at,
+    )
+
+
+async def open_session(  # noqa: PLR0912, PLR0915 — explicit open-time guards
     db: AsyncSession,
     *,
     user_id: uuid.UUID,
@@ -524,6 +709,9 @@ async def open_session(  # noqa: PLR0915 — explicit open-time guards
     descriptor_schema: str | None = None,
     route_binding: RouteBinding | None = None,
     request_id: str | None = None,
+    workload_request_digest: bytes | None = None,
+    caller_public_key: bytes | None = None,
+    broker_wholesale: BrokerWholesaleAccountClient | None = None,
 ) -> CreateSessionResponse:
     """Open a long-running session (case d) under handoff mode.
 
@@ -618,6 +806,36 @@ async def open_session(  # noqa: PLR0915 — explicit open-time guards
         raise InsufficientCredit(
             available_wei=int(balance.amount_wei),
             required_wei=int(worst_case_value_wei),
+        )
+
+    if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
+        if workload_request_digest is None or caller_public_key is None:
+            raise InvalidSessionRequest(
+                message="wholesale route requires workload_request_digest and caller_public_key"
+            )
+        if broker_wholesale is None:
+            raise DaemonUnavailable(
+                daemon="wholesale-account", reason="broker account client is unavailable"
+            )
+        return await _open_wholesale_session(
+            db,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            route=route,
+            session_axes=session_axes,
+            estimated_runway_units=estimated_runway_units,
+            max_total_units=max_total_units,
+            max_debit_wei=worst_case_value_wei,
+            request_id=broker_request_id,
+            request_digest=workload_request_digest,
+            caller_public_key=caller_public_key,
+            broker=broker_wholesale,
+            daemon=daemon,
+            clock=clock,
+            settings=settings,
+            sdk_identity=sdk_identity,
+            spend_period_seconds=cfg.spend_period_seconds,
+            spend_period_cap_wei=cfg.spend_period_cap_wei,
         )
 
     # ---- 5. Daemon call (initial ticket sized for runway)
@@ -831,6 +1049,11 @@ async def _next_refill_funding(
 def _refill_snapshot(session_row: PaymentSession) -> dict[str, Any]:
     """Return a usable v1 route snapshot or refuse the refill."""
 
+    if session_row.accounting_mode == "wholesale_account":
+        raise DaemonUnavailable(
+            daemon="wholesale-account",
+            reason="aggregate account replenishment is not available through legacy refill",
+        )
     snapshot = session_row.route_snapshot or {}
     axes = snapshot.get("session", snapshot.get("axes"))
     if not isinstance(axes, dict):

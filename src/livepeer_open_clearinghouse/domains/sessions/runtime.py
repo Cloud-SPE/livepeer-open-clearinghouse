@@ -23,6 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, status
 
 from livepeer_open_clearinghouse.dependencies import (
+    BrokerWholesaleDep,
     ClockDep,
     CurrentApiKeyDep,
     PaymentDaemonDep,
@@ -63,6 +64,7 @@ async def open_session_endpoint(
     daemon: PaymentDaemonDep,
     clock: ClockDep,
     settings: SettingsDep,
+    broker_wholesale: BrokerWholesaleDep,
     idempotency_key: Annotated[
         str,
         Header(alias="Idempotency-Key", min_length=1, max_length=255),
@@ -114,6 +116,17 @@ async def open_session_endpoint(
             clock=clock,
             settings=settings,
             request_id=claim.broker_request_id,
+            workload_request_digest=(
+                bytes.fromhex(body.workload_request_digest)
+                if body.workload_request_digest is not None
+                else None
+            ),
+            caller_public_key=(
+                bytes.fromhex(body.caller_public_key)
+                if body.caller_public_key is not None
+                else None
+            ),
+            broker_wholesale=broker_wholesale,
         )
     except OpenClearinghouseError as exc:
         await db.rollback()

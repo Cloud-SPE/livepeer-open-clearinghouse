@@ -42,6 +42,8 @@ class CreateSessionRequest(BaseModel):
     estimated_runway_units: int = Field(gt=0)
     max_total_units: int = Field(gt=0)
     route_binding: RouteBinding | None = None
+    workload_request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    caller_public_key: str | None = Field(default=None, pattern=r"^(02|03)[0-9a-f]{64}$")
 
 
 class CapStatus(BaseModel):
@@ -107,7 +109,9 @@ class RefillSessionResponse(BaseModel):
     work_id: str
     request_id: str
     refill_seq: int
-    payment_envelope: str
+    payment_envelope: str | None = None
+    spend_authorization: str | None = None
+    accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
     expected_value_wei: WeiDecimal
     funded_value_wei: WeiDecimal
     cap_status: CapStatus
@@ -223,7 +227,9 @@ class CreateSessionResponse(BaseModel):
     protocol: str
     session: SessionAxesView
     route_snapshot: RouteSnapshot
-    payment_envelope: str
+    payment_envelope: str | None = None
+    spend_authorization: str | None = None
+    accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
     expected_value_wei: WeiDecimal
     funded_value_wei: WeiDecimal
     refill_endpoint: str

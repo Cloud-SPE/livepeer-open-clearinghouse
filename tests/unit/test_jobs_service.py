@@ -43,12 +43,20 @@ from livepeer_open_clearinghouse.domains.jobs.types import CreateJobResponse, Se
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
+from livepeer_open_clearinghouse.domains.sessions.repo import (
+    PaymentSession,
+    PaymentSettlement,
+    SpendAuthorizationGrant,
+)
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
     RouteBindingMismatch,
+)
+from livepeer_open_clearinghouse.domains.wholesale.repo import (
+    WholesaleExposureBudget,
+    WholesaleFunding,
 )
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
@@ -60,6 +68,8 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeResult,
     BrokerSettlementQueryError,
     NonAdmissionQuery,
+    WholesaleAccountObservation,
+    WholesaleFundingResult,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -233,6 +243,87 @@ class _FailingExchangeClient:
 
 
 # ---- open_job happy path ----
+
+
+class _WholesaleBroker:
+    def __init__(self) -> None:
+        self.funded = False
+
+    async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
+        return WholesaleAccountObservation(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            chain_id=42161,
+            denomination="wei",
+            credited_value_wei=100 if self.funded else 0,
+            reserved_value_wei=0,
+            debited_value_wei=0,
+            available_value_wei=100 if self.funded else 0,
+            version=1 if self.funded else 0,
+            observed_at=_clock().now(),
+        )
+
+    async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
+        self.funded = True
+        return WholesaleFundingResult(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            credited_value_wei=100,
+            available_value_wei=100,
+            account_version=1,
+            replayed=False,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    route = _route().model_copy(
+        update={"extra": {**_route().extra, "features": {"wholesale_accounts": True}}}
+    )
+    db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db_session.commit()
+    response = await jobs_service.open_job(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings().model_copy(
+            update={
+                "wholesale_accounts_enabled": True,
+                "wholesale_chain_id": 42161,
+                "wholesale_target_available_wei": 100,
+                "wholesale_max_available_per_payee_wei": 200,
+                "wholesale_max_aggregate_available_wei": 500,
+                "wholesale_max_single_funding_wei": 100,
+            }
+        ),
+        request_id="request-wholesale-1",
+        workload_request_digest=b"\x44" * 32,
+        caller_public_key=bytes.fromhex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        broker_wholesale=_WholesaleBroker(),
+    )
+    assert response.accounting_mode == "wholesale_account"
+    assert response.payment_envelope is None
+    assert response.spend_authorization is not None
+    assert (await db_session.scalars(select(Payment))).all() == []
+    job = await db_session.get(PaymentSession, response.job_id)
+    assert job is not None
+    assert job.accounting_mode == "wholesale_account"
+    assert (await db_session.scalars(select(SpendAuthorizationGrant))).one().state == "issued"
+    assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
 
 
 @pytest.mark.unit

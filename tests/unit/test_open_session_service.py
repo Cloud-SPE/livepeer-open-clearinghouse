@@ -35,17 +35,28 @@ from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # 
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import (
+    PaymentSession,
+    SpendAuthorizationGrant,
+)
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
     ProtocolNotSupportedForSession,
     RouteBindingMismatch,
 )
+from livepeer_open_clearinghouse.domains.wholesale.repo import (
+    WholesaleExposureBudget,
+    WholesaleFunding,
+)
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    WholesaleAccountObservation,
+    WholesaleFundingResult,
 )
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
@@ -144,6 +155,106 @@ def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> Selecte
 
 
 # ---- happy path ----
+
+
+class _WholesaleBroker:
+    def __init__(self) -> None:
+        self.funded = False
+
+    async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
+        return WholesaleAccountObservation(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            chain_id=42161,
+            denomination="wei",
+            credited_value_wei=100 if self.funded else 0,
+            reserved_value_wei=0,
+            debited_value_wei=0,
+            available_value_wei=100 if self.funded else 0,
+            version=1 if self.funded else 0,
+            observed_at=_clock().now(),
+        )
+
+    async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
+        self.funded = True
+        return WholesaleFundingResult(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            credited_value_wei=100,
+            available_value_wei=100,
+            account_version=1,
+            replayed=False,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_runway(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    base_route = _route_for_protocol("paid-session/v1")
+    route = base_route.model_copy(
+        update={"extra": {**base_route.extra, "features": {"wholesale_accounts": True}}}
+    )
+    db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db_session.commit()
+
+    response = await sessions_service.open_session(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_runway_units=2,
+        max_total_units=10,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings().model_copy(
+            update={
+                "wholesale_accounts_enabled": True,
+                "wholesale_chain_id": 42161,
+                "wholesale_target_available_wei": 100,
+                "wholesale_max_available_per_payee_wei": 200,
+                "wholesale_max_aggregate_available_wei": 500,
+                "wholesale_max_single_funding_wei": 100,
+            }
+        ),
+        request_id="session-wholesale-1",
+        workload_request_digest=b"\x55" * 32,
+        caller_public_key=bytes.fromhex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        broker_wholesale=_WholesaleBroker(),
+    )
+
+    assert response.accounting_mode == "wholesale_account"
+    assert response.payment_envelope is None
+    assert response.spend_authorization is not None
+    assert response.expected_value_wei == 100
+    assert response.funded_value_wei == 100
+    assert (await db_session.scalars(select(Payment))).all() == []
+    session = await db_session.get(PaymentSession, response.session_id)
+    assert session is not None
+    assert session.customer_max_debit_wei == Decimal(10_000)
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.max_total_units == 10
+    assert grant.max_debit_wei == Decimal(10_000)
+    assert grant.request_id == response.request_id
+    assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+    with pytest.raises(DaemonUnavailable, match="legacy refill"):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=response.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=None,
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=_settings(),
+        )
 
 
 @pytest.mark.unit

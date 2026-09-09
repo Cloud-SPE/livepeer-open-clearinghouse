@@ -26,6 +26,7 @@ from livepeer_open_clearinghouse.domains.wholesale.service import (
     claim_account_funding,
     create_account_funding_request,
     plan_account_shortfall,
+    plan_observed_account_shortfall,
     record_minted_funding,
 )
 from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
@@ -239,6 +240,40 @@ def test_shortfall_plan_fails_closed_at_operator_limits(
             aggregate_available_wei=Decimal(aggregate),
             limits=_limits(**updates),
         )
+
+
+@pytest.mark.asyncio
+async def test_observed_plan_replaces_prior_account_value_in_aggregate(
+    wholesale_db: AsyncSession,
+) -> None:
+    budget = await wholesale_db.get(WholesaleExposureBudget, "global")
+    assert budget is not None
+    budget.projected_available_wei = Decimal(200)
+    wholesale_db.add(
+        WholesaleAccount(
+            chain_id=42161,
+            payer_eth_address="0x" + "aa" * 20,
+            payee_eth_address="0x" + "11" * 20,
+            denomination="wei",
+            protocol_version="wholesale-account/1.0.0-draft",
+            broker_url="https://broker.example",
+            credited_value_wei=Decimal(100),
+            reserved_value_wei=Decimal(10),
+            debited_value_wei=Decimal(50),
+            available_value_wei=Decimal(40),
+            remote_version=3,
+            observed_at=datetime.now(UTC),
+        )
+    )
+    await wholesale_db.commit()
+
+    plan = await plan_observed_account_shortfall(
+        wholesale_db,
+        observation=_account(available=60).model_copy(update={"version": 4}),
+        limits=_limits(),
+    )
+    assert plan.shortfall_wei == 40
+    assert plan.projected_aggregate_available_wei == 260
 
 
 @pytest.mark.asyncio
