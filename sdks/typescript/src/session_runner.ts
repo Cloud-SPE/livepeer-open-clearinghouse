@@ -116,22 +116,38 @@ export class SessionRunner {
 
   async start(): Promise<BrokerSession> {
     if (this.broker !== null) return this.broker;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Livepeer-Protocol": this.handle.protocol,
+      "Livepeer-Capability": this.handle.capability,
+      "Livepeer-Offering": this.handle.offering,
+      "Livepeer-Request-Id": this.handle.requestId,
+    };
+    if (this.handle.accountingMode === "wholesale_account") {
+      if (this.handle.spendAuthorization == null || this.handle.callerProof == null) {
+        throw protocolError("wholesale session is missing authorization headers");
+      }
+      headers["Livepeer-Authorization"] = this.handle.spendAuthorization;
+      headers["Livepeer-Caller-Proof"] = this.handle.callerProof;
+      if (this.handle.paymentEnvelope !== null) {
+        headers["Livepeer-Payment"] = this.handle.paymentEnvelope;
+      }
+    } else if (this.handle.paymentEnvelope !== null) {
+      headers["Livepeer-Payment"] = this.handle.paymentEnvelope;
+    } else {
+      throw protocolError("legacy session is missing Livepeer-Payment");
+    }
     const response = await this.fetchImpl(
       `${this.handle.brokerUrl.replace(/\/+$/, "")}/v1/session`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Livepeer-Protocol": this.handle.protocol,
-          "Livepeer-Capability": this.handle.capability,
-          "Livepeer-Offering": this.handle.offering,
-          "Livepeer-Request-Id": this.handle.requestId,
-          "Livepeer-Payment": this.handle.paymentEnvelope,
-        },
-        body: JSON.stringify({
-          gateway_session_id: this.handle.sessionId,
-          session_params: this.handle.sessionParams,
-        }),
+        headers,
+        body:
+          this.handle.sessionOpenBody ??
+          JSON.stringify({
+            gateway_session_id: this.handle.sessionId,
+            session_params: this.handle.sessionParams,
+          }),
       },
     );
     if (!response.ok) throw protocolError(`broker session-open failed: ${String(response.status)}`);

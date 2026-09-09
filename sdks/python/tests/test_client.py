@@ -10,6 +10,7 @@ Stubs the LOC gateway + broker via respx. Covers:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 
@@ -459,6 +460,51 @@ async def test_list_orchestrators_passes_capability_filter() -> None:
     assert "capability=video%3Atranscode.live" in str(route.calls[0].request.url)
 
 
+@respx.mock
+async def test_submit_job_binds_exact_body_and_sends_wholesale_proof() -> None:
+    jid = "00000000-0000-0000-0000-000000000cde"
+    authorization_bytes = b"signed-spend-authorization"
+    authorization = base64.b64encode(authorization_bytes).decode()
+    opened = _job_open(jid)
+    opened.update(
+        payment_envelope=None,
+        spend_authorization=authorization,
+        accounting_mode="wholesale_account",
+    )
+    loc_call = respx.post(f"{BASE}/v1/jobs").mock(return_value=httpx.Response(201, json=opened))
+    broker_call = respx.post(f"{BROKER}/v1/job").mock(
+        return_value=httpx.Response(200, json={"ok": True}, headers=_broker_headers(2))
+    )
+    respx.post(f"{BASE}/v1/jobs/{jid}/settle").mock(
+        return_value=httpx.Response(200, json=_job_settled(jid, actual=2))
+    )
+    signed: list[bytes] = []
+
+    def sign(value: bytes) -> str:
+        signed.append(value)
+        return "CALLER-PROOF"
+
+    expected_body = b'{"model":"explicit-model","prompt":"hello"}'
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await client.submit_job(
+            capability="openai:chat-completions",
+            offering="default",
+            estimated_units=2,
+            body={"model": "explicit-model", "prompt": "hello"},
+            caller_public_key="02" + "11" * 32,
+            sign_caller_proof=sign,
+        )
+
+    loc_body = json.loads(loc_call.calls[0].request.content)
+    assert loc_body["workload_request_digest"] == hashlib.sha256(expected_body).hexdigest()
+    assert loc_body["caller_public_key"] == "02" + "11" * 32
+    assert broker_call.calls[0].request.content == expected_body
+    assert broker_call.calls[0].request.headers["Livepeer-Authorization"] == authorization
+    assert broker_call.calls[0].request.headers["Livepeer-Caller-Proof"] == "CALLER-PROOF"
+    assert "Livepeer-Payment" not in broker_call.calls[0].request.headers
+    assert signed == [authorization_bytes]
+
+
 # ----- sessions (case d) ------------------------------------------
 
 
@@ -501,6 +547,92 @@ async def test_open_session_returns_handle() -> None:
     assert handle.broker_url == BROKER
     assert handle.protocol == "paid-session/v1"
     assert handle.funded_value_wei == 200_000
+
+
+@respx.mock
+async def test_open_session_prepares_exact_wholesale_commitment() -> None:
+    sid = "00000000-0000-0000-0000-000000000998"
+    authorization_bytes = b"session-authorization"
+    authorization = base64.b64encode(authorization_bytes).decode()
+    respx.post(f"{BASE}/v1/sessions/prepare").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "gateway_session_id": sid,
+                "route_binding": {
+                    "eth_address": "0x" + "12" * 20,
+                    "worker_url": BROKER,
+                    "capability": "livepeer:test",
+                    "offering": "default",
+                    "protocol": "paid-session/v1",
+                    "quote_id": "quote",
+                    "quote_version": "1",
+                    "constraint_fingerprint": "constraint",
+                    "route_fingerprint": "route",
+                },
+                "broker_url": BROKER,
+                "preparation_token": "prepared-token",
+                "expires_at": "2026-09-09T12:05:00Z",
+            },
+        )
+    )
+    open_call = respx.post(f"{BASE}/v1/sessions").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "session_id": sid,
+                "work_id": "loc-auth:open-request",
+                "broker_url": BROKER,
+                "request_id": "open-request",
+                "protocol": "paid-session/v1",
+                "session": {
+                    "descriptor_schema": "livepeer-session-test/v1",
+                    "attachment": "external",
+                    "metering": "runner-reported",
+                    "refill": "extensible",
+                },
+                "payment_envelope": None,
+                "spend_authorization": authorization,
+                "accounting_mode": "wholesale_account",
+                "expected_value_wei": 100_000,
+                "funded_value_wei": 100_000,
+                "refill_endpoint": f"/v1/sessions/{sid}/refill",
+                "close_endpoint": f"/v1/sessions/{sid}/close",
+                "opened_at": "2026-09-09T12:00:00Z",
+            },
+        )
+    )
+    signed: list[bytes] = []
+
+    def sign(value: bytes) -> str:
+        signed.append(value)
+        return "SESSION-PROOF"
+
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        handle = await client.open_session(
+            capability="livepeer:test",
+            offering="default",
+            descriptor_schema="livepeer-session-test/v1",
+            session_params={"room": "alpha"},
+            estimated_runway_units=100,
+            max_total_units=200,
+            request_id="open-request",
+            caller_public_key="03" + "22" * 32,
+            sign_caller_proof=sign,
+        )
+
+    expected_body = (
+        b'{"gateway_session_id":"00000000-0000-0000-0000-000000000998",'
+        b'"session_params":{"room":"alpha"}}'
+    )
+    loc_body = json.loads(open_call.calls[0].request.content)
+    assert loc_body["gateway_session_id"] == sid
+    assert loc_body["preparation_token"] == "prepared-token"
+    assert loc_body["workload_request_digest"] == hashlib.sha256(expected_body).hexdigest()
+    assert handle.session_open_body == expected_body
+    assert handle.accounting_mode == "wholesale_account"
+    assert handle.caller_proof == "SESSION-PROOF"
+    assert signed == [authorization_bytes]
 
 
 @respx.mock

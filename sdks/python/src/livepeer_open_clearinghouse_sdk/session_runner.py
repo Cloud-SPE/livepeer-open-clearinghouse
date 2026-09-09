@@ -162,20 +162,40 @@ class SessionRunner:
         if self._broker_session is not None:
             return self._broker_session
         url = f"{self._handle.broker_url.rstrip('/')}/v1/session"
+        headers = {
+            "Livepeer-Protocol": self._handle.protocol,
+            "Livepeer-Capability": self._handle.capability,
+            "Livepeer-Offering": self._handle.offering,
+            "Livepeer-Request-Id": self._handle.request_id,
+            "Content-Type": "application/json",
+        }
+        if self._handle.accounting_mode == "wholesale_account":
+            if self._handle.spend_authorization is None or self._handle.caller_proof is None:
+                raise BrokerProtocolError("wholesale session is missing authorization headers")
+            headers["Livepeer-Authorization"] = self._handle.spend_authorization
+            headers["Livepeer-Caller-Proof"] = self._handle.caller_proof
+            if self._handle.payment_envelope is not None:
+                headers["Livepeer-Payment"] = self._handle.payment_envelope
+        elif self._handle.payment_envelope is not None:
+            headers["Livepeer-Payment"] = self._handle.payment_envelope
+        else:
+            raise BrokerProtocolError("legacy session is missing Livepeer-Payment")
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
+            body = (
+                self._handle.session_open_body
+                or json.dumps(
+                    {
+                        "gateway_session_id": str(self._handle.session_id),
+                        "session_params": self._handle.session_params,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            )
             response = await broker.post(
                 url,
-                headers={
-                    "Livepeer-Protocol": self._handle.protocol,
-                    "Livepeer-Capability": self._handle.capability,
-                    "Livepeer-Offering": self._handle.offering,
-                    "Livepeer-Request-Id": self._handle.request_id,
-                    "Livepeer-Payment": self._handle.payment_envelope,
-                },
-                json={
-                    "gateway_session_id": str(self._handle.session_id),
-                    "session_params": self._handle.session_params,
-                },
+                headers=headers,
+                content=body,
             )
         response.raise_for_status()
         session = self._parse_open(response.json())

@@ -156,6 +156,44 @@ async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> Non
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_wholesale_open_sends_authorization_and_exact_committed_body() -> None:
+    legacy = _handle()
+    exact_body = b'{"gateway_session_id":"bound-id","session_params":{"room":"alpha"}}'
+    handle = SessionHandle(
+        session_id=legacy.session_id,
+        request_id=legacy.request_id,
+        work_id=legacy.work_id,
+        broker_url=legacy.broker_url,
+        protocol=legacy.protocol,
+        capability=legacy.capability,
+        offering=legacy.offering,
+        session=legacy.session,
+        session_params=legacy.session_params,
+        payment_envelope=None,
+        expected_value_wei=legacy.expected_value_wei,
+        funded_value_wei=legacy.funded_value_wei,
+        refill_endpoint=legacy.refill_endpoint,
+        close_endpoint=legacy.close_endpoint,
+        spend_authorization="AUTHORIZATION",
+        accounting_mode="wholesale_account",
+        caller_proof="CALLER-PROOF",
+        session_open_body=exact_body,
+    )
+    broker_open = respx.post(f"{BROKER}/v1/session").mock(
+        return_value=httpx.Response(200, json=_open_response())
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        await SessionRunner(client=client, handle=handle).start()
+
+    request = broker_open.calls[0].request
+    assert request.content == exact_body
+    assert request.headers["Livepeer-Authorization"] == "AUTHORIZATION"
+    assert request.headers["Livepeer-Caller-Proof"] == "CALLER-PROOF"
+    assert "Livepeer-Payment" not in request.headers
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_bounded_and_refusal_warning_balances_drain_without_refill() -> None:
     warnings: list[WinddownEvent] = []
     respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))

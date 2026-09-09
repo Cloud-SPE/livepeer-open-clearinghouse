@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import inspect
 import json
 import os
 import platform
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -182,11 +185,49 @@ class SessionHandle:
     offering: str
     session: SessionAxes
     session_params: dict[str, Any]
-    payment_envelope: str
+    payment_envelope: str | None
     expected_value_wei: int
     funded_value_wei: int
     refill_endpoint: str
     close_endpoint: str
+    spend_authorization: str | None = None
+    accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
+    caller_proof: str | None = None
+    session_open_body: bytes | None = None
+
+
+CallerProofSigner = Callable[[bytes], str | Awaitable[str]]
+
+
+def _encode_json(value: dict[str, Any]) -> bytes:
+    """Serialize once so the authorized digest and broker body cannot drift."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+async def _caller_proof(authorization: str | None, signer: CallerProofSigner | None) -> str | None:
+    if authorization is None:
+        return None
+    if signer is None:
+        raise BrokerProtocolError(
+            "LOC returned a spend authorization but no caller-proof signer was supplied",
+            code="caller_proof_signer_required",
+        )
+    try:
+        authorization_bytes = base64.b64decode(authorization, validate=True)
+    except ValueError as exc:
+        raise BrokerProtocolError(
+            "LOC returned a malformed spend authorization",
+            code="broker_protocol_error",
+        ) from exc
+    proof = signer(authorization_bytes)
+    if inspect.isawaitable(proof):
+        proof = await proof
+    if not isinstance(proof, str) or not proof:
+        raise BrokerProtocolError(
+            "caller-proof signer returned an empty proof",
+            code="caller_proof_signer_failed",
+        )
+    return proof
 
 
 def _with_route_model(
@@ -322,6 +363,8 @@ class OpenClearinghouseClient:
         transport: Literal["unary", "stream", "multipart"] = "unary",
         content_type: str | None = None,
         timeout: httpx.Timeout | float | None = None,
+        caller_public_key: str | None = None,
+        sign_caller_proof: CallerProofSigner | None = None,
     ) -> JobResult:
         """One-shot mint → broker → settle for cases (a)/(b)/(c).
 
@@ -356,6 +399,9 @@ class OpenClearinghouseClient:
                 raise ValueError("multipart transport requires a pre-encoded bytes body")
             if content_type is None or not content_type.lower().startswith("multipart/form-data"):
                 raise ValueError("multipart transport requires a multipart/form-data content_type")
+        if (caller_public_key is None) != (sign_caller_proof is None):
+            raise ValueError("caller_public_key and sign_caller_proof must be supplied together")
+        authorization_body = _encode_json(body) if isinstance(body, dict) else body
 
         self._ensure_telemetry_started()
         self._telemetry.emit(
@@ -380,6 +426,8 @@ class OpenClearinghouseClient:
                     "transport": transport,
                     "estimated_units": estimated_units,
                     "max_total_units": max_total_units,
+                    "workload_request_digest": hashlib.sha256(authorization_body).hexdigest(),
+                    "caller_public_key": caller_public_key,
                 },
             )
             job = self._unwrap(open_resp)
@@ -407,7 +455,9 @@ class OpenClearinghouseClient:
         )
         job_id = uuid.UUID(job["job_id"])
         broker_url = job["broker_url"]
-        envelope = job["payment_envelope"]
+        envelope = job.get("payment_envelope")
+        authorization = job.get("spend_authorization")
+        accounting_mode = job.get("accounting_mode", "legacy_ticket")
         protocol = job["protocol"]
         if protocol != "paid-job/v1":
             raise BrokerProtocolError(
@@ -430,16 +480,41 @@ class OpenClearinghouseClient:
         headers: dict[str, str] = {
             "Livepeer-Capability": capability,
             "Livepeer-Offering": offering,
-            "Livepeer-Payment": envelope,
             "Livepeer-Protocol": protocol,
             "Livepeer-Request-Id": broker_request_id,
         }
+        if accounting_mode == "wholesale_account":
+            proof = await _caller_proof(authorization, sign_caller_proof)
+            if authorization is None or proof is None:
+                raise BrokerProtocolError(
+                    "LOC returned an incomplete wholesale authorization",
+                    code="broker_protocol_error",
+                )
+            headers["Livepeer-Authorization"] = authorization
+            headers["Livepeer-Caller-Proof"] = proof
+            if envelope is not None:
+                headers["Livepeer-Payment"] = envelope
+        elif accounting_mode == "legacy_ticket":
+            if not isinstance(envelope, str) or not envelope:
+                raise BrokerProtocolError(
+                    "LOC returned no payment envelope for legacy accounting",
+                    code="broker_protocol_error",
+                )
+            headers["Livepeer-Payment"] = envelope
+        else:
+            raise BrokerProtocolError(
+                f"LOC returned unsupported accounting mode {accounting_mode!r}",
+                code="protocol_unsupported",
+            )
         if selected_transport == "stream":
             headers["Accept"] = "text/event-stream"
         if isinstance(body, dict):
-            body = _with_route_model(body, capability=capability, job=job)
+            if accounting_mode == "legacy_ticket":
+                body = _with_route_model(body, capability=capability, job=job)
             headers["Content-Type"] = content_type or "application/json"
-            broker_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+            broker_body = (
+                authorization_body if accounting_mode == "wholesale_account" else _encode_json(body)
+            )
         else:
             headers["Content-Type"] = content_type or "application/octet-stream"
             broker_body = body
@@ -685,22 +760,57 @@ class OpenClearinghouseClient:
         estimated_runway_units: int,
         max_total_units: int,
         request_id: str | None = None,
+        caller_public_key: str | None = None,
+        sign_caller_proof: CallerProofSigner | None = None,
     ) -> SessionHandle:
         """Create the LOC payment intent for one paid-session/v1 open."""
+        if (caller_public_key is None) != (sign_caller_proof is None):
+            raise ValueError("caller_public_key and sign_caller_proof must be supplied together")
         self._ensure_telemetry_started()
         loc_request_id = request_id or str(uuid.uuid4())
         params = dict(session_params or {})
+        prepared: dict[str, Any] | None = None
+        if caller_public_key is not None:
+            prepare_response = await self._http.post(
+                "/v1/sessions/prepare",
+                headers={"Idempotency-Key": f"{loc_request_id}:prepare"},
+                json={
+                    "capability": capability,
+                    "offering": offering,
+                    "descriptor_schema": descriptor_schema,
+                },
+            )
+            prepared = self._unwrap(prepare_response)
+            session_open_body = _encode_json(
+                {
+                    "gateway_session_id": prepared["gateway_session_id"],
+                    "session_params": params,
+                }
+            )
+        else:
+            session_open_body = b""
+        open_body: dict[str, Any] = {
+            "capability": capability,
+            "offering": offering,
+            "descriptor_schema": descriptor_schema,
+            "session_params": params,
+            "estimated_runway_units": estimated_runway_units,
+            "max_total_units": max_total_units,
+        }
+        if prepared is not None:
+            open_body.update(
+                {
+                    "gateway_session_id": prepared["gateway_session_id"],
+                    "preparation_token": prepared["preparation_token"],
+                    "route_binding": prepared["route_binding"],
+                    "workload_request_digest": hashlib.sha256(session_open_body).hexdigest(),
+                    "caller_public_key": caller_public_key,
+                }
+            )
         r = await self._http.post(
             "/v1/sessions",
             headers={"Idempotency-Key": loc_request_id},
-            json={
-                "capability": capability,
-                "offering": offering,
-                "descriptor_schema": descriptor_schema,
-                "session_params": params,
-                "estimated_runway_units": estimated_runway_units,
-                "max_total_units": max_total_units,
-            },
+            json=open_body,
         )
         data = self._unwrap(r)
         protocol = data.get("protocol")
@@ -710,6 +820,32 @@ class OpenClearinghouseClient:
         if session_axes.descriptor_schema != descriptor_schema:
             raise BrokerProtocolError(
                 "LOC response descriptor_schema does not match the requested adapter"
+            )
+        if prepared is None:
+            session_open_body = _encode_json(
+                {
+                    "gateway_session_id": data["session_id"],
+                    "session_params": params,
+                }
+            )
+        accounting_mode = data.get("accounting_mode", "legacy_ticket")
+        if accounting_mode not in {"legacy_ticket", "wholesale_account"}:
+            raise BrokerProtocolError(
+                f"LOC returned unsupported accounting mode {accounting_mode!r}",
+                code="protocol_unsupported",
+            )
+        authorization = data.get("spend_authorization")
+        proof = await _caller_proof(authorization, sign_caller_proof)
+        payment_envelope = data.get("payment_envelope")
+        if accounting_mode == "legacy_ticket" and not payment_envelope:
+            raise BrokerProtocolError(
+                "LOC returned no payment envelope for legacy accounting",
+                code="broker_protocol_error",
+            )
+        if accounting_mode == "wholesale_account" and (authorization is None or proof is None):
+            raise BrokerProtocolError(
+                "LOC returned an incomplete wholesale authorization",
+                code="broker_protocol_error",
             )
         handle = SessionHandle(
             session_id=uuid.UUID(data["session_id"]),
@@ -721,7 +857,11 @@ class OpenClearinghouseClient:
             offering=offering,
             session=session_axes,
             session_params=params,
-            payment_envelope=data["payment_envelope"],
+            payment_envelope=payment_envelope,
+            spend_authorization=authorization,
+            accounting_mode=accounting_mode,
+            caller_proof=proof,
+            session_open_body=session_open_body,
             expected_value_wei=int(data["expected_value_wei"]),
             funded_value_wei=int(data["funded_value_wei"]),
             refill_endpoint=data["refill_endpoint"],

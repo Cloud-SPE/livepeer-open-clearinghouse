@@ -27,7 +27,9 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,18 +107,20 @@ type Orchestrator struct {
 
 // JobOpenResponse mirrors POST /v1/jobs response.
 type JobOpenResponse struct {
-	JobID            string `json:"job_id"`
-	RequestID        string `json:"request_id"`
-	WorkID           string `json:"work_id"`
-	BrokerURL        string `json:"broker_url"`
-	Protocol         string `json:"protocol"`
-	Transport        string `json:"transport"`
-	WorkUnit         string `json:"work_unit"`
-	PaymentEnvelope  string `json:"payment_envelope"`
-	ExpectedValueWei Wei    `json:"expected_value_wei"`
-	FundedValueWei   Wei    `json:"funded_value_wei"`
-	SettleEndpoint   string `json:"settle_endpoint"`
-	OpenedAt         string `json:"opened_at"`
+	JobID              string `json:"job_id"`
+	RequestID          string `json:"request_id"`
+	WorkID             string `json:"work_id"`
+	BrokerURL          string `json:"broker_url"`
+	Protocol           string `json:"protocol"`
+	Transport          string `json:"transport"`
+	WorkUnit           string `json:"work_unit"`
+	PaymentEnvelope    string `json:"payment_envelope"`
+	SpendAuthorization string `json:"spend_authorization"`
+	AccountingMode     string `json:"accounting_mode"`
+	ExpectedValueWei   Wei    `json:"expected_value_wei"`
+	FundedValueWei     Wei    `json:"funded_value_wei"`
+	SettleEndpoint     string `json:"settle_endpoint"`
+	OpenedAt           string `json:"opened_at"`
 	// RouteSnapshot is the route LOC bound the job to (v2 gateways).
 	// SubmitJob reads `extra.openai.model` from it; see SubmitJobInput.Body.
 	RouteSnapshot map[string]any `json:"route_snapshot,omitempty"`
@@ -185,21 +189,25 @@ type JobResult struct {
 // broker URL + minted envelope; the caller drives the broker WS/RTMP
 // wire today.
 type SessionHandle struct {
-	SessionID        string         `json:"session_id"`
-	RequestID        string         `json:"request_id"`
-	WorkID           string         `json:"work_id"`
-	BrokerURL        string         `json:"broker_url"`
-	Protocol         string         `json:"protocol"`
-	Capability       string         `json:"-"`
-	Offering         string         `json:"-"`
-	Session          SessionAxes    `json:"session"`
-	SessionParams    map[string]any `json:"-"`
-	PaymentEnvelope  string         `json:"payment_envelope"`
-	ExpectedValueWei Wei            `json:"expected_value_wei"`
-	FundedValueWei   Wei            `json:"funded_value_wei"`
-	RefillEndpoint   string         `json:"refill_endpoint"`
-	CloseEndpoint    string         `json:"close_endpoint"`
-	OpenedAt         string         `json:"opened_at"`
+	SessionID          string         `json:"session_id"`
+	RequestID          string         `json:"request_id"`
+	WorkID             string         `json:"work_id"`
+	BrokerURL          string         `json:"broker_url"`
+	Protocol           string         `json:"protocol"`
+	Capability         string         `json:"-"`
+	Offering           string         `json:"-"`
+	Session            SessionAxes    `json:"session"`
+	SessionParams      map[string]any `json:"-"`
+	PaymentEnvelope    string         `json:"payment_envelope"`
+	SpendAuthorization string         `json:"spend_authorization"`
+	AccountingMode     string         `json:"accounting_mode"`
+	CallerProof        string         `json:"-"`
+	SessionOpenBody    []byte         `json:"-"`
+	ExpectedValueWei   Wei            `json:"expected_value_wei"`
+	FundedValueWei     Wei            `json:"funded_value_wei"`
+	RefillEndpoint     string         `json:"refill_endpoint"`
+	CloseEndpoint      string         `json:"close_endpoint"`
+	OpenedAt           string         `json:"opened_at"`
 }
 
 type SessionAxes struct {
@@ -329,12 +337,35 @@ type SubmitJobInput struct {
 	// that has no `model` key, SubmitJob fills `model` from the route
 	// LOC selected (route_snapshot.extra.openai.model) — the offering
 	// picks the model, so callers normally leave it out.
-	Body          []byte
-	ContentType   string // defaults to application/json if Body starts with {/[, else octet-stream
-	MaxTotalUnits int64  // optional; defaults to EstimatedUnits
-	RequestID     string // optional; SubmitJob generates a UUID if empty
-	Transport     string // unary (default), stream, or multipart
-	Timeout       time.Duration
+	Body            []byte
+	ContentType     string // defaults to application/json if Body starts with {/[, else octet-stream
+	MaxTotalUnits   int64  // optional; defaults to EstimatedUnits
+	RequestID       string // optional; SubmitJob generates a UUID if empty
+	Transport       string // unary (default), stream, or multipart
+	Timeout         time.Duration
+	CallerPublicKey string
+	SignCallerProof func([]byte) (string, error)
+}
+
+func signCallerAuthorization(encoded string, signer func([]byte) (string, error)) (string, error) {
+	if encoded == "" {
+		return "", nil
+	}
+	if signer == nil {
+		return "", &BrokerProtocolError{Code: "caller_proof_signer_required", Message: "LOC returned a spend authorization but no caller-proof signer was supplied"}
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return "", &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned a malformed spend authorization"}
+	}
+	proof, err := signer(raw)
+	if err != nil {
+		return "", fmt.Errorf("openclearinghouse: caller-proof signer: %w", err)
+	}
+	if proof == "" {
+		return "", &BrokerProtocolError{Code: "caller_proof_signer_failed", Message: "caller-proof signer returned an empty proof"}
+	}
+	return proof, nil
 }
 
 func normalizedTransport(transport string) string {
@@ -367,6 +398,10 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if transport == "multipart" && !strings.HasPrefix(strings.ToLower(in.ContentType), "multipart/form-data") {
 		return nil, &BrokerProtocolError{Code: "protocol_transport_mismatch", Message: "multipart transport requires multipart/form-data Content-Type"}
 	}
+	if (in.CallerPublicKey == "") != (in.SignCallerProof == nil) {
+		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof must be supplied together"}
+	}
+	digest := sha256.Sum256(in.Body)
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "request.mint_started",
 		CorrelationID: requestID,
@@ -379,10 +414,12 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	mintStarted := time.Now()
 
 	body := map[string]any{
-		"capability":      in.Capability,
-		"offering":        in.Offering,
-		"transport":       transport,
-		"estimated_units": in.EstimatedUnits,
+		"capability":              in.Capability,
+		"offering":                in.Offering,
+		"transport":               transport,
+		"estimated_units":         in.EstimatedUnits,
+		"workload_request_digest": hex.EncodeToString(digest[:]),
+		"caller_public_key":       in.CallerPublicKey,
 	}
 	if in.MaxTotalUnits > 0 {
 		body["max_total_units"] = in.MaxTotalUnits
@@ -434,7 +471,14 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 		timeout = 60 * time.Second
 	}
 	endpoint := strings.TrimRight(job.BrokerURL, "/") + "/v1/job"
-	brokerBody := injectRouteModel(in.Body, contentType, in.Capability, job.RouteSnapshot)
+	accountingMode := job.AccountingMode
+	if accountingMode == "" {
+		accountingMode = "legacy_ticket"
+	}
+	brokerBody := in.Body
+	if accountingMode == "legacy_ticket" {
+		brokerBody = injectRouteModel(in.Body, contentType, in.Capability, job.RouteSnapshot)
+	}
 
 	brokerCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -444,7 +488,27 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 	req.Header.Set("Livepeer-Capability", in.Capability)
 	req.Header.Set("Livepeer-Offering", in.Offering)
-	req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
+	if accountingMode == "wholesale_account" {
+		proof, proofErr := signCallerAuthorization(job.SpendAuthorization, in.SignCallerProof)
+		if proofErr != nil {
+			return nil, proofErr
+		}
+		if job.SpendAuthorization == "" || proof == "" {
+			return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
+		}
+		req.Header.Set("Livepeer-Authorization", job.SpendAuthorization)
+		req.Header.Set("Livepeer-Caller-Proof", proof)
+		if job.PaymentEnvelope != "" {
+			req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
+		}
+	} else if accountingMode == "legacy_ticket" {
+		if job.PaymentEnvelope == "" {
+			return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned no payment envelope for legacy accounting"}
+		}
+		req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
+	} else {
+		return nil, &BrokerProtocolError{Code: "protocol_unsupported", Message: fmt.Sprintf("LOC returned unsupported accounting mode %q", accountingMode)}
+	}
 	req.Header.Set("Livepeer-Protocol", job.Protocol)
 	req.Header.Set("Livepeer-Request-Id", job.RequestID)
 	req.Header.Set("Content-Type", contentType)
@@ -683,6 +747,8 @@ type OpenSessionInput struct {
 	EstimatedRunwayUnits int64
 	MaxTotalUnits        int64
 	RequestID            string
+	CallerPublicKey      string
+	SignCallerProof      func([]byte) (string, error)
 }
 
 // OpenSession opens a long-running session and returns the SessionHandle.
@@ -703,6 +769,27 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 	if in.RequestID == "" {
 		in.RequestID = newUUIDv4()
 	}
+	if (in.CallerPublicKey == "") != (in.SignCallerProof == nil) {
+		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof must be supplied together"}
+	}
+	type preparation struct {
+		GatewaySessionID string         `json:"gateway_session_id"`
+		RouteBinding     map[string]any `json:"route_binding"`
+		PreparationToken string         `json:"preparation_token"`
+	}
+	var prepared preparation
+	var sessionOpenBody []byte
+	if in.CallerPublicKey != "" {
+		prepareBody := map[string]any{"capability": in.Capability, "offering": in.Offering, "descriptor_schema": in.DescriptorSchema}
+		if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/prepare", prepareBody, &prepared, http.Header{"Idempotency-Key": []string{in.RequestID + ":prepare"}}); err != nil {
+			return nil, err
+		}
+		var err error
+		sessionOpenBody, err = json.Marshal(map[string]any{"gateway_session_id": prepared.GatewaySessionID, "session_params": in.SessionParams})
+		if err != nil {
+			return nil, fmt.Errorf("openclearinghouse: encode session commitment: %w", err)
+		}
+	}
 	body := map[string]any{
 		"capability":             in.Capability,
 		"offering":               in.Offering,
@@ -710,6 +797,14 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 		"session_params":         in.SessionParams,
 		"estimated_runway_units": in.EstimatedRunwayUnits,
 		"max_total_units":        in.MaxTotalUnits,
+	}
+	if in.CallerPublicKey != "" {
+		digest := sha256.Sum256(sessionOpenBody)
+		body["gateway_session_id"] = prepared.GatewaySessionID
+		body["preparation_token"] = prepared.PreparationToken
+		body["route_binding"] = prepared.RouteBinding
+		body["workload_request_digest"] = hex.EncodeToString(digest[:])
+		body["caller_public_key"] = in.CallerPublicKey
 	}
 	var out SessionHandle
 	headers := http.Header{"Idempotency-Key": []string{in.RequestID}}
@@ -722,9 +817,34 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 	if out.Session.DescriptorSchema != in.DescriptorSchema {
 		return nil, fmt.Errorf("openclearinghouse: descriptor schema mismatch")
 	}
+	if len(sessionOpenBody) == 0 {
+		var err error
+		sessionOpenBody, err = json.Marshal(map[string]any{"gateway_session_id": out.SessionID, "session_params": in.SessionParams})
+		if err != nil {
+			return nil, fmt.Errorf("openclearinghouse: encode session open: %w", err)
+		}
+	}
+	if out.AccountingMode == "" {
+		out.AccountingMode = "legacy_ticket"
+	}
+	proof, err := signCallerAuthorization(out.SpendAuthorization, in.SignCallerProof)
+	if err != nil {
+		return nil, err
+	}
+	if out.AccountingMode == "legacy_ticket" && out.PaymentEnvelope == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned no payment envelope for legacy accounting"}
+	}
+	if out.AccountingMode == "wholesale_account" && (out.SpendAuthorization == "" || proof == "") {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
+	}
+	if out.AccountingMode != "legacy_ticket" && out.AccountingMode != "wholesale_account" {
+		return nil, &BrokerProtocolError{Code: "protocol_unsupported", Message: fmt.Sprintf("LOC returned unsupported accounting mode %q", out.AccountingMode)}
+	}
 	out.Capability = in.Capability
 	out.Offering = in.Offering
 	out.SessionParams = in.SessionParams
+	out.CallerProof = proof
+	out.SessionOpenBody = sessionOpenBody
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.opened",
 		CorrelationID: out.SessionID,

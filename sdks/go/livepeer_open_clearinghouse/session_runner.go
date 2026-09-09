@@ -115,10 +115,13 @@ func (r *SessionRunner) Start(ctx context.Context) error {
 		return nil
 	}
 	r.mu.Unlock()
-	body, _ := json.Marshal(map[string]any{
-		"gateway_session_id": r.handle.SessionID,
-		"session_params":     r.handle.SessionParams,
-	})
+	body := r.handle.SessionOpenBody
+	if len(body) == 0 {
+		body, _ = json.Marshal(map[string]any{
+			"gateway_session_id": r.handle.SessionID,
+			"session_params":     r.handle.SessionParams,
+		})
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(r.handle.BrokerURL, "/")+"/v1/session", bytes.NewReader(body))
 	if err != nil {
@@ -129,7 +132,21 @@ func (r *SessionRunner) Start(ctx context.Context) error {
 	req.Header.Set("Livepeer-Capability", r.handle.Capability)
 	req.Header.Set("Livepeer-Offering", r.handle.Offering)
 	req.Header.Set("Livepeer-Request-Id", r.handle.RequestID)
-	req.Header.Set("Livepeer-Payment", r.handle.PaymentEnvelope)
+	if r.handle.AccountingMode == "wholesale_account" {
+		if r.handle.SpendAuthorization == "" || r.handle.CallerProof == "" {
+			return fmt.Errorf("openclearinghouse: wholesale session is missing authorization headers")
+		}
+		req.Header.Set("Livepeer-Authorization", r.handle.SpendAuthorization)
+		req.Header.Set("Livepeer-Caller-Proof", r.handle.CallerProof)
+		if r.handle.PaymentEnvelope != "" {
+			req.Header.Set("Livepeer-Payment", r.handle.PaymentEnvelope)
+		}
+	} else {
+		if r.handle.PaymentEnvelope == "" {
+			return fmt.Errorf("openclearinghouse: legacy session is missing Livepeer-Payment")
+		}
+		req.Header.Set("Livepeer-Payment", r.handle.PaymentEnvelope)
+	}
 	res, err := r.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("openclearinghouse: broker session-open: %w", err)
