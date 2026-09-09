@@ -137,6 +137,9 @@ migrate-create: ## Create a new Alembic revision (usage: make migrate-create m="
 migrate-rehearse: ## Restore/audit/migrate a v1 dump (requires SOURCE_DATABASE_URL + ARTIFACT_DIR)
 	./infra/scripts/rehearse-v1-postgres-migration.sh
 
+migrate-wholesale-rehearse: ## Rehearse the disabled wholesale migration from 0024
+	./infra/scripts/rehearse-wholesale-postgres-migration.sh
+
 # ---------------------------------------------------------------------------
 # protobuf
 # ---------------------------------------------------------------------------

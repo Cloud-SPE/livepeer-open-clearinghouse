@@ -30,4 +30,7 @@ to reconstruct your reasoning.
 | 001 | [Production topology and security baseline](001-production-topology.md) | accepted | LOC operator | Single-process v2 launch unit, private dependencies, durable payer state |
 | 002 | [Fair wholesale credit accounts](002-fair-wholesale-credit-accounts.md) | accepted | LOC + Modules | Target contract pinned to Modules `913cf7d`; implementation tracked by `loc-1zq` |
 
+The operator procedure for design 002 is
+[`wholesale-rollout.md`](../references/wholesale-rollout.md).
+
 (more entries appear here as we accumulate decisions)
