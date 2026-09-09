@@ -1012,6 +1012,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Session Endpoint
+         * @description Issue LOC's route-locked session ID before exact-body hashing.
+         */
+        post: operations["prepare_session_endpoint_v1_sessions_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -1947,6 +1967,10 @@ export interface components {
             estimated_runway_units: number;
             /** Max Total Units */
             max_total_units: number;
+            /** Gateway Session Id */
+            gateway_session_id?: string | null;
+            /** Preparation Token */
+            preparation_token?: string | null;
             route_binding?: components["schemas"]["RouteBinding"] | null;
             /** Workload Request Digest */
             workload_request_digest?: string | null;
@@ -2525,6 +2549,34 @@ export interface components {
             fired_at: string;
             /** Dismissed At */
             dismissed_at: string | null;
+        };
+        /** PrepareSessionRequest */
+        PrepareSessionRequest: {
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Descriptor Schema */
+            descriptor_schema: string;
+            route_binding?: components["schemas"]["RouteBinding"] | null;
+        };
+        /** PrepareSessionResponse */
+        PrepareSessionResponse: {
+            /**
+             * Gateway Session Id
+             * Format: uuid
+             */
+            gateway_session_id: string;
+            route_binding: components["schemas"]["RouteBinding"];
+            /** Broker Url */
+            broker_url: string;
+            /** Preparation Token */
+            preparation_token: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
         };
         /**
          * RefillSessionRequest
@@ -5647,6 +5699,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_session_endpoint_v1_sessions_prepare_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-API-Key"?: string | null;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrepareSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrepareSessionResponse"];
                 };
             };
             /** @description Validation Error */

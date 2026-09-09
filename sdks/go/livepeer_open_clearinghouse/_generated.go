@@ -783,8 +783,10 @@ type CreateSessionRequest struct {
 	Capability            string                  `json:"capability"`
 	DescriptorSchema      string                  `json:"descriptor_schema"`
 	EstimatedRunwayUnits  int                     `json:"estimated_runway_units"`
+	GatewaySessionId      *openapi_types.UUID     `json:"gateway_session_id,omitempty"`
 	MaxTotalUnits         int                     `json:"max_total_units"`
 	Offering              string                  `json:"offering"`
+	PreparationToken      *string                 `json:"preparation_token,omitempty"`
 	RouteBinding          *RouteBinding           `json:"route_binding,omitempty"`
 	SessionParams         *map[string]interface{} `json:"session_params,omitempty"`
 	WorkloadRequestDigest *string                 `json:"workload_request_digest,omitempty"`
@@ -1113,6 +1115,25 @@ type PortalNotificationView struct {
 	FiredAt     time.Time              `json:"fired_at"`
 	Id          openapi_types.UUID     `json:"id"`
 	Trigger     string                 `json:"trigger"`
+}
+
+// PrepareSessionRequest defines model for PrepareSessionRequest.
+type PrepareSessionRequest struct {
+	Capability       string        `json:"capability"`
+	DescriptorSchema string        `json:"descriptor_schema"`
+	Offering         string        `json:"offering"`
+	RouteBinding     *RouteBinding `json:"route_binding,omitempty"`
+}
+
+// PrepareSessionResponse defines model for PrepareSessionResponse.
+type PrepareSessionResponse struct {
+	BrokerUrl        string             `json:"broker_url"`
+	ExpiresAt        time.Time          `json:"expires_at"`
+	GatewaySessionId openapi_types.UUID `json:"gateway_session_id"`
+	PreparationToken string             `json:"preparation_token"`
+
+	// RouteBinding Compact caller-stable identity for one signed selected route.
+	RouteBinding RouteBinding `json:"route_binding"`
 }
 
 // RefillSessionRequest Inbound: “POST /v1/sessions/{id}/refill“.
@@ -2235,6 +2256,13 @@ type OpenSessionEndpointV1SessionsPostParams struct {
 	Authorization                *string `json:"authorization,omitempty"`
 }
 
+// PrepareSessionEndpointV1SessionsPreparePostParams defines parameters for PrepareSessionEndpointV1SessionsPreparePost.
+type PrepareSessionEndpointV1SessionsPreparePostParams struct {
+	IdempotencyKey string  `json:"Idempotency-Key"`
+	XAPIKey        *string `json:"X-API-Key,omitempty"`
+	Authorization  *string `json:"authorization,omitempty"`
+}
+
 // GetSessionStatusEndpointV1SessionsSessionIdGetParams defines parameters for GetSessionStatusEndpointV1SessionsSessionIdGet.
 type GetSessionStatusEndpointV1SessionsSessionIdGetParams struct {
 	XAPIKey       *string `json:"X-API-Key,omitempty"`
@@ -2343,6 +2371,9 @@ type PutWebhookConfigEndpointV1NotificationsWebhookPutJSONRequestBody = WebhookC
 
 // OpenSessionEndpointV1SessionsPostJSONRequestBody defines body for OpenSessionEndpointV1SessionsPost for application/json ContentType.
 type OpenSessionEndpointV1SessionsPostJSONRequestBody = CreateSessionRequest
+
+// PrepareSessionEndpointV1SessionsPreparePostJSONRequestBody defines body for PrepareSessionEndpointV1SessionsPreparePost for application/json ContentType.
+type PrepareSessionEndpointV1SessionsPreparePostJSONRequestBody = PrepareSessionRequest
 
 // CloseSessionEndpointV1SessionsSessionIdClosePostJSONRequestBody defines body for CloseSessionEndpointV1SessionsSessionIdClosePost for application/json ContentType.
 type CloseSessionEndpointV1SessionsSessionIdClosePostJSONRequestBody = CloseSessionRequest

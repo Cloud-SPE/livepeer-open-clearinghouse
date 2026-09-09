@@ -14,6 +14,8 @@ the state machine or repo queries.
 from __future__ import annotations
 
 import base64
+import hmac
+import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -37,6 +39,7 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     CapStatus,
     CloseSessionResponse,
     CreateSessionResponse,
+    PrepareSessionResponse,
     RefillSessionResponse,
     SessionAxesView,
     SessionStatusResponse,
@@ -412,6 +415,7 @@ async def create_session(
     accounting_mode: str = "legacy_ticket",
     customer_pricing: dict[str, Any] | None = None,
     customer_max_debit_wei: Decimal | None = None,
+    session_id: uuid.UUID | None = None,
 ) -> PaymentSession:
     """Create a new session in the ``open`` state and return it.
 
@@ -420,6 +424,7 @@ async def create_session(
     """
     now = clock.now()
     row = PaymentSession(
+        id=session_id or uuid.uuid4(),
         user_id=user_id,
         api_key_id=api_key_id,
         work_id=work_id,
@@ -457,9 +462,16 @@ async def claim_wholesale_engagement(
     sdk_identity: str | None,
     spend_period_seconds: int,
     spend_period_cap_wei: int,
+    gateway_session_id: uuid.UUID | None = None,
 ) -> PaymentSession:
     """Create and hold one wholesale engagement, or resume its exact replay."""
 
+    if gateway_session_id is not None:
+        id_owner = await db.get(PaymentSession, gateway_session_id)
+        if id_owner is not None and (
+            id_owner.user_id != user_id or id_owner.broker_request_id != broker_request_id
+        ):
+            raise InvalidSessionRequest(message="gateway_session_id is already in use")
     existing = await db.scalar(
         select(PaymentSession).where(
             PaymentSession.user_id == user_id,
@@ -517,6 +529,7 @@ async def claim_wholesale_engagement(
         accounting_mode="wholesale_account",
         customer_pricing=pricing,
         customer_max_debit_wei=max_debit_wei,
+        session_id=gateway_session_id,
     )
     await billing_service.encumber_customer_engagement(
         db,
@@ -553,6 +566,7 @@ async def claim_wholesale_engagement(
             sdk_identity=sdk_identity,
             spend_period_seconds=spend_period_seconds,
             spend_period_cap_wei=spend_period_cap_wei,
+            gateway_session_id=gateway_session_id,
         )
     return engagement
 
@@ -675,6 +689,117 @@ def _close_endpoint_for(session_id: uuid.UUID) -> str:
     return f"/v1/sessions/{session_id}/close"
 
 
+_PREPARATION_DOMAIN = b"loc-session-preparation/v1\x00"
+_PREPARATION_TTL = timedelta(minutes=5)
+
+
+def _encode_preparation(payload: dict[str, Any], settings: Settings) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signature = hmac.digest(
+        settings.session_secret.get_secret_value().encode(), _PREPARATION_DOMAIN + raw, "sha256"
+    )
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=") + "." + signature.hex()
+
+
+def _decode_preparation(token: str, settings: Settings) -> dict[str, Any]:
+    try:
+        encoded, supplied_signature = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        expected_signature = hmac.digest(
+            settings.session_secret.get_secret_value().encode(),
+            _PREPARATION_DOMAIN + raw,
+            "sha256",
+        )
+        if not hmac.compare_digest(bytes.fromhex(supplied_signature), expected_signature):
+            raise ValueError
+        payload = json.loads(raw)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise InvalidSessionRequest(message="invalid session preparation token") from exc
+    if not isinstance(payload, dict):
+        raise InvalidSessionRequest(message="invalid session preparation token")
+    return payload
+
+
+async def prepare_session(
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    capability: str,
+    offering: str,
+    descriptor_schema: str,
+    route_binding: RouteBinding | None,
+    registry: RegistryClient,
+    clock: Clock,
+    settings: Settings,
+) -> PrepareSessionResponse:
+    """Issue a route-locked session identity before body commitment."""
+
+    route = await select_bound_route(
+        registry, capability=capability, offering=offering, binding=route_binding
+    )
+    if route is None:
+        if route_binding is not None:
+            raise RouteBindingMismatch(binding=route_binding)
+        raise NoRouteAvailable(capability=capability, offering=offering)
+    if route.protocol != PAID_SESSION_PROTOCOL:
+        raise ProtocolNotSupportedForSession(protocol=route.protocol)
+    if route.session is None or route.session.descriptor_schema != descriptor_schema:
+        raise InvalidSessionRequest(message="prepared route descriptor schema changed")
+    gateway_session_id = uuid.uuid4()
+    expires_at = clock.now() + _PREPARATION_TTL
+    binding = route.binding
+    payload = {
+        "user_id": str(user_id),
+        "api_key_id": str(api_key_id),
+        "gateway_session_id": str(gateway_session_id),
+        "capability": capability,
+        "offering": offering,
+        "descriptor_schema": descriptor_schema,
+        "route_binding": binding.model_dump(mode="json"),
+        "expires_at": expires_at.isoformat(),
+    }
+    return PrepareSessionResponse(
+        gateway_session_id=gateway_session_id,
+        route_binding=binding,
+        broker_url=route.worker_url,
+        preparation_token=_encode_preparation(payload, settings),
+        expires_at=expires_at,
+    )
+
+
+def _verify_prepared_session(
+    *,
+    token: str,
+    gateway_session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    capability: str,
+    offering: str,
+    descriptor_schema: str,
+    route: SelectedRoute,
+    clock: Clock,
+    settings: Settings,
+) -> None:
+    payload = _decode_preparation(token, settings)
+    expected = {
+        "user_id": str(user_id),
+        "api_key_id": str(api_key_id),
+        "gateway_session_id": str(gateway_session_id),
+        "capability": capability,
+        "offering": offering,
+        "descriptor_schema": descriptor_schema,
+        "route_binding": route.binding.model_dump(mode="json"),
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        raise InvalidSessionRequest(message="session preparation scope changed")
+    try:
+        expires_at = datetime.fromisoformat(str(payload["expires_at"]))
+    except (KeyError, ValueError) as exc:
+        raise InvalidSessionRequest(message="invalid session preparation expiry") from exc
+    if expires_at <= clock.now():
+        raise InvalidSessionRequest(message="session preparation expired")
+
+
 async def _replenish_wholesale_account(
     db: AsyncSession,
     *,
@@ -752,6 +877,7 @@ async def _open_wholesale_session(
     sdk_identity: str | None,
     spend_period_seconds: int,
     spend_period_cap_wei: int,
+    gateway_session_id: uuid.UUID,
 ) -> CreateSessionResponse:
     """Create a cumulative-cap session and replenish only shared runway."""
 
@@ -768,6 +894,7 @@ async def _open_wholesale_session(
         sdk_identity=sdk_identity,
         spend_period_seconds=spend_period_seconds,
         spend_period_cap_wei=spend_period_cap_wei,
+        gateway_session_id=gateway_session_id,
     )
 
     now = clock.now()
@@ -848,6 +975,8 @@ async def open_session(  # noqa: PLR0912, PLR0915 — explicit open-time guards
     workload_request_digest: bytes | None = None,
     caller_public_key: bytes | None = None,
     broker_wholesale: BrokerWholesaleAccountClient | None = None,
+    gateway_session_id: uuid.UUID | None = None,
+    preparation_token: str | None = None,
 ) -> CreateSessionResponse:
     """Open a long-running session (case d) under handoff mode.
 
@@ -945,10 +1074,31 @@ async def open_session(  # noqa: PLR0912, PLR0915 — explicit open-time guards
         )
 
     if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
-        if workload_request_digest is None or caller_public_key is None:
+        if (
+            workload_request_digest is None
+            or caller_public_key is None
+            or gateway_session_id is None
+            or preparation_token is None
+            or descriptor_schema is None
+        ):
             raise InvalidSessionRequest(
-                message="wholesale route requires workload_request_digest and caller_public_key"
+                message=(
+                    "wholesale route requires a prepared gateway_session_id, preparation_token, "
+                    "workload_request_digest, and caller_public_key"
+                )
             )
+        _verify_prepared_session(
+            token=preparation_token,
+            gateway_session_id=gateway_session_id,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            capability=capability,
+            offering=offering,
+            descriptor_schema=descriptor_schema,
+            route=route,
+            clock=clock,
+            settings=settings,
+        )
         if broker_wholesale is None:
             raise DaemonUnavailable(
                 daemon="wholesale-account", reason="broker account client is unavailable"
@@ -972,6 +1122,7 @@ async def open_session(  # noqa: PLR0912, PLR0915 — explicit open-time guards
             sdk_identity=sdk_identity,
             spend_period_seconds=cfg.spend_period_seconds,
             spend_period_cap_wei=cfg.spend_period_cap_wei,
+            gateway_session_id=gateway_session_id,
         )
 
     # ---- 5. Daemon call (initial ticket sized for runway)

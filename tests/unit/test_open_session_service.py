@@ -240,6 +240,17 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
             "wholesale_max_single_funding_wei": 100,
         }
     )
+    prepared = await sessions_service.prepare_session(
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        descriptor_schema="test-runtime/v1",
+        route_binding=None,
+        registry=MockRegistryClient(routes=[route]),
+        clock=_clock(),
+        settings=settings,
+    )
 
     async def open_wholesale_session() -> sessions_service.CreateSessionResponse:
         return await sessions_service.open_session(
@@ -248,8 +259,12 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
             api_key_id=key_id,
             capability=route.capability,
             offering=route.offering,
+            descriptor_schema="test-runtime/v1",
             estimated_runway_units=2,
             max_total_units=10,
+            gateway_session_id=prepared.gateway_session_id,
+            preparation_token=prepared.preparation_token,
+            route_binding=prepared.route_binding,
             sdk_identity=None,
             registry=MockRegistryClient(routes=[route]),
             daemon=MockPaymentDaemonClient(),

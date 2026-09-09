@@ -41,9 +41,26 @@ class CreateSessionRequest(BaseModel):
     session_params: dict[str, Any] = Field(default_factory=dict)
     estimated_runway_units: int = Field(gt=0)
     max_total_units: int = Field(gt=0)
+    gateway_session_id: uuid.UUID | None = None
+    preparation_token: str | None = Field(default=None, min_length=1)
     route_binding: RouteBinding | None = None
     workload_request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     caller_public_key: str | None = Field(default=None, pattern=r"^(02|03)[0-9a-f]{64}$")
+
+
+class PrepareSessionRequest(BaseModel):
+    capability: str = Field(min_length=1)
+    offering: str = Field(min_length=1)
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    route_binding: RouteBinding | None = None
+
+
+class PrepareSessionResponse(BaseModel):
+    gateway_session_id: uuid.UUID
+    route_binding: RouteBinding
+    broker_url: str
+    preparation_token: str
+    expires_at: datetime
 
 
 class CapStatus(BaseModel):

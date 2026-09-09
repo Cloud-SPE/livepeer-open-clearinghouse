@@ -38,6 +38,8 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
     CloseSessionResponse,
     CreateSessionRequest,
     CreateSessionResponse,
+    PrepareSessionRequest,
+    PrepareSessionResponse,
     RefillSessionRequest,
     RefillSessionResponse,
     SessionStatusResponse,
@@ -49,6 +51,66 @@ from livepeer_open_clearinghouse.errors import (
 )
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
+
+
+@router.post(
+    "/prepare",
+    response_model=PrepareSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def prepare_session_endpoint(
+    body: PrepareSessionRequest,
+    pair: CurrentApiKeyDep,
+    db: SessionDep,
+    registry: RegistryDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=255),
+    ],
+) -> PrepareSessionResponse:
+    """Issue LOC's route-locked session ID before exact-body hashing."""
+
+    api_key, user = pair
+    operation = "sessions.prepare"
+    fingerprint = payments_service.create_request_fingerprint(
+        operation=operation, payload=body.model_dump(mode="json")
+    )
+    claim = await payments_service.claim_create_request(
+        db,
+        user_id=user.id,
+        api_key_id=api_key.id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        clock=clock,
+        inflight_timeout_seconds=settings.idempotency_inflight_timeout_seconds,
+    )
+    if claim.is_replay:
+        return PrepareSessionResponse.model_validate(claim.replay_payload or {})
+    response = await service.prepare_session(
+        user_id=user.id,
+        api_key_id=api_key.id,
+        capability=body.capability,
+        offering=body.offering,
+        descriptor_schema=body.descriptor_schema,
+        route_binding=body.route_binding,
+        registry=registry,
+        clock=clock,
+        settings=settings,
+    )
+    await payments_service.complete_create_request(
+        db,
+        user_id=user.id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        http_status=status.HTTP_201_CREATED,
+        response_payload=response.model_dump(mode="json"),
+        clock=clock,
+        retention_seconds=settings.idempotency_retention_seconds,
+    )
+    return response
 
 
 @router.post(
@@ -109,6 +171,8 @@ async def open_session_endpoint(
             descriptor_schema=body.descriptor_schema,
             estimated_runway_units=body.estimated_runway_units,
             max_total_units=body.max_total_units,
+            gateway_session_id=body.gateway_session_id,
+            preparation_token=body.preparation_token,
             route_binding=body.route_binding,
             sdk_identity=sdk_identity,
             registry=registry,
