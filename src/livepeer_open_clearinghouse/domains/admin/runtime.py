@@ -51,6 +51,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     SessionWithSdkView,
     UpdateOperatorRequest,
     UpdateSdkApprovalRequest,
+    WholesaleOverview,
 )
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import service as discovery_service
@@ -58,6 +59,18 @@ from livepeer_open_clearinghouse.domains.payments import service as payments_ser
 from livepeer_open_clearinghouse.settings import Settings
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+@router.get("/wholesale", response_model=WholesaleOverview)
+async def wholesale_overview_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> WholesaleOverview:
+    """Operator-only shared-account float and recovery visibility."""
+
+    return await service.wholesale_overview(db, clock=clock, settings=settings)
 
 
 @router.get("/users/pending", response_model=PendingUserList)

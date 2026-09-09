@@ -115,6 +115,7 @@ export const listFleetUsageJobs = (params = {}) =>
   api(`/usage/jobs${qs(params)}`);
 export const getUsageAttention = (params = {}) =>
   api(`/usage/attention${qs(params)}`);
+export const getWholesaleOverview = () => api("/wholesale");
 
 // --- Settlement recourse ----------------------------------------------------
 //

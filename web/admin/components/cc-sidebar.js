@@ -10,6 +10,7 @@ const ITEMS = [
   { key: "catalog", label: "Catalog", icon: "search" },
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
+  { key: "wholesale", label: "Wholesale", icon: "deposit" },
   { key: "telemetry", label: "Telemetry", icon: "activity" },
   { key: "sdk-fleet", label: "SDK fleet", icon: "shield" },
   { key: "email", label: "Email", icon: "log" },

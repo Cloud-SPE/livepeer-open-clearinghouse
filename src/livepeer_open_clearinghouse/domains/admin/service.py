@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -17,22 +18,174 @@ from livepeer_open_clearinghouse.domains.admin.repo import (
     OperatorAudit,
     SdkApproval,
 )
-from livepeer_open_clearinghouse.domains.admin.types import ResolveJobResponse
+from livepeer_open_clearinghouse.domains.admin.types import (
+    ResolveJobResponse,
+    WholesaleAccountView,
+    WholesaleFundingView,
+    WholesaleLimitsView,
+    WholesaleOverview,
+)
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.usage import service as usage_service
+from livepeer_open_clearinghouse.domains.wholesale.repo import (
+    WholesaleAccount,
+    WholesaleExposureBudget,
+    WholesaleFunding,
+)
 from livepeer_open_clearinghouse.errors import OpenClearinghouseError
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.email import EmailProvider, templates
 from livepeer_open_clearinghouse.providers.telemetry import get_logger
+from livepeer_open_clearinghouse.settings import Settings
 
 logger = get_logger(__name__)
 
 BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@livepeer-open-clearinghouse.local"
 BOOTSTRAP_OPERATOR_NAME = "Bootstrap Operator"
+WHOLESALE_STALE_AFTER_SECONDS = 5 * 60
+WHOLESALE_FUNDING_ATTENTION_AFTER_SECONDS = 5 * 60
+
+
+def _age_seconds(now: datetime, value: datetime) -> float:
+    current = now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo is not None else now
+    observed = value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
+    return max(0.0, (current - observed).total_seconds())
+
+
+async def wholesale_overview(
+    session: AsyncSession,
+    *,
+    clock: Clock,
+    settings: Settings,
+    limit: int = 100,
+) -> WholesaleOverview:
+    """Return customer-neutral wholesale exposure and recovery state."""
+
+    now = clock.now()
+    accounts = list(
+        (
+            await session.scalars(
+                select(WholesaleAccount).order_by(WholesaleAccount.observed_at.desc()).limit(limit)
+            )
+        ).all()
+    )
+    fundings = list(
+        (
+            await session.scalars(
+                select(WholesaleFunding).order_by(WholesaleFunding.created_at.desc()).limit(limit)
+            )
+        ).all()
+    )
+    budget = await session.get(WholesaleExposureBudget, "global")
+    projected = Decimal(0) if budget is None else Decimal(budget.projected_available_wei)
+    observed = Decimal(
+        await session.scalar(
+            select(func.coalesce(func.sum(WholesaleAccount.available_value_wei), 0))
+        )
+        or 0
+    )
+    aggregate_limit = Decimal(settings.wholesale_max_aggregate_available_wei)
+    limit_exceeded = settings.wholesale_accounts_enabled and projected > aggregate_limit
+    headroom = max(Decimal(0), aggregate_limit - projected)
+    stale_cutoff = (
+        now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo is not None else now
+    ) - timedelta(seconds=WHOLESALE_STALE_AFTER_SECONDS)
+    stale_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(WholesaleAccount)
+            .where(WholesaleAccount.observed_at < stale_cutoff)
+        )
+        or 0
+    )
+    pending_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(WholesaleFunding)
+            .where(WholesaleFunding.status != "acknowledged")
+        )
+        or 0
+    )
+
+    account_views: list[WholesaleAccountView] = []
+    for account in accounts:
+        age = _age_seconds(now, account.observed_at)
+        account_views.append(
+            WholesaleAccountView(
+                id=account.id,
+                chain_id=account.chain_id,
+                payer_eth_address=account.payer_eth_address,
+                payee_eth_address=account.payee_eth_address,
+                denomination=account.denomination,
+                protocol_version=account.protocol_version,
+                broker_url=account.broker_url,
+                credited_value_wei=account.credited_value_wei,
+                reserved_value_wei=account.reserved_value_wei,
+                debited_value_wei=account.debited_value_wei,
+                available_value_wei=account.available_value_wei,
+                remote_version=account.remote_version,
+                observed_at=account.observed_at,
+                age_seconds=age,
+                stale=age > WHOLESALE_STALE_AFTER_SECONDS,
+                over_per_payee_limit=(
+                    settings.wholesale_accounts_enabled
+                    and Decimal(account.available_value_wei)
+                    > Decimal(settings.wholesale_max_available_per_payee_wei)
+                ),
+            )
+        )
+
+    funding_views: list[WholesaleFundingView] = []
+    for funding in fundings:
+        age = _age_seconds(now, funding.created_at)
+        funding_views.append(
+            WholesaleFundingView(
+                id=funding.id,
+                account_id=funding.account_id,
+                mint_request_id=funding.mint_request_id,
+                correlation_id=funding.correlation_id,
+                target_available_wei=funding.target_available_wei,
+                observed_available_wei=funding.observed_available_wei,
+                requested_shortfall_wei=funding.requested_shortfall_wei,
+                minted_expected_value_wei=funding.minted_expected_value_wei,
+                credited_value_wei=funding.credited_value_wei,
+                work_id=funding.work_id,
+                account_version=funding.account_version,
+                status=funding.status,
+                has_replayable_payment=funding.payment_bytes is not None,
+                acknowledged_at=funding.acknowledged_at,
+                created_at=funding.created_at,
+                age_seconds=age,
+                needs_attention=(
+                    funding.status != "acknowledged"
+                    and age > WHOLESALE_FUNDING_ATTENTION_AFTER_SECONDS
+                ),
+            )
+        )
+
+    return WholesaleOverview(
+        generated_at=now,
+        limits=WholesaleLimitsView(
+            enabled=settings.wholesale_accounts_enabled,
+            target_available_wei=settings.wholesale_target_available_wei,
+            replenish_below_wei=settings.wholesale_replenish_below_wei,
+            max_available_per_payee_wei=settings.wholesale_max_available_per_payee_wei,
+            max_aggregate_available_wei=settings.wholesale_max_aggregate_available_wei,
+            max_single_funding_wei=settings.wholesale_max_single_funding_wei,
+        ),
+        projected_available_wei=projected,
+        observed_available_wei=observed,
+        aggregate_headroom_wei=headroom,
+        aggregate_limit_exceeded=limit_exceeded,
+        stale_accounts=stale_count,
+        pending_fundings=pending_count,
+        accounts=account_views,
+        fundings=funding_views,
+    )
 
 
 class AdminServiceError(Exception):
