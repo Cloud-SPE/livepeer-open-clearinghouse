@@ -319,7 +319,12 @@ def _verify_session_diagnostics(
         raise SettlementVerificationError(
             "termination_reason_invalid", "signed termination reason is not a safe code"
         )
-    if output_state is not None and output_state not in {"waiting", "producing", "stalled"}:
+    if output_state is not None and output_state not in {
+        "unknown",
+        "waiting",
+        "producing",
+        "stalled",
+    }:
         raise SettlementVerificationError(
             "output_state_invalid", "signed output state is not recognized"
         )

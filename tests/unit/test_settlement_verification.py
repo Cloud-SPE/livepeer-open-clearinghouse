@@ -388,6 +388,20 @@ def test_valid_session_settlement_binds_gateway_identity_and_signed_charge() -> 
 
 
 @pytest.mark.unit
+def test_session_settlement_accepts_unknown_output_state_from_legacy_runner() -> None:
+    verified = verify_session_settlement(
+        signed_session_settlement(
+            gateway_session_id="11111111-1111-1111-1111-111111111111",
+            breakdown={"output_state": "unknown"},
+        ),
+        settlement_keys=[delegated_key()],
+        expected=_session_expected(),
+    )
+
+    assert verified.output_state == "unknown"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("breakdown", "code"),
     [
