@@ -1455,7 +1455,7 @@ export interface paths {
         };
         /**
          * Admin Usage Attention
-         * @description What an operator should look at: jobs still holding funds, and refused settlements.
+         * @description Surface unresolved accounting and suspicious session outcomes for operators.
          */
         get: operations["admin_usage_attention_v1_admin_usage_attention_get"];
         put?: never;
@@ -1574,6 +1574,10 @@ export interface components {
             unresolved: number;
             /** Settlement Failures 24H */
             settlement_failures_24h: number;
+            /** Zero Output Sessions */
+            zero_output_sessions: number;
+            /** Unterminated Sessions */
+            unterminated_sessions: number;
         };
         /** AuditEntryList */
         AuditEntryList: {
@@ -1820,6 +1824,10 @@ export interface components {
             /** Max Total Units */
             max_total_units?: number | null;
             route_binding?: components["schemas"]["RouteBinding"] | null;
+            /** Workload Request Digest */
+            workload_request_digest?: string | null;
+            /** Caller Public Key */
+            caller_public_key?: string | null;
         };
         /**
          * CreateJobResponse
@@ -1854,7 +1862,15 @@ export interface components {
             work_unit: string;
             route_snapshot: components["schemas"]["RouteSnapshot"];
             /** Payment Envelope */
-            payment_envelope: string;
+            payment_envelope?: string | null;
+            /** Spend Authorization */
+            spend_authorization?: string | null;
+            /**
+             * Accounting Mode
+             * @default legacy_ticket
+             * @enum {string}
+             */
+            accounting_mode: "legacy_ticket" | "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
@@ -1932,6 +1948,10 @@ export interface components {
             /** Max Total Units */
             max_total_units: number;
             route_binding?: components["schemas"]["RouteBinding"] | null;
+            /** Workload Request Digest */
+            workload_request_digest?: string | null;
+            /** Caller Public Key */
+            caller_public_key?: string | null;
         };
         /**
          * CreateSessionResponse
@@ -1966,7 +1986,15 @@ export interface components {
             session: components["schemas"]["SessionAxesView"];
             route_snapshot: components["schemas"]["RouteSnapshot"];
             /** Payment Envelope */
-            payment_envelope: string;
+            payment_envelope?: string | null;
+            /** Spend Authorization */
+            spend_authorization?: string | null;
+            /**
+             * Accounting Mode
+             * @default legacy_ticket
+             * @enum {string}
+             */
+            accounting_mode: "legacy_ticket" | "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
@@ -2238,6 +2266,8 @@ export interface components {
             reason: string;
             /** Related Payment Id */
             related_payment_id: string | null;
+            /** Related Engagement Id */
+            related_engagement_id?: string | null;
             /** Related Topup Id */
             related_topup_id: string | null;
             /**
@@ -2509,6 +2539,10 @@ export interface components {
         RefillSessionRequest: {
             /** Observed Consumed Units */
             observed_consumed_units?: number | null;
+            /** Max Total Units */
+            max_total_units?: number | null;
+            /** Workload Request Digest */
+            workload_request_digest?: string | null;
             /** Rebind From */
             rebind_from?: string | null;
             /** Replaces Request Id */
@@ -2531,7 +2565,15 @@ export interface components {
             /** Refill Seq */
             refill_seq: number;
             /** Payment Envelope */
-            payment_envelope: string;
+            payment_envelope?: string | null;
+            /** Spend Authorization */
+            spend_authorization?: string | null;
+            /**
+             * Accounting Mode
+             * @default legacy_ticket
+             * @enum {string}
+             */
+            accounting_mode: "legacy_ticket" | "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
@@ -3240,6 +3282,44 @@ export interface components {
             /** Reported Units */
             reported_units?: number | null;
         };
+        /** UnterminatedSession */
+        UnterminatedSession: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** User Email */
+            user_email: string | null;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Broker Session Id */
+            broker_session_id: string | null;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /**
+             * Last Funded At
+             * Format: date-time
+             */
+            last_funded_at: string;
+            /**
+             * Attention After
+             * Format: date-time
+             */
+            attention_after: string;
+            /** Overdue Seconds */
+            overdue_seconds: number;
+        };
         /**
          * UpdateNotificationPrefRequest
          * @description Inbound: ``PUT /v1/notifications/config``. One row at a time.
@@ -3279,6 +3359,10 @@ export interface components {
             unresolved: components["schemas"]["UnresolvedJob"][];
             /** Settlement Failures */
             settlement_failures: components["schemas"]["SettlementFailure"][];
+            /** Zero Output Sessions */
+            zero_output_sessions: components["schemas"]["ZeroOutputSession"][];
+            /** Unterminated Sessions */
+            unterminated_sessions: components["schemas"]["UnterminatedSession"][];
         };
         /** UsageJobPage */
         UsageJobPage: {
@@ -3573,6 +3657,34 @@ export interface components {
             package?: string | null;
             /** Fixtures */
             fixtures: string;
+        };
+        /** ZeroOutputSession */
+        ZeroOutputSession: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** User Email */
+            user_email: string | null;
+            /** Capability */
+            capability: string;
+            /** Offering */
+            offering: string;
+            /** Broker Session Id */
+            broker_session_id: string | null;
+            /** Duration Seconds */
+            duration_seconds: number;
+            /**
+             * Closed At
+             * Format: date-time
+             */
+            closed_at: string;
         };
     };
     responses: never;
@@ -6270,6 +6382,7 @@ export interface operations {
         parameters: {
             query?: {
                 stale_after_seconds?: number;
+                session_attention_after_seconds?: number;
             };
             header?: {
                 authorization?: string | null;

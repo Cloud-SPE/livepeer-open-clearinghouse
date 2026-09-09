@@ -362,7 +362,12 @@ def plan_account_shortfall(
         raise WholesaleFundingPolicyError(
             "aggregate available value cannot be below the observed account"
         )
-    shortfall = max(Decimal(0), limits.target_available_wei - observation.available_value_wei)
+    should_replenish = observation.available_value_wei < limits.replenish_below_wei
+    shortfall = (
+        max(Decimal(0), limits.target_available_wei - observation.available_value_wei)
+        if should_replenish
+        else Decimal(0)
+    )
     projected_payee = observation.available_value_wei + shortfall
     projected_aggregate = aggregate_available_wei + shortfall
     if shortfall == 0:

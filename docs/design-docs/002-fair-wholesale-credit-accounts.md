@@ -170,7 +170,10 @@ target float = active reserved runway + configured safety buffer
 shortfall    = max(0, target float - available wholesale credit)
 ```
 
-LOC requests funding only for the bounded shortfall. If replenishment is
+LOC evaluates that shortfall only after available credit falls below the
+operator-configured `WHOLESALE_REPLENISH_BELOW_WEI` low-water mark; values
+between the low-water mark and target remain reusable residual credit and do
+not trigger a mint. LOC requests funding only for the bounded shortfall. If replenishment is
 unavailable, the broker may work only within already authorized and funded
 runway and must wind down without extending involuntary credit. Increasing an
 extensible session's cumulative cap requires a new idempotent authorization

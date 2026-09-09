@@ -183,6 +183,14 @@ async def admin_usage_attention(
     db: SessionDep,
     clock: ClockDep,
     stale_after_seconds: int = Query(service.DEFAULT_STALE_AFTER_SECONDS, ge=60),
+    session_attention_after_seconds: int = Query(
+        service.DEFAULT_SESSION_ATTENTION_AFTER_SECONDS, ge=60
+    ),
 ) -> UsageAttention:
-    """What an operator should look at: jobs still holding funds, and refused settlements."""
-    return await service.attention(db, clock=clock, stale_after_seconds=stale_after_seconds)
+    """Surface unresolved accounting and suspicious session outcomes for operators."""
+    return await service.attention(
+        db,
+        clock=clock,
+        stale_after_seconds=stale_after_seconds,
+        session_attention_after_seconds=session_attention_after_seconds,
+    )

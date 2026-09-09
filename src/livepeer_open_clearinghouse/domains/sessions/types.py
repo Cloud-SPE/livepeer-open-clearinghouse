@@ -84,6 +84,11 @@ class RefillSessionRequest(BaseModel):
 
     observed_consumed_units: int | None = Field(default=None, ge=0)
 
+    # Wholesale extensible sessions use refill as an idempotent cumulative-cap
+    # revision, never as authority to mint the per-session maximum.
+    max_total_units: int | None = Field(default=None, gt=0)
+    workload_request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
     # Present only after the broker returned `recipient_rotated` for a
     # previously issued LOC response. Both fields bind the rejected payment
     # before LOC evicts payer state and mints a successor.

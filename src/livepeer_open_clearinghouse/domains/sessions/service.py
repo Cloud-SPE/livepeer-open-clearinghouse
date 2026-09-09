@@ -43,7 +43,10 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
 )
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
-from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
+from livepeer_open_clearinghouse.domains.wholesale.types import (
+    WholesaleFundingLimits,
+    WholesaleFundingPlan,
+)
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
@@ -74,6 +77,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     RegistryClient,
     RouteBinding,
+    RouteSnapshot,
     SelectedRoute,
     SessionAxes,
     select_bound_route,
@@ -270,7 +274,7 @@ async def record_spend_authorization_grant(
     expected_session_id = str(engagement_id) if request.protocol == PAID_SESSION_PROTOCOL else ""
     if request.session_id != expected_session_id:
         raise InvalidSessionRequest(message="authorization session identity changed")
-    if engagement.broker_request_id != request.request_id:
+    if request.revision == 0 and engagement.broker_request_id != request.request_id:
         raise InvalidSessionRequest(message="authorization request identity changed")
 
     existing = await db.scalar(
@@ -669,6 +673,63 @@ def _close_endpoint_for(session_id: uuid.UUID) -> str:
     return f"/v1/sessions/{session_id}/close"
 
 
+async def _replenish_wholesale_account(
+    db: AsyncSession,
+    *,
+    route: SelectedRoute,
+    payer_eth_address: str,
+    mint_request_id: str,
+    correlation_id: str,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+) -> WholesaleFundingPlan:
+    """Bring one shared account to target only after its low-water threshold."""
+
+    observation = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer_eth_address,
+        payee_eth_address=route.eth_address,
+        chain_id=settings.wholesale_chain_id,
+    )
+    limits = WholesaleFundingLimits(
+        target_available_wei=Decimal(settings.wholesale_target_available_wei),
+        replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
+        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
+        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
+        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
+    )
+    plan = await wholesale_service.plan_observed_account_shortfall(
+        db,
+        observation=observation,
+        limits=limits,
+    )
+    funding = await wholesale_service.claim_account_funding(
+        db,
+        route=route,
+        observation=observation,
+        plan=plan,
+        limits=limits,
+        mint_request_id=mint_request_id,
+        correlation_id=correlation_id,
+        protocol_version="wholesale-account/1.0.0-draft",
+    )
+    await wholesale_service.complete_account_funding(
+        db,
+        funding=funding,
+        route=route,
+        observation=observation,
+        plan=plan,
+        payer_eth_address=payer_eth_address,
+        chain_id=settings.wholesale_chain_id,
+        broker=broker,
+        daemon=daemon,
+        acknowledged_at=clock.now(),
+    )
+    return plan
+
+
 async def _open_wholesale_session(
     db: AsyncSession,
     *,
@@ -734,45 +795,16 @@ async def _open_wholesale_session(
     await db.commit()
 
     payer = "0x" + auth_response.payer.hex()
-    observation = await broker.get_wholesale_account(
-        broker_url=route.worker_url,
-        payer_eth_address=payer,
-        payee_eth_address=route.eth_address,
-        chain_id=settings.wholesale_chain_id,
-    )
-    limits = WholesaleFundingLimits(
-        target_available_wei=Decimal(settings.wholesale_target_available_wei),
-        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
-        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
-        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
-    )
-    plan = await wholesale_service.plan_observed_account_shortfall(
-        db,
-        observation=observation,
-        limits=limits,
-    )
-    mint_id = f"loc-account:{request_id}"
-    funding = await wholesale_service.claim_account_funding(
+    plan = await _replenish_wholesale_account(
         db,
         route=route,
-        observation=observation,
-        plan=plan,
-        limits=limits,
-        mint_request_id=mint_id,
+        payer_eth_address=payer,
+        mint_request_id=f"loc-account:{request_id}",
         correlation_id=str(session_row.id),
-        protocol_version="wholesale-account/1.0.0-draft",
-    )
-    await wholesale_service.complete_account_funding(
-        db,
-        funding=funding,
-        route=route,
-        observation=observation,
-        plan=plan,
-        payer_eth_address=payer,
-        chain_id=settings.wholesale_chain_id,
         broker=broker,
         daemon=daemon,
-        acknowledged_at=clock.now(),
+        clock=clock,
+        settings=settings,
     )
 
     return CreateSessionResponse(
@@ -1305,7 +1337,177 @@ def _resolve_refill_work_id(
     return current_work_id, None
 
 
-async def refill_session(
+def _route_from_persisted_snapshot(session_row: PaymentSession) -> SelectedRoute:
+    """Rehydrate the typed route without consulting mutable discovery state."""
+
+    snapshot = RouteSnapshot.model_validate(session_row.route_snapshot)
+    return SelectedRoute(
+        worker_url=snapshot.broker_url,
+        eth_address=snapshot.eth_address,
+        capability=snapshot.capability,
+        offering=snapshot.offering,
+        price_per_work_unit_wei=snapshot.price_per_work_unit_wei,
+        work_unit=snapshot.work_unit,
+        units_per_price=snapshot.units_per_price,
+        quote_id=snapshot.quote_id,
+        quote_version=snapshot.quote_version,
+        constraint_fingerprint=bytes.fromhex(snapshot.constraint_fingerprint),
+        route_fingerprint=bytes.fromhex(snapshot.route_fingerprint),
+        protocol=snapshot.protocol,
+        settlement_keys=snapshot.settlement_keys,
+        work_unit_estimator=snapshot.work_unit_estimator,
+        extra=snapshot.extra,
+    )
+
+
+async def _refill_wholesale_session(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    user_id: uuid.UUID,
+    requested_max_total_units: int | None,
+    request_digest: bytes | None,
+    request_id: str,
+    broker: BrokerWholesaleAccountClient | None,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+    cfg: billing_service.ResolvedBillingConfig,
+) -> RefillSessionResponse:
+    """Increase one cumulative cap without minting a session-sized ticket."""
+
+    if requested_max_total_units is None or request_digest is None:
+        raise InvalidSessionRequest(
+            message=("wholesale refill requires max_total_units and workload_request_digest")
+        )
+    if broker is None:
+        raise DaemonUnavailable(
+            daemon="wholesale-account", reason="broker account client is unavailable"
+        )
+    route = _route_from_persisted_snapshot(session_row)
+    session_axes = route.session
+    if session_axes is None or session_axes.refill != "extensible":
+        raise RefillNotSupported
+
+    authorization_id = f"loc-auth:{request_id}"
+    revision_grant = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == session_row.id,
+            SpendAuthorizationGrant.authorization_id == authorization_id,
+        )
+    )
+    if revision_grant is None:
+        if requested_max_total_units <= session_row.max_total_units:
+            raise InvalidSessionRequest(
+                message="wholesale cap revision must increase max_total_units"
+            )
+        if session_row.authorization_id is None:
+            raise InvalidSessionRequest(message="wholesale session has no current authorization")
+        predecessor = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == session_row.id,
+                SpendAuthorizationGrant.authorization_id == session_row.authorization_id,
+            )
+        )
+        if predecessor is None:
+            raise InvalidSessionRequest(message="authorization predecessor is unavailable")
+        new_wholesale_cap = _bill_value_wei(
+            units=requested_max_total_units,
+            amount_wei=route.price_per_work_unit_wei,
+            per_units=route.units_per_price,
+        )
+        if session_row.customer_pricing is None or session_row.customer_max_debit_wei is None:
+            raise InvalidSessionRequest(message="wholesale customer pricing is unavailable")
+        pricing = CustomerPricingSnapshot.model_validate(session_row.customer_pricing)
+        new_customer_cap = billing_service.calculate_customer_charge(
+            pricing,
+            actual_units=requested_max_total_units,
+            wholesale_debit_wei=new_wholesale_cap,
+        )
+        incremental_hold = new_customer_cap - session_row.customer_max_debit_wei
+        if incremental_hold <= 0:
+            raise InvalidSessionRequest(message="cap revision did not increase customer exposure")
+        next_revision = predecessor.revision + 1
+        await billing_service.increase_customer_engagement_cap(
+            db,
+            user_id=user_id,
+            engagement_id=session_row.id,
+            revision=next_revision,
+            amount_wei=incremental_hold,
+            clock=clock,
+            period_seconds=cfg.spend_period_seconds,
+            cap_wei=cfg.spend_period_cap_wei,
+        )
+        now = clock.now()
+        auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+            daemon=daemon,
+            route=route,
+            authorization_id=authorization_id,
+            request_id=request_id,
+            session_id=str(session_row.id),
+            request_digest=request_digest,
+            caller_public_key=bytes.fromhex(predecessor.caller_public_key),
+            max_debit_wei=new_wholesale_cap,
+            max_total_units=requested_max_total_units,
+            not_before=now,
+            expires_at=now + timedelta(minutes=5),
+            chain_id=settings.wholesale_chain_id,
+            revision=next_revision,
+            predecessor_authorization_id=predecessor.authorization_id,
+        )
+        revision_grant = await record_spend_authorization_grant(
+            db,
+            engagement_id=session_row.id,
+            user_id=user_id,
+            route=route,
+            request=auth_request,
+            response=auth_response,
+        )
+        session_row.max_total_units = requested_max_total_units
+        session_row.funded_value_wei = new_wholesale_cap
+        session_row.customer_max_debit_wei = new_customer_cap
+        session_row.refill_seq = next_revision
+        await db.commit()
+    elif (
+        revision_grant.request_id != request_id
+        or revision_grant.max_total_units != requested_max_total_units
+        or revision_grant.request_digest != request_digest.hex()
+    ):
+        raise InvalidSessionRequest(message="authorization revision replay changed scope")
+
+    plan = await _replenish_wholesale_account(
+        db,
+        route=route,
+        payer_eth_address=revision_grant.payer_eth_address,
+        mint_request_id=f"loc-account:{request_id}",
+        correlation_id=str(session_row.id),
+        broker=broker,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
+    cap_status = await _compute_cap_status(
+        db,
+        session_row=session_row,
+        user_id=user_id,
+        next_mint_value_wei=Decimal(0),
+        cfg=cfg,
+        clock=clock,
+    )
+    return RefillSessionResponse(
+        work_id=revision_grant.authorization_id,
+        request_id=request_id,
+        refill_seq=revision_grant.revision,
+        payment_envelope=None,
+        spend_authorization=base64.b64encode(revision_grant.authorization_bytes).decode("ascii"),
+        accounting_mode="wholesale_account",
+        expected_value_wei=int(plan.shortfall_wei),
+        funded_value_wei=int(plan.shortfall_wei),
+        cap_status=cap_status,
+    )
+
+
+async def refill_session(  # noqa: PLR0915 — legacy and account paths share one boundary
     db: AsyncSession,
     *,
     session_id: uuid.UUID,
@@ -1318,6 +1520,9 @@ async def refill_session(
     request_id: str | None = None,
     rebind_from: str | None = None,
     replaces_request_id: str | None = None,
+    max_total_units: int | None = None,
+    workload_request_digest: bytes | None = None,
+    broker_wholesale: BrokerWholesaleAccountClient | None = None,
 ) -> RefillSessionResponse:
     """Mint a top-up bound to an existing session's work_id.
 
@@ -1363,6 +1568,22 @@ async def refill_session(
     if session_row.state != SESSION_STATE_OPEN:
         raise SessionNotOpen(current_state=session_row.state)
 
+    broker_request_id = request_id or str(uuid.uuid4())
+    if session_row.accounting_mode == "wholesale_account":
+        return await _refill_wholesale_session(
+            db,
+            session_row=session_row,
+            user_id=user_id,
+            requested_max_total_units=max_total_units,
+            request_digest=workload_request_digest,
+            request_id=broker_request_id,
+            broker=broker_wholesale,
+            daemon=daemon,
+            clock=clock,
+            settings=settings,
+            cfg=cfg,
+        )
+
     # 3. Declared-axis check — only extensible sessions refill.
     snapshot = _refill_snapshot(session_row)
 
@@ -1379,7 +1600,6 @@ async def refill_session(
         # Should never happen — open_session writes one. Defensive.
         raise SessionNotFound
 
-    broker_request_id = request_id or str(uuid.uuid4())
     replaced_payment = await _prepare_rotation(
         db,
         session_row=session_row,
@@ -1716,10 +1936,14 @@ async def _verify_close_settlement(
     authorization_id: str | None = None
     authorized_value_wei: int | None = None
     if session_row.accounting_mode == "wholesale_account":
+        payload = settlement.get("payload")
+        authorization_hint = payload.get("authorization_id") if isinstance(payload, dict) else None
+        if not isinstance(authorization_hint, str) or not authorization_hint:
+            raise SessionSettlementVerificationFailed(reason="missing_authorization")
         grant = await db.scalar(
             select(SpendAuthorizationGrant).where(
                 SpendAuthorizationGrant.session_id == session_row.id,
-                SpendAuthorizationGrant.authorization_id == session_row.authorization_id,
+                SpendAuthorizationGrant.authorization_id == authorization_hint,
             )
         )
         if grant is None:
@@ -1893,11 +2117,18 @@ async def close_session(  # noqa: PLR0912, PLR0915 — explicit accounting adapt
     session_row.broker_session_id = verified.broker_session_id
     session_row.last_settlement_seq = verified.settlement_seq
     if session_row.accounting_mode == "wholesale_account":
-        assert session_row.authorization_id is not None
+        payload = settlement.get("payload") if settlement is not None else None
+        settled_authorization_id = (
+            payload.get("authorization_id") if isinstance(payload, dict) else None
+        )
+        if not isinstance(settled_authorization_id, str) or not settled_authorization_id:
+            raise SessionSettlementVerificationFailed(reason="missing_authorization")
+        session_row.authorization_id = settled_authorization_id
+        session_row.work_id = settled_authorization_id
         await mark_spend_authorization_settled(
             db,
             engagement_id=session_row.id,
-            authorization_id=session_row.authorization_id,
+            authorization_id=settled_authorization_id,
             clock=clock,
         )
     await db.flush()

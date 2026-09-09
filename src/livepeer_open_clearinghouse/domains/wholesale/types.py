@@ -13,12 +13,15 @@ class WholesaleFundingLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     target_available_wei: Decimal = Field(gt=0)
+    replenish_below_wei: Decimal = Field(gt=0)
     max_available_per_payee_wei: Decimal = Field(gt=0)
     max_aggregate_available_wei: Decimal = Field(gt=0)
     max_single_funding_wei: Decimal = Field(gt=0)
 
     @model_validator(mode="after")
     def target_fits_hard_limits(self) -> WholesaleFundingLimits:
+        if self.replenish_below_wei > self.target_available_wei:
+            raise ValueError("replenish_below_wei exceeds target_available_wei")
         if self.target_available_wei > self.max_available_per_payee_wei:
             raise ValueError("target_available_wei exceeds the per-payee limit")
         if self.target_available_wei > self.max_aggregate_available_wei:

@@ -163,6 +163,7 @@ def _account(*, available: int = 40) -> WholesaleAccountObservation:
 def _limits(**updates: int) -> WholesaleFundingLimits:
     values = {
         "target_available_wei": 100,
+        "replenish_below_wei": 75,
         "max_available_per_payee_wei": 120,
         "max_aggregate_available_wei": 500,
         "max_single_funding_wei": 75,
@@ -248,6 +249,16 @@ def test_shortfall_plan_mints_nothing_at_or_above_target() -> None:
         limits=_limits(),
     )
     assert plan.shortfall_wei == 0
+
+
+def test_shortfall_plan_preserves_residual_credit_above_low_water_mark() -> None:
+    plan = plan_account_shortfall(
+        observation=_account(available=75),
+        aggregate_available_wei=250,
+        limits=_limits(),
+    )
+    assert plan.shortfall_wei == 0
+    assert plan.projected_payee_available_wei == 75
 
 
 @pytest.mark.parametrize(

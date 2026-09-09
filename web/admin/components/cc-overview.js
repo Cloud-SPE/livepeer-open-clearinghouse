@@ -31,6 +31,8 @@ export class CcOverview extends LitElement {
     _usageLoading: { state: true },
     _showUnresolved: { state: true },
     _showFailures: { state: true },
+    _showZeroOutput: { state: true },
+    _showUnterminated: { state: true },
     _resolveTarget: { state: true },
   };
 
@@ -50,6 +52,8 @@ export class CcOverview extends LitElement {
     this._usageLoading = true;
     this._showUnresolved = false;
     this._showFailures = false;
+    this._showZeroOutput = false;
+    this._showUnterminated = false;
     this._resolveTarget = null;
   }
 
@@ -119,6 +123,8 @@ export class CcOverview extends LitElement {
     const counts = a?.counts || {};
     const unresolved = Number(counts.unresolved ?? (a?.unresolved?.length || 0));
     const failures = Number(counts.settlement_failures_24h ?? (a?.settlement_failures?.length || 0));
+    const zeroOutput = Number(counts.zero_output_sessions ?? (a?.zero_output_sessions?.length || 0));
+    const unterminated = Number(counts.unterminated_sessions ?? (a?.unterminated_sessions?.length || 0));
     const heldTotal = (a?.unresolved || []).reduce((n, j) => n + (toWei(j.funded_value_wei) ?? 0n), 0n);
     const loading = this._usageLoading && !a;
 
@@ -157,9 +163,35 @@ export class CcOverview extends LitElement {
             ${loading ? "Loading…" : failures > 0 ? "Broker settle calls that errored" : "No failures"}
           </div>
         </button>
+        <button
+          type="button"
+          class="metric ${zeroOutput > 0 ? "alert-warn" : "quiet"}"
+          aria-expanded=${this._showZeroOutput}
+          aria-controls="attention-zero-output"
+          @click=${() => (this._showZeroOutput = !this._showZeroOutput)}
+        >
+          <span class="chevron">${icon.chevron()}</span>
+          <div class="label">Zero-output sessions (24h)</div>
+          <div class="value num">${loading ? "…" : formatCount(zeroOutput)}</div>
+          <div class="sub">${loading ? "Loading…" : zeroOutput > 0 ? "Closed after 60s with no metered work" : "No zero-output sessions"}</div>
+        </button>
+        <button
+          type="button"
+          class="metric ${unterminated > 0 ? "alert" : "quiet"}"
+          aria-expanded=${this._showUnterminated}
+          aria-controls="attention-unterminated"
+          @click=${() => (this._showUnterminated = !this._showUnterminated)}
+        >
+          <span class="chevron">${icon.chevron()}</span>
+          <div class="label">Sessions requiring review</div>
+          <div class="value num">${loading ? "…" : formatCount(unterminated)}</div>
+          <div class="sub">${loading ? "Loading…" : unterminated > 0 ? "No terminal broker record after the review threshold" : "Nothing stuck"}</div>
+        </button>
       </div>
       ${this._showUnresolved ? this._renderUnresolvedList() : null}
       ${this._showFailures ? this._renderFailuresList() : null}
+      ${this._showZeroOutput ? this._renderZeroOutputList() : null}
+      ${this._showUnterminated ? this._renderUnterminatedList() : null}
       ${this._resolveTarget
         ? html`<cc-resolve-job
             .job=${this._resolveTarget}
@@ -266,6 +298,65 @@ export class CcOverview extends LitElement {
                 </table>
               </div>
             `}
+      </div>
+    `;
+  }
+
+  _renderZeroOutputList() {
+    const rows = this._attention?.zero_output_sessions || [];
+    return html`
+      <div class="card" id="attention-zero-output">
+        <div class="card-head"><h3>Zero-output sessions (24h)</h3></div>
+        ${rows.length === 0
+          ? html`<p class="empty">No sessions ran for at least 60 seconds and closed with zero units.</p>`
+          : html`
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>User</th><th>Capability</th><th class="num">Duration</th><th>Closed</th><th>Broker session</th></tr></thead>
+                  <tbody>
+                    ${rows.map((s) => html`
+                      <tr>
+                        <td title=${s.user_id}>${s.user_email || html`<span class="mono small">${s.user_id}</span>`}</td>
+                        <td><span class="cap-path">${s.capability}<span class="off">/${s.offering}</span></span></td>
+                        <td class="num warn-text">${formatDuration(s.duration_seconds)}</td>
+                        <td class="nowrap" title=${s.closed_at}>${formatDateTime(s.closed_at)}</td>
+                        <td class="mono small truncate" title=${s.broker_session_id || ""}>${s.broker_session_id || "—"}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>`}
+      </div>
+    `;
+  }
+
+  _renderUnterminatedList() {
+    const rows = this._attention?.unterminated_sessions || [];
+    return html`
+      <div class="card" id="attention-unterminated">
+        <div class="card-head">
+          <h3>Sessions requiring review</h3>
+          <span class="muted small">time alone never releases the customer hold</span>
+        </div>
+        ${rows.length === 0
+          ? html`<p class="empty">No sessions are beyond the operator review threshold.</p>`
+          : html`
+              <div class="table-scroll">
+                <table>
+                  <thead><tr><th>User</th><th>Capability</th><th class="num">Overdue</th><th>Last funded</th><th>Broker session</th></tr></thead>
+                  <tbody>
+                    ${rows.map((s) => html`
+                      <tr>
+                        <td title=${s.user_id}>${s.user_email || html`<span class="mono small">${s.user_id}</span>`}</td>
+                        <td><span class="cap-path">${s.capability}<span class="off">/${s.offering}</span></span></td>
+                        <td class="num danger-text">${formatDuration(s.overdue_seconds)}</td>
+                        <td class="nowrap" title=${s.last_funded_at}>${formatDateTime(s.last_funded_at)}</td>
+                        <td class="mono small truncate" title=${s.broker_session_id || ""}>${s.broker_session_id || "—"}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>`}
       </div>
     `;
   }

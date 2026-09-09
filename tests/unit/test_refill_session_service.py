@@ -353,6 +353,7 @@ async def test_refill_endpoint_replays_one_payer_mint_and_accounting_mutation(
         daemon=daemon,
         clock=_clock(),
         settings=_settings(),
+        broker_wholesale=None,
         idempotency_key="stable-refill-1",
     )
     await db_session.commit()
@@ -364,6 +365,7 @@ async def test_refill_endpoint_replays_one_payer_mint_and_accounting_mutation(
         daemon=daemon,
         clock=_clock(),
         settings=_settings(),
+        broker_wholesale=None,
         idempotency_key="stable-refill-1",
     )
 
@@ -403,6 +405,7 @@ async def test_proactive_rotation_rebinds_once_and_replays_idempotently(
         "daemon": daemon,
         "clock": _clock(),
         "settings": _settings(),
+        "broker_wholesale": None,
         "idempotency_key": "proactive-rotation",
     }
 
@@ -516,6 +519,7 @@ async def test_refill_endpoint_rejects_changed_payload_under_same_key(
         "daemon": daemon,
         "clock": _clock(),
         "settings": _settings(),
+        "broker_wholesale": None,
         "idempotency_key": "stable-refill-2",
     }
 
@@ -555,6 +559,7 @@ async def test_refill_endpoint_recovers_lost_completed_payer_response_with_same_
         "daemon": daemon,
         "clock": clock,
         "settings": settings,
+        "broker_wholesale": None,
         "idempotency_key": "lost-refill-response",
     }
 
@@ -800,6 +805,7 @@ async def test_rotation_recovery_replays_after_lost_payer_response(
         "daemon": daemon,
         "clock": clock,
         "settings": settings,
+        "broker_wholesale": None,
         "idempotency_key": "rotation-after-lost-response",
     }
 
@@ -844,6 +850,7 @@ async def test_refill_endpoint_keeps_incomplete_payer_reservation_as_tombstone(
         "daemon": daemon,
         "clock": _clock(),
         "settings": _settings(),
+        "broker_wholesale": None,
         "idempotency_key": "incomplete-refill",
     }
 
@@ -896,6 +903,7 @@ async def test_concurrent_refill_requests_mint_and_account_once(tmp_path: Path) 
                     daemon=daemon,
                     clock=_clock(),
                     settings=_settings(),
+                    broker_wholesale=None,
                     idempotency_key="concurrent-refill",
                 )
                 await db.commit()

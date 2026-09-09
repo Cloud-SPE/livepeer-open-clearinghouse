@@ -193,7 +193,7 @@ class _WholesaleBroker:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_runway(
+async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_runway(  # noqa: PLR0915
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=100_000)
@@ -210,6 +210,7 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
             "wholesale_accounts_enabled": True,
             "wholesale_chain_id": 42161,
             "wholesale_target_available_wei": 100,
+            "wholesale_replenish_below_wei": 50,
             "wholesale_max_available_per_payee_wei": 200,
             "wholesale_max_aggregate_available_wei": 500,
             "wholesale_max_single_funding_wei": 100,
@@ -261,17 +262,59 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(90_000)
-    with pytest.raises(DaemonUnavailable, match="legacy refill"):
-        await sessions_service.refill_session(
-            db_session,
-            session_id=response.session_id,
-            user_id=user_id,
-            api_key_id=key_id,
-            observed_consumed_units=None,
-            daemon=MockPaymentDaemonClient(),
-            clock=_clock(),
-            settings=_settings(),
-        )
+    revision = await sessions_service.refill_session(
+        db_session,
+        session_id=response.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=settings,
+        request_id="session-wholesale-revision-1",
+        max_total_units=20,
+        workload_request_digest=b"\x66" * 32,
+        broker_wholesale=broker,
+    )
+    assert revision.accounting_mode == "wholesale_account"
+    assert revision.payment_envelope is None
+    assert revision.spend_authorization is not None
+    assert revision.expected_value_wei == 0
+    grants = list(
+        (
+            await db_session.scalars(
+                select(SpendAuthorizationGrant).order_by(SpendAuthorizationGrant.revision)
+            )
+        ).all()
+    )
+    assert len(grants) == 2
+    assert grants[1].revision == 1
+    assert grants[1].predecessor_authorization_id == grant.authorization_id
+    assert grants[1].max_total_units == 20
+    grant = grants[1]
+    assert session.max_total_units == 20
+    assert session.customer_max_debit_wei == Decimal(20_000)
+    assert session.refill_seq == 1
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(80_000)
+    revision_replay = await sessions_service.refill_session(
+        db_session,
+        session_id=response.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=settings,
+        request_id="session-wholesale-revision-1",
+        max_total_units=20,
+        workload_request_digest=b"\x66" * 32,
+        broker_wholesale=broker,
+    )
+    assert revision_replay.spend_authorization == revision.spend_authorization
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 2
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(80_000)
     settlement = signed_session_settlement(
         gateway_session_id=str(response.session_id),
         work_id=grant.authorization_id,
@@ -283,8 +326,8 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
         per_units=1,
         work_unit="audio_second",
         authorization_id=grant.authorization_id,
-        authorized_value_wei=10_000,
-        released_value_wei=8_000,
+        authorized_value_wei=20_000,
+        released_value_wei=18_000,
         outcome="TOPPED_UP",
     )
     broker.settlement = settlement

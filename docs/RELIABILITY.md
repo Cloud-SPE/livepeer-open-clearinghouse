@@ -159,6 +159,14 @@ record's signature, first/last seen) on the row, emits one
 `server.settlement_verification_failed` event, and stops re-verifying that
 record; only a different record, or an operator, changes the outcome.
 
+Long-running sessions use the same evidence rule. The attention view flags an
+open session after two hours without a LOC-recorded successful funding event,
+but elapsed time is only an operational alarm: it does not prove that the
+broker lease ended and never releases a customer hold automatically. The view
+also reports sessions closed in the last 24 hours after at least 60 seconds
+with zero metered units, including LOC's broker session identifier, so a
+runner regression is visible even when accounting completed correctly.
+
 **Operator recourse.** `POST /v1/admin/jobs/{id}/resolve` closes an open job
 or session on an explicit operator decision: `refund_hold` releases the
 encumbrance, `accept_reported` charges the broker-reported units at the

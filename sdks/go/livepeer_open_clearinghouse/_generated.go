@@ -33,6 +33,24 @@ func (e CreateJobRequestTransport) Valid() bool {
 	}
 }
 
+// Defines values for CreateJobResponseAccountingMode.
+const (
+	CreateJobResponseAccountingModeLegacyTicket     CreateJobResponseAccountingMode = "legacy_ticket"
+	CreateJobResponseAccountingModeWholesaleAccount CreateJobResponseAccountingMode = "wholesale_account"
+)
+
+// Valid indicates whether the value is a known member of the CreateJobResponseAccountingMode enum.
+func (e CreateJobResponseAccountingMode) Valid() bool {
+	switch e {
+	case CreateJobResponseAccountingModeLegacyTicket:
+		return true
+	case CreateJobResponseAccountingModeWholesaleAccount:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateJobResponseTransport.
 const (
 	CreateJobResponseTransportMultipart CreateJobResponseTransport = "multipart"
@@ -48,6 +66,24 @@ func (e CreateJobResponseTransport) Valid() bool {
 	case CreateJobResponseTransportStream:
 		return true
 	case CreateJobResponseTransportUnary:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CreateSessionResponseAccountingMode.
+const (
+	CreateSessionResponseAccountingModeLegacyTicket     CreateSessionResponseAccountingMode = "legacy_ticket"
+	CreateSessionResponseAccountingModeWholesaleAccount CreateSessionResponseAccountingMode = "wholesale_account"
+)
+
+// Valid indicates whether the value is a known member of the CreateSessionResponseAccountingMode enum.
+func (e CreateSessionResponseAccountingMode) Valid() bool {
+	switch e {
+	case CreateSessionResponseAccountingModeLegacyTicket:
+		return true
+	case CreateSessionResponseAccountingModeWholesaleAccount:
 		return true
 	default:
 		return false
@@ -72,6 +108,24 @@ func (e JobStatusResponseAccountingOutcome) Valid() bool {
 	case JobStatusResponseAccountingOutcomeNonAdmissionAudit:
 		return true
 	case JobStatusResponseAccountingOutcomeUnresolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RefillSessionResponseAccountingMode.
+const (
+	RefillSessionResponseAccountingModeLegacyTicket     RefillSessionResponseAccountingMode = "legacy_ticket"
+	RefillSessionResponseAccountingModeWholesaleAccount RefillSessionResponseAccountingMode = "wholesale_account"
+)
+
+// Valid indicates whether the value is a known member of the RefillSessionResponseAccountingMode enum.
+func (e RefillSessionResponseAccountingMode) Valid() bool {
+	switch e {
+	case RefillSessionResponseAccountingModeLegacyTicket:
+		return true
+	case RefillSessionResponseAccountingModeWholesaleAccount:
 		return true
 	default:
 		return false
@@ -455,6 +509,8 @@ type ApprovedUserView struct {
 type AttentionCounts struct {
 	SettlementFailures24h int `json:"settlement_failures_24h"`
 	Unresolved            int `json:"unresolved"`
+	UnterminatedSessions  int `json:"unterminated_sessions"`
+	ZeroOutputSessions    int `json:"zero_output_sessions"`
 }
 
 // AuditEntryList defines model for AuditEntryList.
@@ -651,12 +707,14 @@ type CreateApiKeyResponse struct {
 // customers should pass a generous “max_total_units“ to give the
 // broker room. Refunds happen at “/settle“.
 type CreateJobRequest struct {
-	Capability     string                    `json:"capability"`
-	EstimatedUnits int                       `json:"estimated_units"`
-	MaxTotalUnits  *int                      `json:"max_total_units,omitempty"`
-	Offering       string                    `json:"offering"`
-	RouteBinding   *RouteBinding             `json:"route_binding,omitempty"`
-	Transport      CreateJobRequestTransport `json:"transport"`
+	CallerPublicKey       *string                   `json:"caller_public_key,omitempty"`
+	Capability            string                    `json:"capability"`
+	EstimatedUnits        int                       `json:"estimated_units"`
+	MaxTotalUnits         *int                      `json:"max_total_units,omitempty"`
+	Offering              string                    `json:"offering"`
+	RouteBinding          *RouteBinding             `json:"route_binding,omitempty"`
+	Transport             CreateJobRequestTransport `json:"transport"`
+	WorkloadRequestDigest *string                   `json:"workload_request_digest,omitempty"`
 }
 
 // CreateJobRequestTransport defines model for CreateJobRequest.Transport.
@@ -670,22 +728,27 @@ type CreateJobRequestTransport string
 // the broker's response (terminal headers for unary/multipart, or a
 // terminal settlement lookup when stream trailers are inaccessible).
 type CreateJobResponse struct {
-	BrokerUrl        string             `json:"broker_url"`
-	ExpectedValueWei string             `json:"expected_value_wei"`
-	FundedValueWei   string             `json:"funded_value_wei"`
-	JobId            openapi_types.UUID `json:"job_id"`
-	OpenedAt         time.Time          `json:"opened_at"`
-	PaymentEnvelope  string             `json:"payment_envelope"`
-	Protocol         string             `json:"protocol"`
-	RequestId        string             `json:"request_id"`
+	AccountingMode   *CreateJobResponseAccountingMode `json:"accounting_mode,omitempty"`
+	BrokerUrl        string                           `json:"broker_url"`
+	ExpectedValueWei string                           `json:"expected_value_wei"`
+	FundedValueWei   string                           `json:"funded_value_wei"`
+	JobId            openapi_types.UUID               `json:"job_id"`
+	OpenedAt         time.Time                        `json:"opened_at"`
+	PaymentEnvelope  *string                          `json:"payment_envelope,omitempty"`
+	Protocol         string                           `json:"protocol"`
+	RequestId        string                           `json:"request_id"`
 
 	// RouteSnapshot Immutable public route declaration used to authorize one open.
-	RouteSnapshot  RouteSnapshot              `json:"route_snapshot"`
-	SettleEndpoint string                     `json:"settle_endpoint"`
-	Transport      CreateJobResponseTransport `json:"transport"`
-	WorkId         string                     `json:"work_id"`
-	WorkUnit       string                     `json:"work_unit"`
+	RouteSnapshot      RouteSnapshot              `json:"route_snapshot"`
+	SettleEndpoint     string                     `json:"settle_endpoint"`
+	SpendAuthorization *string                    `json:"spend_authorization,omitempty"`
+	Transport          CreateJobResponseTransport `json:"transport"`
+	WorkId             string                     `json:"work_id"`
+	WorkUnit           string                     `json:"work_unit"`
 }
+
+// CreateJobResponseAccountingMode defines model for CreateJobResponse.AccountingMode.
+type CreateJobResponseAccountingMode string
 
 // CreateJobResponseTransport defines model for CreateJobResponse.Transport.
 type CreateJobResponseTransport string
@@ -716,13 +779,15 @@ type CreateSdkApprovalRequest struct {
 //
 // “max_total_units“ MUST be >= “estimated_runway_units“ and > 0.
 type CreateSessionRequest struct {
-	Capability           string                  `json:"capability"`
-	DescriptorSchema     string                  `json:"descriptor_schema"`
-	EstimatedRunwayUnits int                     `json:"estimated_runway_units"`
-	MaxTotalUnits        int                     `json:"max_total_units"`
-	Offering             string                  `json:"offering"`
-	RouteBinding         *RouteBinding           `json:"route_binding,omitempty"`
-	SessionParams        *map[string]interface{} `json:"session_params,omitempty"`
+	CallerPublicKey       *string                 `json:"caller_public_key,omitempty"`
+	Capability            string                  `json:"capability"`
+	DescriptorSchema      string                  `json:"descriptor_schema"`
+	EstimatedRunwayUnits  int                     `json:"estimated_runway_units"`
+	MaxTotalUnits         int                     `json:"max_total_units"`
+	Offering              string                  `json:"offering"`
+	RouteBinding          *RouteBinding           `json:"route_binding,omitempty"`
+	SessionParams         *map[string]interface{} `json:"session_params,omitempty"`
+	WorkloadRequestDigest *string                 `json:"workload_request_digest,omitempty"`
 }
 
 // CreateSessionResponse Outbound: “POST /v1/sessions“.
@@ -739,24 +804,29 @@ type CreateSessionRequest struct {
 // LOC-relative paths the SDK calls when it needs to refill or
 // explicitly close the session.
 type CreateSessionResponse struct {
-	BrokerUrl        string    `json:"broker_url"`
-	CloseEndpoint    string    `json:"close_endpoint"`
-	ExpectedValueWei string    `json:"expected_value_wei"`
-	FundedValueWei   string    `json:"funded_value_wei"`
-	OpenedAt         time.Time `json:"opened_at"`
-	PaymentEnvelope  string    `json:"payment_envelope"`
-	Protocol         string    `json:"protocol"`
-	RefillEndpoint   string    `json:"refill_endpoint"`
-	RequestId        string    `json:"request_id"`
+	AccountingMode   *CreateSessionResponseAccountingMode `json:"accounting_mode,omitempty"`
+	BrokerUrl        string                               `json:"broker_url"`
+	CloseEndpoint    string                               `json:"close_endpoint"`
+	ExpectedValueWei string                               `json:"expected_value_wei"`
+	FundedValueWei   string                               `json:"funded_value_wei"`
+	OpenedAt         time.Time                            `json:"opened_at"`
+	PaymentEnvelope  *string                              `json:"payment_envelope,omitempty"`
+	Protocol         string                               `json:"protocol"`
+	RefillEndpoint   string                               `json:"refill_endpoint"`
+	RequestId        string                               `json:"request_id"`
 
 	// RouteSnapshot Immutable public route declaration used to authorize one open.
 	RouteSnapshot RouteSnapshot `json:"route_snapshot"`
 
 	// Session Authoritative paid-session/v1 offering axes selected for the session.
-	Session   SessionAxesView    `json:"session"`
-	SessionId openapi_types.UUID `json:"session_id"`
-	WorkId    string             `json:"work_id"`
+	Session            SessionAxesView    `json:"session"`
+	SessionId          openapi_types.UUID `json:"session_id"`
+	SpendAuthorization *string            `json:"spend_authorization,omitempty"`
+	WorkId             string             `json:"work_id"`
 }
+
+// CreateSessionResponseAccountingMode defines model for CreateSessionResponse.AccountingMode.
+type CreateSessionResponseAccountingMode string
 
 // DayUsage defines model for DayUsage.
 type DayUsage struct {
@@ -890,12 +960,13 @@ type JobStatusResponseAccountingOutcome string
 
 // LedgerEntryView One row of the credit ledger (audit history).
 type LedgerEntryView struct {
-	CreatedAt        time.Time           `json:"created_at"`
-	DeltaWei         string              `json:"delta_wei"`
-	Id               openapi_types.UUID  `json:"id"`
-	Reason           string              `json:"reason"`
-	RelatedPaymentId *openapi_types.UUID `json:"related_payment_id"`
-	RelatedTopupId   *openapi_types.UUID `json:"related_topup_id"`
+	CreatedAt           time.Time           `json:"created_at"`
+	DeltaWei            string              `json:"delta_wei"`
+	Id                  openapi_types.UUID  `json:"id"`
+	Reason              string              `json:"reason"`
+	RelatedEngagementId *openapi_types.UUID `json:"related_engagement_id,omitempty"`
+	RelatedPaymentId    *openapi_types.UUID `json:"related_payment_id"`
+	RelatedTopupId      *openapi_types.UUID `json:"related_topup_id"`
 }
 
 // LedgerPage defines model for LedgerPage.
@@ -1052,9 +1123,11 @@ type PortalNotificationView struct {
 // view of broker progress. Signed broker settlements, supplied on
 // close/reconciliation, are authoritative for delivered work.
 type RefillSessionRequest struct {
+	MaxTotalUnits         *int    `json:"max_total_units,omitempty"`
 	ObservedConsumedUnits *int    `json:"observed_consumed_units,omitempty"`
 	RebindFrom            *string `json:"rebind_from,omitempty"`
 	ReplacesRequestId     *string `json:"replaces_request_id,omitempty"`
+	WorkloadRequestDigest *string `json:"workload_request_digest,omitempty"`
 }
 
 // RefillSessionResponse Outbound: “POST /v1/sessions/{id}/refill“ success (200).
@@ -1064,6 +1137,8 @@ type RefillSessionRequest struct {
 // paid-session HTTP top-up URL; a control WebSocket is only an optional push
 // mirror.
 type RefillSessionResponse struct {
+	AccountingMode *RefillSessionResponseAccountingMode `json:"accounting_mode,omitempty"`
+
 	// CapStatus Cap headroom snapshot returned with every successful refill.
 	//
 	// All percentages are in ``[0.0, 1.0]``. ``None`` means the cap
@@ -1079,15 +1154,19 @@ type RefillSessionResponse struct {
 	// ``will_refuse_next_refill=true``: ``"session_cap_imminent"``,
 	// ``"spend_period_cap_imminent"``, ``"user_balance_imminent"``,
 	// ``"operator_pool_cap_imminent"``. ``None`` otherwise.
-	CapStatus        CapStatus `json:"cap_status"`
-	ExpectedValueWei string    `json:"expected_value_wei"`
-	FundedValueWei   string    `json:"funded_value_wei"`
-	PaymentEnvelope  string    `json:"payment_envelope"`
-	RebindFrom       *string   `json:"rebind_from,omitempty"`
-	RefillSeq        int       `json:"refill_seq"`
-	RequestId        string    `json:"request_id"`
-	WorkId           string    `json:"work_id"`
+	CapStatus          CapStatus `json:"cap_status"`
+	ExpectedValueWei   string    `json:"expected_value_wei"`
+	FundedValueWei     string    `json:"funded_value_wei"`
+	PaymentEnvelope    *string   `json:"payment_envelope,omitempty"`
+	RebindFrom         *string   `json:"rebind_from,omitempty"`
+	RefillSeq          int       `json:"refill_seq"`
+	RequestId          string    `json:"request_id"`
+	SpendAuthorization *string   `json:"spend_authorization,omitempty"`
+	WorkId             string    `json:"work_id"`
 }
+
+// RefillSessionResponseAccountingMode defines model for RefillSessionResponse.AccountingMode.
+type RefillSessionResponseAccountingMode string
 
 // RequestPasswordResetRequest Inbound: “POST /v1/auth/password-reset/request“.
 type RequestPasswordResetRequest struct {
@@ -1533,6 +1612,20 @@ type UnresolvedJob struct {
 	UserId         openapi_types.UUID `json:"user_id"`
 }
 
+// UnterminatedSession defines model for UnterminatedSession.
+type UnterminatedSession struct {
+	AttentionAfter  time.Time          `json:"attention_after"`
+	BrokerSessionId *string            `json:"broker_session_id"`
+	Capability      string             `json:"capability"`
+	LastFundedAt    time.Time          `json:"last_funded_at"`
+	Offering        string             `json:"offering"`
+	OpenedAt        time.Time          `json:"opened_at"`
+	OverdueSeconds  float32            `json:"overdue_seconds"`
+	SessionId       openapi_types.UUID `json:"session_id"`
+	UserEmail       *string            `json:"user_email"`
+	UserId          openapi_types.UUID `json:"user_id"`
+}
+
 // UpdateNotificationPrefRequest Inbound: “PUT /v1/notifications/config“. One row at a time.
 type UpdateNotificationPrefRequest struct {
 	Channel string `json:"channel"`
@@ -1554,9 +1647,11 @@ type UpdateSdkApprovalRequest struct {
 
 // UsageAttention defines model for UsageAttention.
 type UsageAttention struct {
-	Counts             AttentionCounts     `json:"counts"`
-	SettlementFailures []SettlementFailure `json:"settlement_failures"`
-	Unresolved         []UnresolvedJob     `json:"unresolved"`
+	Counts               AttentionCounts       `json:"counts"`
+	SettlementFailures   []SettlementFailure   `json:"settlement_failures"`
+	Unresolved           []UnresolvedJob       `json:"unresolved"`
+	UnterminatedSessions []UnterminatedSession `json:"unterminated_sessions"`
+	ZeroOutputSessions   []ZeroOutputSession   `json:"zero_output_sessions"`
 }
 
 // UsageJobPage defines model for UsageJobPage.
@@ -1730,6 +1825,18 @@ type WorkUnitEstimator struct {
 	Id        string  `json:"id"`
 	Package   *string `json:"package,omitempty"`
 	Rounding  string  `json:"rounding"`
+}
+
+// ZeroOutputSession defines model for ZeroOutputSession.
+type ZeroOutputSession struct {
+	BrokerSessionId *string            `json:"broker_session_id"`
+	Capability      string             `json:"capability"`
+	ClosedAt        time.Time          `json:"closed_at"`
+	DurationSeconds float32            `json:"duration_seconds"`
+	Offering        string             `json:"offering"`
+	SessionId       openapi_types.UUID `json:"session_id"`
+	UserEmail       *string            `json:"user_email"`
+	UserId          openapi_types.UUID `json:"user_id"`
 }
 
 // MeEndpointV1AccountsMeGetParams defines parameters for MeEndpointV1AccountsMeGet.
@@ -1920,8 +2027,9 @@ type AdminPurgeUserEndpointV1AdminTelemetryUsersUserIdDeleteParams struct {
 
 // AdminUsageAttentionV1AdminUsageAttentionGetParams defines parameters for AdminUsageAttentionV1AdminUsageAttentionGet.
 type AdminUsageAttentionV1AdminUsageAttentionGetParams struct {
-	StaleAfterSeconds *int    `form:"stale_after_seconds,omitempty" json:"stale_after_seconds,omitempty"`
-	Authorization     *string `json:"authorization,omitempty"`
+	StaleAfterSeconds            *int    `form:"stale_after_seconds,omitempty" json:"stale_after_seconds,omitempty"`
+	SessionAttentionAfterSeconds *int    `form:"session_attention_after_seconds,omitempty" json:"session_attention_after_seconds,omitempty"`
+	Authorization                *string `json:"authorization,omitempty"`
 }
 
 // AdminFleetUsageJobsV1AdminUsageJobsGetParams defines parameters for AdminFleetUsageJobsV1AdminUsageJobsGet.

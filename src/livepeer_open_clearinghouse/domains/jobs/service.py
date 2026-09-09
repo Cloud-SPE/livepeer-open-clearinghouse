@@ -290,6 +290,7 @@ async def _open_wholesale_job(
     )
     limits = WholesaleFundingLimits(
         target_available_wei=Decimal(settings.wholesale_target_available_wei),
+        replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
         max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
         max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
         max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),

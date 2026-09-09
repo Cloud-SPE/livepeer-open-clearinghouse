@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from livepeer_open_clearinghouse.domains.accounts.repo import User
 from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
 from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 from livepeer_open_clearinghouse.domains.usage.types import (
     AccountingOutcome,
@@ -37,6 +37,7 @@ from livepeer_open_clearinghouse.domains.usage.types import (
     OfferingUsage,
     SettlementFailure,
     UnresolvedJob,
+    UnterminatedSession,
     UsageAttention,
     UsageJobPage,
     UsageJobView,
@@ -45,6 +46,7 @@ from livepeer_open_clearinghouse.domains.usage.types import (
     UsageSummary,
     UsageTotals,
     UserUsage,
+    ZeroOutputSession,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.settings import Settings
@@ -58,6 +60,13 @@ OPEN_STATES = (STATE_OPEN, STATE_DRAINING)
 #: the reconciler has not recovered it yet. Mirrors the default job
 #: reconciliation cadence with headroom for slow broker work.
 DEFAULT_STALE_AFTER_SECONDS = 900
+
+# Session silence is not financial evidence. After this much time without a
+# successful LOC funding event, surface the row for operator investigation but
+# retain its hold until the broker supplies a signed terminal settlement.
+DEFAULT_SESSION_ATTENTION_AFTER_SECONDS = 2 * 60 * 60
+ZERO_OUTPUT_MIN_DURATION_SECONDS = 60
+ZERO_OUTPUT_LOOKBACK_HOURS = 24
 
 SETTLEMENT_FAILURE_EVENT = "server.settlement_verification_failed"
 
@@ -508,6 +517,7 @@ async def attention(
     *,
     clock: Clock,
     stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
+    session_attention_after_seconds: int = DEFAULT_SESSION_ATTENTION_AFTER_SECONDS,
     limit: int = 100,
 ) -> UsageAttention:
     now = clock.now()
@@ -516,7 +526,11 @@ async def attention(
         (
             await db.scalars(
                 select(PaymentSession)
-                .where(PaymentSession.state.in_(OPEN_STATES), PaymentSession.opened_at < cutoff)
+                .where(
+                    PaymentSession.protocol == "paid-job/v1",
+                    PaymentSession.state.in_(OPEN_STATES),
+                    PaymentSession.opened_at < cutoff,
+                )
                 .order_by(PaymentSession.opened_at.asc())
                 .limit(limit)
             )
@@ -524,9 +538,64 @@ async def attention(
     )
     unresolved_total = await db.scalar(
         select(func.count()).where(
-            PaymentSession.state.in_(OPEN_STATES), PaymentSession.opened_at < cutoff
+            PaymentSession.protocol == "paid-job/v1",
+            PaymentSession.state.in_(OPEN_STATES),
+            PaymentSession.opened_at < cutoff,
         )
     )
+
+    zero_output_since = _naive(now - timedelta(hours=ZERO_OUTPUT_LOOKBACK_HOURS))
+    zero_output_candidates = list(
+        (
+            await db.scalars(
+                select(PaymentSession)
+                .where(
+                    PaymentSession.protocol == "paid-session/v1",
+                    PaymentSession.state == STATE_CLOSED,
+                    PaymentSession.actual_units == 0,
+                    PaymentSession.closed_at.is_not(None),
+                    PaymentSession.closed_at >= zero_output_since,
+                )
+                .order_by(PaymentSession.closed_at.desc())
+            )
+        ).all()
+    )
+    zero_output_rows = [
+        row
+        for row in zero_output_candidates
+        if row.closed_at is not None
+        and (_naive(row.closed_at) - _naive(row.opened_at)).total_seconds()
+        >= ZERO_OUTPUT_MIN_DURATION_SECONDS
+    ]
+
+    last_refill = (
+        select(
+            PaymentSettlement.session_id.label("session_id"),
+            func.max(PaymentSettlement.recorded_at).label("last_funded_at"),
+        )
+        .where(PaymentSettlement.event_type == "refill_granted")
+        .group_by(PaymentSettlement.session_id)
+        .subquery()
+    )
+    session_rows = (
+        await db.execute(
+            select(PaymentSession, last_refill.c.last_funded_at)
+            .outerjoin(last_refill, last_refill.c.session_id == PaymentSession.id)
+            .where(
+                PaymentSession.protocol == "paid-session/v1",
+                PaymentSession.state.in_(OPEN_STATES),
+            )
+            .order_by(PaymentSession.opened_at.asc())
+        )
+    ).all()
+    unterminated_candidates: list[tuple[PaymentSession, datetime, datetime]] = []
+    for row, last_refill_at in session_rows:
+        last_funded_at = last_refill_at or row.opened_at
+        attention_after = _naive(last_funded_at) + timedelta(
+            seconds=session_attention_after_seconds
+        )
+        if attention_after < _naive(now):
+            unterminated_candidates.append((row, last_funded_at, attention_after))
     failures_since = _naive(now - timedelta(hours=24))
     failure_rows = list(
         (
@@ -550,6 +619,8 @@ async def attention(
     emails = await _emails_for(
         db,
         {r.user_id for r in stale_rows}
+        | {r.user_id for r in zero_output_rows}
+        | {r.user_id for r, _, _ in unterminated_candidates}
         | {e.user_id for e in failure_rows if e.user_id is not None},
     )
     unresolved = [
@@ -580,11 +651,44 @@ async def attention(
         )
         for e in failure_rows
     ]
+    zero_output = [
+        ZeroOutputSession(
+            session_id=row.id,
+            user_id=row.user_id,
+            user_email=emails.get(row.user_id),
+            capability=row.capability,
+            offering=row.offering,
+            broker_session_id=row.broker_session_id,
+            duration_seconds=(_naive(row.closed_at) - _naive(row.opened_at)).total_seconds(),
+            closed_at=_aware(row.closed_at),
+        )
+        for row in zero_output_rows[:limit]
+        if row.closed_at is not None
+    ]
+    unterminated = [
+        UnterminatedSession(
+            session_id=row.id,
+            user_id=row.user_id,
+            user_email=emails.get(row.user_id),
+            capability=row.capability,
+            offering=row.offering,
+            broker_session_id=row.broker_session_id,
+            opened_at=_aware(row.opened_at),
+            last_funded_at=_aware(last_funded_at),
+            attention_after=_aware(attention_after),
+            overdue_seconds=(_naive(now) - attention_after).total_seconds(),
+        )
+        for row, last_funded_at, attention_after in unterminated_candidates[:limit]
+    ]
     return UsageAttention(
         counts=AttentionCounts(
             unresolved=int(unresolved_total or 0),
             settlement_failures_24h=int(failures_total or 0),
+            zero_output_sessions=len(zero_output_rows),
+            unterminated_sessions=len(unterminated_candidates),
         ),
         unresolved=unresolved,
         settlement_failures=failures,
+        zero_output_sessions=zero_output,
+        unterminated_sessions=unterminated,
     )

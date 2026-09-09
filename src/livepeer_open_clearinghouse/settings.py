@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     wholesale_accounts_enabled: bool = False
     wholesale_chain_id: int = Field(default=0, ge=0)
     wholesale_target_available_wei: int = Field(default=0, ge=0)
+    wholesale_replenish_below_wei: int = Field(default=0, ge=0)
     wholesale_max_available_per_payee_wei: int = Field(default=0, ge=0)
     wholesale_max_aggregate_available_wei: int = Field(default=0, ge=0)
     wholesale_max_single_funding_wei: int = Field(default=0, ge=0)
@@ -149,6 +150,7 @@ class Settings(BaseSettings):
             wholesale_values = (
                 self.wholesale_chain_id,
                 self.wholesale_target_available_wei,
+                self.wholesale_replenish_below_wei,
                 self.wholesale_max_available_per_payee_wei,
                 self.wholesale_max_aggregate_available_wei,
                 self.wholesale_max_single_funding_wei,
@@ -157,6 +159,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "wholesale account rollout requires positive chain and exposure limits"
                 )
+            if self.wholesale_replenish_below_wei > self.wholesale_target_available_wei:
+                raise ValueError("wholesale replenish threshold exceeds target")
             if (
                 self.wholesale_target_available_wei > self.wholesale_max_available_per_payee_wei
                 or self.wholesale_target_available_wei > self.wholesale_max_aggregate_available_wei

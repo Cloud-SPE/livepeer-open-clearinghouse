@@ -407,6 +407,50 @@ async def encumber_customer_engagement(
     )
 
 
+async def increase_customer_engagement_cap(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    revision: int,
+    amount_wei: Decimal,
+    clock: Clock,
+    period_seconds: int,
+    cap_wei: int,
+) -> CreditBalance:
+    """Idempotently hold the incremental retail exposure for one cap revision."""
+
+    if revision <= 0 or amount_wei <= 0:
+        raise ValueError("engagement cap revision and amount must be positive")
+    reason = f"engagement_cap_revision:{revision}"
+    balance = await _ensure_balance_row(session, user_id=user_id)
+    existing = await session.scalar(
+        select(CreditLedger).where(
+            CreditLedger.related_engagement_id == engagement_id,
+            CreditLedger.reason == reason,
+        )
+    )
+    if existing is not None:
+        if existing.delta_wei != -amount_wei:
+            raise ValueError("engagement cap revision replay changed amount")
+        return balance
+    await enforce_and_record_spend(
+        session,
+        user_id=user_id,
+        amount_wei=amount_wei,
+        clock=clock,
+        period_seconds=period_seconds,
+        cap_wei=cap_wei,
+    )
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=-amount_wei,
+        reason=reason,
+        related_engagement_id=engagement_id,
+    )
+
+
 async def release_customer_engagement(
     session: AsyncSession,
     *,

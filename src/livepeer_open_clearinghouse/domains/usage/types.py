@@ -153,12 +153,40 @@ class SettlementFailure(BaseModel):
     reason: str | None
 
 
+class ZeroOutputSession(BaseModel):
+    session_id: uuid.UUID
+    user_id: uuid.UUID
+    user_email: str | None
+    capability: str
+    offering: str
+    broker_session_id: str | None
+    duration_seconds: float
+    closed_at: datetime
+
+
+class UnterminatedSession(BaseModel):
+    session_id: uuid.UUID
+    user_id: uuid.UUID
+    user_email: str | None
+    capability: str
+    offering: str
+    broker_session_id: str | None
+    opened_at: datetime
+    last_funded_at: datetime
+    attention_after: datetime
+    overdue_seconds: float
+
+
 class AttentionCounts(BaseModel):
     unresolved: int
     settlement_failures_24h: int
+    zero_output_sessions: int
+    unterminated_sessions: int
 
 
 class UsageAttention(BaseModel):
     counts: AttentionCounts
     unresolved: list[UnresolvedJob]
     settlement_failures: list[SettlementFailure]
+    zero_output_sessions: list[ZeroOutputSession]
+    unterminated_sessions: list[UnterminatedSession]

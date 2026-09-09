@@ -303,6 +303,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
                 "wholesale_accounts_enabled": True,
                 "wholesale_chain_id": 42161,
                 "wholesale_target_available_wei": 100,
+                "wholesale_replenish_below_wei": 50,
                 "wholesale_max_available_per_payee_wei": 200,
                 "wholesale_max_aggregate_available_wei": 500,
                 "wholesale_max_single_funding_wei": 100,

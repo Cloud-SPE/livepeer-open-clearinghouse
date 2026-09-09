@@ -335,6 +335,29 @@ async def test_overview_reports_available_held_and_spent(db_session: AsyncSessio
 @pytest.mark.asyncio
 async def test_attention_lists_stale_jobs_and_refused_settlements(db_session: AsyncSession) -> None:
     user, key, rows = await _seed_mixed(db_session)
+    stale_job = _row(
+        user,
+        key,
+        state="open",
+        billed=None,
+        units=None,
+        closed_at=None,
+        outcome=None,
+        opened_at=NOW - timedelta(hours=1),
+    )
+    zero_output = _row(
+        user,
+        key,
+        protocol="paid-session/v1",
+        state="closed",
+        billed=0,
+        units=0,
+        opened_at=NOW - timedelta(minutes=5),
+        closed_at=NOW - timedelta(minutes=3),
+    )
+    rows[3].broker_session_id = "runner-session-stuck"
+    zero_output.broker_session_id = "runner-session-zero"
+    db_session.add_all([stale_job, zero_output])
     db_session.add(
         TelemetryEvent(
             id=uuid.uuid4(),
@@ -366,12 +389,25 @@ async def test_attention_lists_stale_jobs_and_refused_settlements(db_session: As
     )
     await db_session.flush()
 
-    view = await usage.attention(db_session, clock=_clock(), stale_after_seconds=900)
+    view = await usage.attention(
+        db_session,
+        clock=_clock(),
+        stale_after_seconds=900,
+        session_attention_after_seconds=1800,
+    )
 
     assert view.counts.unresolved == 1
-    assert view.unresolved[0].job_id == rows[3].id
+    assert view.unresolved[0].job_id == stale_job.id
     assert view.unresolved[0].user_email == user.email
     assert view.unresolved[0].age_seconds == 3600.0
+    assert view.counts.zero_output_sessions == 1
+    assert view.zero_output_sessions[0].session_id == zero_output.id
+    assert view.zero_output_sessions[0].broker_session_id == "runner-session-zero"
+    assert view.zero_output_sessions[0].duration_seconds == 120.0
+    assert view.counts.unterminated_sessions == 1
+    assert view.unterminated_sessions[0].session_id == rows[3].id
+    assert view.unterminated_sessions[0].broker_session_id == "runner-session-stuck"
+    assert view.unterminated_sessions[0].overdue_seconds == 1800.0
     assert view.counts.settlement_failures_24h == 1
     failure = view.settlement_failures[0]
     assert failure.reason == "missing_delegation"
