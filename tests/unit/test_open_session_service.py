@@ -192,7 +192,7 @@ class _WholesaleBroker:
 async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_runway(
     db_session: AsyncSession,
 ) -> None:
-    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=100_000)
     base_route = _route_for_protocol("paid-session/v1")
     route = base_route.model_copy(
         update={"extra": {**base_route.extra, "features": {"wholesale_accounts": True}}}
@@ -200,35 +200,41 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
     await db_session.commit()
 
-    response = await sessions_service.open_session(
-        db_session,
-        user_id=user_id,
-        api_key_id=key_id,
-        capability=route.capability,
-        offering=route.offering,
-        estimated_runway_units=2,
-        max_total_units=10,
-        sdk_identity=None,
-        registry=MockRegistryClient(routes=[route]),
-        daemon=MockPaymentDaemonClient(),
-        clock=_clock(),
-        settings=_settings().model_copy(
-            update={
-                "wholesale_accounts_enabled": True,
-                "wholesale_chain_id": 42161,
-                "wholesale_target_available_wei": 100,
-                "wholesale_max_available_per_payee_wei": 200,
-                "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
-            }
-        ),
-        request_id="session-wholesale-1",
-        workload_request_digest=b"\x55" * 32,
-        caller_public_key=bytes.fromhex(
-            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-        ),
-        broker_wholesale=_WholesaleBroker(),
+    broker = _WholesaleBroker()
+    settings = _settings().model_copy(
+        update={
+            "wholesale_accounts_enabled": True,
+            "wholesale_chain_id": 42161,
+            "wholesale_target_available_wei": 100,
+            "wholesale_max_available_per_payee_wei": 200,
+            "wholesale_max_aggregate_available_wei": 500,
+            "wholesale_max_single_funding_wei": 100,
+        }
     )
+
+    async def open_wholesale_session() -> sessions_service.CreateSessionResponse:
+        return await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            estimated_runway_units=2,
+            max_total_units=10,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=settings,
+            request_id="session-wholesale-1",
+            workload_request_digest=b"\x55" * 32,
+            caller_public_key=bytes.fromhex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+            broker_wholesale=broker,
+        )
+
+    response = await open_wholesale_session()
 
     assert response.accounting_mode == "wholesale_account"
     assert response.payment_envelope is None
@@ -244,6 +250,13 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert grant.max_debit_wei == Decimal(10_000)
     assert grant.request_id == response.request_id
     assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+    replay = await open_wholesale_session()
+    assert replay.session_id == response.session_id
+    assert len((await db_session.scalars(select(PaymentSession))).all()) == 1
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(90_000)
     with pytest.raises(DaemonUnavailable, match="legacy refill"):
         await sessions_service.refill_session(
             db_session,

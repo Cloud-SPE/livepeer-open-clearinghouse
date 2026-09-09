@@ -49,6 +49,14 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     ``funded_value_wei - billed_value_wei``.
     """
 
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "broker_request_id",
+            name="uq_payment_session_user_broker_request",
+        ),
+    )
+
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("user.id", ondelete="RESTRICT"), nullable=False, index=True
     )

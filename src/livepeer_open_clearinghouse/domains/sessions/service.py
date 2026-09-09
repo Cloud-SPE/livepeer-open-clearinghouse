@@ -16,11 +16,12 @@ from __future__ import annotations
 import base64
 import time
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
@@ -308,8 +309,8 @@ async def record_spend_authorization_grant(
             existing.denomination,
             existing.max_debit_wei,
             existing.max_total_units,
-            existing.not_before,
-            existing.expires_at,
+            _normalized_utc(existing.not_before),
+            _normalized_utc(existing.expires_at),
         )
         if actual != expected:
             raise InvalidSessionRequest(message="authorization revision replay changed scope")
@@ -350,6 +351,12 @@ async def record_spend_authorization_grant(
     engagement.authorization_id = request.authorization_id
     await db.flush()
     return grant
+
+
+def _normalized_utc(value: datetime) -> datetime:
+    """Normalize SQLite's timezone-naive UTC persistence for replay checks."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def create_session(
@@ -400,6 +407,120 @@ async def create_session(
     session.add(row)
     await session.flush()
     return row
+
+
+async def claim_wholesale_engagement(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    route: SelectedRoute,
+    broker_request_id: str,
+    estimated_units: int,
+    max_total_units: int,
+    max_debit_wei: Decimal,
+    clock: Clock,
+    sdk_identity: str | None,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+) -> PaymentSession:
+    """Create and hold one wholesale engagement, or resume its exact replay."""
+
+    existing = await db.scalar(
+        select(PaymentSession).where(
+            PaymentSession.user_id == user_id,
+            PaymentSession.broker_request_id == broker_request_id,
+            PaymentSession.accounting_mode == "wholesale_account",
+        )
+    )
+    pricing = CustomerPricingSnapshot(
+        plan_id="wholesale-pass-through",
+        kind="wholesale_pass_through",
+        work_unit=route.work_unit,
+    ).model_dump(mode="json")
+    if existing is not None:
+        requested_scope = (
+            api_key_id,
+            route.capability,
+            route.offering,
+            route.protocol,
+            route.snapshot(),
+            estimated_units,
+            max_total_units,
+            max_debit_wei,
+            pricing,
+        )
+        recorded_scope = (
+            existing.api_key_id,
+            existing.capability,
+            existing.offering,
+            existing.protocol,
+            existing.route_snapshot,
+            existing.estimated_units,
+            existing.max_total_units,
+            existing.customer_max_debit_wei,
+            existing.customer_pricing,
+        )
+        if recorded_scope != requested_scope:
+            raise InvalidSessionRequest(message="wholesale engagement replay changed scope")
+        return existing
+
+    engagement = await create_session(
+        db,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        work_id="",
+        capability=route.capability,
+        offering=route.offering,
+        protocol=route.protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=broker_request_id,
+        estimated_units=estimated_units,
+        max_total_units=max_total_units,
+        funded_value_wei=max_debit_wei,
+        clock=clock,
+        sdk_identity=sdk_identity,
+        accounting_mode="wholesale_account",
+        customer_pricing=pricing,
+        customer_max_debit_wei=max_debit_wei,
+    )
+    await billing_service.encumber_customer_engagement(
+        db,
+        user_id=user_id,
+        engagement_id=engagement.id,
+        amount_wei=max_debit_wei,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        winner = await db.scalar(
+            select(PaymentSession).where(
+                PaymentSession.user_id == user_id,
+                PaymentSession.broker_request_id == broker_request_id,
+                PaymentSession.accounting_mode == "wholesale_account",
+            )
+        )
+        if winner is None:
+            raise
+        return await claim_wholesale_engagement(
+            db,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            route=route,
+            broker_request_id=broker_request_id,
+            estimated_units=estimated_units,
+            max_total_units=max_total_units,
+            max_debit_wei=max_debit_wei,
+            clock=clock,
+            sdk_identity=sdk_identity,
+            spend_period_seconds=spend_period_seconds,
+            spend_period_cap_wei=spend_period_cap_wei,
+        )
+    return engagement
 
 
 async def get_session(session: AsyncSession, session_id: uuid.UUID) -> PaymentSession | None:
@@ -543,40 +664,20 @@ async def _open_wholesale_session(
 ) -> CreateSessionResponse:
     """Create a cumulative-cap session and replenish only shared runway."""
 
-    pricing = CustomerPricingSnapshot(
-        plan_id="wholesale-pass-through",
-        kind="wholesale_pass_through",
-        work_unit=route.work_unit,
-    )
-    session_row = await create_session(
+    session_row = await claim_wholesale_engagement(
         db,
         user_id=user_id,
         api_key_id=api_key_id,
-        work_id="",
-        capability=route.capability,
-        offering=route.offering,
-        protocol=route.protocol,
-        route_snapshot=route.snapshot(),
         broker_request_id=request_id,
         estimated_units=estimated_runway_units,
         max_total_units=max_total_units,
-        funded_value_wei=max_debit_wei,
+        max_debit_wei=max_debit_wei,
+        route=route,
         clock=clock,
         sdk_identity=sdk_identity,
-        accounting_mode="wholesale_account",
-        customer_pricing=pricing.model_dump(mode="json"),
-        customer_max_debit_wei=max_debit_wei,
+        spend_period_seconds=spend_period_seconds,
+        spend_period_cap_wei=spend_period_cap_wei,
     )
-    await billing_service.encumber_customer_engagement(
-        db,
-        user_id=user_id,
-        engagement_id=session_row.id,
-        amount_wei=max_debit_wei,
-        clock=clock,
-        period_seconds=spend_period_seconds,
-        cap_wei=spend_period_cap_wei,
-    )
-    await db.commit()
 
     now = clock.now()
     authorization_id = f"loc-auth:{request_id}"
@@ -633,45 +734,18 @@ async def _open_wholesale_session(
         correlation_id=str(session_row.id),
         protocol_version="wholesale-account/1.0.0-draft",
     )
-    if funding is not None and funding.status != "acknowledged":
-        mint_request = wholesale_service.create_account_funding_request(
-            route=route,
-            observation=observation,
-            plan=plan,
-            mint_request_id=mint_id,
-        )
-        mint_response = validate_funding_response(
-            mint_request, await daemon.create_payment(mint_request)
-        )
-        if "0x" + mint_response.sender.hex() != payer:
-            raise DaemonUnavailable(
-                daemon="payment-daemon", reason="funding payer differs from authorization payer"
-            )
-        await wholesale_service.record_minted_funding(
-            db, mint_request_id=mint_id, response=mint_response
-        )
-        funded = await broker.fund_wholesale_account(
-            broker_url=route.worker_url,
-            capability=route.capability,
-            offering=route.offering,
-            payment_bytes=mint_response.payment_bytes,
-            payer_eth_address=payer,
-            payee_eth_address=route.eth_address,
-            expected_credited_value_wei=plan.shortfall_wei,
-        )
-        after = await broker.get_wholesale_account(
-            broker_url=route.worker_url,
-            payer_eth_address=payer,
-            payee_eth_address=route.eth_address,
-            chain_id=settings.wholesale_chain_id,
-        )
-        await wholesale_service.acknowledge_account_funding(
-            db,
-            mint_request_id=mint_id,
-            result=funded,
-            observation=after,
-            acknowledged_at=clock.now(),
-        )
+    await wholesale_service.complete_account_funding(
+        db,
+        funding=funding,
+        route=route,
+        observation=observation,
+        plan=plan,
+        payer_eth_address=payer,
+        chain_id=settings.wholesale_chain_id,
+        broker=broker,
+        daemon=daemon,
+        acknowledged_at=clock.now(),
+    )
 
     return CreateSessionResponse(
         session_id=session_row.id,

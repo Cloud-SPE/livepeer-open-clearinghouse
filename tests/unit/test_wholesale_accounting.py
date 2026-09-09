@@ -24,6 +24,7 @@ from livepeer_open_clearinghouse.domains.wholesale.service import (
     WholesaleFundingPolicyError,
     acknowledge_account_funding,
     claim_account_funding,
+    complete_account_funding,
     create_account_funding_request,
     plan_account_shortfall,
     plan_observed_account_shortfall,
@@ -194,6 +195,31 @@ def _route() -> SelectedRoute:
     )
 
 
+class _ReplayBroker:
+    def __init__(self, observation: WholesaleAccountObservation) -> None:
+        self.observation = observation
+        self.fund_calls = 0
+
+    async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
+        self.fund_calls += 1
+        return WholesaleFundingResult(
+            payer=self.observation.payer,
+            payee=self.observation.payee,
+            credited_value_wei=60,
+            available_value_wei=self.observation.available_value_wei,
+            account_version=self.observation.version,
+            replayed=True,
+        )
+
+    async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
+        return self.observation
+
+
+class _NoMintDaemon:
+    async def create_payment(self, *_: object, **__: object) -> object:
+        raise AssertionError("a persisted mint must not call the daemon again")
+
+
 def test_shortfall_plan_and_request_use_aggregate_account_not_customer_maximum() -> None:
     observation = _account(available=40)
     plan = plan_account_shortfall(
@@ -353,3 +379,68 @@ async def test_funding_claim_mint_and_ack_are_durable(
             correlation_id=None,
             protocol_version="wholesale-account/1.0.0-draft",
         )
+
+
+@pytest.mark.asyncio
+async def test_minted_funding_replays_persisted_bytes_without_reminting(
+    wholesale_db: AsyncSession,
+) -> None:
+    route = _route()
+    observation = _account(available=40)
+    plan = plan_account_shortfall(
+        observation=observation,
+        aggregate_available_wei=40,
+        limits=_limits(),
+    )
+    funding = await claim_account_funding(
+        wholesale_db,
+        route=route,
+        observation=observation,
+        plan=plan,
+        limits=_limits(),
+        mint_request_id="loc:account:recover-minted",
+        correlation_id="engagement-recovery",
+        protocol_version="wholesale-account/1.0.0-draft",
+    )
+    assert funding is not None
+    request = create_account_funding_request(
+        route=route,
+        observation=observation,
+        plan=plan,
+        mint_request_id=funding.mint_request_id,
+    )
+    response = await MockPaymentDaemonClient().create_payment(request)
+    funding = await record_minted_funding(
+        wholesale_db,
+        mint_request_id=funding.mint_request_id,
+        response=response,
+    )
+    after = observation.model_copy(
+        update={
+            "credited_value_wei": Decimal(160),
+            "available_value_wei": Decimal(100),
+            "version": 4,
+        }
+    )
+    broker = _ReplayBroker(after)
+
+    await complete_account_funding(
+        wholesale_db,
+        funding=funding,
+        route=route,
+        observation=after,
+        plan=plan_account_shortfall(
+            observation=after,
+            aggregate_available_wei=100,
+            limits=_limits(),
+        ),
+        payer_eth_address=observation.payer,
+        chain_id=observation.chain_id,
+        broker=broker,
+        daemon=_NoMintDaemon(),  # type: ignore[arg-type]
+        acknowledged_at=datetime.now(UTC),
+    )
+    assert broker.fund_calls == 1
+    recovered = await wholesale_db.get(WholesaleFunding, funding.id)
+    assert recovered is not None
+    assert recovered.status == "acknowledged"

@@ -18,6 +18,7 @@ from livepeer_open_clearinghouse.domains.wholesale.types import (
     WholesaleFundingPlan,
 )
 from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerWholesaleAccountClient,
     WholesaleAccountObservation,
     WholesaleFundingResult,
 )
@@ -27,7 +28,9 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     CreatePaymentRequest,
     CreatePaymentResponse,
     FundingIntent,
+    PaymentDaemonClient,
     QuoteRef,
+    validate_funding_response,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
 
@@ -61,20 +64,23 @@ async def claim_account_funding(
         select(WholesaleFunding).where(WholesaleFunding.mint_request_id == mint_request_id)
     )
     if existing is not None:
-        recorded = (
+        recorded_identity = (
             existing.target_available_wei,
+            existing.route_snapshot,
+            existing.correlation_id,
+        )
+        requested_identity = (
+            plan.target_available_wei,
+            route.snapshot(),
+            correlation_id,
+        )
+        if recorded_identity != requested_identity:
+            raise WholesaleFundingPolicyError("mint_request_id replay changed funding scope")
+        if existing.status == "claimed" and (
             existing.observed_available_wei,
             existing.requested_shortfall_wei,
-            existing.route_snapshot,
-        )
-        requested = (
-            plan.target_available_wei,
-            plan.observed_available_wei,
-            plan.shortfall_wei,
-            route.snapshot(),
-        )
-        if recorded != requested:
-            raise WholesaleFundingPolicyError("mint_request_id replay changed funding scope")
+        ) != (plan.observed_available_wei, plan.shortfall_wei):
+            raise WholesaleFundingPolicyError("unminted funding replay changed account state")
         await db.commit()
         return existing
     budget = await db.scalar(
@@ -156,6 +162,66 @@ async def claim_account_funding(
     db.add(funding)
     await db.commit()
     return funding
+
+
+async def complete_account_funding(
+    db: AsyncSession,
+    *,
+    funding: WholesaleFunding | None,
+    route: SelectedRoute,
+    observation: WholesaleAccountObservation,
+    plan: WholesaleFundingPlan,
+    payer_eth_address: str,
+    chain_id: int,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    acknowledged_at: datetime,
+) -> None:
+    """Mint or replay a claimed shortfall and durably converge broker state."""
+
+    if funding is None or funding.status == "acknowledged":
+        return
+    payment_bytes = funding.payment_bytes
+    if funding.status == "claimed":
+        mint_request = create_account_funding_request(
+            route=route,
+            observation=observation,
+            plan=plan,
+            mint_request_id=funding.mint_request_id,
+        )
+        mint_response = validate_funding_response(
+            mint_request, await daemon.create_payment(mint_request)
+        )
+        if "0x" + mint_response.sender.hex() != payer_eth_address:
+            raise WholesaleFundingPolicyError("funding payer differs from authorization payer")
+        funding = await record_minted_funding(
+            db, mint_request_id=funding.mint_request_id, response=mint_response
+        )
+        payment_bytes = funding.payment_bytes
+    if payment_bytes is None:
+        raise WholesaleFundingPolicyError("minted funding has no replayable payment bytes")
+    result = await broker.fund_wholesale_account(
+        broker_url=route.worker_url,
+        capability=route.capability,
+        offering=route.offering,
+        payment_bytes=payment_bytes,
+        payer_eth_address=payer_eth_address,
+        payee_eth_address=route.eth_address,
+        expected_credited_value_wei=funding.requested_shortfall_wei,
+    )
+    after = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer_eth_address,
+        payee_eth_address=route.eth_address,
+        chain_id=chain_id,
+    )
+    await acknowledge_account_funding(
+        db,
+        mint_request_id=funding.mint_request_id,
+        result=result,
+        observation=after,
+        acknowledged_at=acknowledged_at,
+    )
 
 
 async def plan_observed_account_shortfall(
