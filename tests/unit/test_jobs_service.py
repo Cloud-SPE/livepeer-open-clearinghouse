@@ -293,7 +293,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
         capability=route.capability,
         offering=route.offering,
         estimated_units=1,
-        max_total_units=1,
+        max_total_units=2,
         sdk_identity=None,
         registry=MockRegistryClient(routes=[route]),
         daemon=MockPaymentDaemonClient(),
@@ -322,8 +322,45 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
     job = await db_session.get(PaymentSession, response.job_id)
     assert job is not None
     assert job.accounting_mode == "wholesale_account"
-    assert (await db_session.scalars(select(SpendAuthorizationGrant))).one().state == "issued"
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.state == "issued"
+    assert response.work_id == grant.authorization_id
     assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+    settlement = signed_job_settlement(
+        request_id=response.request_id,
+        job_id="broker-wholesale-job",
+        work_id=grant.authorization_id,
+        actual_units=1,
+        amount_wei=100,
+        per_units=1,
+        authorization_id=grant.authorization_id,
+        authorized_value_wei=200,
+        reserved_value_wei=200,
+        released_value_wei=100,
+        account_funding_value_wei=100,
+        account_version=1,
+    )
+    finalized = await jobs_service.reconcile_open_jobs(
+        db_session,
+        settlement_client=_StaticExchangeClient(
+            BrokerExchangeResult(
+                request_id=response.request_id,
+                outcome=BrokerExchangeOutcome.SETTLED,
+                job_id="broker-wholesale-job",
+                work_units=1,
+                unit="token",
+                settlement=settlement,
+            )
+        ),
+        clock=_clock(),
+        settings=_settings(),
+    )
+    assert finalized == 1
+    assert job.state == SESSION_STATE_CLOSED
+    assert job.billed_value_wei == Decimal(100)
+    assert grant.state == "settled"
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(10**12 - 100)
 
 
 @pytest.mark.unit

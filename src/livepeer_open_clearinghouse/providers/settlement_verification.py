@@ -42,6 +42,8 @@ class JobSettlementExpectation:
     quote_version: int
     constraint_fingerprint: bytes
     route_fingerprint: bytes
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +87,14 @@ class SessionSettlementExpectation:
     work_unit: str
     amount_wei: int
     per_units: int
+    quote_id: str
+    quote_version: int
+    constraint_fingerprint: bytes
+    route_fingerprint: bytes
     funded_value_wei: int
     last_settlement_seq: int
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
     require_terminal: bool = True
 
 
@@ -165,6 +173,12 @@ def verify_job_settlement(
         raise SettlementVerificationError(
             "funding_ceiling_exceeded", "signed billed value exceeds the funded job ceiling"
         )
+    _verify_authorization_accounting(
+        record,
+        authorization_id=expected.authorization_id,
+        authorized_value_wei=expected.authorized_value_wei,
+        billed_value_wei=billed_value,
+    )
 
     return VerifiedJobSettlement(
         actual_units=record.actual_units,
@@ -312,6 +326,14 @@ def _verify_session_identity(record: Any, expected: SessionSettlementExpectation
         )
     if record.work_unit_name != expected.work_unit:
         raise SettlementVerificationError("work_unit_mismatch", "signed work unit does not match")
+    quote = record.accepted_quote_ref
+    if (
+        quote.quote_id != expected.quote_id
+        or quote.quote_version != expected.quote_version
+        or bytes(quote.constraint_fingerprint) != expected.constraint_fingerprint
+        or bytes(quote.route_fingerprint) != expected.route_fingerprint
+    ):
+        raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
 
 
 def _verify_session_accounting(record: Any, expected: SessionSettlementExpectation) -> int:
@@ -351,7 +373,55 @@ def _verify_session_accounting(record: Any, expected: SessionSettlementExpectati
         raise SettlementVerificationError(
             "generation_value_invalid", "generation billed value exceeds session billed value"
         )
+    _verify_authorization_accounting(
+        record,
+        authorization_id=expected.authorization_id,
+        authorized_value_wei=expected.authorized_value_wei,
+        billed_value_wei=billed_value,
+    )
     return billed_value
+
+
+def _verify_authorization_accounting(
+    record: Any,
+    *,
+    authorization_id: str | None,
+    authorized_value_wei: int | None,
+    billed_value_wei: int,
+) -> None:
+    """Prevent settlement evidence from crossing legacy/account semantics."""
+
+    if authorization_id is None:
+        if record.authorization_id:
+            raise SettlementVerificationError(
+                "unexpected_authorization", "legacy settlement carries account authorization"
+            )
+        return
+    if record.authorization_id != authorization_id or record.work_id != authorization_id:
+        raise SettlementVerificationError(
+            "authorization_id_mismatch", "signed authorization identity does not match"
+        )
+    if authorized_value_wei is None:
+        raise SettlementVerificationError(
+            "missing_authorization_ceiling", "LOC authorization ceiling is unavailable"
+        )
+    signed_authorized = int.from_bytes(record.authorized_value_wei.value, "big")
+    reserved = int.from_bytes(record.reserved_value_wei.value, "big")
+    released = int.from_bytes(record.released_value_wei.value, "big")
+    if signed_authorized != authorized_value_wei:
+        raise SettlementVerificationError(
+            "authorization_ceiling_mismatch", "signed authorization ceiling does not match"
+        )
+    if (
+        billed_value_wei > signed_authorized
+        or reserved > signed_authorized
+        or released > signed_authorized
+        or billed_value_wei + released > signed_authorized
+    ):
+        raise SettlementVerificationError(
+            "authorization_accounting_invalid",
+            "signed reservation, debit, or release exceeds authorization",
+        )
 
 
 def _verify_envelope(

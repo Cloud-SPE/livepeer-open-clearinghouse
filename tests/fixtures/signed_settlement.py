@@ -45,6 +45,12 @@ def signed_job_settlement(
     route_fingerprint: bytes = b"\x11" * 32,
     issued_at: str = TEST_ISSUED_AT,
     outcome: str = "OVERFUNDED",
+    authorization_id: str | None = None,
+    authorized_value_wei: int = 0,
+    reserved_value_wei: int = 0,
+    released_value_wei: int = 0,
+    account_funding_value_wei: int = 0,
+    account_version: int = 0,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     debited = actual_units if debited_units is None else debited_units
@@ -74,6 +80,25 @@ def signed_job_settlement(
         "job_id": job_id,
         "request_id": request_id,
     }
+    if authorization_id is not None:
+        payload.update(
+            {
+                "authorization_id": authorization_id,
+                "authorized_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(authorized_value_wei)).decode()
+                },
+                "reserved_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(reserved_value_wei)).decode()
+                },
+                "released_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(released_value_wei)).decode()
+                },
+                "account_funding_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(account_funding_value_wei)).decode()
+                },
+                "account_version": str(account_version),
+            }
+        )
     canonical = rfc8785.dumps(payload)
     prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
     signature = bytearray(private_key.sign_msg_hash(keccak(prefix + canonical)).to_bytes())
@@ -157,8 +182,16 @@ def signed_session_settlement(
     settlement_seq: int = 1,
     state: str = "closed",
     work_unit: str = "token",
+    quote_id: str = "q-1",
+    quote_version: int = 1,
+    constraint_fingerprint: bytes = b"\x00" * 32,
+    route_fingerprint: bytes = b"\x11" * 32,
     issued_at: str = TEST_ISSUED_AT,
     outcome: str = "OVERFUNDED",
+    authorization_id: str | None = None,
+    authorized_value_wei: int = 0,
+    reserved_value_wei: int = 0,
+    released_value_wei: int = 0,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one signed paid-session/v1 settlement envelope."""
@@ -172,6 +205,12 @@ def signed_session_settlement(
         billed_value_wei if generation_billed_value_wei is None else generation_billed_value_wei
     )
     payload: dict[str, Any] = {
+        "accepted_quote_ref": {
+            "quote_id": quote_id,
+            "quote_version": str(quote_version),
+            "constraint_fingerprint": base64.b64encode(constraint_fingerprint).decode(),
+            "route_fingerprint": base64.b64encode(route_fingerprint).decode(),
+        },
         "work_unit_name": work_unit,
         "actual_units": str(actual),
         "billed_units": str(actual),
@@ -198,6 +237,21 @@ def signed_session_settlement(
         "issued_at": issued_at,
         "state": state,
     }
+    if authorization_id is not None:
+        payload.update(
+            {
+                "authorization_id": authorization_id,
+                "authorized_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(authorized_value_wei)).decode()
+                },
+                "reserved_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(reserved_value_wei)).decode()
+                },
+                "released_value_wei": {
+                    "value": base64.b64encode(_unsigned_bytes(released_value_wei)).decode()
+                },
+            }
+        )
     canonical = rfc8785.dumps(payload)
     prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
     signature = bytearray(private_key.sign_msg_hash(keccak(prefix + canonical)).to_bytes())

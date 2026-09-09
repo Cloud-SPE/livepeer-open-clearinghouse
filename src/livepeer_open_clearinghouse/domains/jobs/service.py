@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
 from livepeer_open_clearinghouse.domains.jobs.types import (
     CreateJobResponse,
     JobStatusResponse,
@@ -45,7 +46,11 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     PaymentDaemonDepositSnapshot,
 )
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession, PaymentSettlement
+from livepeer_open_clearinghouse.domains.sessions.repo import (
+    PaymentSession,
+    PaymentSettlement,
+    SpendAuthorizationGrant,
+)
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
 from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
@@ -320,7 +325,7 @@ async def _open_wholesale_job(
     return CreateJobResponse(
         job_id=job.id,
         request_id=request_id,
-        work_id="",
+        work_id=authorization_id,
         broker_url=route.worker_url,
         protocol=route.protocol,
         transport=transport,
@@ -606,7 +611,7 @@ async def open_job(
     )
 
 
-async def settle_job(
+async def settle_job(  # noqa: PLR0912, PLR0915 — explicit legacy/wholesale accounting split
     db: AsyncSession,
     *,
     job_id: uuid.UUID,
@@ -646,11 +651,27 @@ async def settle_job(
         .order_by(Payment.created_at.asc())
         .limit(1)
     )
-    if initial_payment_row is None:
+    if initial_payment_row is None and job_row.accounting_mode != "wholesale_account":
         raise JobNotFound  # defensive
 
-    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
     snapshot = job_row.route_snapshot or {}
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
+    if job_row.accounting_mode == "wholesale_account":
+        grant = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == job_id,
+                SpendAuthorizationGrant.authorization_id == job_row.authorization_id,
+            )
+        )
+        if grant is None:
+            raise SettlementVerificationFailed(reason="missing_authorization")
+        authorization_id = grant.authorization_id
+        authorized_value_wei = int(grant.max_debit_wei)
+        price_wei = Decimal(str(snapshot.get("price_per_work_unit_wei", "0")))
+    else:
+        assert initial_payment_row is not None
+        price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
     expected_work_unit = str(snapshot.get("work_unit", ""))
     if work_unit != expected_work_unit:
         raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
@@ -686,6 +707,8 @@ async def settle_job(
                 quote_version=int(snapshot["quote_version"]),
                 constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
                 route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+                authorization_id=authorization_id,
+                authorized_value_wei=authorized_value_wei,
             ),
         )
     except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
@@ -711,8 +734,22 @@ async def settle_job(
             clock=clock,
         )
         raise SettlementVerificationFailed(reason="outcome_mismatch")
-    billed_value_wei = Decimal(verified.billed_value_wei)
-    refund_wei = job_row.funded_value_wei - billed_value_wei
+    wholesale_billed_value_wei = Decimal(verified.billed_value_wei)
+    if job_row.accounting_mode == "wholesale_account":
+        if job_row.customer_pricing is None or job_row.customer_max_debit_wei is None:
+            raise SettlementVerificationFailed(reason="missing_customer_pricing")
+        pricing = CustomerPricingSnapshot.model_validate(job_row.customer_pricing)
+        billed_value_wei = billing_service.calculate_customer_charge(
+            pricing,
+            actual_units=verified.actual_units,
+            wholesale_debit_wei=wholesale_billed_value_wei,
+        )
+        if billed_value_wei > job_row.customer_max_debit_wei:
+            raise SettlementVerificationFailed(reason="customer_cap_exceeded")
+        refund_wei = job_row.customer_max_debit_wei - billed_value_wei
+    else:
+        billed_value_wei = wholesale_billed_value_wei
+        refund_wei = job_row.funded_value_wei - billed_value_wei
 
     # Transition state
     await sessions_service.transition_state(
@@ -725,18 +762,35 @@ async def settle_job(
 
     # Release encumbrance if there's unused value to refund.
     if refund_wei > 0:
-        await billing_service.release_session_encumbrance(
-            db,
-            user_id=user_id,
-            payment_id=initial_payment_row.id,
-            amount_wei=refund_wei,
-        )
+        if job_row.accounting_mode == "wholesale_account":
+            await billing_service.release_customer_engagement(
+                db,
+                user_id=user_id,
+                engagement_id=job_row.id,
+                amount_wei=refund_wei,
+            )
+        else:
+            assert initial_payment_row is not None
+            await billing_service.release_session_encumbrance(
+                db,
+                user_id=user_id,
+                payment_id=initial_payment_row.id,
+                amount_wei=refund_wei,
+            )
 
     # Finalize fields
     final_outcome = verified.outcome
     job_row.actual_units = actual_units
     job_row.billed_value_wei = billed_value_wei
     job_row.outcome = final_outcome
+    if job_row.accounting_mode == "wholesale_account":
+        assert job_row.authorization_id is not None
+        await sessions_service.mark_spend_authorization_settled(
+            db,
+            engagement_id=job_row.id,
+            authorization_id=job_row.authorization_id,
+            clock=clock,
+        )
     job_row.breakdown = {
         **(job_row.breakdown or {}),
         "broker_job_id": broker_job_id,
@@ -970,21 +1024,17 @@ async def _request_non_admission(
     broker_url: str,
     request_id: str,
 ) -> BrokerExchangeResult:
-    initial_payment = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == job_row.id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
     snapshot = job_row.route_snapshot or {}
-    if initial_payment is None or initial_payment.sender_eth_address is None:
+    payer_scope = await _job_payer_scope(db, job_row)
+    if payer_scope is None:
         raise BrokerSettlementQueryError("job lacks persisted payer sender scope")
+    sender_eth_address, recipient_eth_address = payer_scope
     try:
         query = NonAdmissionQuery(
             protocol=PAID_JOB_PROTOCOL,
             work_id=job_row.work_id,
-            sender=initial_payment.sender_eth_address.lower(),
-            recipient=initial_payment.recipient_eth_address.lower(),
+            sender=sender_eth_address,
+            recipient=recipient_eth_address,
             quote_id=str(snapshot["quote_id"]),
             quote_version=int(snapshot["quote_version"]),
             constraint_fingerprint=str(snapshot["constraint_fingerprint"]),
@@ -1002,6 +1052,35 @@ async def _request_non_admission(
         request_id=request_id,
         query=query,
     )
+
+
+async def _job_payer_scope(db: AsyncSession, job_row: PaymentSession) -> tuple[str, str] | None:
+    """Return immutable payer/payee scope for either accounting adapter."""
+
+    initial_payment = await db.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_row.id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment is not None and initial_payment.sender_eth_address is not None:
+        return (
+            initial_payment.sender_eth_address.lower(),
+            initial_payment.recipient_eth_address.lower(),
+        )
+    if job_row.accounting_mode != "wholesale_account":
+        return None
+    grant = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == job_row.id,
+            SpendAuthorizationGrant.authorization_id == job_row.authorization_id,
+        )
+    )
+    snapshot = job_row.route_snapshot or {}
+    recipient = snapshot.get("eth_address")
+    if grant is None or not isinstance(recipient, str):
+        return None
+    return grant.payer_eth_address.lower(), recipient.lower()
 
 
 async def _retain_verified_non_admission(
@@ -1026,17 +1105,13 @@ async def _retain_verified_non_admission(
     request_id = job_row.broker_request_id
     if envelope is None or request_id is None:
         return
-    initial_payment = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == job_row.id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
     snapshot = job_row.route_snapshot or {}
     audit = _exchange_audit_record(exchange)
     try:
-        if initial_payment is None or initial_payment.sender_eth_address is None:
+        payer_scope = await _job_payer_scope(db, job_row)
+        if payer_scope is None:
             raise SettlementVerificationError("missing_sender", "payer sender was not persisted")
+        sender_eth_address, recipient_eth_address = payer_scope
         settlement_keys = snapshot["settlement_keys"]
         if not isinstance(settlement_keys, list) or not settlement_keys:
             raise SettlementVerificationError(
@@ -1049,10 +1124,8 @@ async def _retain_verified_non_admission(
                 protocol=PAID_JOB_PROTOCOL,
                 request_id=request_id,
                 work_id=job_row.work_id,
-                sender=sessions_service._eth_address_to_bytes(initial_payment.sender_eth_address),
-                recipient=sessions_service._eth_address_to_bytes(
-                    initial_payment.recipient_eth_address
-                ),
+                sender=sessions_service._eth_address_to_bytes(sender_eth_address),
+                recipient=sessions_service._eth_address_to_bytes(recipient_eth_address),
                 quote_id=str(snapshot["quote_id"]),
                 quote_version=int(snapshot["quote_version"]),
                 constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),

@@ -67,7 +67,7 @@ from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
-from tests.fixtures.signed_settlement import delegated_key
+from tests.fixtures.signed_settlement import delegated_key, signed_session_settlement
 
 
 @pytest_asyncio.fixture()
@@ -160,6 +160,7 @@ def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> Selecte
 class _WholesaleBroker:
     def __init__(self) -> None:
         self.funded = False
+        self.settlement: dict[str, object] | None = None
 
     async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
         return WholesaleAccountObservation(
@@ -185,6 +186,9 @@ class _WholesaleBroker:
             account_version=1,
             replayed=False,
         )
+
+    async def get_settlement(self, **_: object) -> dict[str, object] | None:
+        return self.settlement
 
 
 @pytest.mark.unit
@@ -268,6 +272,33 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
             clock=_clock(),
             settings=_settings(),
         )
+    settlement = signed_session_settlement(
+        gateway_session_id=str(response.session_id),
+        work_id=grant.authorization_id,
+        debited_units=2,
+        billed_value_wei=2_000,
+        funded_value_wei=100,
+        generation_funded_value_wei=100,
+        amount_wei=1_000,
+        per_units=1,
+        work_unit="audio_second",
+        authorization_id=grant.authorization_id,
+        authorized_value_wei=10_000,
+        released_value_wei=8_000,
+        outcome="TOPPED_UP",
+    )
+    broker.settlement = settlement
+    finalized = await sessions_service.reconcile_open_sessions(
+        db_session,
+        settlement_client=broker,  # type: ignore[arg-type]
+        clock=_clock(),
+    )
+    assert finalized == 1
+    assert session.state == sessions_service.SESSION_STATE_CLOSED
+    assert session.billed_value_wei == Decimal(2_000)
+    assert grant.state == "settled"
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(98_000)
 
 
 @pytest.mark.unit

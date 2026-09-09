@@ -349,6 +349,34 @@ async def record_spend_authorization_grant(
     )
     db.add(grant)
     engagement.authorization_id = request.authorization_id
+    engagement.work_id = request.authorization_id
+    await db.flush()
+    return grant
+
+
+async def mark_spend_authorization_settled(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    authorization_id: str,
+    clock: Clock,
+) -> SpendAuthorizationGrant:
+    """Record terminal broker-signed use without deleting grant history."""
+
+    grant = await db.scalar(
+        select(SpendAuthorizationGrant)
+        .where(
+            SpendAuthorizationGrant.session_id == engagement_id,
+            SpendAuthorizationGrant.authorization_id == authorization_id,
+        )
+        .with_for_update()
+    )
+    if grant is None:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    if grant.state not in {"issued", "admitted", "settled"}:
+        raise SessionSettlementVerificationFailed(reason="authorization_state_conflict")
+    grant.state = "settled"
+    grant.retired_at = grant.retired_at or clock.now()
     await db.flush()
     return grant
 
@@ -750,7 +778,7 @@ async def _open_wholesale_session(
     return CreateSessionResponse(
         session_id=session_row.id,
         request_id=request_id,
-        work_id="",
+        work_id=authorization_id,
         broker_url=route.worker_url,
         protocol=route.protocol,
         session=SessionAxesView.model_validate(session_axes.model_dump(mode="json")),
@@ -1666,7 +1694,7 @@ async def _verify_close_settlement(
     db: AsyncSession,
     *,
     session_row: PaymentSession,
-    initial_payment_row: Payment,
+    initial_payment_row: Payment | None,
     settlement: dict[str, Any] | None,
     require_terminal: bool = True,
 ) -> VerifiedSessionSettlement:
@@ -1685,6 +1713,24 @@ async def _verify_close_settlement(
         if not session_row.predecessor_work_id:
             raise SessionSettlementVerificationFailed(reason="missing_rotation_predecessor")
         predecessor_work_id = session_row.predecessor_work_id
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
+    if session_row.accounting_mode == "wholesale_account":
+        grant = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == session_row.id,
+                SpendAuthorizationGrant.authorization_id == session_row.authorization_id,
+            )
+        )
+        if grant is None:
+            raise SessionSettlementVerificationFailed(reason="missing_authorization")
+        authorization_id = grant.authorization_id
+        authorized_value_wei = int(grant.max_debit_wei)
+        amount_wei = int(snapshot["price_per_work_unit_wei"])
+    elif initial_payment_row is not None:
+        amount_wei = int(initial_payment_row.price_per_work_unit_wei)
+    else:
+        raise SessionSettlementVerificationFailed(reason="missing_payment")
     try:
         return verify_session_settlement(
             settlement,
@@ -1696,10 +1742,16 @@ async def _verify_close_settlement(
                 predecessor_work_id=predecessor_work_id,
                 rotation_generation=session_row.rotation_generation,
                 work_unit=str(snapshot["work_unit"]),
-                amount_wei=int(initial_payment_row.price_per_work_unit_wei),
+                amount_wei=amount_wei,
                 per_units=int(snapshot["units_per_price"]),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
                 funded_value_wei=int(session_row.funded_value_wei),
                 last_settlement_seq=session_row.last_settlement_seq,
+                authorization_id=authorization_id,
+                authorized_value_wei=authorized_value_wei,
                 require_terminal=require_terminal,
             ),
         )
@@ -1708,7 +1760,7 @@ async def _verify_close_settlement(
         raise SessionSettlementVerificationFailed(reason=reason) from exc
 
 
-async def close_session(
+async def close_session(  # noqa: PLR0912, PLR0915 — explicit accounting adapter split
     db: AsyncSession,
     *,
     session_id: uuid.UUID,
@@ -1758,7 +1810,7 @@ async def close_session(
         .order_by(Payment.created_at.asc())
         .limit(1)
     )
-    if initial_payment_row is None:
+    if initial_payment_row is None and session_row.accounting_mode != "wholesale_account":
         raise SessionNotFound  # defensive — open writes one
 
     try:
@@ -1781,8 +1833,22 @@ async def close_session(
             clock=clock,
         )
         raise
-    billed_value_wei = Decimal(verified.billed_value_wei)
-    refund_wei = session_row.funded_value_wei - billed_value_wei
+    wholesale_billed_value_wei = Decimal(verified.billed_value_wei)
+    if session_row.accounting_mode == "wholesale_account":
+        if session_row.customer_pricing is None or session_row.customer_max_debit_wei is None:
+            raise SessionSettlementVerificationFailed(reason="missing_customer_pricing")
+        pricing = CustomerPricingSnapshot.model_validate(session_row.customer_pricing)
+        billed_value_wei = billing_service.calculate_customer_charge(
+            pricing,
+            actual_units=verified.debited_units,
+            wholesale_debit_wei=wholesale_billed_value_wei,
+        )
+        if billed_value_wei > session_row.customer_max_debit_wei:
+            raise SessionSettlementVerificationFailed(reason="customer_cap_exceeded")
+        refund_wei = session_row.customer_max_debit_wei - billed_value_wei
+    else:
+        billed_value_wei = wholesale_billed_value_wei
+        refund_wei = session_row.funded_value_wei - billed_value_wei
 
     # 3. Transition state (open or draining → closed)
     await transition_state(
@@ -1796,12 +1862,21 @@ async def close_session(
     # 4. Release encumbrance (refund unused). Skip if billed exceeded
     # funded — operator absorbs that delta; no balance change.
     if refund_wei > 0:
-        await billing_service.release_session_encumbrance(
-            db,
-            user_id=user_id,
-            payment_id=initial_payment_row.id,
-            amount_wei=refund_wei,
-        )
+        if session_row.accounting_mode == "wholesale_account":
+            await billing_service.release_customer_engagement(
+                db,
+                user_id=user_id,
+                engagement_id=session_row.id,
+                amount_wei=refund_wei,
+            )
+        else:
+            assert initial_payment_row is not None
+            await billing_service.release_session_encumbrance(
+                db,
+                user_id=user_id,
+                payment_id=initial_payment_row.id,
+                amount_wei=refund_wei,
+            )
 
     # 5. Finalize payment_session fields
     signed_outcome = verified.outcome
@@ -1817,6 +1892,14 @@ async def close_session(
     session_row.outcome = final_outcome
     session_row.broker_session_id = verified.broker_session_id
     session_row.last_settlement_seq = verified.settlement_seq
+    if session_row.accounting_mode == "wholesale_account":
+        assert session_row.authorization_id is not None
+        await mark_spend_authorization_settled(
+            db,
+            engagement_id=session_row.id,
+            authorization_id=session_row.authorization_id,
+            clock=clock,
+        )
     await db.flush()
 
     # 6. Append close settlement event
@@ -1911,7 +1994,7 @@ async def reconcile_open_sessions(
             .order_by(Payment.created_at.asc())
             .limit(1)
         )
-        if initial_payment is None:
+        if initial_payment is None and session_row.accounting_mode != "wholesale_account":
             continue
         block = (session_row.breakdown or {}).get("settlement_block")
         signature = settlement.get("signature") if isinstance(settlement, dict) else None

@@ -139,6 +139,40 @@ def test_valid_job_settlement_verifies_ceiling_and_overlap_key() -> None:
 
 
 @pytest.mark.unit
+def test_wholesale_job_settlement_is_bound_to_authorization_and_ceiling() -> None:
+    authorization_id = "loc-auth:request-1"
+    envelope = _envelope(
+        work_id=authorization_id,
+        authorization_id=authorization_id,
+        authorized_value_wei=10,
+        reserved_value_wei=10,
+        released_value_wei=6,
+    )
+    verified = verify_job_settlement(
+        envelope,
+        settlement_keys=[delegated_key()],
+        expected=_expected(
+            work_id=authorization_id,
+            authorization_id=authorization_id,
+            authorized_value_wei=10,
+        ),
+    )
+    assert verified.billed_value_wei == 4
+
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            envelope,
+            settlement_keys=[delegated_key()],
+            expected=_expected(
+                work_id=authorization_id,
+                authorization_id="loc-auth:other",
+                authorized_value_wei=10,
+            ),
+        )
+    assert exc_info.value.code == "authorization_id_mismatch"
+
+
+@pytest.mark.unit
 def test_job_settlement_uses_shared_payment_cumulative_curve() -> None:
     verified = verify_job_settlement(
         _envelope(actual_units=42, payment_cumulative_units=84),
@@ -316,6 +350,10 @@ def _session_expected(**overrides: object) -> SessionSettlementExpectation:
         "work_unit": "token",
         "amount_wei": 100,
         "per_units": 1000,
+        "quote_id": "q-1",
+        "quote_version": 1,
+        "constraint_fingerprint": b"\x00" * 32,
+        "route_fingerprint": b"\x11" * 32,
         "funded_value_wei": 100,
         "last_settlement_seq": 0,
     }
@@ -365,6 +403,7 @@ def test_session_settlement_rejects_failed_debit_explicitly(debited_units: int) 
         ({"predecessor_work_id": "other"}, {}, "predecessor_mismatch"),
         ({"rotation_generation": 1}, {}, "rotation_generation_mismatch"),
         ({"work_unit": "frame"}, {}, "work_unit_mismatch"),
+        ({"quote_id": "other"}, {}, "quote_mismatch"),
         ({"amount_wei": 101}, {}, "pricing_mismatch"),
         ({"settlement_seq": 1}, {"last_settlement_seq": 1}, "settlement_replay"),
         ({"state": "open"}, {}, "session_not_terminal"),
