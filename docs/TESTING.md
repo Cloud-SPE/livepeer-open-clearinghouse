@@ -58,6 +58,23 @@ client. Every process log, build log, migration log, and a machine-readable
 result is retained under `.artifacts/live-conformance/stack/`; processes and
 the Postgres container are removed on success or failure.
 
+The fair-wholesale release gate composes the exact LOC and Modules tests for
+strict negotiation, customer/account isolation, bounded shortfall funding,
+authorization scope and revision, independent reconciliation, retry/crash/
+concurrency behavior, and legacy compatibility:
+
+```bash
+make test-wholesale-rollout
+```
+
+The command refuses dirty LOC or Modules trees, records both immutable Git
+revisions, hashes every case log, and runs `test-live-stack` as its real-process
+legacy control. Machine-readable evidence is written to
+`.artifacts/live-conformance/wholesale/result.json`. Use
+`uv run python conformance/wholesale_rollout.py --skip-live-stack` only for a
+fast development check; that result is marked as not requiring the live stack
+and is not release evidence.
+
 ## Image builds
 
 Build the gateway image locally with the same root-independent entrypoint used
