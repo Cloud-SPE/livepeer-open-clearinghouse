@@ -28,6 +28,7 @@ from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
+    SpendAuthorizationGrant,
 )
 from livepeer_open_clearinghouse.domains.sessions.types import (
     CapStatus,
@@ -55,6 +56,8 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
     CreatePaymentRequest,
     CreatePaymentResponse,
+    CreateSpendAuthorizationRequest,
+    CreateSpendAuthorizationResponse,
     FundingIntent,
     MintOutcomeUnknown,
     PaymentDaemonClient,
@@ -65,6 +68,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     RegistryClient,
     RouteBinding,
+    SelectedRoute,
     select_bound_route,
 )
 from livepeer_open_clearinghouse.providers.settlement_verification import (
@@ -229,6 +233,116 @@ def _eth_address_to_bytes(addr: str) -> bytes:
     if len(stripped) != _ETH_ADDRESS_HEX_LEN:
         raise ValueError(f"expected {_ETH_ADDRESS_HEX_LEN}-char hex address, got {addr!r}")
     return bytes.fromhex(stripped)
+
+
+async def record_spend_authorization_grant(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    user_id: uuid.UUID,
+    route: SelectedRoute,
+    request: CreateSpendAuthorizationRequest,
+    response: CreateSpendAuthorizationResponse,
+) -> SpendAuthorizationGrant:
+    """Persist a signed grant without retiring any predecessor implicitly."""
+
+    engagement = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if engagement is None or engagement.user_id != user_id:
+        raise SessionNotFound
+    if engagement.accounting_mode != "wholesale_account":
+        raise InvalidSessionRequest(message="legacy engagement cannot record an authorization")
+    if engagement.route_snapshot != route.snapshot():
+        raise InvalidSessionRequest(message="authorization route differs from locked engagement")
+    if response.authorization_id != request.authorization_id:
+        raise InvalidSessionRequest(message="authorization signer changed identity")
+    if request.session_id != str(engagement_id):
+        raise InvalidSessionRequest(message="authorization session identity changed")
+    if engagement.broker_request_id != request.request_id:
+        raise InvalidSessionRequest(message="authorization request identity changed")
+
+    existing = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == engagement_id,
+            SpendAuthorizationGrant.revision == request.revision,
+        )
+    )
+    if existing is not None:
+        expected = (
+            request.authorization_id,
+            request.predecessor_authorization_id or None,
+            request.request_id,
+            request.request_digest.hex(),
+            request.caller_public_key.hex(),
+            response.authorization_bytes,
+            request.protocol,
+            response.payer.hex(),
+            request.chain_id,
+            request.denomination,
+            request.max_debit_wei,
+            request.max_total_units,
+            request.not_before,
+            request.expires_at,
+        )
+        actual = (
+            existing.authorization_id,
+            existing.predecessor_authorization_id,
+            existing.request_id,
+            existing.request_digest,
+            existing.caller_public_key,
+            existing.authorization_bytes,
+            existing.protocol,
+            existing.payer_eth_address.removeprefix("0x"),
+            existing.chain_id,
+            existing.denomination,
+            existing.max_debit_wei,
+            existing.max_total_units,
+            existing.not_before,
+            existing.expires_at,
+        )
+        if actual != expected:
+            raise InvalidSessionRequest(message="authorization revision replay changed scope")
+        return existing
+
+    if request.revision > 0:
+        predecessor = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == engagement_id,
+                SpendAuthorizationGrant.authorization_id == request.predecessor_authorization_id,
+            )
+        )
+        if predecessor is None:
+            raise InvalidSessionRequest(message="authorization predecessor is not retained")
+
+    grant = SpendAuthorizationGrant(
+        session_id=engagement_id,
+        authorization_id=request.authorization_id,
+        revision=request.revision,
+        predecessor_authorization_id=request.predecessor_authorization_id or None,
+        request_id=request.request_id,
+        request_digest=request.request_digest.hex(),
+        caller_public_key=request.caller_public_key.hex(),
+        authorization_bytes=response.authorization_bytes,
+        protocol=request.protocol,
+        route_snapshot=route.snapshot(),
+        payer_eth_address="0x" + response.payer.hex(),
+        chain_id=request.chain_id,
+        denomination=request.denomination,
+        max_debit_wei=request.max_debit_wei,
+        max_total_units=request.max_total_units,
+        not_before=request.not_before,
+        expires_at=request.expires_at,
+        state="issued",
+        retired_at=None,
+    )
+    db.add(grant)
+    engagement.authorization_id = request.authorization_id
+    await db.flush()
+    return grant
 
 
 async def create_session(

@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, ForeignKey, PrimaryKeyConstraint
+from sqlalchemy import BigInteger, ForeignKey, PrimaryKeyConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -53,6 +53,14 @@ class CreditLedger(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     'payment_refund', 'admin_adjustment'.
     """
 
+    __table_args__ = (
+        UniqueConstraint(
+            "related_engagement_id",
+            "reason",
+            name="uq_credit_ledger_engagement_reason",
+        ),
+    )
+
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -60,6 +68,11 @@ class CreditLedger(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     reason: Mapped[str] = mapped_column(nullable=False)
     related_payment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("payment.id", ondelete="SET NULL"), nullable=True
+    )
+    # New account-aware paths correlate customer balance changes directly to
+    # the customer engagement, never to an aggregate wholesale funding mint.
+    related_engagement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("payment_session.id", ondelete="SET NULL"), nullable=True
     )
     related_topup_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("credit_topup.id", ondelete="SET NULL"), nullable=True

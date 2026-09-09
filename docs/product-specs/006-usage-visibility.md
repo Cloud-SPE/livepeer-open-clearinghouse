@@ -6,6 +6,12 @@
 | Status | shipped |
 | Updated | 2026-09-08 |
 
+> This specification describes the current legacy accounting projection. The
+> future wholesale-account design keeps the customer concepts of available,
+> held, and spent but derives them from LOC's separate customer ledger, not
+> from wholesale ticket funding. See
+> [`002-fair-wholesale-credit-accounts.md`](../design-docs/002-fair-wholesale-credit-accounts.md).
+
 ## What the user sees
 
 A developer's credit has three states, and both consoles name them the same

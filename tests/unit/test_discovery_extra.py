@@ -138,3 +138,33 @@ async def test_offering_view_defaults_to_empty_extra() -> None:
     client = MockRegistryClient(routes=[route])
     caps = await list_capabilities(client)
     assert caps[0].offerings[0].extra == {"job": {"transports": ["unary"]}}
+
+
+@pytest.mark.unit
+def test_wholesale_account_feature_is_parsed_at_registry_boundary() -> None:
+    route = _ROUTE.model_copy(
+        update={
+            "extra": {
+                **_ROUTE.extra,
+                "features": {"wholesale_accounts": True, "future_feature": "kept"},
+            }
+        }
+    )
+    reparsed = SelectedRoute.model_validate(route.model_dump())
+    assert reparsed.features.wholesale_accounts is True
+    assert reparsed.snapshot_view().features.wholesale_accounts is True
+    assert reparsed.snapshot()["extra"]["features"]["future_feature"] == "kept"
+
+
+@pytest.mark.unit
+def test_wholesale_account_feature_does_not_coerce_untrusted_values() -> None:
+    with pytest.raises(ValidationError, match="wholesale_accounts"):
+        SelectedRoute.model_validate(
+            {
+                **_ROUTE.model_dump(),
+                "extra": {
+                    **_ROUTE.extra,
+                    "features": {"wholesale_accounts": "true"},
+                },
+            }
+        )

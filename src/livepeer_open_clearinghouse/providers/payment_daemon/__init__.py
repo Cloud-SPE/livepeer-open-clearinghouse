@@ -8,8 +8,11 @@ lands once `make protoc` is run and the generated stubs are committed.
 
 from livepeer_open_clearinghouse.providers.payment_daemon.client import (
     AcceptedPrice,
+    AccountFundingIntent,
     CreatePaymentRequest,
     CreatePaymentResponse,
+    CreateSpendAuthorizationRequest,
+    CreateSpendAuthorizationResponse,
     DaemonDepositInsufficient,
     DepositInfo,
     FundingIntent,
@@ -25,8 +28,11 @@ from livepeer_open_clearinghouse.providers.payment_daemon.client import (
 
 __all__ = [
     "AcceptedPrice",
+    "AccountFundingIntent",
     "CreatePaymentRequest",
     "CreatePaymentResponse",
+    "CreateSpendAuthorizationRequest",
+    "CreateSpendAuthorizationResponse",
     "DaemonDepositInsufficient",
     "DepositInfo",
     "FundingIntent",

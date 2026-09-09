@@ -3,6 +3,14 @@
 The load-bearing design decisions behind Livepeer Open Clearinghouse, written down so future
 agent runs can reason about them without re-deriving them from code.
 
+> **Protocol epochs:** This file describes the currently implemented legacy
+> funding model. The approved target is
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md):
+> customer maxima become single-purpose authorization caps, while tickets fund
+> only bounded shortfall in a shared LOC payer-payee wholesale account. LOC
+> preserves this legacy behavior until Modules publishes the versioned wire
+> contract and fails closed rather than mixing the two models.
+
 ## What Livepeer Open Clearinghouse is
 
 A single Python service that sits between Livepeer application developers and
@@ -56,7 +64,7 @@ On-chain identity is the operator's, not the user's.
 **Trade-off:** Livepeer Open Clearinghouse must absorb short-term variance from probabilistic
 micropayments. See `docs/RELIABILITY.md`.
 
-### 3. Charge ticket EV at issuance ("Option A")
+### 3. Charge ticket EV at issuance (legacy protocol only)
 
 When `payment-daemon.CreatePayment` returns `expected_value`, Livepeer Open Clearinghouse
 decrements the user's balance by that exact amount and never revisits.
@@ -70,9 +78,11 @@ what was charged in EV terms.
 
 **Trade-off:** Livepeer Open Clearinghouse's pooled wallet eats short-term lottery variance —
 favorable in expectation, unfavorable in any given window. Acceptable for
-MVP scale; revisit if it stops being acceptable.
+MVP scale. This is not the future customer-billing rule: under design 002,
+ticket EV funds LOC's wholesale account and verified actual usage is priced in
+a separate customer ledger.
 
-### 4. Job-sizing is "N work units," not "X wei of funding"
+### 4. Job-sizing is "N work units," not "X wei of funding" (legacy protocol)
 
 The app developer asks for tickets in units of work (e.g., "200 tokens",
 "30 video frames"). Livepeer Open Clearinghouse multiplies by `price_per_work_unit_wei` from
@@ -87,6 +97,9 @@ Discovery (`Select`) gives Livepeer Open Clearinghouse the rate; Livepeer Open C
 up-front (e.g., LLM completions), the app dev declares `max_work_units`,
 Livepeer Open Clearinghouse reserves credit for the max, and refunds the delta after the app
 dev reports actuals back. See `domains/usage`.
+
+Under design 002, `max_work_units` still expresses a customer authorization
+ceiling, but it no longer commands LOC to mint the corresponding ticket EV.
 
 ### 5. Discovery is a thin pass-through
 
@@ -129,15 +142,17 @@ a whole toolchain (bundler, transpiler, css processor) from the surface
 area. Matches the conventions established in `livepeer-modules-openai`.
 See `docs/FRONTEND.md`.
 
-### 9. Livepeer Open Clearinghouse fronts every external call from app devs
+### 9. Livepeer Open Clearinghouse fronts every control-plane call from app devs
 
 App developers talk only to Livepeer Open Clearinghouse. They never address `payment-daemon`
 or `service-registry-daemon` directly. Livepeer Open Clearinghouse can therefore enforce
 billing on every call without trusting clients.
 
-**Why:** keeps the auth/billing model simple. A v2 might issue scoped
-tokens for app devs to talk to daemons directly (taking Livepeer Open Clearinghouse out of
-the hot path); that's an optimization, not a feature.
+**Why:** keeps customer authentication and billing policy in LOC. In handoff
+mode, the customer or SDK may invoke the selected broker directly, but only
+with LOC-issued, route-locked authority. The future Modules contract makes
+that authority single-purpose; it never grants generic access to LOC's pooled
+wholesale credit.
 
 ## When in doubt
 

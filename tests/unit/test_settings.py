@@ -67,3 +67,19 @@ def test_production_settings_reject_development_defaults() -> None:
     assert "API_KEY_HASH_PEPPER" in message
     assert "SESSION_SECRET" in message
     assert "METRICS_TOKEN" in message
+
+
+@pytest.mark.unit
+def test_wholesale_rollout_is_disabled_and_requires_complete_limits() -> None:
+    assert Settings().wholesale_accounts_enabled is False
+    with pytest.raises(ValidationError, match="positive chain and exposure limits"):
+        Settings(wholesale_accounts_enabled=True)
+    with pytest.raises(ValidationError, match="target exceeds"):
+        Settings(
+            wholesale_accounts_enabled=True,
+            wholesale_chain_id=42161,
+            wholesale_target_available_wei=101,
+            wholesale_max_available_per_payee_wei=100,
+            wholesale_max_aggregate_available_wei=1_000,
+            wholesale_max_single_funding_wei=100,
+        )

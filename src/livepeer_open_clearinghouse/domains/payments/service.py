@@ -35,12 +35,22 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     PaymentIdempotencyKey,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
+from livepeer_open_clearinghouse.providers.payment_daemon import (
+    AcceptedPrice,
+    CreateSpendAuthorizationRequest,
+    CreateSpendAuthorizationResponse,
+    PaymentDaemonClient,
+    QuoteRef,
+)
+from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
 from livepeer_open_clearinghouse.providers.telemetry import (
     payment_daemon_current_round,
     payment_daemon_deposit_wei,
     payment_daemon_reserve_wei,
     payment_daemon_ticket_validity_period,
 )
+
+_ETH_ADDRESS_HEX_LENGTH = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +64,72 @@ class CreateRequestClaim:
     @property
     def is_replay(self) -> bool:
         return self.replay_status is not None
+
+
+async def issue_route_locked_authorization(
+    *,
+    daemon: PaymentDaemonClient,
+    route: SelectedRoute,
+    authorization_id: str,
+    request_id: str,
+    session_id: str,
+    request_digest: bytes,
+    caller_public_key: bytes,
+    max_debit_wei: Decimal,
+    max_total_units: int,
+    not_before: datetime,
+    expires_at: datetime,
+    chain_id: int,
+    revision: int = 0,
+    predecessor_authorization_id: str = "",
+) -> tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]:
+    """Sign only facts from one trusted, already-selected registry route."""
+
+    if not route.features.wholesale_accounts:
+        raise ValueError("selected route does not support wholesale accounts")
+    if not caller_public_key:
+        raise ValueError("wholesale authorization requires caller proof key")
+    request = CreateSpendAuthorizationRequest(
+        payee=_eth_address_to_bytes(route.eth_address),
+        authorization_id=authorization_id,
+        request_id=request_id,
+        session_id=session_id,
+        protocol=route.protocol,
+        accepted_price=AcceptedPrice(
+            capability=route.capability,
+            offering=route.offering,
+            price_per_unit_wei=route.price_per_work_unit_wei,
+            units_per_price=route.units_per_price,
+            work_unit_name=route.work_unit,
+            quote_ref=QuoteRef(
+                quote_id=route.quote_id,
+                quote_version=route.quote_version,
+                constraint_fingerprint=route.constraint_fingerprint,
+                route_fingerprint=route.route_fingerprint,
+            ),
+        ),
+        max_debit_wei=max_debit_wei,
+        max_total_units=max_total_units,
+        not_before=not_before,
+        expires_at=expires_at,
+        request_digest=request_digest,
+        caller_public_key=caller_public_key,
+        revision=revision,
+        predecessor_authorization_id=predecessor_authorization_id,
+        broker_uri=route.worker_url,
+        chain_id=chain_id,
+    )
+    return request, await daemon.create_spend_authorization(request)
+
+
+def _eth_address_to_bytes(address: str) -> bytes:
+    raw = address.removeprefix("0x")
+    if len(raw) != _ETH_ADDRESS_HEX_LENGTH:
+        raise ValueError("selected payee must be a 20-byte hex address")
+    try:
+        return bytes.fromhex(raw)
+    except ValueError as exc:
+        raise ValueError("selected payee must be a 20-byte hex address") from exc
 
 
 def create_request_fingerprint(*, operation: str, payload: dict[str, Any]) -> str:

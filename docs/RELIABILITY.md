@@ -3,6 +3,14 @@
 The reliability principles for Livepeer Open Clearinghouse. Read this before changing
 anything in `domains/billing`, `domains/payments`, or `domains/usage`.
 
+> **Version boundary:** Detailed mint, refill, `work_id`, and settlement rules
+> below apply to the current legacy protocol. The approved future invariants
+> are in
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+> LOC must preserve legacy semantics until a versioned Modules contract ships
+> and must fail closed rather than combine legacy tickets with new shared
+> account authorizations.
+
 ## The principle
 
 **Under-billing is a liability. Over-billing is recoverable.** Every design
@@ -22,6 +30,11 @@ Return an error rather than serve work whenever:
 - The daemon returns any error from `Select` or `CreatePayment`.
 - The user's `funded_value_wei` would exceed available balance.
 - A usage record cannot be written idempotently.
+
+For the future wholesale-account protocol, fail closed also when any selected
+peer cannot prove support for the complete account, single-purpose
+authorization, atomic reservation, and durable-status semantics. A partial
+feature match is not a compatibility mode.
 
 For app-dev-facing failures, the canonical response is `402 Payment
 Required` with a structured error body:

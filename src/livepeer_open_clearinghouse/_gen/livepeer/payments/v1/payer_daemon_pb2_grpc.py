@@ -40,6 +40,11 @@ class PayerDaemonStub(object):
                 request_serializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentRequest.SerializeToString,
                 response_deserializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentResponse.FromString,
                 _registered_method=True)
+        self.CreateSpendAuthorization = channel.unary_unary(
+                '/livepeer.payments.v1.PayerDaemon/CreateSpendAuthorization',
+                request_serializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationRequest.SerializeToString,
+                response_deserializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationResponse.FromString,
+                _registered_method=True)
         self.ReportPaymentResult = channel.unary_unary(
                 '/livepeer.payments.v1.PayerDaemon/ReportPaymentResult',
                 request_serializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.ReportPaymentResultRequest.SerializeToString,
@@ -90,6 +95,14 @@ class PayerDaemonServicer(object):
         treat the returned `TicketParams` as the source of truth and not
         assume the returned winning-ticket face value equals the funded
         value they requested.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateSpendAuthorization(self, request, context):
+        """Sign one single-purpose job/session spend authorization. This grants no
+        generic access to the payer's wholesale balance and creates no ticket.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -151,6 +164,11 @@ def add_PayerDaemonServicer_to_server(servicer, server):
                     request_deserializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentRequest.FromString,
                     response_serializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentResponse.SerializeToString,
             ),
+            'CreateSpendAuthorization': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateSpendAuthorization,
+                    request_deserializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationRequest.FromString,
+                    response_serializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationResponse.SerializeToString,
+            ),
             'ReportPaymentResult': grpc.unary_unary_rpc_method_handler(
                     servicer.ReportPaymentResult,
                     request_deserializer=livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.ReportPaymentResultRequest.FromString,
@@ -199,6 +217,33 @@ class PayerDaemon(object):
             '/livepeer.payments.v1.PayerDaemon/CreatePayment',
             livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentRequest.SerializeToString,
             livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreatePaymentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateSpendAuthorization(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/livepeer.payments.v1.PayerDaemon/CreateSpendAuthorization',
+            livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationRequest.SerializeToString,
+            livepeer_dot_payments_dot_v1_dot_payer__daemon__pb2.CreateSpendAuthorizationResponse.FromString,
             options,
             channel_credentials,
             insecure,

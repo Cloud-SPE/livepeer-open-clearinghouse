@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     job_conservative_charge_after_seconds: int = Field(default=0, ge=0)
     session_reconciliation_interval_seconds: int = Field(default=60, ge=0)
 
+    # ---- wholesale-account rollout (disabled until explicitly configured) ----
+    wholesale_accounts_enabled: bool = False
+    wholesale_chain_id: int = Field(default=0, ge=0)
+    wholesale_target_available_wei: int = Field(default=0, ge=0)
+    wholesale_max_available_per_payee_wei: int = Field(default=0, ge=0)
+    wholesale_max_aggregate_available_wei: int = Field(default=0, ge=0)
+    wholesale_max_single_funding_wei: int = Field(default=0, ge=0)
+
     # ---- per-IP rate limits (in-process token bucket) ----
     rl_login_capacity: int = Field(default=10, ge=0)
     rl_login_refill_per_minute: int = Field(default=10, ge=0)
@@ -137,6 +145,23 @@ class Settings(BaseSettings):
     def reject_unsafe_production_defaults(self) -> Settings:
         """Fail startup instead of silently running production with dev trust."""
 
+        if self.wholesale_accounts_enabled:
+            wholesale_values = (
+                self.wholesale_chain_id,
+                self.wholesale_target_available_wei,
+                self.wholesale_max_available_per_payee_wei,
+                self.wholesale_max_aggregate_available_wei,
+                self.wholesale_max_single_funding_wei,
+            )
+            if any(value <= 0 for value in wholesale_values):
+                raise ValueError(
+                    "wholesale account rollout requires positive chain and exposure limits"
+                )
+            if (
+                self.wholesale_target_available_wei > self.wholesale_max_available_per_payee_wei
+                or self.wholesale_target_available_wei > self.wholesale_max_aggregate_available_wei
+            ):
+                raise ValueError("wholesale target exceeds an operator exposure limit")
         if self.app_env != "prod":
             return self
         checks = (

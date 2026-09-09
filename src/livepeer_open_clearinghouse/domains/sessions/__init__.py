@@ -15,6 +15,7 @@ rows may attach to the same session via `payment.session_id`.
 from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
+    SpendAuthorizationGrant,
 )
 
-__all__ = ["PaymentSession", "PaymentSettlement"]
+__all__ = ["PaymentSession", "PaymentSettlement", "SpendAuthorizationGrant"]

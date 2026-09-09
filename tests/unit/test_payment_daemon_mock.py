@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from livepeer_open_clearinghouse.providers.payment_daemon import (
     AcceptedPrice,
+    AccountFundingIntent,
     CreatePaymentRequest,
+    CreateSpendAuthorizationRequest,
     FundingIntent,
     MockPaymentDaemonClient,
     PaymentDaemonError,
@@ -53,6 +56,82 @@ async def test_create_payment_returns_expected_value_proportional_to_funding() -
     assert res.expected_value == Decimal(50_000)
     assert res.funded_value_wei == Decimal(50_000)
     assert res.tickets_created == 1
+
+
+@pytest.mark.unit
+async def test_create_payment_mints_only_shared_account_shortfall() -> None:
+    client = MockPaymentDaemonClient()
+    request = replace(
+        _request(100_000),
+        account_funding=AccountFundingIntent(
+            target_available_wei=Decimal(100_000),
+            observed_available_wei=Decimal(75_000),
+        ),
+    )
+    response = await client.create_payment(request)
+    assert response.funded_value_wei == Decimal(25_000)
+    assert response.account_shortfall_wei == Decimal(25_000)
+    assert validate_funding_response(request, response) is response
+
+    with pytest.raises(PaymentDaemonError, match="does not equal"):
+        validate_funding_response(
+            request,
+            replace(response, expected_value=response.expected_value + 1),
+        )
+
+
+@pytest.mark.unit
+async def test_create_payment_returns_no_envelope_for_zero_shortfall() -> None:
+    client = MockPaymentDaemonClient()
+    request = replace(
+        _request(100_000),
+        account_funding=AccountFundingIntent(
+            target_available_wei=Decimal(100_000),
+            observed_available_wei=Decimal(100_000),
+        ),
+    )
+    response = await client.create_payment(request)
+    assert response.payment_bytes == b""
+    assert response.sender == b""
+    assert validate_funding_response(request, response) is response
+
+
+@pytest.mark.unit
+async def test_spend_authorization_is_structural_and_idempotent() -> None:
+    client = MockPaymentDaemonClient()
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    request = CreateSpendAuthorizationRequest(
+        payee=bytes.fromhex("22" * 20),
+        authorization_id="auth-1",
+        request_id="request-1",
+        session_id="",
+        protocol="paid-job/v1",
+        accepted_price=_request().accepted_price,
+        max_debit_wei=Decimal(50_000),
+        max_total_units=50,
+        not_before=now,
+        expires_at=now + timedelta(minutes=5),
+        request_digest=b"\x33" * 32,
+        caller_public_key=b"",
+        revision=0,
+        predecessor_authorization_id="",
+        broker_uri="https://broker.example",
+        chain_id=42161,
+    )
+
+    first = await client.create_spend_authorization(request)
+    replay = await client.create_spend_authorization(request)
+    assert replay == first
+    assert first.authorization_id == "auth-1"
+    assert first.payer == b"\xaa" * 20
+
+    from livepeer.payments.v1 import types_pb2
+
+    wire = types_pb2.SpendAuthorization.FromString(first.authorization_bytes)
+    assert wire.payload.domain == "livepeer-spend-authorization/v1"
+    assert wire.payload.request_digest == b"\x33" * 32
+    with pytest.raises(PaymentDaemonError, match="different request content"):
+        await client.create_spend_authorization(replace(request, request_digest=b"\x44" * 32))
 
 
 @pytest.mark.unit

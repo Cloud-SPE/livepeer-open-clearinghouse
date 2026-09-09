@@ -28,7 +28,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, ForeignKey
+from sqlalchemy import JSON, BigInteger, ForeignKey, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -59,6 +59,12 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)
     protocol: Mapped[str] = mapped_column(nullable=False)
+    # Legacy rows couple customer exposure to a Payment. Wholesale rows carry
+    # an explicit pricing snapshot and authorization identity instead.
+    accounting_mode: Mapped[str] = mapped_column(nullable=False, default="legacy_ticket")
+    customer_pricing: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    customer_max_debit_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    authorization_id: Mapped[str | None] = mapped_column(nullable=True, unique=True)
     route_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     broker_request_id: Mapped[str | None] = mapped_column(nullable=True)
     state: Mapped[str] = mapped_column(nullable=False, index=True)
@@ -106,3 +112,35 @@ class PaymentSettlement(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMix
     billed_value_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
     outcome: Mapped[str | None] = mapped_column(nullable=True)
     raw_record: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class SpendAuthorizationGrant(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
+    """Append-only LOC record of one signed, route-locked authority revision."""
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "revision", name="uq_spend_authorization_grant_session_revision"
+        ),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("payment_session.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    authorization_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    predecessor_authorization_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    caller_public_key: Mapped[str] = mapped_column(nullable=False)
+    authorization_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    protocol: Mapped[str] = mapped_column(nullable=False)
+    route_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payer_eth_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    denomination: Mapped[str] = mapped_column(String(16), nullable=False)
+    max_debit_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    max_total_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    not_before: Mapped[datetime] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(nullable=True)

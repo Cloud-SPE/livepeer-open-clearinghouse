@@ -2,6 +2,11 @@
 
 What Livepeer Open Clearinghouse is for, who it's for, and the scope guardrails.
 
+> The endpoint inventory below retains the original MVP story. The approved
+> next payment model keeps the same customer promise while separating customer
+> authorization and pricing from shared wholesale funding. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+
 ## The pitch in one paragraph
 
 If you are building an application that uses the Livepeer network — for
@@ -58,7 +63,7 @@ The minimum that makes the value proposition real:
    Auto-replenish bounded by a spend-per-period cap. Spend-window ledger.
 4. **Discovery.** Pass-through of `service-registry-daemon.Resolve` /
    `Select` results, with the caller's API key validated.
-5. **Ticket minting.** The headline path:
+5. **Ticket minting (legacy protocol).** The headline path:
    `POST /v1/payments/mint { capability, offering, work_units }` →
    call `Select`, check balance, call `CreatePayment`, decrement EV, return
    `payment_bytes`.
@@ -71,6 +76,13 @@ The minimum that makes the value proposition real:
 
 That's the bar. Anything beyond that is v2 unless it's load-bearing for one
 of these items.
+
+For the future Modules account protocol, the product bar remains simple HTTP:
+LOC locks the route and grants one bounded request/session authorization;
+wholesale tickets and pooled account credit remain invisible to the customer.
+Official SDKs provide the fastest path, but raw HTTP callers receive the same
+accounting guarantees and LOC reconciles independently from broker-signed
+durable status.
 
 ## What we are explicitly not building for MVP
 

@@ -7,6 +7,16 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class SpendAuthorizationState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SPEND_AUTHORIZATION_STATE_UNSPECIFIED: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_ISSUED: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_ADMITTED: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_SETTLED: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_EXPIRED_UNUSED: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_OUTCOME_UNKNOWN: _ClassVar[SpendAuthorizationState]
+    SPEND_AUTHORIZATION_SUPERSEDED: _ClassVar[SpendAuthorizationState]
+
 class PaymentRejectionReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     PAYMENT_REJECTION_REASON_UNSPECIFIED: _ClassVar[PaymentRejectionReason]
@@ -15,6 +25,13 @@ class PaymentRejectionReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PAYMENT_REJECTION_REASON_NONCE_CAP_REACHED: _ClassVar[PaymentRejectionReason]
     PAYMENT_REJECTION_REASON_INVALID_SIGNATURE: _ClassVar[PaymentRejectionReason]
     PAYMENT_REJECTION_REASON_OTHER: _ClassVar[PaymentRejectionReason]
+SPEND_AUTHORIZATION_STATE_UNSPECIFIED: SpendAuthorizationState
+SPEND_AUTHORIZATION_ISSUED: SpendAuthorizationState
+SPEND_AUTHORIZATION_ADMITTED: SpendAuthorizationState
+SPEND_AUTHORIZATION_SETTLED: SpendAuthorizationState
+SPEND_AUTHORIZATION_EXPIRED_UNUSED: SpendAuthorizationState
+SPEND_AUTHORIZATION_OUTCOME_UNKNOWN: SpendAuthorizationState
+SPEND_AUTHORIZATION_SUPERSEDED: SpendAuthorizationState
 PAYMENT_REJECTION_REASON_UNSPECIFIED: PaymentRejectionReason
 PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND: PaymentRejectionReason
 PAYMENT_REJECTION_REASON_NONCE_REPLAY: PaymentRejectionReason
@@ -156,8 +173,94 @@ class FundingIntent(_message.Message):
     top_up_allowed: bool
     def __init__(self, estimated_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., top_up_allowed: bool = ...) -> None: ...
 
+class SpendAuthorizationPayload(_message.Message):
+    __slots__ = ("domain", "payer", "payee", "authorization_id", "request_id", "session_id", "protocol", "capability", "offering", "accepted_price", "max_debit_wei", "max_total_units", "not_before", "expires_at", "request_digest", "caller_public_key", "revision", "predecessor_authorization_id", "broker_uri", "chain_id", "denomination")
+    DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    PAYER_FIELD_NUMBER: _ClassVar[int]
+    PAYEE_FIELD_NUMBER: _ClassVar[int]
+    AUTHORIZATION_ID_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    PROTOCOL_FIELD_NUMBER: _ClassVar[int]
+    CAPABILITY_FIELD_NUMBER: _ClassVar[int]
+    OFFERING_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_PRICE_FIELD_NUMBER: _ClassVar[int]
+    MAX_DEBIT_WEI_FIELD_NUMBER: _ClassVar[int]
+    MAX_TOTAL_UNITS_FIELD_NUMBER: _ClassVar[int]
+    NOT_BEFORE_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    CALLER_PUBLIC_KEY_FIELD_NUMBER: _ClassVar[int]
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    PREDECESSOR_AUTHORIZATION_ID_FIELD_NUMBER: _ClassVar[int]
+    BROKER_URI_FIELD_NUMBER: _ClassVar[int]
+    CHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    DENOMINATION_FIELD_NUMBER: _ClassVar[int]
+    domain: str
+    payer: bytes
+    payee: bytes
+    authorization_id: str
+    request_id: str
+    session_id: str
+    protocol: str
+    capability: str
+    offering: str
+    accepted_price: AcceptedPrice
+    max_debit_wei: BigUInt
+    max_total_units: int
+    not_before: str
+    expires_at: str
+    request_digest: bytes
+    caller_public_key: bytes
+    revision: int
+    predecessor_authorization_id: str
+    broker_uri: str
+    chain_id: int
+    denomination: str
+    def __init__(self, domain: _Optional[str] = ..., payer: _Optional[bytes] = ..., payee: _Optional[bytes] = ..., authorization_id: _Optional[str] = ..., request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., protocol: _Optional[str] = ..., capability: _Optional[str] = ..., offering: _Optional[str] = ..., accepted_price: _Optional[_Union[AcceptedPrice, _Mapping]] = ..., max_debit_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., not_before: _Optional[str] = ..., expires_at: _Optional[str] = ..., request_digest: _Optional[bytes] = ..., caller_public_key: _Optional[bytes] = ..., revision: _Optional[int] = ..., predecessor_authorization_id: _Optional[str] = ..., broker_uri: _Optional[str] = ..., chain_id: _Optional[int] = ..., denomination: _Optional[str] = ...) -> None: ...
+
+class SpendAuthorization(_message.Message):
+    __slots__ = ("payload", "signature")
+    PAYLOAD_FIELD_NUMBER: _ClassVar[int]
+    SIGNATURE_FIELD_NUMBER: _ClassVar[int]
+    payload: SpendAuthorizationPayload
+    signature: bytes
+    def __init__(self, payload: _Optional[_Union[SpendAuthorizationPayload, _Mapping]] = ..., signature: _Optional[bytes] = ...) -> None: ...
+
+class AccountFundingIntent(_message.Message):
+    __slots__ = ("target_available_wei", "observed_available_wei")
+    TARGET_AVAILABLE_WEI_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AVAILABLE_WEI_FIELD_NUMBER: _ClassVar[int]
+    target_available_wei: BigUInt
+    observed_available_wei: BigUInt
+    def __init__(self, target_available_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., observed_available_wei: _Optional[_Union[BigUInt, _Mapping]] = ...) -> None: ...
+
+class WholesaleAccountView(_message.Message):
+    __slots__ = ("payer", "payee", "credited_value_wei", "reserved_value_wei", "debited_value_wei", "available_value_wei", "version", "observed_at", "chain_id", "denomination")
+    PAYER_FIELD_NUMBER: _ClassVar[int]
+    PAYEE_FIELD_NUMBER: _ClassVar[int]
+    CREDITED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    RESERVED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    DEBITED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    AVAILABLE_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    VERSION_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    CHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    DENOMINATION_FIELD_NUMBER: _ClassVar[int]
+    payer: bytes
+    payee: bytes
+    credited_value_wei: BigUInt
+    reserved_value_wei: BigUInt
+    debited_value_wei: BigUInt
+    available_value_wei: BigUInt
+    version: int
+    observed_at: str
+    chain_id: int
+    denomination: str
+    def __init__(self, payer: _Optional[bytes] = ..., payee: _Optional[bytes] = ..., credited_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., reserved_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., debited_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., available_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., version: _Optional[int] = ..., observed_at: _Optional[str] = ..., chain_id: _Optional[int] = ..., denomination: _Optional[str] = ...) -> None: ...
+
 class SettlementRecord(_message.Message):
-    __slots__ = ("accepted_quote_ref", "work_unit_name", "estimated_units", "actual_units", "billed_units", "funded_value_wei", "billed_value_wei", "outcome", "breakdown", "session_id", "work_id", "predecessor_work_id", "rotation_generation", "claimed_units", "debited_units", "generation_debited_units", "generation_billed_value_wei", "generation_funded_value_wei", "amount_wei", "per_units", "settlement_seq", "issued_at", "state", "job_id", "payment_cumulative_units", "gateway_session_id", "request_id")
+    __slots__ = ("accepted_quote_ref", "work_unit_name", "estimated_units", "actual_units", "billed_units", "funded_value_wei", "billed_value_wei", "outcome", "breakdown", "session_id", "work_id", "predecessor_work_id", "rotation_generation", "claimed_units", "debited_units", "generation_debited_units", "generation_billed_value_wei", "generation_funded_value_wei", "amount_wei", "per_units", "settlement_seq", "issued_at", "state", "job_id", "payment_cumulative_units", "gateway_session_id", "request_id", "authorization_id", "authorized_value_wei", "reserved_value_wei", "released_value_wei", "account_funding_value_wei", "account_version")
     class SettlementOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         SETTLEMENT_OUTCOME_UNSPECIFIED: _ClassVar[SettlementRecord.SettlementOutcome]
@@ -208,6 +311,12 @@ class SettlementRecord(_message.Message):
     PAYMENT_CUMULATIVE_UNITS_FIELD_NUMBER: _ClassVar[int]
     GATEWAY_SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    AUTHORIZATION_ID_FIELD_NUMBER: _ClassVar[int]
+    AUTHORIZED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    RESERVED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    RELEASED_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_FUNDING_VALUE_WEI_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_VERSION_FIELD_NUMBER: _ClassVar[int]
     accepted_quote_ref: QuoteRef
     work_unit_name: str
     estimated_units: int
@@ -235,7 +344,13 @@ class SettlementRecord(_message.Message):
     payment_cumulative_units: int
     gateway_session_id: str
     request_id: str
-    def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ..., session_id: _Optional[str] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., rotation_generation: _Optional[int] = ..., claimed_units: _Optional[int] = ..., debited_units: _Optional[int] = ..., generation_debited_units: _Optional[int] = ..., generation_billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., generation_funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., amount_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., per_units: _Optional[int] = ..., settlement_seq: _Optional[int] = ..., issued_at: _Optional[str] = ..., state: _Optional[str] = ..., job_id: _Optional[str] = ..., payment_cumulative_units: _Optional[int] = ..., gateway_session_id: _Optional[str] = ..., request_id: _Optional[str] = ...) -> None: ...
+    authorization_id: str
+    authorized_value_wei: BigUInt
+    reserved_value_wei: BigUInt
+    released_value_wei: BigUInt
+    account_funding_value_wei: BigUInt
+    account_version: int
+    def __init__(self, accepted_quote_ref: _Optional[_Union[QuoteRef, _Mapping]] = ..., work_unit_name: _Optional[str] = ..., estimated_units: _Optional[int] = ..., actual_units: _Optional[int] = ..., billed_units: _Optional[int] = ..., funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., outcome: _Optional[_Union[SettlementRecord.SettlementOutcome, str]] = ..., breakdown: _Optional[_Mapping[str, str]] = ..., session_id: _Optional[str] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., rotation_generation: _Optional[int] = ..., claimed_units: _Optional[int] = ..., debited_units: _Optional[int] = ..., generation_debited_units: _Optional[int] = ..., generation_billed_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., generation_funded_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., amount_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., per_units: _Optional[int] = ..., settlement_seq: _Optional[int] = ..., issued_at: _Optional[str] = ..., state: _Optional[str] = ..., job_id: _Optional[str] = ..., payment_cumulative_units: _Optional[int] = ..., gateway_session_id: _Optional[str] = ..., request_id: _Optional[str] = ..., authorization_id: _Optional[str] = ..., authorized_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., reserved_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., released_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., account_funding_value_wei: _Optional[_Union[BigUInt, _Mapping]] = ..., account_version: _Optional[int] = ...) -> None: ...
 
 class NonAdmissionRecord(_message.Message):
     __slots__ = ("protocol", "request_id", "work_id", "sender", "recipient", "accepted_quote_ref", "broker_eth_address", "observed_at", "coverage_started_at", "outcome")

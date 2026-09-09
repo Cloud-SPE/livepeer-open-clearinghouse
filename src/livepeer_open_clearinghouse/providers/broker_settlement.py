@@ -5,16 +5,51 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 
 class BrokerSettlementQueryError(Exception):
     """The broker lookup did not yield a trustworthy protocol response."""
+
+
+class BrokerWholesaleAccountError(Exception):
+    """The broker account endpoint failed or returned an untrusted response."""
+
+
+class WholesaleAccountObservation(BaseModel):
+    """Strict broker view of LOC's shared account at one selected payee."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    chain_id: int = Field(gt=0)
+    denomination: str
+    credited_value_wei: Decimal = Field(ge=0)
+    reserved_value_wei: Decimal = Field(ge=0)
+    debited_value_wei: Decimal = Field(ge=0)
+    available_value_wei: Decimal = Field(ge=0)
+    version: int = Field(ge=0)
+    observed_at: AwareDatetime
+
+
+class WholesaleFundingResult(BaseModel):
+    """Strict acknowledgement from the funding-only broker endpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    credited_value_wei: Decimal = Field(ge=0)
+    available_value_wei: Decimal = Field(ge=0)
+    account_version: int = Field(ge=0)
+    replayed: bool
 
 
 class BrokerExchangeOutcome(StrEnum):
@@ -126,11 +161,114 @@ class BrokerSettlementClient(Protocol):
     ) -> BrokerExchangeResult: ...
 
 
+class BrokerWholesaleAccountClient(Protocol):
+    """Boundary for observing and funding stable payer-payee credit."""
+
+    async def get_wholesale_account(
+        self,
+        *,
+        broker_url: str,
+        payer_eth_address: str,
+        payee_eth_address: str,
+        chain_id: int,
+    ) -> WholesaleAccountObservation: ...
+
+    async def fund_wholesale_account(
+        self,
+        *,
+        broker_url: str,
+        capability: str,
+        offering: str,
+        payment_bytes: bytes,
+        payer_eth_address: str,
+        payee_eth_address: str,
+        expected_credited_value_wei: Decimal,
+    ) -> WholesaleFundingResult: ...
+
+
 class HttpBrokerSettlementClient:
     """HTTP implementation of the Modules v2 settlement lookup contract."""
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
+
+    async def get_wholesale_account(
+        self,
+        *,
+        broker_url: str,
+        payer_eth_address: str,
+        payee_eth_address: str,
+        chain_id: int,
+    ) -> WholesaleAccountObservation:
+        """Read one TLS-bound account snapshot for shortfall calculation."""
+
+        url = f"{broker_url.rstrip('/')}/v1/payment/account"
+        try:
+            response = await self._client.post(url, json={"payer_eth_address": payer_eth_address})
+        except httpx.HTTPError as exc:
+            raise BrokerWholesaleAccountError("broker account query failed") from exc
+        if response.status_code != httpx.codes.OK:
+            raise BrokerWholesaleAccountError(
+                f"broker account query returned HTTP {response.status_code}"
+            )
+        try:
+            account = WholesaleAccountObservation.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise BrokerWholesaleAccountError(
+                "broker returned a malformed wholesale account"
+            ) from exc
+        if account.payer != payer_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker returned a different payer")
+        if account.payee != payee_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker returned a different payee")
+        if account.chain_id != chain_id:
+            raise BrokerWholesaleAccountError("broker returned a different chain_id")
+        if account.denomination != "wei":
+            raise BrokerWholesaleAccountError("broker returned a non-wei account")
+        return account
+
+    async def fund_wholesale_account(
+        self,
+        *,
+        broker_url: str,
+        capability: str,
+        offering: str,
+        payment_bytes: bytes,
+        payer_eth_address: str,
+        payee_eth_address: str,
+        expected_credited_value_wei: Decimal,
+    ) -> WholesaleFundingResult:
+        """Deposit an envelope without delegating it to an end caller."""
+
+        if not payment_bytes:
+            raise BrokerWholesaleAccountError("cannot fund an account with an empty payment")
+        url = f"{broker_url.rstrip('/')}/v1/payment/account/fund"
+        headers = {
+            "Livepeer-Payment": base64.b64encode(payment_bytes).decode("ascii"),
+            "Livepeer-Capability": capability,
+            "Livepeer-Offering": offering,
+        }
+        try:
+            response = await self._client.post(url, headers=headers, content=b"")
+        except httpx.HTTPError as exc:
+            raise BrokerWholesaleAccountError("broker account funding failed") from exc
+        if response.status_code != httpx.codes.OK:
+            raise BrokerWholesaleAccountError(
+                f"broker account funding returned HTTP {response.status_code}"
+            )
+        try:
+            result = WholesaleFundingResult.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise BrokerWholesaleAccountError(
+                "broker returned a malformed account funding acknowledgement"
+            ) from exc
+        if result.payer != payer_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker funded a different payer")
+        if result.payee != payee_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker funded a different payee")
+        if result.credited_value_wei != expected_credited_value_wei:
+            raise BrokerWholesaleAccountError("broker credited an unexpected value")
+        return result
 
     async def get_settlement(
         self, *, broker_url: str, gateway_session_id: uuid.UUID

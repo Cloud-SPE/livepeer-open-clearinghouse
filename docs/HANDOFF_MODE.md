@@ -9,6 +9,14 @@ exec-plan-002 rewrite. Companion to:
 - The architecture overview: [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - The reliability + state machines: [`docs/RELIABILITY.md`](RELIABILITY.md)
 
+> **Current protocol reference:** Sections 2–9 describe the implemented
+> paid-job/session contract. They are preserved for compatibility. Under the
+> approved future design, tickets fund bounded shortfall in LOC's shared
+> payer-payee account, the caller carries a separate single-purpose
+> authorization, session maxima are cumulative caps, and SDK reporting is a
+> fast path rather than a correctness dependency. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+
 ---
 
 ## 1. What handoff mode is
@@ -181,8 +189,8 @@ and returns the ordinary rebind response to the SDK. The broker-facing steps
 
 ## 5. SDK criticality
 
-Because LOC isn't in the data path, the SDK is **part of the
-platform**. It's responsible for:
+Because LOC isn't in the data path, the SDK is **part of the platform under
+the current protocol**. It's responsible for:
 
 1. **Refill loop** (an offering with `session.refill=extensible`): consuming
    the normative `balance` object from broker status/top-up responses or the
@@ -306,6 +314,11 @@ The customer-facing onboarding doc should make clear:
 > If you need a language we don't ship, the OpenAPI document at
 > `/openapi.json` is the authoritative wire contract. Use it +
 > the SDK source as your reference implementation.
+
+This support policy does not make the SDK an accounting principal. With the
+future account/authorization protocol, raw HTTP remains supported and LOC must
+recover authoritative broker state by its own request/session ID even when no
+SDK callback arrives.
 
 This text is suitable for inclusion in customer-facing onboarding
 emails, the portal first-login flow, and the API docs landing
