@@ -59,6 +59,8 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerSettlementClient,
     BrokerSettlementQueryError,
     BrokerWholesaleAccountClient,
+    BrokerWholesaleAccountError,
+    SpendAuthorizationState,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -1935,6 +1937,7 @@ async def _verify_close_settlement(
         predecessor_work_id = session_row.predecessor_work_id
     authorization_id: str | None = None
     authorized_value_wei: int | None = None
+    expected_work_id = session_row.work_id
     if session_row.accounting_mode == "wholesale_account":
         payload = settlement.get("payload")
         authorization_hint = payload.get("authorization_id") if isinstance(payload, dict) else None
@@ -1950,6 +1953,11 @@ async def _verify_close_settlement(
             raise SessionSettlementVerificationFailed(reason="missing_authorization")
         authorization_id = grant.authorization_id
         authorized_value_wei = int(grant.max_debit_wei)
+        # A revision can be durably issued before aggregate funding succeeds.
+        # The broker may therefore close against a still-delivered predecessor;
+        # bind work_id to the cryptographically selected grant, not LOC's newest
+        # local pointer.
+        expected_work_id = grant.authorization_id
         amount_wei = int(snapshot["price_per_work_unit_wei"])
     elif initial_payment_row is not None:
         amount_wei = int(initial_payment_row.price_per_work_unit_wei)
@@ -1962,7 +1970,7 @@ async def _verify_close_settlement(
             expected=SessionSettlementExpectation(
                 gateway_session_id=str(session_row.id),
                 broker_session_id=session_row.broker_session_id,
-                work_id=session_row.work_id,
+                work_id=expected_work_id,
                 predecessor_work_id=predecessor_work_id,
                 rotation_generation=session_row.rotation_generation,
                 work_unit=str(snapshot["work_unit"]),
@@ -2164,6 +2172,73 @@ async def close_session(  # noqa: PLR0912, PLR0915 — explicit accounting adapt
 
 
 DEFAULT_JANITOR_INTERVAL_SECONDS = 60
+
+
+async def reconcile_spend_authorization_states(
+    db: AsyncSession,
+    *,
+    broker: BrokerWholesaleAccountClient,
+    clock: Clock,
+    batch_limit: int = 100,
+) -> int:
+    """Advance local grants only from their locked broker's durable state.
+
+    This does not settle customer billing: that still requires the signed
+    workload settlement. It records the irrevocable receiver state needed to
+    decide whether an old route reservation may eventually be retired safely.
+    """
+
+    grants = list(
+        (
+            await db.scalars(
+                select(SpendAuthorizationGrant)
+                .join(PaymentSession, PaymentSession.id == SpendAuthorizationGrant.session_id)
+                .where(
+                    PaymentSession.accounting_mode == "wholesale_account",
+                    SpendAuthorizationGrant.state.in_(("issued", "admitted", "outcome_unknown")),
+                )
+                .order_by(SpendAuthorizationGrant.created_at.asc())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+    changed = 0
+    terminal = {
+        SpendAuthorizationState.SETTLED,
+        SpendAuthorizationState.EXPIRED_UNUSED,
+        SpendAuthorizationState.SUPERSEDED,
+    }
+    for grant in grants:
+        snapshot = grant.route_snapshot or {}
+        broker_url = snapshot.get("broker_url")
+        if not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            observed = await broker.get_spend_authorization(
+                broker_url=broker_url,
+                payer_eth_address=grant.payer_eth_address,
+                authorization_id=grant.authorization_id,
+            )
+        except BrokerWholesaleAccountError:
+            continue
+        next_state = observed.state.value
+        if next_state == grant.state:
+            continue
+        # Receiver state is monotonic. Never let an inconsistent observation
+        # resurrect a reservation or turn an admitted grant into unused expiry.
+        if grant.state == "admitted" and observed.state in {
+            SpendAuthorizationState.ISSUED,
+            SpendAuthorizationState.EXPIRED_UNUSED,
+        }:
+            continue
+        if grant.state == "outcome_unknown" and observed.state not in terminal:
+            continue
+        grant.state = next_state
+        if observed.state in terminal:
+            grant.retired_at = grant.retired_at or clock.now()
+        changed += 1
+    await db.flush()
+    return changed
 
 
 async def reconcile_open_sessions(

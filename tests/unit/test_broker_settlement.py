@@ -91,6 +91,43 @@ async def test_wholesale_account_query_rejects_changed_payer() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
+    payer = "0x" + "aa" * 20
+    authorization_id = "loc-auth:request-1"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/payment/account"
+        assert json.loads(request.content) == {
+            "payer_eth_address": payer,
+            "authorization_id": authorization_id,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "payer": payer,
+                "authorization_id": authorization_id,
+                "state": "expired_unused",
+                "reserved_value_wei": "0",
+                "billed_value_wei": "0",
+                "released_value_wei": "0",
+                "actual_units": 0,
+                "settlement_seq": 0,
+                "observed_at": "2026-09-09T12:00:00Z",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        result = await HttpBrokerSettlementClient(http_client).get_spend_authorization(
+            broker_url="https://broker.example",
+            payer_eth_address=payer,
+            authorization_id=authorization_id,
+        )
+    assert result.state.value == "expired_unused"
+    assert result.authorization_id == authorization_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_wholesale_account_funding_keeps_ticket_inside_loc() -> None:
     payment = b"signed-ticket"
 

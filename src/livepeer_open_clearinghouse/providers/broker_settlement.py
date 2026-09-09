@@ -52,6 +52,31 @@ class WholesaleFundingResult(BaseModel):
     replayed: bool
 
 
+class SpendAuthorizationState(StrEnum):
+    ISSUED = "issued"
+    ADMITTED = "admitted"
+    SETTLED = "settled"
+    EXPIRED_UNUSED = "expired_unused"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    SUPERSEDED = "superseded"
+
+
+class SpendAuthorizationObservation(BaseModel):
+    """Strict durable receiver state for one route-locked authorization."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    authorization_id: str = Field(min_length=1)
+    state: SpendAuthorizationState
+    reserved_value_wei: Decimal = Field(ge=0)
+    billed_value_wei: Decimal = Field(ge=0)
+    released_value_wei: Decimal = Field(ge=0)
+    actual_units: int = Field(ge=0)
+    settlement_seq: int = Field(ge=0)
+    observed_at: AwareDatetime
+
+
 class BrokerExchangeOutcome(StrEnum):
     """Normative paid-job/v1 request-ID lookup outcomes."""
 
@@ -185,6 +210,14 @@ class BrokerWholesaleAccountClient(Protocol):
         expected_credited_value_wei: Decimal,
     ) -> WholesaleFundingResult: ...
 
+    async def get_spend_authorization(
+        self,
+        *,
+        broker_url: str,
+        payer_eth_address: str,
+        authorization_id: str,
+    ) -> SpendAuthorizationObservation: ...
+
 
 class HttpBrokerSettlementClient:
     """HTTP implementation of the Modules v2 settlement lookup contract."""
@@ -226,6 +259,40 @@ class HttpBrokerSettlementClient:
         if account.denomination != "wei":
             raise BrokerWholesaleAccountError("broker returned a non-wei account")
         return account
+
+    async def get_spend_authorization(
+        self,
+        *,
+        broker_url: str,
+        payer_eth_address: str,
+        authorization_id: str,
+    ) -> SpendAuthorizationObservation:
+        """Read irrevocable authorization state from its locked broker."""
+
+        url = f"{broker_url.rstrip('/')}/v1/payment/account"
+        body = {
+            "payer_eth_address": payer_eth_address,
+            "authorization_id": authorization_id,
+        }
+        try:
+            response = await self._client.post(url, json=body)
+        except httpx.HTTPError as exc:
+            raise BrokerWholesaleAccountError("broker authorization query failed") from exc
+        if response.status_code != httpx.codes.OK:
+            raise BrokerWholesaleAccountError(
+                f"broker authorization query returned HTTP {response.status_code}"
+            )
+        try:
+            observation = SpendAuthorizationObservation.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise BrokerWholesaleAccountError(
+                "broker returned a malformed spend authorization"
+            ) from exc
+        if observation.payer != payer_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker returned a different authorization payer")
+        if observation.authorization_id != authorization_id:
+            raise BrokerWholesaleAccountError("broker returned a different authorization")
+        return observation
 
     async def fund_wholesale_account(
         self,

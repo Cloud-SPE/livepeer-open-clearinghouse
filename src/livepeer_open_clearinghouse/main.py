@@ -130,6 +130,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             async with httpx.AsyncClient(timeout=10.0) as http_client:
                 settlement_client = HttpBrokerSettlementClient(http_client)
                 async with session_scope() as db:
+                    authorization_updates = (
+                        await sessions_service.reconcile_spend_authorization_states(
+                            db,
+                            broker=settlement_client,
+                            clock=clock,
+                        )
+                    )
                     n = await sessions_service.reconcile_open_sessions(
                         db,
                         settlement_client=settlement_client,
@@ -138,6 +145,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
                     )
                     if n:
                         log.info("scheduler.reconcile_open_sessions.finalized", count=n)
+                    if authorization_updates:
+                        log.info(
+                            "scheduler.reconcile_authorizations.updated",
+                            count=authorization_updates,
+                        )
         except Exception as exc:
             log.warning("scheduler.reconcile_open_sessions.failed", error=str(exc))
 

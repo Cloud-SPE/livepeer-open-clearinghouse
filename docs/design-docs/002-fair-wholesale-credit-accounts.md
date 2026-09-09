@@ -205,7 +205,13 @@ Authorization history is append-only in `spend_authorization_grant`. Each
 revision persists its exact locked route, commitment, caller key, payer,
 maximum, validity window, and predecessor. Selecting a successor updates the
 engagement's current pointer but does not mark the predecessor retired; only
-the authoritative state work may do that after broker/payee evidence.
+the locked broker's durable authorization status may advance it to admitted,
+settled, expired-unused, superseded, or outcome-unknown. LOC polls that status
+independently of SDK callbacks. Only settled, expired-unused, and superseded
+set the local retirement timestamp; customer billing still requires the signed
+workload settlement. LOC does not offer in-place route mutation: a different
+orchestrator requires a separately authorized engagement while the original
+authorization and hold continue until authoritative terminal evidence arrives.
 
 For wholesale pass-through, LOC may calculate the customer charge from the
 verified wholesale debit. For cost-plus or retail plans, LOC applies the
