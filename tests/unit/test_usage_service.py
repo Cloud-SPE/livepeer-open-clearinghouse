@@ -357,6 +357,14 @@ async def test_attention_lists_stale_jobs_and_refused_settlements(db_session: As
     )
     rows[3].broker_session_id = "runner-session-stuck"
     zero_output.broker_session_id = "runner-session-zero"
+    zero_output.breakdown = {
+        "broker_diagnostics": {
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-09-09T19:56:00+00:00",
+            "last_failure_code": "encoder_init_failed",
+        }
+    }
     db_session.add_all([stale_job, zero_output])
     db_session.add(
         TelemetryEvent(
@@ -404,6 +412,9 @@ async def test_attention_lists_stale_jobs_and_refused_settlements(db_session: As
     assert view.zero_output_sessions[0].session_id == zero_output.id
     assert view.zero_output_sessions[0].broker_session_id == "runner-session-zero"
     assert view.zero_output_sessions[0].duration_seconds == 120.0
+    assert view.zero_output_sessions[0].termination_reason == "output_failed"
+    assert view.zero_output_sessions[0].output_state == "stalled"
+    assert view.zero_output_sessions[0].last_failure_code == "encoder_init_failed"
     assert view.counts.unterminated_sessions == 1
     assert view.unterminated_sessions[0].session_id == rows[3].id
     assert view.unterminated_sessions[0].broker_session_id == "runner-session-stuck"

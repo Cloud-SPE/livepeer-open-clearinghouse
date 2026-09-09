@@ -54,7 +54,7 @@ Requires an operator bearer token.
 | `GET /users/{id}/usage/{overview,jobs,summary}` | the customer views for one user |
 | `GET /usage/summary` | fleet totals with the same breakdowns plus by user |
 | `GET /usage/jobs` | fleet job page with `user_id` and `user_email` on each row; adds a `user_id` filter |
-| `GET /usage/attention` | what needs an operator: open jobs older than `stale_after_seconds` (default 900) still holding funds, and settlement verification failures from the last 24 hours with their reason |
+| `GET /usage/attention` | what needs an operator: stale open jobs, settlement-verification failures, zero-output sessions (including signed `output_failed` diagnoses), and unterminated sessions still holding funds |
 
 Settlement failures are recorded as `server.settlement_verification_failed`
 telemetry events when a job settle or session close is refused, so a broker

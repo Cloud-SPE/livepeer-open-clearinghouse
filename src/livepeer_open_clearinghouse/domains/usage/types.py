@@ -160,6 +160,10 @@ class ZeroOutputSession(BaseModel):
     capability: str
     offering: str
     broker_session_id: str | None
+    termination_reason: str | None
+    output_state: str | None
+    output_state_since: datetime | None
+    last_failure_code: str | None
     duration_seconds: float
     closed_at: datetime
 

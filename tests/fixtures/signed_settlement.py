@@ -192,6 +192,7 @@ def signed_session_settlement(
     authorized_value_wei: int = 0,
     reserved_value_wei: int = 0,
     released_value_wei: int = 0,
+    breakdown: dict[str, str] | None = None,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one signed paid-session/v1 settlement envelope."""
@@ -237,6 +238,8 @@ def signed_session_settlement(
         "issued_at": issued_at,
         "state": state,
     }
+    if breakdown is not None:
+        payload["breakdown"] = breakdown
     if authorization_id is not None:
         payload.update(
             {

@@ -162,6 +162,7 @@ def _settlement(
     billed_value_wei: int | None = None,
     funded_value_wei: int = 1_000_000,
     outcome: str = "OVERFUNDED",
+    breakdown: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return signed_session_settlement(
         gateway_session_id=str(open_resp.session_id),
@@ -174,6 +175,7 @@ def _settlement(
         per_units=1,
         work_unit="session_second",
         outcome=outcome,
+        breakdown=breakdown,
     )
 
 
@@ -190,7 +192,16 @@ async def test_close_overfunded_refunds_unused_encumbrance(
     user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
     balance_before_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
 
-    settlement = _settlement(open_resp, actual_units=400)
+    settlement = _settlement(
+        open_resp,
+        actual_units=400,
+        breakdown={
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-05-24T11:59:00Z",
+            "last_failure_code": "encoder_init_failed",
+        },
+    )
     close_resp = await sessions_service.close_session(
         db_session,
         session_id=open_resp.session_id,
@@ -213,6 +224,14 @@ async def test_close_overfunded_refunds_unused_encumbrance(
     assert ps.billed_value_wei == Decimal(400_000)
     assert ps.outcome == "OVERFUNDED"
     assert ps.closed_at is not None
+    assert ps.breakdown == {
+        "broker_diagnostics": {
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-05-24T11:59:00+00:00",
+            "last_failure_code": "encoder_init_failed",
+        }
+    }
 
     balance_after_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     # Refund credits 600_000 back

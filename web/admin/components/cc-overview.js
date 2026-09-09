@@ -308,16 +308,18 @@ export class CcOverview extends LitElement {
       <div class="card" id="attention-zero-output">
         <div class="card-head"><h3>Zero-output sessions (24h)</h3></div>
         ${rows.length === 0
-          ? html`<p class="empty">No sessions ran for at least 60 seconds and closed with zero units.</p>`
+          ? html`<p class="empty">No long-running or output-failed sessions closed with zero units.</p>`
           : html`
               <div class="table-scroll">
                 <table>
-                  <thead><tr><th>User</th><th>Capability</th><th class="num">Duration</th><th>Closed</th><th>Broker session</th></tr></thead>
+                  <thead><tr><th>User</th><th>Capability</th><th>Diagnosis</th><th>Failure</th><th class="num">Duration</th><th>Closed</th><th>Broker session</th></tr></thead>
                   <tbody>
                     ${rows.map((s) => html`
                       <tr>
                         <td title=${s.user_id}>${s.user_email || html`<span class="mono small">${s.user_id}</span>`}</td>
                         <td><span class="cap-path">${s.capability}<span class="off">/${s.offering}</span></span></td>
+                        <td><span class="pill ${s.termination_reason === "output_failed" ? "bad" : "warn"}">${s.termination_reason || s.output_state || "zero output"}</span></td>
+                        <td class="mono small">${s.last_failure_code || "—"}</td>
                         <td class="num warn-text">${formatDuration(s.duration_seconds)}</td>
                         <td class="nowrap" title=${s.closed_at}>${formatDateTime(s.closed_at)}</td>
                         <td class="mono small truncate" title=${s.broker_session_id || ""}>${s.broker_session_id || "—"}</td>

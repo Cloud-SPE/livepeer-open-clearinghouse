@@ -560,13 +560,17 @@ async def attention(
             )
         ).all()
     )
-    zero_output_rows = [
-        row
-        for row in zero_output_candidates
-        if row.closed_at is not None
-        and (_naive(row.closed_at) - _naive(row.opened_at)).total_seconds()
-        >= ZERO_OUTPUT_MIN_DURATION_SECONDS
-    ]
+    zero_output_rows = []
+    for row in zero_output_candidates:
+        if row.closed_at is None:
+            continue
+        diagnostics = (row.breakdown or {}).get("broker_diagnostics")
+        termination_reason = (
+            diagnostics.get("termination_reason") if isinstance(diagnostics, dict) else None
+        )
+        duration = (_naive(row.closed_at) - _naive(row.opened_at)).total_seconds()
+        if duration >= ZERO_OUTPUT_MIN_DURATION_SECONDS or termination_reason == "output_failed":
+            zero_output_rows.append(row)
 
     last_refill = (
         select(
@@ -651,20 +655,33 @@ async def attention(
         )
         for e in failure_rows
     ]
-    zero_output = [
-        ZeroOutputSession(
-            session_id=row.id,
-            user_id=row.user_id,
-            user_email=emails.get(row.user_id),
-            capability=row.capability,
-            offering=row.offering,
-            broker_session_id=row.broker_session_id,
-            duration_seconds=(_naive(row.closed_at) - _naive(row.opened_at)).total_seconds(),
-            closed_at=_aware(row.closed_at),
+    zero_output = []
+    for row in zero_output_rows[:limit]:
+        if row.closed_at is None:
+            continue
+        diagnostics = (row.breakdown or {}).get("broker_diagnostics")
+        safe = diagnostics if isinstance(diagnostics, dict) else {}
+        output_state_since = safe.get("output_state_since")
+        zero_output.append(
+            ZeroOutputSession(
+                session_id=row.id,
+                user_id=row.user_id,
+                user_email=emails.get(row.user_id),
+                capability=row.capability,
+                offering=row.offering,
+                broker_session_id=row.broker_session_id,
+                termination_reason=safe.get("termination_reason"),
+                output_state=safe.get("output_state"),
+                output_state_since=(
+                    datetime.fromisoformat(output_state_since)
+                    if isinstance(output_state_since, str)
+                    else None
+                ),
+                last_failure_code=safe.get("last_failure_code"),
+                duration_seconds=(_naive(row.closed_at) - _naive(row.opened_at)).total_seconds(),
+                closed_at=_aware(row.closed_at),
+            )
         )
-        for row in zero_output_rows[:limit]
-        if row.closed_at is not None
-    ]
     unterminated = [
         UnterminatedSession(
             session_id=row.id,

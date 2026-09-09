@@ -2275,6 +2275,25 @@ async def close_session(  # noqa: PLR0912, PLR0915 — explicit accounting adapt
     session_row.outcome = final_outcome
     session_row.broker_session_id = verified.broker_session_id
     session_row.last_settlement_seq = verified.settlement_seq
+    diagnostics = {
+        key: value
+        for key, value in {
+            "termination_reason": verified.termination_reason,
+            "output_state": verified.output_state,
+            "output_state_since": (
+                verified.output_state_since.isoformat()
+                if verified.output_state_since is not None
+                else None
+            ),
+            "last_failure_code": verified.last_failure_code,
+        }.items()
+        if value is not None
+    }
+    prior_breakdown = dict(session_row.breakdown or {})
+    prior_breakdown.pop("settlement_block", None)
+    if diagnostics:
+        prior_breakdown["broker_diagnostics"] = diagnostics
+    session_row.breakdown = prior_breakdown or None
     if session_row.accounting_mode == "wholesale_account":
         payload = settlement.get("payload") if settlement is not None else None
         settled_authorization_id = (

@@ -1835,6 +1835,71 @@ type WebhookTestResult struct {
 	Ok     bool    `json:"ok"`
 }
 
+// WholesaleAccountView defines model for WholesaleAccountView.
+type WholesaleAccountView struct {
+	AgeSeconds        float32            `json:"age_seconds"`
+	AvailableValueWei string             `json:"available_value_wei"`
+	BrokerUrl         string             `json:"broker_url"`
+	ChainId           int                `json:"chain_id"`
+	CreditedValueWei  string             `json:"credited_value_wei"`
+	DebitedValueWei   string             `json:"debited_value_wei"`
+	Denomination      string             `json:"denomination"`
+	Id                openapi_types.UUID `json:"id"`
+	ObservedAt        time.Time          `json:"observed_at"`
+	OverPerPayeeLimit bool               `json:"over_per_payee_limit"`
+	PayeeEthAddress   string             `json:"payee_eth_address"`
+	PayerEthAddress   string             `json:"payer_eth_address"`
+	ProtocolVersion   string             `json:"protocol_version"`
+	RemoteVersion     int                `json:"remote_version"`
+	ReservedValueWei  string             `json:"reserved_value_wei"`
+	Stale             bool               `json:"stale"`
+}
+
+// WholesaleFundingView defines model for WholesaleFundingView.
+type WholesaleFundingView struct {
+	AccountId              openapi_types.UUID `json:"account_id"`
+	AccountVersion         *int               `json:"account_version"`
+	AcknowledgedAt         *time.Time         `json:"acknowledged_at"`
+	AgeSeconds             float32            `json:"age_seconds"`
+	CorrelationId          *string            `json:"correlation_id"`
+	CreatedAt              time.Time          `json:"created_at"`
+	CreditedValueWei       *string            `json:"credited_value_wei"`
+	HasReplayablePayment   bool               `json:"has_replayable_payment"`
+	Id                     openapi_types.UUID `json:"id"`
+	MintRequestId          string             `json:"mint_request_id"`
+	MintedExpectedValueWei string             `json:"minted_expected_value_wei"`
+	NeedsAttention         bool               `json:"needs_attention"`
+	ObservedAvailableWei   string             `json:"observed_available_wei"`
+	RequestedShortfallWei  string             `json:"requested_shortfall_wei"`
+	Status                 string             `json:"status"`
+	TargetAvailableWei     string             `json:"target_available_wei"`
+	WorkId                 *string            `json:"work_id"`
+}
+
+// WholesaleLimitsView defines model for WholesaleLimitsView.
+type WholesaleLimitsView struct {
+	Enabled                  bool   `json:"enabled"`
+	MaxAggregateAvailableWei string `json:"max_aggregate_available_wei"`
+	MaxAvailablePerPayeeWei  string `json:"max_available_per_payee_wei"`
+	MaxSingleFundingWei      string `json:"max_single_funding_wei"`
+	ReplenishBelowWei        string `json:"replenish_below_wei"`
+	TargetAvailableWei       string `json:"target_available_wei"`
+}
+
+// WholesaleOverview defines model for WholesaleOverview.
+type WholesaleOverview struct {
+	Accounts               []WholesaleAccountView `json:"accounts"`
+	AggregateHeadroomWei   string                 `json:"aggregate_headroom_wei"`
+	AggregateLimitExceeded bool                   `json:"aggregate_limit_exceeded"`
+	Fundings               []WholesaleFundingView `json:"fundings"`
+	GeneratedAt            time.Time              `json:"generated_at"`
+	Limits                 WholesaleLimitsView    `json:"limits"`
+	ObservedAvailableWei   string                 `json:"observed_available_wei"`
+	PendingFundings        int                    `json:"pending_fundings"`
+	ProjectedAvailableWei  string                 `json:"projected_available_wei"`
+	StaleAccounts          int                    `json:"stale_accounts"`
+}
+
 // WorkUnitEstimator Signed client-side funding-ceiling estimator declaration.
 //
 // LOC does not execute the estimator. It parses the registry boundary and
@@ -1850,14 +1915,18 @@ type WorkUnitEstimator struct {
 
 // ZeroOutputSession defines model for ZeroOutputSession.
 type ZeroOutputSession struct {
-	BrokerSessionId *string            `json:"broker_session_id"`
-	Capability      string             `json:"capability"`
-	ClosedAt        time.Time          `json:"closed_at"`
-	DurationSeconds float32            `json:"duration_seconds"`
-	Offering        string             `json:"offering"`
-	SessionId       openapi_types.UUID `json:"session_id"`
-	UserEmail       *string            `json:"user_email"`
-	UserId          openapi_types.UUID `json:"user_id"`
+	BrokerSessionId   *string            `json:"broker_session_id"`
+	Capability        string             `json:"capability"`
+	ClosedAt          time.Time          `json:"closed_at"`
+	DurationSeconds   float32            `json:"duration_seconds"`
+	LastFailureCode   *string            `json:"last_failure_code"`
+	Offering          string             `json:"offering"`
+	OutputState       *string            `json:"output_state"`
+	OutputStateSince  *time.Time         `json:"output_state_since"`
+	SessionId         openapi_types.UUID `json:"session_id"`
+	TerminationReason *string            `json:"termination_reason"`
+	UserEmail         *string            `json:"user_email"`
+	UserId            openapi_types.UUID `json:"user_id"`
 }
 
 // MeEndpointV1AccountsMeGetParams defines parameters for MeEndpointV1AccountsMeGet.
@@ -2138,6 +2207,11 @@ type AdminUserUsageSummaryV1AdminUsersUserIdUsageSummaryGetParams struct {
 	Since         *time.Time `form:"since,omitempty" json:"since,omitempty"`
 	Until         *time.Time `form:"until,omitempty" json:"until,omitempty"`
 	Authorization *string    `json:"authorization,omitempty"`
+}
+
+// WholesaleOverviewEndpointV1AdminWholesaleGetParams defines parameters for WholesaleOverviewEndpointV1AdminWholesaleGet.
+type WholesaleOverviewEndpointV1AdminWholesaleGetParams struct {
+	Authorization *string `json:"authorization,omitempty"`
 }
 
 // LogoutEndpointV1AuthLogoutPostParams defines parameters for LogoutEndpointV1AuthLogoutPost.

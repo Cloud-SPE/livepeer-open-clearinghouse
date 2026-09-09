@@ -164,8 +164,11 @@ open session after two hours without a LOC-recorded successful funding event,
 but elapsed time is only an operational alarm: it does not prove that the
 broker lease ended and never releases a customer hold automatically. The view
 also reports sessions closed in the last 24 hours after at least 60 seconds
-with zero metered units, including LOC's broker session identifier, so a
-runner regression is visible even when accounting completed correctly.
+with zero metered units, or any zero-unit session whose signed terminal
+diagnosis is `output_failed`. The broker's signed settlement supplies the safe
+termination reason, output state/timestamp, and failure code; LOC persists and
+exposes those fields without relying on an SDK callback. Older brokers omit
+the diagnosis and retain the duration-based compatibility behavior.
 
 **Operator recourse.** `POST /v1/admin/jobs/{id}/resolve` closes an open job
 or session on an explicit operator decision: `refund_hold` releases the

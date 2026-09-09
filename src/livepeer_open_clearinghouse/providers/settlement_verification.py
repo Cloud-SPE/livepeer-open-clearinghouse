@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +18,7 @@ from google.protobuf.message import DecodeError
 from livepeer_open_clearinghouse import _gen  # noqa: F401
 
 _SIGNATURE_BYTES = 65
+_SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class SettlementVerificationError(ValueError):
@@ -112,6 +114,10 @@ class VerifiedSessionSettlement:
     outcome: str
     issued_at: datetime
     signing_public_key: str
+    termination_reason: str | None
+    output_state: str | None
+    output_state_since: datetime | None
+    last_failure_code: str | None
 
 
 def verify_job_settlement(
@@ -277,6 +283,9 @@ def verify_session_settlement(
     _reject_failed_debit(record)
     _verify_session_identity(record, expected)
     billed_value = _verify_session_accounting(record, expected)
+    termination_reason, output_state, output_state_since, last_failure_code = (
+        _verify_session_diagnostics(record)
+    )
 
     return VerifiedSessionSettlement(
         broker_session_id=record.session_id,
@@ -291,7 +300,39 @@ def verify_session_settlement(
         outcome=record.SettlementOutcome.Name(record.outcome),
         issued_at=issued_at,
         signing_public_key=public_key,
+        termination_reason=termination_reason,
+        output_state=output_state,
+        output_state_since=output_state_since,
+        last_failure_code=last_failure_code,
     )
+
+
+def _verify_session_diagnostics(
+    record: Any,
+) -> tuple[str | None, str | None, datetime | None, str | None]:
+    breakdown = dict(record.breakdown)
+    termination_reason = breakdown.get("termination_reason") or None
+    output_state = breakdown.get("output_state") or None
+    output_state_since_raw = breakdown.get("output_state_since") or None
+    last_failure_code = breakdown.get("last_failure_code") or None
+    if termination_reason is not None and _SAFE_CODE.fullmatch(termination_reason) is None:
+        raise SettlementVerificationError(
+            "termination_reason_invalid", "signed termination reason is not a safe code"
+        )
+    if output_state is not None and output_state not in {"waiting", "producing", "stalled"}:
+        raise SettlementVerificationError(
+            "output_state_invalid", "signed output state is not recognized"
+        )
+    output_state_since = (
+        _parse_timestamp(output_state_since_raw, field="output_state_since")
+        if output_state_since_raw is not None
+        else None
+    )
+    if last_failure_code is not None and _SAFE_CODE.fullmatch(last_failure_code) is None:
+        raise SettlementVerificationError(
+            "last_failure_code_invalid", "signed failure code is not safe"
+        )
+    return termination_reason, output_state, output_state_since, last_failure_code
 
 
 def _reject_failed_debit(record: Any) -> None:

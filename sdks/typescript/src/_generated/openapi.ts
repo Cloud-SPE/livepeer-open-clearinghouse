@@ -318,6 +318,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/wholesale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Wholesale Overview Endpoint
+         * @description Operator-only shared-account float and recovery visibility.
+         */
+        get: operations["wholesale_overview_endpoint_v1_admin_wholesale_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/pending": {
         parameters: {
             query?: never;
@@ -3690,6 +3710,133 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** WholesaleAccountView */
+        WholesaleAccountView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Chain Id */
+            chain_id: number;
+            /** Payer Eth Address */
+            payer_eth_address: string;
+            /** Payee Eth Address */
+            payee_eth_address: string;
+            /** Denomination */
+            denomination: string;
+            /** Protocol Version */
+            protocol_version: string;
+            /** Broker Url */
+            broker_url: string;
+            /** Credited Value Wei */
+            credited_value_wei: string;
+            /** Reserved Value Wei */
+            reserved_value_wei: string;
+            /** Debited Value Wei */
+            debited_value_wei: string;
+            /** Available Value Wei */
+            available_value_wei: string;
+            /** Remote Version */
+            remote_version: number;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Age Seconds */
+            age_seconds: number;
+            /** Stale */
+            stale: boolean;
+            /** Over Per Payee Limit */
+            over_per_payee_limit: boolean;
+        };
+        /** WholesaleFundingView */
+        WholesaleFundingView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Account Id
+             * Format: uuid
+             */
+            account_id: string;
+            /** Mint Request Id */
+            mint_request_id: string;
+            /** Correlation Id */
+            correlation_id: string | null;
+            /** Target Available Wei */
+            target_available_wei: string;
+            /** Observed Available Wei */
+            observed_available_wei: string;
+            /** Requested Shortfall Wei */
+            requested_shortfall_wei: string;
+            /** Minted Expected Value Wei */
+            minted_expected_value_wei: string;
+            /** Credited Value Wei */
+            credited_value_wei: string | null;
+            /** Work Id */
+            work_id: string | null;
+            /** Account Version */
+            account_version: number | null;
+            /** Status */
+            status: string;
+            /** Has Replayable Payment */
+            has_replayable_payment: boolean;
+            /** Acknowledged At */
+            acknowledged_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Age Seconds */
+            age_seconds: number;
+            /** Needs Attention */
+            needs_attention: boolean;
+        };
+        /** WholesaleLimitsView */
+        WholesaleLimitsView: {
+            /** Enabled */
+            enabled: boolean;
+            /** Target Available Wei */
+            target_available_wei: string;
+            /** Replenish Below Wei */
+            replenish_below_wei: string;
+            /** Max Available Per Payee Wei */
+            max_available_per_payee_wei: string;
+            /** Max Aggregate Available Wei */
+            max_aggregate_available_wei: string;
+            /** Max Single Funding Wei */
+            max_single_funding_wei: string;
+        };
+        /** WholesaleOverview */
+        WholesaleOverview: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            limits: components["schemas"]["WholesaleLimitsView"];
+            /** Projected Available Wei */
+            projected_available_wei: string;
+            /** Observed Available Wei */
+            observed_available_wei: string;
+            /** Aggregate Headroom Wei */
+            aggregate_headroom_wei: string;
+            /** Aggregate Limit Exceeded */
+            aggregate_limit_exceeded: boolean;
+            /** Stale Accounts */
+            stale_accounts: number;
+            /** Pending Fundings */
+            pending_fundings: number;
+            /** Accounts */
+            accounts: components["schemas"]["WholesaleAccountView"][];
+            /** Fundings */
+            fundings: components["schemas"]["WholesaleFundingView"][];
+        };
         /**
          * WorkUnitEstimator
          * @description Signed client-side funding-ceiling estimator declaration.
@@ -3730,6 +3877,14 @@ export interface components {
             offering: string;
             /** Broker Session Id */
             broker_session_id: string | null;
+            /** Termination Reason */
+            termination_reason: string | null;
+            /** Output State */
+            output_state: string | null;
+            /** Output State Since */
+            output_state_since: string | null;
+            /** Last Failure Code */
+            last_failure_code: string | null;
             /** Duration Seconds */
             duration_seconds: number;
             /**
@@ -4296,6 +4451,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TopupView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    wholesale_overview_endpoint_v1_admin_wholesale_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WholesaleOverview"];
                 };
             };
             /** @description Validation Error */

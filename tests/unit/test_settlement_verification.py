@@ -363,7 +363,15 @@ def _session_expected(**overrides: object) -> SessionSettlementExpectation:
 
 @pytest.mark.unit
 def test_valid_session_settlement_binds_gateway_identity_and_signed_charge() -> None:
-    envelope = signed_session_settlement(gateway_session_id="11111111-1111-1111-1111-111111111111")
+    envelope = signed_session_settlement(
+        gateway_session_id="11111111-1111-1111-1111-111111111111",
+        breakdown={
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-08-20T11:59:30Z",
+            "last_failure_code": "encoder_init_failed",
+        },
+    )
     verified = verify_session_settlement(
         envelope,
         settlement_keys=[delegated_key()],
@@ -373,6 +381,35 @@ def test_valid_session_settlement_binds_gateway_identity_and_signed_charge() -> 
     assert verified.debited_units == 31
     assert verified.billed_value_wei == 4
     assert verified.settlement_seq == 1
+    assert verified.termination_reason == "output_failed"
+    assert verified.output_state == "stalled"
+    assert verified.output_state_since == datetime(2026, 8, 20, 11, 59, 30, tzinfo=UTC)
+    assert verified.last_failure_code == "encoder_init_failed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("breakdown", "code"),
+    [
+        ({"termination_reason": "unsafe detail"}, "termination_reason_invalid"),
+        ({"output_state": "broken"}, "output_state_invalid"),
+        ({"output_state_since": "not-a-time"}, "invalid_output_state_since"),
+        ({"last_failure_code": "contains detail"}, "last_failure_code_invalid"),
+    ],
+)
+def test_session_settlement_rejects_unsafe_output_diagnostics(
+    breakdown: dict[str, str], code: str
+) -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_session_settlement(
+            signed_session_settlement(
+                gateway_session_id="11111111-1111-1111-1111-111111111111",
+                breakdown=breakdown,
+            ),
+            settlement_keys=[delegated_key()],
+            expected=_session_expected(),
+        )
+    assert exc_info.value.code == code
 
 
 @pytest.mark.unit
