@@ -1348,6 +1348,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             artifacts,
             processes,
             cwd=modules_repo / "livepeer-network-protocol/conformance",
+            env=broker_env,
         )
         stack.callback(runner_process.stop)
         _wait_for(
@@ -1564,6 +1565,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             artifacts,
             processes,
             cwd=modules_repo / "livepeer-network-protocol/conformance",
+            env=broker_env,
         )
         stack.callback(runner_process.stop)
         _wait_for(
