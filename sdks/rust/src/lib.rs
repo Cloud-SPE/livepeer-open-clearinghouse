@@ -17,7 +17,8 @@ pub use client::{
 };
 pub use errors::{ErrorKind, OpenClearinghouseError};
 pub use session_runner::{
-    BrokerControl, BrokerSession, RefillCallback, RefillEvent, SessionBalance, SessionOutcome,
-    SessionRunner, SessionRunnerOptions, WinddownCallback, WinddownEvent,
+    BrokerControl, BrokerSession, CapExtensionCallback, RefillCallback, RefillEvent,
+    SessionBalance, SessionOutcome, SessionRunner, SessionRunnerOptions, WinddownCallback,
+    WinddownEvent,
 };
 pub use telemetry::{telemetry_correlation_id, EmitOptions, EmitterConfig, TelemetryEmitter};

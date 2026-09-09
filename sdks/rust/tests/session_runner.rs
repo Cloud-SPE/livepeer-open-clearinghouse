@@ -7,7 +7,7 @@ use livepeer_open_clearinghouse_sdk::{
 };
 use serde_json::json;
 use tokio::sync::Mutex;
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_json, body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const SID: &str = "11111111-1111-1111-1111-111111111111";
@@ -33,6 +33,7 @@ fn handle(broker: &MockServer, refill: &str) -> SessionHandle {
         accounting_mode: "legacy_ticket".to_string(),
         caller_proof: None,
         session_open_body: Vec::new(),
+        max_total_units: 100,
         expected_value_wei: 100_000,
         funded_value_wei: 100_000,
         refill_endpoint: format!("/v1/sessions/{SID}/refill"),
@@ -299,6 +300,84 @@ async fn bounded_and_refusal_warning_balances_drain() {
             "broker_will_refuse_next_refill"
         ]
     );
+}
+
+#[tokio::test]
+async fn wholesale_low_balance_requires_explicit_cap_approval() {
+    let broker = MockServer::start().await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
+    let loc = MockServer::start().await;
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let captured = warnings.clone();
+    let mut wholesale = handle(&broker, "extensible");
+    wholesale.payment_envelope = None;
+    wholesale.spend_authorization = Some("aW5pdGlhbA==".to_string());
+    wholesale.accounting_mode = "wholesale_account".to_string();
+    wholesale.caller_proof = Some("INITIAL-PROOF".to_string());
+    let client = Client::new(ClientOptions::new(loc.uri(), "pymth_test")).unwrap();
+    let mut options = SessionRunnerOptions::new(client, wholesale);
+    options.on_winddown_warning = Some(Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move { captured.lock().await.push(event.reason) })
+    }));
+    let runner = SessionRunner::start(options).await.unwrap();
+    runner
+        .on_balance(serde_json::from_value(balance("low", false)).unwrap())
+        .await;
+    assert_eq!(*warnings.lock().await, ["wholesale_cap_extension_required"]);
+}
+
+#[tokio::test]
+async fn wholesale_cap_revision_commits_and_signs_exact_body() {
+    let broker = MockServer::start().await;
+    mount_open(&broker, "livepeer-session-test/v1").await;
+    Mock::given(method("POST"))
+        .and(path("/topup"))
+        .and(header("Livepeer-Authorization", "c3VjY2Vzc29y"))
+        .and(header("Livepeer-Caller-Proof", "SUCCESSOR-PROOF"))
+        .and(body_json(json!({})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"balance": balance("ok", false)})),
+        )
+        .expect(1)
+        .mount(&broker)
+        .await;
+    let loc = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/sessions/{SID}/refill")))
+        .and(body_partial_json(json!({
+            "observed_consumed_units": 80u64,
+            "max_total_units": 200u64,
+            "workload_request_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "work_id": "loc-auth:revision", "request_id": "revision-request",
+            "refill_seq": 1u64, "payment_envelope": null,
+            "spend_authorization": "c3VjY2Vzc29y", "accounting_mode": "wholesale_account",
+            "expected_value_wei": "0", "funded_value_wei": "0", "cap_status": null
+        })))
+        .expect(1)
+        .mount(&loc)
+        .await;
+    let signer = Arc::new(|bytes: &[u8]| {
+        assert_eq!(bytes, b"successor");
+        Ok("SUCCESSOR-PROOF".to_string())
+    });
+    let client = Client::new(
+        ClientOptions::new(loc.uri(), "pymth_test").with_caller_proof("public-key", signer),
+    )
+    .unwrap();
+    let mut wholesale = handle(&broker, "extensible");
+    wholesale.payment_envelope = None;
+    wholesale.spend_authorization = Some("aW5pdGlhbA==".to_string());
+    wholesale.accounting_mode = "wholesale_account".to_string();
+    wholesale.caller_proof = Some("INITIAL-PROOF".to_string());
+    let mut options = SessionRunnerOptions::new(client, wholesale);
+    options.approve_cap_extension = Some(Arc::new(|_| Box::pin(async { Some(200) })));
+    let runner = SessionRunner::start(options).await.unwrap();
+    runner
+        .on_balance(serde_json::from_value(balance("low", false)).unwrap())
+        .await;
 }
 
 #[tokio::test]

@@ -11,6 +11,7 @@ export { SessionRunner } from "./session_runner.js";
 export { telemetryCorrelationId } from "./telemetry.js";
 export type {
   BrokerSession,
+  CapExtensionCallback,
   RefillCallback,
   RefillEvent,
   SessionBalance,

@@ -2,7 +2,7 @@
 
 import { WebSocket } from "ws";
 
-import { OpenClearinghouseClient, parseWei, type SessionHandle } from "./client.js";
+import { OpenClearinghouseClient, callerProof, parseWei, type SessionHandle } from "./client.js";
 import { BrokerProtocolError, OpenClearinghouseError } from "./errors.js";
 
 export interface SessionBalance {
@@ -50,6 +50,9 @@ export interface WinddownEvent {
 
 export type RefillCallback = (event: RefillEvent) => void | Promise<void>;
 export type WinddownCallback = (event: WinddownEvent) => void | Promise<void>;
+export type CapExtensionCallback = (
+  balance: SessionBalance,
+) => number | null | Promise<number | null>;
 
 export interface SessionRunnerOptions {
   client: OpenClearinghouseClient;
@@ -57,6 +60,7 @@ export interface SessionRunnerOptions {
   onRefillSucceeded?: RefillCallback;
   onRefillRefused?: RefillCallback;
   onWinddownWarning?: WinddownCallback;
+  approveCapExtension?: CapExtensionCallback;
   WebSocketCtor?: typeof WebSocket;
   fetch?: typeof fetch;
 }
@@ -70,16 +74,19 @@ interface FinalSettle {
 
 export class SessionRunner {
   private readonly client: OpenClearinghouseClient;
-  private readonly handle: SessionHandle;
+  private handle: SessionHandle;
   private readonly onRefillSucceeded: RefillCallback | undefined;
   private readonly onRefillRefused: RefillCallback | undefined;
   private readonly onWinddownWarning: WinddownCallback | undefined;
+  private readonly approveCapExtension: CapExtensionCallback | undefined;
   private readonly WS: typeof WebSocket;
   private readonly fetchImpl: typeof fetch;
   private ws: WebSocket | null = null;
   private broker: BrokerSession | null = null;
   private pendingRefillKey: string | null = null;
   private pendingRefill: Record<string, unknown> | null = null;
+  private pendingRefillProof: string | null = null;
+  private pendingRefillMaxTotalUnits: number | null = null;
   private finalSettle: FinalSettle | null = null;
   private finalWei: { billedValueWei: bigint; refundWei: bigint } | null = null;
   private closedResolve: (() => void) | null = null;
@@ -91,6 +98,7 @@ export class SessionRunner {
     this.onRefillSucceeded = opts.onRefillSucceeded;
     this.onRefillRefused = opts.onRefillRefused;
     this.onWinddownWarning = opts.onWinddownWarning;
+    this.approveCapExtension = opts.approveCapExtension;
     this.WS = opts.WebSocketCtor ?? WebSocket;
     this.fetchImpl = opts.fetch ?? fetch;
     this.closedPromise = new Promise((resolve) => {
@@ -189,18 +197,58 @@ export class SessionRunner {
       });
       return;
     }
+    if (this.handle.accountingMode === "wholesale_account") {
+      if (this.pendingRefill !== null) {
+        await this.refill(balance.claimed_units, this.pendingRefillMaxTotalUnits ?? undefined);
+        return;
+      }
+      if (this.approveCapExtension === undefined) {
+        await this.onWinddownWarning?.({
+          reason: "wholesale_cap_extension_required",
+          projectedEndAt: null,
+        });
+        return;
+      }
+      const newMax = await this.approveCapExtension(balance);
+      if (newMax === null) {
+        await this.onWinddownWarning?.({
+          reason: "wholesale_cap_extension_declined",
+          projectedEndAt: null,
+        });
+        return;
+      }
+      if (this.handle.maxTotalUnits === undefined || newMax <= this.handle.maxTotalUnits) {
+        throw protocolError("wholesale cap extension must increase maxTotalUnits");
+      }
+      await this.refill(balance.claimed_units, newMax);
+      return;
+    }
     await this.refill(balance.claimed_units);
   }
 
-  private async refill(observedUnits: number): Promise<void> {
+  private async refill(observedUnits: number, maxTotalUnits?: number): Promise<void> {
     const session = await this.start();
     this.pendingRefillKey ??= crypto.randomUUID();
     if (this.pendingRefill === null) {
       try {
-        this.pendingRefill = (await this.client.refillSession(this.handle.sessionId, {
+        const refillOptions: {
+          observedConsumedUnits: number;
+          requestId: string;
+          maxTotalUnits?: number;
+          workloadRequestDigest?: string;
+        } = {
           observedConsumedUnits: observedUnits,
           requestId: this.pendingRefillKey,
-        })) as Record<string, unknown>;
+        };
+        if (maxTotalUnits !== undefined) {
+          refillOptions.maxTotalUnits = maxTotalUnits;
+          refillOptions.workloadRequestDigest = await sha256EmptyObject();
+        }
+        this.pendingRefill = (await this.client.refillSession(
+          this.handle.sessionId,
+          refillOptions,
+        )) as Record<string, unknown>;
+        this.pendingRefillMaxTotalUnits = maxTotalUnits ?? null;
       } catch (error) {
         if (error instanceof OpenClearinghouseError) {
           await this.onRefillRefused?.({
@@ -261,6 +309,17 @@ export class SessionRunner {
       session.workId = String(acceptedRefill.work_id);
     }
     const brokerResult = (await response.json()) as { balance?: SessionBalance };
+    if (acceptedRefill.accounting_mode === "wholesale_account") {
+      if (maxTotalUnits === undefined) {
+        throw protocolError("wholesale refill lost its cumulative cap");
+      }
+      this.handle = {
+        ...this.handle,
+        spendAuthorization: String(acceptedRefill.spend_authorization),
+        callerProof: this.pendingRefillProof,
+        maxTotalUnits,
+      };
+    }
     if (brokerResult.balance?.will_refuse_next_refill) {
       await this.onWinddownWarning?.({
         reason: "broker_will_refuse_next_refill",
@@ -276,6 +335,8 @@ export class SessionRunner {
     });
     this.pendingRefill = null;
     this.pendingRefillKey = null;
+    this.pendingRefillProof = null;
+    this.pendingRefillMaxTotalUnits = null;
   }
 
   private async postTopup(
@@ -285,9 +346,35 @@ export class SessionRunner {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${session.credential}`,
       "Content-Type": "application/json",
-      "Livepeer-Payment": String(refill.payment_envelope),
       "Livepeer-Request-Id": String(refill.request_id),
     };
+    if (refill.accounting_mode === "wholesale_account") {
+      if (
+        typeof refill.spend_authorization !== "string" ||
+        refill.spend_authorization.length === 0
+      ) {
+        throw protocolError("wholesale refill is missing spend authorization");
+      }
+      const authorization = refill.spend_authorization;
+      const proof = await callerProof(authorization, this.handle.signCallerProof);
+      if (authorization.length === 0 || proof === null) {
+        throw protocolError("wholesale refill is missing authorization credentials");
+      }
+      headers["Livepeer-Authorization"] = authorization;
+      headers["Livepeer-Caller-Proof"] = proof;
+      this.pendingRefillProof = proof;
+      if (refill.payment_envelope != null) {
+        if (typeof refill.payment_envelope !== "string") {
+          throw protocolError("wholesale refill returned an invalid payment envelope");
+        }
+        headers["Livepeer-Payment"] = refill.payment_envelope;
+      }
+    } else {
+      if (typeof refill.payment_envelope !== "string") {
+        throw protocolError("legacy refill is missing a payment envelope");
+      }
+      headers["Livepeer-Payment"] = refill.payment_envelope;
+    }
     const rebindFrom = refill.rebind_from;
     if (rebindFrom !== null && rebindFrom !== undefined) {
       if (typeof rebindFrom !== "string" || rebindFrom.length === 0) {
@@ -305,6 +392,8 @@ export class SessionRunner {
   private async endUnrecoverableRotation(): Promise<void> {
     this.pendingRefill = null;
     this.pendingRefillKey = null;
+    this.pendingRefillProof = null;
+    this.pendingRefillMaxTotalUnits = null;
     await this.onWinddownWarning?.({
       reason: "payment_unrecoverable",
       projectedEndAt: null,
@@ -370,6 +459,13 @@ export class SessionRunner {
   waitClosed(): Promise<void> {
     return this.closedPromise;
   }
+}
+
+async function sha256EmptyObject(): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("{}"));
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 function parseOpen(value: unknown, handle: SessionHandle): BrokerSession {

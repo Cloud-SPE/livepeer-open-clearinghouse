@@ -9,6 +9,7 @@ use base64::Engine as _;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -93,13 +94,21 @@ struct RefillResponse {
     work_id: String,
     request_id: String,
     refill_seq: Option<u64>,
-    payment_envelope: String,
+    payment_envelope: Option<String>,
+    #[serde(default)]
+    spend_authorization: Option<String>,
+    #[serde(default = "legacy_accounting_mode")]
+    accounting_mode: String,
     #[serde(default, deserialize_with = "crate::wei::deserialize_opt_wei")]
     expected_value_wei: Option<u128>,
     #[serde(default, deserialize_with = "crate::wei::deserialize_opt_wei")]
     funded_value_wei: Option<u128>,
     cap_status: Option<CapStatus>,
     rebind_from: Option<String>,
+}
+
+fn legacy_accounting_mode() -> String {
+    "legacy_ticket".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +130,8 @@ pub type RefillCallback =
     Arc<dyn Fn(RefillEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 pub type WinddownCallback =
     Arc<dyn Fn(WinddownEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type CapExtensionCallback =
+    Arc<dyn Fn(SessionBalance) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> + Send + Sync>;
 
 pub struct SessionRunnerOptions {
     pub client: Client,
@@ -128,6 +139,7 @@ pub struct SessionRunnerOptions {
     pub on_refill_succeeded: Option<RefillCallback>,
     pub on_refill_refused: Option<RefillCallback>,
     pub on_winddown_warning: Option<WinddownCallback>,
+    pub approve_cap_extension: Option<CapExtensionCallback>,
 }
 
 impl SessionRunnerOptions {
@@ -139,6 +151,7 @@ impl SessionRunnerOptions {
             on_refill_succeeded: None,
             on_refill_refused: None,
             on_winddown_warning: None,
+            approve_cap_extension: None,
         }
     }
 }
@@ -157,9 +170,11 @@ struct Inner {
     on_refill_succeeded: Option<RefillCallback>,
     on_refill_refused: Option<RefillCallback>,
     on_winddown_warning: Option<WinddownCallback>,
+    approve_cap_extension: Option<CapExtensionCallback>,
     ws_tx: Option<mpsc::UnboundedSender<Message>>,
     pending_refill_key: Option<String>,
     pending_refill: Option<RefillResponse>,
+    pending_max_total_units: Option<u64>,
     final_settle: Option<SessionOutcome>,
     close_started: bool,
 }
@@ -180,9 +195,11 @@ impl SessionRunner {
             on_refill_succeeded: opts.on_refill_succeeded,
             on_refill_refused: opts.on_refill_refused,
             on_winddown_warning: opts.on_winddown_warning,
+            approve_cap_extension: opts.approve_cap_extension,
             ws_tx: None,
             pending_refill_key: None,
             pending_refill: None,
+            pending_max_total_units: None,
             final_settle: None,
             close_started: false,
         }));
@@ -446,7 +463,7 @@ async fn open_events_ws(
 }
 
 async fn handle_balance(inner: &Arc<Mutex<Inner>>, balance: SessionBalance) {
-    let (refill_units, winddown) = {
+    let (refill_units, winddown, cap_approval, current_max) = {
         let state = inner.lock().await;
         if balance.will_refuse_next_refill {
             (
@@ -455,9 +472,11 @@ async fn handle_balance(inner: &Arc<Mutex<Inner>>, balance: SessionBalance) {
                     state.on_winddown_warning.clone(),
                     "broker_will_refuse_next_refill",
                 )),
+                None,
+                0,
             )
         } else if balance.status != "low" {
-            (None, None)
+            (None, None, None, 0)
         } else if state.handle.session.refill == "bounded" {
             (
                 None,
@@ -465,9 +484,29 @@ async fn handle_balance(inner: &Arc<Mutex<Inner>>, balance: SessionBalance) {
                     state.on_winddown_warning.clone(),
                     "bounded_runway_exhausting",
                 )),
+                None,
+                0,
             )
+        } else if state.handle.accounting_mode == "wholesale_account" {
+            match state.approve_cap_extension.clone() {
+                Some(callback) => (
+                    Some(balance.claimed_units),
+                    None,
+                    Some(callback),
+                    state.handle.max_total_units,
+                ),
+                None => (
+                    None,
+                    Some((
+                        state.on_winddown_warning.clone(),
+                        "wholesale_cap_extension_required",
+                    )),
+                    None,
+                    0,
+                ),
+            }
         } else {
-            (Some(balance.claimed_units), None)
+            (Some(balance.claimed_units), None, None, 0)
         }
     };
     if let Some((callback, reason)) = winddown {
@@ -481,12 +520,41 @@ async fn handle_balance(inner: &Arc<Mutex<Inner>>, balance: SessionBalance) {
         return;
     }
     if let Some(observed_units) = refill_units {
-        refill(inner, observed_units).await;
+        let max_total_units = if let Some(callback) = cap_approval {
+            let Some(approved_max) = callback(balance).await else {
+                fire_winddown(inner, "wholesale_cap_extension_declined").await;
+                return;
+            };
+            if approved_max <= current_max {
+                fire_refill_error(
+                    inner,
+                    OpenClearinghouseError::broker_protocol(
+                        "invalid_cap_extension",
+                        "wholesale cap extension must increase max_total_units",
+                    ),
+                )
+                .await;
+                return;
+            }
+            Some(approved_max)
+        } else {
+            None
+        };
+        refill(inner, observed_units, max_total_units).await;
     }
 }
 
-async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
-    let (client, session_id, request_id, existing, callback_refused) = {
+#[allow(clippy::too_many_lines)]
+async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64, max_total_units: Option<u64>) {
+    let (
+        client,
+        session_id,
+        request_id,
+        existing,
+        callback_refused,
+        accounting_mode,
+        pending_max_total_units,
+    ) = {
         let mut state = inner.lock().await;
         let request_id = state
             .pending_refill_key
@@ -498,25 +566,46 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
             request_id,
             state.pending_refill.clone(),
             state.on_refill_refused.clone(),
+            state.handle.accounting_mode.clone(),
+            state.pending_max_total_units,
         )
+    };
+    let max_total_units = if existing.is_some() && accounting_mode == "wholesale_account" {
+        pending_max_total_units
+    } else {
+        max_total_units
     };
     let refill = if let Some(existing) = existing {
         existing
     } else {
-        let result = client
-            .refill_session(
-                &session_id,
-                Some(observed_units),
-                Some(&request_id),
-                None,
-                None,
-            )
-            .await;
+        let result = if accounting_mode == "wholesale_account" {
+            client
+                .revise_session_authorization(
+                    &session_id,
+                    observed_units,
+                    max_total_units.expect("wholesale cap approval checked"),
+                    &format!("{:x}", Sha256::digest(b"{}")),
+                    Some(&request_id),
+                )
+                .await
+        } else {
+            client
+                .refill_session(
+                    &session_id,
+                    Some(observed_units),
+                    Some(&request_id),
+                    None,
+                    None,
+                )
+                .await
+        };
         match result
             .and_then(|value| serde_json::from_value::<RefillResponse>(value).map_err(Into::into))
         {
             Ok(refill) => {
-                inner.lock().await.pending_refill = Some(refill.clone());
+                let mut state = inner.lock().await;
+                state.pending_refill = Some(refill.clone());
+                state.pending_max_total_units = max_total_units;
                 refill
             }
             Err(error) => {
@@ -544,12 +633,16 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
             state.on_winddown_warning.clone(),
         )
     };
-    let response = post_topup(&url, &credential, &refill).await;
+    let response = post_topup(&client, &url, &credential, &refill).await;
     let Ok(mut response) = response else {
         return;
     };
     let mut accepted_refill = refill;
     if broker_error(&response) == Some("recipient_rotated") {
+        if accepted_refill.accounting_mode == "wholesale_account" {
+            end_unrecoverable_rotation(inner, callback_winddown).await;
+            return;
+        }
         if accepted_refill.rebind_from.is_some() {
             end_unrecoverable_rotation(inner, callback_winddown).await;
             return;
@@ -585,7 +678,9 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
         };
         inner.lock().await.pending_refill = Some(replacement.clone());
         accepted_refill = replacement;
-        let Ok(replacement_response) = post_topup(&url, &credential, &accepted_refill).await else {
+        let Ok(replacement_response) =
+            post_topup(&client, &url, &credential, &accepted_refill).await
+        else {
             return;
         };
         response = replacement_response;
@@ -603,6 +698,21 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
     };
     if accepted_refill.rebind_from.is_some() {
         inner.lock().await.broker.work_id = accepted_refill.work_id.clone();
+    }
+    if accepted_refill.accounting_mode == "wholesale_account" {
+        let mut state = inner.lock().await;
+        state
+            .handle
+            .spend_authorization
+            .clone_from(&accepted_refill.spend_authorization);
+        state.handle.caller_proof = match state
+            .client
+            .caller_proof(accepted_refill.spend_authorization.as_deref())
+        {
+            Ok(proof) => proof,
+            Err(_) => return,
+        };
+        state.handle.max_total_units = max_total_units.unwrap_or(state.handle.max_total_units);
     }
     let broker_result: Value = match response.json().await {
         Ok(value) => value,
@@ -634,22 +744,76 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64) {
     let mut state = inner.lock().await;
     state.pending_refill_key = None;
     state.pending_refill = None;
+    state.pending_max_total_units = None;
 }
 
 async fn post_topup(
+    client: &Client,
     url: &str,
     credential: &str,
     refill: &RefillResponse,
-) -> Result<reqwest::Response, reqwest::Error> {
+) -> Result<reqwest::Response, OpenClearinghouseError> {
     let mut request = reqwest::Client::new()
         .post(url)
         .bearer_auth(credential)
-        .header("Livepeer-Payment", &refill.payment_envelope)
         .header("Livepeer-Request-Id", &refill.request_id);
+    if refill.accounting_mode == "wholesale_account" {
+        let authorization = refill.spend_authorization.as_deref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "wholesale refill is missing spend_authorization",
+            )
+        })?;
+        let proof = client.caller_proof(Some(authorization))?.ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "wholesale refill is missing caller proof",
+            )
+        })?;
+        request = request
+            .header("Livepeer-Authorization", authorization)
+            .header("Livepeer-Caller-Proof", proof);
+        if let Some(payment) = &refill.payment_envelope {
+            request = request.header("Livepeer-Payment", payment);
+        }
+    } else {
+        let payment = refill.payment_envelope.as_deref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "legacy refill is missing payment_envelope",
+            )
+        })?;
+        request = request.header("Livepeer-Payment", payment);
+    }
     if let Some(rebind_from) = &refill.rebind_from {
         request = request.header("Livepeer-Rebind-From", rebind_from);
     }
-    request.json(&serde_json::json!({})).send().await
+    Ok(request.json(&serde_json::json!({})).send().await?)
+}
+
+async fn fire_winddown(inner: &Arc<Mutex<Inner>>, reason: &str) {
+    let callback = inner.lock().await.on_winddown_warning.clone();
+    if let Some(callback) = callback {
+        callback(WinddownEvent {
+            reason: reason.to_string(),
+            projected_end_at: None,
+        })
+        .await;
+    }
+}
+
+async fn fire_refill_error(inner: &Arc<Mutex<Inner>>, error: OpenClearinghouseError) {
+    let callback = inner.lock().await.on_refill_refused.clone();
+    if let Some(callback) = callback {
+        callback(RefillEvent {
+            refill_seq: None,
+            expected_value_wei: None,
+            funded_value_wei: None,
+            cap_status: None,
+            error: Some(Arc::new(error)),
+        })
+        .await;
+    }
 }
 
 fn broker_error(response: &reqwest::Response) -> Option<&str> {
@@ -666,6 +830,7 @@ async fn end_unrecoverable_rotation(inner: &Arc<Mutex<Inner>>, callback: Option<
     let mut state = inner.lock().await;
     state.pending_refill_key = None;
     state.pending_refill = None;
+    state.pending_max_total_units = None;
     drop(state);
     if let Some(callback) = callback {
         callback(WinddownEvent {

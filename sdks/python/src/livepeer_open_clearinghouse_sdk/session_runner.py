@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
+import inspect
 import json
 import logging
 import uuid
@@ -21,7 +23,11 @@ try:
 except ImportError as _exc:  # pragma: no cover - declared dependency
     raise ImportError("SessionRunner requires the `websockets` package") from _exc
 
-from livepeer_open_clearinghouse_sdk.client import OpenClearinghouseClient, SessionHandle
+from livepeer_open_clearinghouse_sdk.client import (
+    OpenClearinghouseClient,
+    SessionHandle,
+    _caller_proof,
+)
 from livepeer_open_clearinghouse_sdk.errors import BrokerProtocolError, OpenClearinghouseError
 
 _logger = logging.getLogger(__name__)
@@ -99,6 +105,7 @@ class WinddownEvent:
 
 RefillCallback = Callable[[RefillEvent], Awaitable[None] | None]
 WinddownCallback = Callable[[WinddownEvent], Awaitable[None] | None]
+CapExtensionCallback = Callable[[SessionBalance], Awaitable[int | None] | int | None]
 
 
 class SessionRunner:
@@ -116,6 +123,7 @@ class SessionRunner:
         on_refill_succeeded: RefillCallback | None = None,
         on_refill_refused: RefillCallback | None = None,
         on_winddown_warning: WinddownCallback | None = None,
+        approve_cap_extension: CapExtensionCallback | None = None,
         auto_close_on_disconnect: bool = False,
     ) -> None:
         self._client = client
@@ -123,6 +131,7 @@ class SessionRunner:
         self._on_refill_succeeded = on_refill_succeeded
         self._on_refill_refused = on_refill_refused
         self._on_winddown_warning = on_winddown_warning
+        self._approve_cap_extension = approve_cap_extension
         self._auto_close_on_disconnect = auto_close_on_disconnect
         self._broker_session: BrokerSession | None = None
         self._ws: ClientConnection | None = None
@@ -131,6 +140,8 @@ class SessionRunner:
         self._final_settle: dict[str, Any] | None = None
         self._pending_refill_key: str | None = None
         self._pending_refill: dict[str, Any] | None = None
+        self._pending_refill_proof: str | None = None
+        self._pending_refill_max_total_units: int | None = None
         self._closing = False
 
     @property
@@ -301,9 +312,29 @@ class SessionRunner:
         if self._handle.session.refill == "bounded":
             await self._fire_winddown(WinddownEvent("bounded_runway_exhausting", None))
             return
+        if self._handle.accounting_mode == "wholesale_account":
+            if self._pending_refill is not None:
+                await self._refill(
+                    parsed.claimed_units,
+                    max_total_units=self._pending_refill_max_total_units,
+                )
+                return
+            if self._approve_cap_extension is None:
+                await self._fire_winddown(WinddownEvent("wholesale_cap_extension_required", None))
+                return
+            new_max = self._approve_cap_extension(parsed)
+            if inspect.isawaitable(new_max):
+                new_max = await new_max
+            if new_max is None:
+                await self._fire_winddown(WinddownEvent("wholesale_cap_extension_declined", None))
+                return
+            if self._handle.max_total_units is None or new_max <= self._handle.max_total_units:
+                raise BrokerProtocolError("wholesale cap extension must increase max_total_units")
+            await self._refill(parsed.claimed_units, max_total_units=new_max)
+            return
         await self._refill(parsed.claimed_units)
 
-    async def _refill(self, observed_units: int) -> None:
+    async def _refill(self, observed_units: int, *, max_total_units: int | None = None) -> None:
         session = await self.start()
         if self._pending_refill_key is None:
             self._pending_refill_key = str(uuid.uuid4())
@@ -313,7 +344,12 @@ class SessionRunner:
                     self._handle.session_id,
                     observed_consumed_units=observed_units,
                     request_id=self._pending_refill_key,
+                    max_total_units=max_total_units,
+                    workload_request_digest=(
+                        hashlib.sha256(b"{}").hexdigest() if max_total_units is not None else None
+                    ),
                 )
+                self._pending_refill_max_total_units = max_total_units
             except OpenClearinghouseError as exc:
                 await self._fire_refill_refused(RefillEvent(None, None, None, None, error=exc))
                 return
@@ -348,6 +384,16 @@ class SessionRunner:
             return
         response.raise_for_status()
         broker_result = response.json()
+        if self._handle.accounting_mode == "wholesale_account":
+            authorization = refill.get("spend_authorization")
+            if not isinstance(authorization, str):
+                raise BrokerProtocolError("wholesale refill is missing spend_authorization")
+            self._handle = replace(
+                self._handle,
+                spend_authorization=authorization,
+                caller_proof=self._pending_refill_proof,
+                max_total_units=max_total_units,
+            )
         if refill.get("rebind_from") is not None:
             self._broker_session = replace(session, work_id=str(refill["work_id"]))
         if isinstance(broker_result, dict) and isinstance(broker_result.get("balance"), dict):
@@ -364,22 +410,39 @@ class SessionRunner:
         )
         self._pending_refill_key = None
         self._pending_refill = None
+        self._pending_refill_proof = None
+        self._pending_refill_max_total_units = None
 
     async def _post_topup(self, session: BrokerSession, refill: dict[str, Any]) -> httpx.Response:
         headers = {
             "Authorization": f"Bearer {session.credential}",
-            "Livepeer-Payment": str(refill["payment_envelope"]),
             "Livepeer-Request-Id": str(refill["request_id"]),
         }
+        if refill.get("accounting_mode") == "wholesale_account":
+            authorization = refill.get("spend_authorization")
+            if not isinstance(authorization, str):
+                raise BrokerProtocolError("wholesale refill is missing spend_authorization")
+            proof = await _caller_proof(authorization, self._handle.sign_caller_proof)
+            if proof is None:
+                raise BrokerProtocolError("wholesale refill is missing caller proof")
+            headers["Livepeer-Authorization"] = authorization
+            headers["Livepeer-Caller-Proof"] = proof
+            self._pending_refill_proof = proof
+            if refill.get("payment_envelope") is not None:
+                headers["Livepeer-Payment"] = str(refill["payment_envelope"])
+        else:
+            headers["Livepeer-Payment"] = str(refill["payment_envelope"])
         rebind_from = refill.get("rebind_from")
         if rebind_from is not None:
             headers["Livepeer-Rebind-From"] = str(rebind_from)
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
-            return await broker.post(session.control.topup_url, headers=headers, json={})
+            return await broker.post(session.control.topup_url, headers=headers, content=b"{}")
 
     async def _end_unrecoverable_rotation(self) -> None:
         self._pending_refill_key = None
         self._pending_refill = None
+        self._pending_refill_proof = None
+        self._pending_refill_max_total_units = None
         await self._fire_winddown(WinddownEvent("payment_unrecoverable", None))
 
     async def close(

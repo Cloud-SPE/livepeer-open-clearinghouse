@@ -2,6 +2,7 @@ package openclearinghouse_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -140,6 +141,96 @@ func TestSessionRunnerDrainsWithoutRefill(t *testing.T) {
 	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "ok", WillRefuseNextRefill: true})
 	if len(warnings) != 2 || warnings[0] != "bounded_runway_exhausting" || warnings[1] != "broker_will_refuse_next_refill" {
 		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestWholesaleSessionRunnerRequiresExplicitCapApproval(t *testing.T) {
+	warnings := []string{}
+	handle := sessionHandle("http://unused", "extensible")
+	handle.AccountingMode = "wholesale_account"
+	handle.PaymentEnvelope = ""
+	handle.SpendAuthorization = base64.StdEncoding.EncodeToString([]byte("initial"))
+	handle.CallerProof = "INITIAL-PROOF"
+	handle.MaxTotalUnits = 100
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Handle:            handle,
+		OnWinddownWarning: func(event loc.WinddownEvent) { warnings = append(warnings, event.Reason) },
+	})
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	if len(warnings) != 1 || warnings[0] != "wholesale_cap_extension_required" {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestWholesaleSessionRunnerCommitsExactCapRevision(t *testing.T) {
+	var brokerURL string
+	var topupHeader http.Header
+	var topupBody map[string]any
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/session":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "broker-session", "work_id": "wid", "state": "active",
+				"runtime":    map[string]any{"schema": "livepeer-session-test/v1", "public": map[string]any{}},
+				"credential": "credential", "lease": map[string]any{"expires_at": "2026-08-21T00:00:00Z"},
+				"balance": balance("ok", false),
+				"control": map[string]any{"status_url": brokerURL + "/status", "topup_url": brokerURL + "/topup", "end_url": brokerURL + "/end"},
+			})
+		case "/topup":
+			topupHeader = r.Header.Clone()
+			_ = json.NewDecoder(r.Body).Decode(&topupBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{"balance": balance("ok", false)})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	brokerURL = broker.URL
+	defer broker.Close()
+
+	sid := "11111111-1111-1111-1111-111111111111"
+	var revisionBody map[string]any
+	successor := base64.StdEncoding.EncodeToString([]byte("successor"))
+	locServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/"+sid+"/refill" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&revisionBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"work_id": "loc-auth:revision", "request_id": "revision-request", "refill_seq": 1,
+			"payment_envelope": nil, "spend_authorization": successor,
+			"accounting_mode": "wholesale_account", "expected_value_wei": "0", "funded_value_wei": "0",
+		})
+	}))
+	defer locServer.Close()
+	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
+	handle := sessionHandle(brokerURL, "extensible")
+	handle.AccountingMode = "wholesale_account"
+	handle.PaymentEnvelope = ""
+	handle.SpendAuthorization = base64.StdEncoding.EncodeToString([]byte("initial"))
+	handle.CallerProof = "INITIAL-PROOF"
+	handle.MaxTotalUnits = 100
+	handle.SignCallerProof = func(raw []byte) (string, error) {
+		if string(raw) != "successor" {
+			t.Fatalf("signed wrong authorization: %q", raw)
+		}
+		return "SUCCESSOR-PROOF", nil
+	}
+	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
+		Client: client, Handle: handle,
+		ApproveCapExtension: func(loc.SessionBalance) (int64, bool) { return 200, true },
+	})
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.OnBalance(context.Background(), loc.SessionBalance{Status: "low", ClaimedUnits: 80})
+	if revisionBody["max_total_units"] != float64(200) || revisionBody["workload_request_digest"] != "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
+		t.Fatalf("wrong revision body: %v", revisionBody)
+	}
+	if len(topupBody) != 0 || topupHeader.Get("Livepeer-Authorization") != successor || topupHeader.Get("Livepeer-Caller-Proof") != "SUCCESSOR-PROOF" || topupHeader.Get("Livepeer-Payment") != "" {
+		t.Fatalf("wrong broker topup: body=%v headers=%v", topupBody, topupHeader)
 	}
 }
 

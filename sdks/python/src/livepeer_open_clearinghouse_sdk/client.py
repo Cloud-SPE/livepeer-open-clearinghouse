@@ -194,6 +194,8 @@ class SessionHandle:
     accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
     caller_proof: str | None = None
     session_open_body: bytes | None = None
+    max_total_units: int | None = None
+    sign_caller_proof: CallerProofSigner | None = None
 
 
 CallerProofSigner = Callable[[bytes], str | Awaitable[str]]
@@ -862,6 +864,8 @@ class OpenClearinghouseClient:
             accounting_mode=accounting_mode,
             caller_proof=proof,
             session_open_body=session_open_body,
+            max_total_units=max_total_units,
+            sign_caller_proof=sign_caller_proof,
             expected_value_wei=int(data["expected_value_wei"]),
             funded_value_wei=int(data["funded_value_wei"]),
             refill_endpoint=data["refill_endpoint"],
@@ -890,6 +894,8 @@ class OpenClearinghouseClient:
         request_id: str | None = None,
         rebind_from: str | None = None,
         replaces_request_id: str | None = None,
+        max_total_units: int | None = None,
+        workload_request_digest: str | None = None,
     ) -> dict[str, Any]:
         """Mint or replay one LOC top-up intent for a paid session."""
         self._telemetry.emit(
@@ -899,6 +905,9 @@ class OpenClearinghouseClient:
         refill_started_ns = time.monotonic_ns()
         loc_request_id = request_id or str(uuid.uuid4())
         body: dict[str, Any] = {"observed_consumed_units": observed_consumed_units}
+        if max_total_units is not None:
+            body["max_total_units"] = max_total_units
+            body["workload_request_digest"] = workload_request_digest
         if rebind_from is not None:
             body["rebind_from"] = rebind_from
             body["replaces_request_id"] = replaces_request_id

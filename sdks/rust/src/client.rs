@@ -147,6 +147,8 @@ pub struct SessionHandle {
     pub caller_proof: Option<String>,
     #[serde(skip)]
     pub session_open_body: Vec<u8>,
+    #[serde(skip)]
+    pub max_total_units: u64,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
     pub expected_value_wei: u128,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
@@ -357,7 +359,7 @@ impl Client {
         }
     }
 
-    fn caller_proof(
+    pub(crate) fn caller_proof(
         &self,
         authorization: Option<&str>,
     ) -> Result<Option<String>, OpenClearinghouseError> {
@@ -968,6 +970,7 @@ impl Client {
         handle.session_params = in_.session_params.clone();
         handle.caller_proof = proof;
         handle.session_open_body = session_open_body;
+        handle.max_total_units = in_.max_total_units;
         self.telemetry
             .emit(
                 "session.opened",
@@ -1083,6 +1086,31 @@ impl Client {
             )
             .await;
         Ok(result)
+    }
+
+    /// Explicitly increases a wholesale session's cumulative cap. The
+    /// digest must bind the exact body subsequently sent to the broker.
+    pub async fn revise_session_authorization(
+        &self,
+        session_id: &str,
+        observed_consumed_units: u64,
+        max_total_units: u64,
+        workload_request_digest: &str,
+        request_id: Option<&str>,
+    ) -> Result<Value, OpenClearinghouseError> {
+        let idempotency_key =
+            request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToString::to_string);
+        self.request_with_headers(
+            Method::POST,
+            &format!("/v1/sessions/{session_id}/refill"),
+            Some(&serde_json::json!({
+                "observed_consumed_units": observed_consumed_units,
+                "max_total_units": max_total_units,
+                "workload_request_digest": workload_request_digest,
+            })),
+            &[("Idempotency-Key", idempotency_key.as_str())],
+        )
+        .await
     }
 
     pub async fn close_session(

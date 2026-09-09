@@ -36,7 +36,7 @@ async function sha256Hex(body: string | Uint8Array): Promise<string> {
   );
 }
 
-async function callerProof(
+export async function callerProof(
   authorization: string | null | undefined,
   signer: CallerProofSigner | undefined,
 ): Promise<string | null> {
@@ -172,6 +172,8 @@ export interface SessionHandle {
   accountingMode?: "legacy_ticket" | "wholesale_account";
   callerProof?: string | null;
   sessionOpenBody?: string;
+  maxTotalUnits?: number;
+  signCallerProof?: CallerProofSigner;
   expectedValueWei: bigint;
   fundedValueWei: bigint;
   refillEndpoint: string;
@@ -815,6 +817,8 @@ export class OpenClearinghouseClient {
       accountingMode,
       callerProof: proof,
       sessionOpenBody,
+      maxTotalUnits: args.maxTotalUnits,
+      ...(args.signCallerProof === undefined ? {} : { signCallerProof: args.signCallerProof }),
       expectedValueWei: parseWei(data.expected_value_wei),
       fundedValueWei: parseWei(data.funded_value_wei),
       refillEndpoint: data.refill_endpoint,
@@ -829,6 +833,8 @@ export class OpenClearinghouseClient {
       requestId?: string;
       rebindFrom?: string;
       replacesRequestId?: string;
+      maxTotalUnits?: number;
+      workloadRequestDigest?: string;
     } = {},
   ): Promise<unknown> {
     this._telemetry.emit({
@@ -840,6 +846,10 @@ export class OpenClearinghouseClient {
     const body: Record<string, unknown> = {
       observed_consumed_units: opts.observedConsumedUnits ?? null,
     };
+    if (opts.maxTotalUnits !== undefined) {
+      body.max_total_units = opts.maxTotalUnits;
+      body.workload_request_digest = opts.workloadRequestDigest;
+    }
     if (opts.rebindFrom !== undefined) {
       body.rebind_from = opts.rebindFrom;
       body.replaces_request_id = opts.replacesRequestId;

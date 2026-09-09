@@ -184,6 +184,96 @@ describe("SessionRunner paid-session/v1", () => {
     ]);
   });
 
+  it("winds down wholesale low balance without explicit cap approval", async () => {
+    const warnings: WinddownEvent[] = [];
+    const wholesale = {
+      ...handle(),
+      paymentEnvelope: null,
+      spendAuthorization: Buffer.from("initial").toString("base64"),
+      accountingMode: "wholesale_account" as const,
+      callerProof: "INITIAL-PROOF",
+      maxTotalUnits: 100,
+    };
+    const client = new OpenClearinghouseClient({ baseUrl: LOC, apiKey: "pymth_test" });
+    const runner = new SessionRunner({
+      client,
+      handle: wholesale,
+      onWinddownWarning: (event) => {
+        warnings.push(event);
+      },
+    });
+    await runner.onBalance(balance({ status: "low" }));
+    expect(warnings.map((event) => event.reason)).toEqual(["wholesale_cap_extension_required"]);
+  });
+
+  it("commits and signs the exact wholesale cap-revision body", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const successor = Buffer.from("successor").toString("base64");
+    const fetchImpl: typeof fetch = (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ url, ...(init === undefined ? {} : { init }) });
+      if (url === `${BROKER}/v1/session`) return Promise.resolve(json(openResponse()));
+      if (url === `${LOC}/v1/sessions/${SID}/refill`) {
+        return Promise.resolve(
+          json({
+            work_id: "loc-auth:revision",
+            request_id: "revision-request",
+            refill_seq: 1,
+            payment_envelope: null,
+            spend_authorization: successor,
+            accounting_mode: "wholesale_account",
+            expected_value_wei: "0",
+            funded_value_wei: "0",
+            cap_status: null,
+          }),
+        );
+      }
+      if (url === `${BROKER}/topup`) return Promise.resolve(json({ balance: balance() }));
+      return Promise.resolve(json({}, 404));
+    };
+    const wholesale = {
+      ...handle(),
+      paymentEnvelope: null,
+      spendAuthorization: Buffer.from("initial").toString("base64"),
+      accountingMode: "wholesale_account" as const,
+      callerProof: "INITIAL-PROOF",
+      maxTotalUnits: 100,
+      signCallerProof: (bytes: Uint8Array) => {
+        expect(Buffer.from(bytes).toString()).toBe("successor");
+        return "SUCCESSOR-PROOF";
+      },
+    };
+    const client = new OpenClearinghouseClient({
+      baseUrl: LOC,
+      apiKey: "pymth_test",
+      fetch: fetchImpl,
+    });
+    const runner = new SessionRunner({
+      client,
+      handle: wholesale,
+      fetch: fetchImpl,
+      approveCapExtension: () => 200,
+    });
+    await runner.start();
+    await runner.onBalance(balance({ status: "low", claimed_units: 80 }));
+
+    const revision = calls.find((call) => call.url.includes("/refill"));
+    const topup = calls.find((call) => call.url.endsWith("/topup"));
+    if (typeof revision?.init?.body !== "string" || typeof topup?.init?.body !== "string") {
+      throw new Error("missing wholesale revision bodies");
+    }
+    expect(JSON.parse(revision.init.body)).toMatchObject({
+      observed_consumed_units: 80,
+      max_total_units: 200,
+      workload_request_digest: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    });
+    expect(topup.init.body).toBe("{}");
+    const headers = topup.init.headers as Record<string, string>;
+    expect(headers["Livepeer-Authorization"]).toBe(successor);
+    expect(headers["Livepeer-Caller-Proof"]).toBe("SUCCESSOR-PROOF");
+    expect(headers["Livepeer-Payment"]).toBeUndefined();
+  });
+
   it("remints recipient rotation with a fresh id and declared predecessor", async () => {
     const warnings: WinddownEvent[] = [];
     const calls: { url: string; init?: RequestInit }[] = [];

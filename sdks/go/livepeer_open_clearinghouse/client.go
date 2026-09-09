@@ -189,25 +189,27 @@ type JobResult struct {
 // broker URL + minted envelope; the caller drives the broker WS/RTMP
 // wire today.
 type SessionHandle struct {
-	SessionID          string         `json:"session_id"`
-	RequestID          string         `json:"request_id"`
-	WorkID             string         `json:"work_id"`
-	BrokerURL          string         `json:"broker_url"`
-	Protocol           string         `json:"protocol"`
-	Capability         string         `json:"-"`
-	Offering           string         `json:"-"`
-	Session            SessionAxes    `json:"session"`
-	SessionParams      map[string]any `json:"-"`
-	PaymentEnvelope    string         `json:"payment_envelope"`
-	SpendAuthorization string         `json:"spend_authorization"`
-	AccountingMode     string         `json:"accounting_mode"`
-	CallerProof        string         `json:"-"`
-	SessionOpenBody    []byte         `json:"-"`
-	ExpectedValueWei   Wei            `json:"expected_value_wei"`
-	FundedValueWei     Wei            `json:"funded_value_wei"`
-	RefillEndpoint     string         `json:"refill_endpoint"`
-	CloseEndpoint      string         `json:"close_endpoint"`
-	OpenedAt           string         `json:"opened_at"`
+	SessionID          string                       `json:"session_id"`
+	RequestID          string                       `json:"request_id"`
+	WorkID             string                       `json:"work_id"`
+	BrokerURL          string                       `json:"broker_url"`
+	Protocol           string                       `json:"protocol"`
+	Capability         string                       `json:"-"`
+	Offering           string                       `json:"-"`
+	Session            SessionAxes                  `json:"session"`
+	SessionParams      map[string]any               `json:"-"`
+	PaymentEnvelope    string                       `json:"payment_envelope"`
+	SpendAuthorization string                       `json:"spend_authorization"`
+	AccountingMode     string                       `json:"accounting_mode"`
+	CallerProof        string                       `json:"-"`
+	SessionOpenBody    []byte                       `json:"-"`
+	MaxTotalUnits      int64                        `json:"-"`
+	SignCallerProof    func([]byte) (string, error) `json:"-"`
+	ExpectedValueWei   Wei                          `json:"expected_value_wei"`
+	FundedValueWei     Wei                          `json:"funded_value_wei"`
+	RefillEndpoint     string                       `json:"refill_endpoint"`
+	CloseEndpoint      string                       `json:"close_endpoint"`
+	OpenedAt           string                       `json:"opened_at"`
 }
 
 type SessionAxes struct {
@@ -845,6 +847,8 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 	out.SessionParams = in.SessionParams
 	out.CallerProof = proof
 	out.SessionOpenBody = sessionOpenBody
+	out.MaxTotalUnits = in.MaxTotalUnits
+	out.SignCallerProof = in.SignCallerProof
 	c.telemetry.Emit(EmitTelemetryOptions{
 		EventType:     "session.opened",
 		CorrelationID: out.SessionID,
@@ -920,6 +924,22 @@ func (c *Client) RefillSession(ctx context.Context, sessionID string, observedCo
 		},
 	})
 	return out, nil
+}
+
+// ReviseSessionAuthorization explicitly increases a wholesale session's
+// cumulative cap. The digest must bind the exact body sent to the broker.
+func (c *Client) ReviseSessionAuthorization(ctx context.Context, sessionID string, observedConsumedUnits int64, maxTotalUnits int64, requestDigest, requestID string) (map[string]any, error) {
+	body := map[string]any{
+		"observed_consumed_units": observedConsumedUnits,
+		"max_total_units":         maxTotalUnits,
+		"workload_request_digest": requestDigest,
+	}
+	if requestID == "" {
+		requestID = newUUIDv4()
+	}
+	var out map[string]any
+	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out, http.Header{"Idempotency-Key": []string{requestID}})
+	return out, err
 }
 
 // CloseSession explicitly closes a session and finalizes accounting.

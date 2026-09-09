@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import uuid
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -189,6 +192,84 @@ async def test_wholesale_open_sends_authorization_and_exact_committed_body() -> 
     assert request.content == exact_body
     assert request.headers["Livepeer-Authorization"] == "AUTHORIZATION"
     assert request.headers["Livepeer-Caller-Proof"] == "CALLER-PROOF"
+    assert "Livepeer-Payment" not in request.headers
+
+
+@pytest.mark.asyncio
+async def test_wholesale_low_balance_without_cap_approval_winds_down() -> None:
+    warnings: list[WinddownEvent] = []
+    legacy = _handle()
+    handle = replace(
+        legacy,
+        payment_envelope=None,
+        spend_authorization="AUTHORIZATION",
+        accounting_mode="wholesale_account",
+        caller_proof="PROOF",
+        max_total_units=100,
+    )
+    runner = SessionRunner(
+        client=OpenClearinghouseClient(base_url=BASE, api_key=KEY),
+        handle=handle,
+        on_winddown_warning=warnings.append,
+    )
+    await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
+    assert warnings == [WinddownEvent("wholesale_cap_extension_required", None)]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_wholesale_cap_extension_commits_and_sends_exact_revision() -> None:
+    legacy = _handle()
+    authorization = base64.b64encode(b"revision-authorization").decode()
+
+    def sign(value: bytes) -> str:
+        assert value == b"revision-authorization"
+        return "REVISION-PROOF"
+
+    handle = replace(
+        legacy,
+        payment_envelope=None,
+        spend_authorization=base64.b64encode(b"initial").decode(),
+        accounting_mode="wholesale_account",
+        caller_proof="INITIAL-PROOF",
+        max_total_units=100,
+        sign_caller_proof=sign,
+    )
+    respx.post(f"{BROKER}/v1/session").mock(return_value=httpx.Response(200, json=_open_response()))
+    loc_refill = respx.post(f"{BASE}{handle.refill_endpoint}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "work_id": "loc-auth:revision",
+                "request_id": "revision-request",
+                "refill_seq": 1,
+                "payment_envelope": None,
+                "spend_authorization": authorization,
+                "accounting_mode": "wholesale_account",
+                "expected_value_wei": 0,
+                "funded_value_wei": 0,
+                "cap_status": None,
+            },
+        )
+    )
+    broker_topup = respx.post(f"{BROKER}/topup").mock(
+        return_value=httpx.Response(200, json={"balance": _balance(status="ok")})
+    )
+    async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
+        runner = SessionRunner(
+            client=client,
+            handle=handle,
+            approve_cap_extension=lambda _: 200,
+        )
+        await runner.on_balance(SessionBalance.from_dict(_balance(status="low")))
+
+    request_body = json.loads(loc_refill.calls[0].request.content)
+    assert request_body["max_total_units"] == 200
+    assert request_body["workload_request_digest"] == hashlib.sha256(b"{}").hexdigest()
+    request = broker_topup.calls[0].request
+    assert request.content == b"{}"
+    assert request.headers["Livepeer-Authorization"] == authorization
+    assert request.headers["Livepeer-Caller-Proof"] == "REVISION-PROOF"
     assert "Livepeer-Payment" not in request.headers
 
 
