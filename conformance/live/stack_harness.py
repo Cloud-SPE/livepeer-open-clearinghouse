@@ -649,7 +649,14 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         status = await runner.status()
         if status.get("state") != "active":
             raise AssertionError(f"broker session status is not active: {status!r}")
-        closed = await runner.close(actual_units=0)
+        try:
+            closed = await runner.close(actual_units=0)
+        except Exception as exc:
+            raise AssertionError(
+                "official SDK session close failed: "
+                f"code={getattr(exc, 'code', None)!r} "
+                f"details={getattr(exc, 'details', None)!r}"
+            ) from exc
         if closed.get("actual_units") != 0 or closed.get("outcome") != "OVERFUNDED":
             raise AssertionError(f"official SDK session close is invalid: {closed!r}")
         cases.append(
