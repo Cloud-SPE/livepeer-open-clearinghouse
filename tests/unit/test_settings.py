@@ -6,6 +6,12 @@ from pydantic import ValidationError
 from livepeer_open_clearinghouse.settings import Settings
 
 
+def _settings(**overrides: object) -> Settings:
+    """Build settings without inheriting the operator's checkout-local dotenv."""
+
+    return Settings(_env_file=None, **overrides)  # type: ignore[arg-type]
+
+
 def _production_settings(**overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "app_env": "prod",
@@ -28,7 +34,7 @@ def _production_settings(**overrides: object) -> dict[str, object]:
 
 @pytest.mark.unit
 def test_production_settings_accept_hardened_values() -> None:
-    settings = Settings(**_production_settings())  # type: ignore[arg-type]
+    settings = _settings(**_production_settings())
 
     assert settings.app_env == "prod"
     assert settings.public_base_url.scheme == "https"
@@ -37,7 +43,7 @@ def test_production_settings_accept_hardened_values() -> None:
 @pytest.mark.unit
 def test_production_settings_reject_development_defaults() -> None:
     with pytest.raises(ValidationError, match="unsafe production configuration") as raised:
-        Settings(
+        _settings(
             app_env="prod",
             public_base_url="http://localhost:8000",
             database_url=(
@@ -71,11 +77,11 @@ def test_production_settings_reject_development_defaults() -> None:
 
 @pytest.mark.unit
 def test_wholesale_rollout_is_disabled_and_requires_complete_limits() -> None:
-    assert Settings().wholesale_accounts_enabled is False
+    assert _settings().wholesale_accounts_enabled is False
     with pytest.raises(ValidationError, match="positive chain and exposure limits"):
-        Settings(wholesale_accounts_enabled=True)
+        _settings(wholesale_accounts_enabled=True)
     with pytest.raises(ValidationError, match="target exceeds"):
-        Settings(
+        _settings(
             wholesale_accounts_enabled=True,
             wholesale_chain_id=42161,
             wholesale_target_available_wei=101,
@@ -85,7 +91,7 @@ def test_wholesale_rollout_is_disabled_and_requires_complete_limits() -> None:
             wholesale_max_single_funding_wei=100,
         )
     with pytest.raises(ValidationError, match="replenish threshold exceeds target"):
-        Settings(
+        _settings(
             wholesale_accounts_enabled=True,
             wholesale_chain_id=42161,
             wholesale_target_available_wei=100,
