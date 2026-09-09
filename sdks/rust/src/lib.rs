@@ -11,9 +11,9 @@ mod telemetry;
 pub mod wei;
 
 pub use client::{
-    CapStatus, Capability, Client, ClientOptions, JobBody, JobOpenResponse, JobResult,
-    JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionAxes, SessionHandle,
-    SubmitJobInput, SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
+    CallerProofSigner, CapStatus, Capability, Client, ClientOptions, JobBody, JobOpenResponse,
+    JobResult, JobSettleResponse, Offering, OpenSessionInput, Orchestrator, SessionAxes,
+    SessionHandle, SubmitJobInput, SDK_GIT_SHA, SDK_LANG, SDK_VERSION,
 };
 pub use errors::{ErrorKind, OpenClearinghouseError};
 pub use session_runner::{

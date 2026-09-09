@@ -320,6 +320,32 @@ future account/authorization protocol, raw HTTP remains supported and LOC must
 recover authoritative broker state by its own request/session ID even when no
 SDK callback arrives.
 
+### Raw HTTP parity for wholesale accounts
+
+Raw callers follow the same versioned flow as the official SDKs. They must
+serialize the workload body once, retain those exact bytes, and send its
+lowercase SHA-256 digest plus their compressed secp256k1 public key when they
+open the LOC job. If LOC returns `accounting_mode: wholesale_account`, the
+caller signs the opaque decoded `spend_authorization` according to the
+published Modules contract and sends the original body bytes with
+`Livepeer-Authorization` and `Livepeer-Caller-Proof` to the returned broker.
+The caller must not decode, reconstruct, or canonicalize the authorization.
+
+Sessions add one step because their LOC-issued ID is part of the broker-open
+body. Call `POST /v1/sessions/prepare`, construct and retain the exact
+`{"gateway_session_id": ..., "session_params": ...}` bytes, then call
+`POST /v1/sessions` with the preparation token, returned route binding, body
+digest, and caller public key. Send those retained bytes and the two
+authorization headers to the locked broker. A route change starts a new
+preparation and authorization; it never reuses the old proof.
+
+The OpenAPI document is authoritative for LOC request and response fields.
+The Modules protocol specification is authoritative for caller-proof signing
+and broker headers. `accounting_mode: legacy_ticket` continues to use
+`Livepeer-Payment`; an unknown mode or incomplete wholesale response fails
+closed. Settlement callbacks remain a latency optimization: LOC reconciles
+from durable broker status by its issued request or session ID.
+
 This text is suitable for inclusion in customer-facing onboarding
 emails, the portal first-login flow, and the API docs landing
 page.

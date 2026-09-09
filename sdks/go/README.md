@@ -137,6 +137,11 @@ call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
 
+For wholesale-capable routes, set `CallerPublicKey` and `SignCallerProof` on
+`SubmitJobInput` or `OpenSessionInput`. The callback receives opaque decoded
+authorization bytes and returns the base64 caller proof. The SDK retains the
+exact committed body and never takes custody of the caller's private key.
+
 Errors come back as `*openclearinghouse.Error` with predicate methods:
 `IsInsufficientCredit`, `IsSpendCapExceeded`, `IsAccountNotApproved`,
 `IsEmailNotVerified`, `IsNoRouteAvailable`, `IsRateLimited` (with

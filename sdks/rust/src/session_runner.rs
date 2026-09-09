@@ -313,17 +313,51 @@ async fn open_broker_session(
     handle: &SessionHandle,
 ) -> Result<BrokerSession, OpenClearinghouseError> {
     let url = format!("{}/v1/session", handle.broker_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let mut request = reqwest::Client::new()
         .post(url)
         .header("Livepeer-Protocol", &handle.protocol)
         .header("Livepeer-Capability", &handle.capability)
         .header("Livepeer-Offering", &handle.offering)
-        .header("Livepeer-Request-Id", &handle.request_id)
-        .header("Livepeer-Payment", &handle.payment_envelope)
-        .json(&serde_json::json!({
+        .header("Livepeer-Request-Id", &handle.request_id);
+    if handle.accounting_mode == "wholesale_account" {
+        let authorization = handle.spend_authorization.as_deref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "wholesale session is missing authorization",
+            )
+        })?;
+        let proof = handle.caller_proof.as_deref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "wholesale session is missing caller proof",
+            )
+        })?;
+        request = request
+            .header("Livepeer-Authorization", authorization)
+            .header("Livepeer-Caller-Proof", proof);
+        if let Some(payment) = &handle.payment_envelope {
+            request = request.header("Livepeer-Payment", payment);
+        }
+    } else {
+        let payment = handle.payment_envelope.as_deref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "legacy session is missing Livepeer-Payment",
+            )
+        })?;
+        request = request.header("Livepeer-Payment", payment);
+    }
+    let body = if handle.session_open_body.is_empty() {
+        serde_json::to_vec(&serde_json::json!({
             "gateway_session_id": handle.session_id,
             "session_params": handle.session_params,
-        }))
+        }))?
+    } else {
+        handle.session_open_body.clone()
+    };
+    let response = request
+        .header("Content-Type", "application/json")
+        .body(body)
         .send()
         .await?
         .error_for_status()?;

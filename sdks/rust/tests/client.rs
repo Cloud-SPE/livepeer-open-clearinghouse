@@ -1,6 +1,8 @@
 //! Tests for the handoff-mode Rust SDK. Uses wiremock to stub both
 //! the LOC gateway and the broker.
 
+use std::sync::Arc;
+
 use base64::Engine as _;
 use livepeer_open_clearinghouse_sdk::{
     Client, ClientOptions, ErrorKind, JobBody, OpenSessionInput, SubmitJobInput,
@@ -424,6 +426,88 @@ async fn open_session_returns_handle() {
         .expect("open_session");
     assert_eq!(handle.protocol, "paid-session/v1");
     assert_eq!(handle.funded_value_wei, 200_000);
+}
+
+#[tokio::test]
+async fn open_session_prepares_exact_wholesale_commitment() {
+    let loc = MockServer::start().await;
+    let sid = "33333333-3333-3333-3333-333333333333";
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/prepare"))
+        .and(header("Idempotency-Key", "session-request:prepare"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "gateway_session_id": sid,
+            "route_binding": {"route": "locked"},
+            "broker_url": "https://broker.example/livepeer",
+            "preparation_token": "prepared-token",
+            "expires_at": "2026-09-09T12:05:00Z"
+        })))
+        .mount(&loc)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions"))
+        .and(body_json(json!({
+            "capability": "livepeer:test",
+            "offering": "default",
+            "descriptor_schema": "livepeer-session-test/v1",
+            "session_params": {"room": "alpha"},
+            "estimated_runway_units": 100,
+            "max_total_units": 200,
+            "gateway_session_id": sid,
+            "preparation_token": "prepared-token",
+            "route_binding": {"route": "locked"},
+            "workload_request_digest": "6d6fa90ea27fa42dc3fd7538c56269d0fd9fd2699c560bef2862723310738f30",
+            "caller_public_key": format!("02{}", "11".repeat(32))
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "session_id": sid,
+            "work_id": "loc-auth:session-request",
+            "broker_url": "https://broker.example/livepeer",
+            "request_id": "session-request",
+            "protocol": "paid-session/v1",
+            "session": {
+                "descriptor_schema": "livepeer-session-test/v1",
+                "attachment": "external", "metering": "runner-reported", "refill": "extensible"
+            },
+            "payment_envelope": null,
+            "spend_authorization": "YXV0aA==",
+            "accounting_mode": "wholesale_account",
+            "expected_value_wei": "100000",
+            "funded_value_wei": "100000",
+            "refill_endpoint": format!("/v1/sessions/{sid}/refill"),
+            "close_endpoint": format!("/v1/sessions/{sid}/close"),
+            "opened_at": "2026-09-09T12:00:00Z"
+        })))
+        .mount(&loc)
+        .await;
+
+    let options = ClientOptions::new(loc.uri(), API_KEY).with_caller_proof(
+        format!("02{}", "11".repeat(32)),
+        Arc::new(|authorization| {
+            assert_eq!(authorization, b"auth");
+            Ok("CALLER-PROOF".to_string())
+        }),
+    );
+    let handle = Client::new(options)
+        .unwrap()
+        .open_session(OpenSessionInput {
+            capability: "livepeer:test",
+            offering: "default",
+            descriptor_schema: "livepeer-session-test/v1",
+            session_params: json!({"room": "alpha"}),
+            estimated_runway_units: 100,
+            max_total_units: 200,
+            request_id: Some("session-request".to_string()),
+        })
+        .await
+        .expect("open wholesale session");
+
+    assert_eq!(handle.accounting_mode, "wholesale_account");
+    assert_eq!(handle.caller_proof.as_deref(), Some("CALLER-PROOF"));
+    assert_eq!(
+        handle.session_open_body,
+        br#"{"gateway_session_id":"33333333-3333-3333-3333-333333333333","session_params":{"room":"alpha"}}"#
+    );
 }
 
 #[tokio::test]

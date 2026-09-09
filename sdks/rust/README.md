@@ -133,6 +133,12 @@ every call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
 
+For wholesale-capable routes, configure `ClientOptions::with_caller_proof`
+with the compressed caller public key and an `Arc<CallerProofSigner>`. The
+callback receives opaque decoded authorization bytes and returns the base64
+caller proof. The SDK retains the exact committed body and never takes
+custody of the caller's private key.
+
 `OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`,
 and `Config` variants. Call `.kind()` for the high-level `ErrorKind`
 (`InsufficientCredit`, `SpendCapExceeded`, `AccountNotApproved`,

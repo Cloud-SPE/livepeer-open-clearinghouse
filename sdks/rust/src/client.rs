@@ -10,12 +10,13 @@
 //!   carrying the broker URL + minted envelope; the caller drives the
 //!   broker WS/RTMP wire today.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use base64::Engine as _;
 use reqwest::{header, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::errors::OpenClearinghouseError;
 
@@ -71,7 +72,11 @@ pub struct JobOpenResponse {
     pub protocol: String,
     pub transport: String,
     pub work_unit: String,
-    pub payment_envelope: String,
+    pub payment_envelope: Option<String>,
+    #[serde(default)]
+    pub spend_authorization: Option<String>,
+    #[serde(default = "legacy_accounting_mode")]
+    pub accounting_mode: String,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
     pub expected_value_wei: u128,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
@@ -133,7 +138,15 @@ pub struct SessionHandle {
     pub session: SessionAxes,
     #[serde(skip)]
     pub session_params: Value,
-    pub payment_envelope: String,
+    pub payment_envelope: Option<String>,
+    #[serde(default)]
+    pub spend_authorization: Option<String>,
+    #[serde(default = "legacy_accounting_mode")]
+    pub accounting_mode: String,
+    #[serde(skip)]
+    pub caller_proof: Option<String>,
+    #[serde(skip)]
+    pub session_open_body: Vec<u8>,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
     pub expected_value_wei: u128,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
@@ -141,6 +154,10 @@ pub struct SessionHandle {
     pub refill_endpoint: String,
     pub close_endpoint: String,
     pub opened_at: String,
+}
+
+fn legacy_accounting_mode() -> String {
+    "legacy_ticket".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,12 +168,25 @@ pub struct SessionAxes {
     pub refill: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Deserialize)]
+struct SessionPreparation {
+    gateway_session_id: String,
+    route_binding: Value,
+    #[serde(rename = "preparation_token")]
+    token: String,
+}
+
+pub type CallerProofSigner =
+    Arc<dyn Fn(&[u8]) -> Result<String, OpenClearinghouseError> + Send + Sync + 'static>;
+
+#[derive(Clone)]
 pub struct ClientOptions {
     pub base_url: String,
     pub api_key: String,
     pub timeout: Duration,
     pub sdk_identity: String,
+    caller_public_key: Option<String>,
+    caller_proof_signer: Option<CallerProofSigner>,
 }
 
 impl ClientOptions {
@@ -166,7 +196,20 @@ impl ClientOptions {
             api_key: api_key.into(),
             timeout: Duration::from_secs(15),
             sdk_identity: default_sdk_identity(),
+            caller_public_key: None,
+            caller_proof_signer: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_caller_proof(
+        mut self,
+        caller_public_key: impl Into<String>,
+        signer: CallerProofSigner,
+    ) -> Self {
+        self.caller_public_key = Some(caller_public_key.into());
+        self.caller_proof_signer = Some(signer);
+        self
     }
 }
 
@@ -175,6 +218,8 @@ pub struct Client {
     http: reqwest::Client,
     telemetry: std::sync::Arc<crate::telemetry::TelemetryEmitter>,
     init_emitted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    caller_public_key: Option<String>,
+    caller_proof_signer: Option<CallerProofSigner>,
 }
 
 impl Clone for Client {
@@ -184,6 +229,8 @@ impl Clone for Client {
             http: self.http.clone(),
             telemetry: self.telemetry.clone(),
             init_emitted: self.init_emitted.clone(),
+            caller_public_key: self.caller_public_key.clone(),
+            caller_proof_signer: self.caller_proof_signer.clone(),
         }
     }
 }
@@ -272,6 +319,8 @@ impl Client {
             telemetry,
             base_url,
             http,
+            caller_public_key: opts.caller_public_key,
+            caller_proof_signer: opts.caller_proof_signer,
         })
     }
 
@@ -308,6 +357,37 @@ impl Client {
         }
     }
 
+    fn caller_proof(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<Option<String>, OpenClearinghouseError> {
+        let Some(authorization) = authorization else {
+            return Ok(None);
+        };
+        let signer = self.caller_proof_signer.as_ref().ok_or_else(|| {
+            OpenClearinghouseError::broker_protocol(
+                "caller_proof_signer_required",
+                "LOC returned a spend authorization but no caller-proof signer was supplied",
+            )
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(authorization)
+            .map_err(|_| {
+                OpenClearinghouseError::broker_protocol(
+                    "broker_protocol_error",
+                    "LOC returned a malformed spend authorization",
+                )
+            })?;
+        let proof = signer(&bytes)?;
+        if proof.is_empty() {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "caller_proof_signer_failed",
+                "caller-proof signer returned an empty proof",
+            ));
+        }
+        Ok(Some(proof))
+    }
+
     // ---- discovery ----
 
     pub async fn list_capabilities(&self) -> Result<Vec<Capability>, OpenClearinghouseError> {
@@ -339,6 +419,7 @@ impl Client {
 
     // ---- jobs (cases a/b/c) ----
 
+    #[allow(clippy::too_many_lines)]
     pub async fn submit_job(
         &self,
         in_: SubmitJobInput<'_>,
@@ -363,6 +444,11 @@ impl Client {
                 "multipart transport requires a bytes body and multipart/form-data content_type",
             ));
         }
+        let authorization_body = match &in_.body {
+            JobBody::Json(value) => serde_json::to_vec(value)?,
+            JobBody::Bytes(bytes) => bytes.to_vec(),
+        };
+        let request_digest = format!("{:x}", Sha256::digest(&authorization_body));
 
         self.emit_sdk_init_once().await;
         self.telemetry
@@ -388,6 +474,8 @@ impl Client {
             "transport": transport,
             "estimated_units": in_.estimated_units,
             "max_total_units": in_.max_total_units,
+            "workload_request_digest": request_digest,
+            "caller_public_key": self.caller_public_key,
         });
         let job: JobOpenResponse = match self
             .request_with_headers(
@@ -457,9 +545,43 @@ impl Client {
             .timeout(Duration::from_secs(60))
             .header("Livepeer-Capability", in_.capability)
             .header("Livepeer-Offering", in_.offering)
-            .header("Livepeer-Payment", &job.payment_envelope)
             .header("Livepeer-Protocol", &job.protocol)
             .header("Livepeer-Request-Id", &job.request_id);
+
+        match job.accounting_mode.as_str() {
+            "wholesale_account" => {
+                let proof = self.caller_proof(job.spend_authorization.as_deref())?;
+                let (Some(authorization), Some(proof)) =
+                    (job.spend_authorization.as_deref(), proof)
+                else {
+                    return Err(OpenClearinghouseError::broker_protocol(
+                        "broker_protocol_error",
+                        "LOC returned an incomplete wholesale authorization",
+                    ));
+                };
+                req = req
+                    .header("Livepeer-Authorization", authorization)
+                    .header("Livepeer-Caller-Proof", proof);
+                if let Some(payment) = &job.payment_envelope {
+                    req = req.header("Livepeer-Payment", payment);
+                }
+            }
+            "legacy_ticket" => {
+                let payment = job.payment_envelope.as_deref().ok_or_else(|| {
+                    OpenClearinghouseError::broker_protocol(
+                        "broker_protocol_error",
+                        "LOC returned no payment envelope for legacy accounting",
+                    )
+                })?;
+                req = req.header("Livepeer-Payment", payment);
+            }
+            mode => {
+                return Err(OpenClearinghouseError::broker_protocol(
+                    "protocol_unsupported",
+                    format!("LOC returned unsupported accounting mode {mode}"),
+                ));
+            }
+        }
 
         if transport == "stream" {
             req = req.header("Accept", "text/event-stream");
@@ -467,10 +589,19 @@ impl Client {
 
         req = match &in_.body {
             JobBody::Json(v) => {
-                let body = route_model_for(in_.capability, job.route_snapshot.as_ref())
-                    .map_or_else(|| v.clone(), |model| with_model(v, model));
-                req.header("Content-Type", "application/json")
-                    .body(serde_json::to_vec(&body)?)
+                let body = if job.accounting_mode == "wholesale_account" {
+                    v.clone()
+                } else {
+                    route_model_for(in_.capability, job.route_snapshot.as_ref())
+                        .map_or_else(|| v.clone(), |model| with_model(v, model))
+                };
+                req.header("Content-Type", "application/json").body(
+                    if job.accounting_mode == "wholesale_account" {
+                        authorization_body
+                    } else {
+                        serde_json::to_vec(&body)?
+                    },
+                )
             }
             JobBody::Bytes(b) => {
                 let content_type = in_.content_type.unwrap_or("application/octet-stream");
@@ -730,6 +861,7 @@ impl Client {
     /// `estimated_runway_units` is the initial chunk LOC mints
     /// toward; [`SessionRunner`] tops up automatically as the broker
     /// reports a normative low balance.
+    #[allow(clippy::too_many_lines)]
     pub async fn open_session(
         &self,
         in_: OpenSessionInput<'_>,
@@ -739,11 +871,55 @@ impl Client {
             .request_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let prepared: Option<SessionPreparation> = if self.caller_public_key.is_some() {
+            Some(
+                self.request_with_headers(
+                    Method::POST,
+                    "/v1/sessions/prepare",
+                    Some(&serde_json::json!({
+                        "capability": in_.capability,
+                        "offering": in_.offering,
+                        "descriptor_schema": in_.descriptor_schema,
+                    })),
+                    &[("Idempotency-Key", format!("{request_id}:prepare").as_str())],
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut session_open_body = if let Some(preparation) = &prepared {
+            serde_json::to_vec(&serde_json::json!({
+                "gateway_session_id": preparation.gateway_session_id,
+                "session_params": in_.session_params,
+            }))?
+        } else {
+            Vec::new()
+        };
+        let mut open_body = serde_json::json!({
+            "capability": in_.capability,
+            "offering": in_.offering,
+            "descriptor_schema": in_.descriptor_schema,
+            "session_params": in_.session_params,
+            "estimated_runway_units": in_.estimated_runway_units,
+            "max_total_units": in_.max_total_units,
+        });
+        if let Some(preparation) = &prepared {
+            open_body["gateway_session_id"] = Value::String(preparation.gateway_session_id.clone());
+            open_body["preparation_token"] = Value::String(preparation.token.clone());
+            open_body["route_binding"] = preparation.route_binding.clone();
+            open_body["workload_request_digest"] =
+                Value::String(format!("{:x}", Sha256::digest(&session_open_body)));
+            open_body["caller_public_key"] = self
+                .caller_public_key
+                .as_ref()
+                .map_or(Value::Null, |value| Value::String(value.clone()));
+        }
         let mut handle: SessionHandle = self
             .request_with_headers(
                 Method::POST,
                 "/v1/sessions",
-                Some(&in_),
+                Some(&open_body),
                 &[("Idempotency-Key", request_id.as_str())],
             )
             .await?;
@@ -759,9 +935,39 @@ impl Client {
                 "session descriptor schema mismatch",
             ));
         }
+        if session_open_body.is_empty() {
+            session_open_body = serde_json::to_vec(&serde_json::json!({
+                "gateway_session_id": handle.session_id,
+                "session_params": in_.session_params,
+            }))?;
+        }
+        let proof = self.caller_proof(handle.spend_authorization.as_deref())?;
+        match handle.accounting_mode.as_str() {
+            "wholesale_account" if handle.spend_authorization.is_none() || proof.is_none() => {
+                return Err(OpenClearinghouseError::broker_protocol(
+                    "broker_protocol_error",
+                    "LOC returned an incomplete wholesale authorization",
+                ));
+            }
+            "legacy_ticket" if handle.payment_envelope.is_none() => {
+                return Err(OpenClearinghouseError::broker_protocol(
+                    "broker_protocol_error",
+                    "LOC returned no payment envelope for legacy accounting",
+                ));
+            }
+            "wholesale_account" | "legacy_ticket" => {}
+            mode => {
+                return Err(OpenClearinghouseError::broker_protocol(
+                    "protocol_unsupported",
+                    format!("LOC returned unsupported accounting mode {mode}"),
+                ));
+            }
+        }
         handle.capability = in_.capability.to_string();
         handle.offering = in_.offering.to_string();
         handle.session_params = in_.session_params.clone();
+        handle.caller_proof = proof;
+        handle.session_open_body = session_open_body;
         self.telemetry
             .emit(
                 "session.opened",
