@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | accepted — implementation pending |
+| Status | accepted — wholesale-only cutover in progress |
 | Opened | 2026-09-08 |
 | Beads | `loc-1zq` |
 | Governing Modules work | `lnm-b41`; `docs/design-docs/wholesale-credit-accounts.md`; plan `0049-fair-wholesale-credit-accounts.md` |
@@ -21,6 +21,12 @@ wholesale payee. All LOC customers share LOC's wholesale credit account with a
 given payee. Customer balances, holds, API-key attribution, spend caps, and
 pricing remain isolated inside LOC and never become authority over that shared
 account.
+
+Wholesale accounts are the only payment model for new work. LOC does not
+offer a legacy-ticket mode, rollout toggle, or fallback. A selected route must
+advertise the complete signed wholesale feature contract; otherwise LOC
+rejects it before creating a customer hold, signing an authorization, or
+funding an account.
 
 Tickets will add only a bounded shortfall to the shared wholesale account.
 They will not encode how much an individual customer job or session may spend.
@@ -49,7 +55,7 @@ contract is:
 | Authorization state and settlement extension fields | Durable reconciliation evidence keyed by LOC authorization plus request/session identity |
 | `Livepeer-Authorization` | Base64 signed authorization sent to the locked broker |
 | Optional `Livepeer-Payment` | Shortfall funding only on an account-authorized invocation |
-| `extra.features.wholesale_accounts: true` | Required route opt-in; absence or partial support selects legacy only before issuance and never permits fallback afterward |
+| `extra.features.wholesale_accounts: true` | Mandatory route contract; absence or partial support fails closed before issuance |
 
 The receiver RPCs (`FundWholesaleAccount`, `AdmitAuthorization`,
 `AdvanceAuthorization`, `SettleAuthorization`, `GetWholesaleAccount`, and
@@ -83,11 +89,10 @@ wei, add a fee, apply an independent retail price, or offer multiple plans.
 Broker settlement proves wholesale cost; it does not dictate the customer's
 price.
 
-## Current assumptions that do not carry forward
+## Legacy assumptions that do not carry forward
 
-The existing implementation and its v1 documentation remain authoritative
-until the new protocol ships. The following are compatibility facts, not target
-invariants:
+The following describe the retired ticket-per-engagement implementation. They
+are historical facts, not supported runtime alternatives:
 
 | Current v1 assumption | Future contract |
 |---|---|
@@ -193,13 +198,14 @@ authority. A customer cannot observe, claim, or directly spend residual pooled
 wholesale credit. The orchestrator does not receive LOC customer identity,
 balance, plan, margin, discount, or retail price.
 
-Migration `0025` establishes this boundary without reclassifying legacy rows:
-`payment_session.accounting_mode` defaults to `legacy_ticket`; account-aware
-engagements persist an immutable `customer-pricing/v1` snapshot and customer
-maximum, while `credit_ledger.related_engagement_id` replaces the legacy
-payment linkage. Separate `wholesale_account` and `wholesale_funding` tables
-contain no customer or API-key ownership columns. Enabling the new route path
-still requires the authorization, reconciliation, and rollout beads.
+Migration `0025` establishes this boundary without falsifying history. Closed
+historical rows may retain `accounting_mode = legacy_ticket` as immutable audit
+data, but no code may use that label to issue, refill, reopen, or authorize
+work. New engagements persist an immutable `customer-pricing/v1` snapshot and
+customer maximum, while `credit_ledger.related_engagement_id` correlates the
+customer ledger without making it own wholesale value. Separate
+`wholesale_account` and `wholesale_funding` tables contain no customer or
+API-key ownership columns.
 
 Authorization history is append-only in `spend_authorization_grant`. Each
 revision persists its exact locked route, commitment, caller key, payer,
@@ -219,19 +225,19 @@ persisted customer price policy to verified actual usage. In every case,
 broker-signed settlement remains wholesale evidence rather than a customer
 invoice.
 
-## Compatibility and rollout
+## Wholesale-only cutover
 
-Until the versioned Modules contract is published and implemented, LOC keeps
-the current paid-job/session behavior unchanged. Existing endpoints, payment
-rows, `work_id` relationships, and conservative recovery rules must not be
-silently reinterpreted as shared-account semantics.
+LOC does not support mixed payment epochs for new work. Existing payment rows,
+`work_id` relationships, and closed historical records must not be silently
+reinterpreted as shared-account semantics, but they provide no continuing
+legacy spend authority.
 
 Migration requires:
 
 - explicit protocol and feature negotiation;
-- separate adapters and persisted version markers for legacy and new records;
-- inventory and safe drain or protocol-defined transfer of legacy residual
-  credit, without double credit or stranded redeemable tickets;
+- an inventory and complete operator-approved drain of every active legacy
+  job, session, payment, and idempotency claim before the new release starts;
+- preservation of closed historical labels solely for audit and reporting;
 - idempotent migration and recovery for in-flight jobs and sessions;
 - conformance evidence for authorization scope, atomic reservation, durable
   status, rotation, expiry, and aggregate replenishment; and
@@ -239,11 +245,10 @@ Migration requires:
   reservation/cumulative caps, reconciliation deadlines, and drain behavior.
 
 LOC fails closed if a selected route, broker, sender, or receiver does not
-advertise and prove support for the complete new account and authorization
-semantics. It must not mix a new authorization with legacy funding/account
-behavior. A route may continue under the legacy path only when the caller
-explicitly entered a supported legacy protocol version and all legacy
-invariants remain intact.
+advertise and prove support for the complete account and authorization
+semantics. There is no caller-selectable legacy version and no fallback after
+route selection. Startup or cutover preflight must reject active legacy state
+rather than strand it or revive the retired path.
 
 ## Protocol-owned details
 
@@ -253,7 +258,7 @@ LOC implementation must consume, not independently decide:
 - authorization revision, replay, expiry, and irrevocable retirement rules;
 - atomic admission/reservation/debit APIs and durable status schemas;
 - account identity encoding and authenticated account query mechanisms;
-- ticket-generation rotation and legacy residual-credit disposition;
+- ticket-generation rotation and pre-cutover residual-credit disposition;
 - capability negotiation and exact mixed-version failure behavior; and
 - broker evidence needed to retire a route during failover.
 

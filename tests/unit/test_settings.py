@@ -27,6 +27,12 @@ def _production_settings(**overrides: object) -> dict[str, object]:
         "email_from_address": "info@loc.example.com",
         "sdk_manifest_signing_key": "c2lnbmluZy1rZXktZm9yLXByb2R1Y3Rpb24=",
         "admin_bootstrap_token": None,
+        "wholesale_chain_id": 42161,
+        "wholesale_target_available_wei": 100,
+        "wholesale_replenish_below_wei": 50,
+        "wholesale_max_available_per_payee_wei": 200,
+        "wholesale_max_aggregate_available_wei": 1_000,
+        "wholesale_max_single_funding_wei": 100,
     }
     values.update(overrides)
     return values
@@ -44,22 +50,23 @@ def test_production_settings_accept_hardened_values() -> None:
 def test_production_settings_reject_development_defaults() -> None:
     with pytest.raises(ValidationError, match="unsafe production configuration") as raised:
         _settings(
-            app_env="prod",
-            public_base_url="http://localhost:8000",
-            database_url=(
-                "postgresql+asyncpg://livepeer_open_clearinghouse:"
-                "livepeer_open_clearinghouse-dev-password@localhost/loc"
-            ),
-            api_key_hash_pepper="dev-pepper-CHANGE-FOR-PROD",
-            session_secret="dev-session-secret-CHANGE-FOR-PROD",
-            metrics_token="dev-metrics-token-CHANGE-FOR-PROD",
-            payment_daemon_mode="mock",
-            registry_daemon_mode="mock",
-            email_provider="auto",
-            resend_api_key=None,
-            email_from_address="no-reply@livepeer-open-clearinghouse.local",
-            sdk_manifest_signing_key=None,
-            admin_bootstrap_token=None,
+            **_production_settings(
+                public_base_url="http://localhost:8000",
+                database_url=(
+                    "postgresql+asyncpg://livepeer_open_clearinghouse:"
+                    "livepeer_open_clearinghouse-dev-password@localhost/loc"
+                ),
+                api_key_hash_pepper="dev-pepper-CHANGE-FOR-PROD",
+                session_secret="dev-session-secret-CHANGE-FOR-PROD",
+                metrics_token="dev-metrics-token-CHANGE-FOR-PROD",
+                payment_daemon_mode="mock",
+                registry_daemon_mode="mock",
+                email_provider="auto",
+                resend_api_key=None,
+                email_from_address="no-reply@livepeer-open-clearinghouse.local",
+                sdk_manifest_signing_key=None,
+                admin_bootstrap_token=None,
+            )
         )
 
     message = str(raised.value)
@@ -76,27 +83,26 @@ def test_production_settings_reject_development_defaults() -> None:
 
 
 @pytest.mark.unit
-def test_wholesale_rollout_is_disabled_and_requires_complete_limits() -> None:
-    assert _settings().wholesale_accounts_enabled is False
+def test_production_requires_complete_wholesale_limits() -> None:
     with pytest.raises(ValidationError, match="positive chain and exposure limits"):
-        _settings(wholesale_accounts_enabled=True)
+        _settings(**_production_settings(wholesale_chain_id=0))
     with pytest.raises(ValidationError, match="target exceeds"):
         _settings(
-            wholesale_accounts_enabled=True,
-            wholesale_chain_id=42161,
-            wholesale_target_available_wei=101,
-            wholesale_replenish_below_wei=50,
-            wholesale_max_available_per_payee_wei=100,
-            wholesale_max_aggregate_available_wei=1_000,
-            wholesale_max_single_funding_wei=100,
+            **_production_settings(
+                wholesale_target_available_wei=101,
+                wholesale_replenish_below_wei=50,
+                wholesale_max_available_per_payee_wei=100,
+                wholesale_max_aggregate_available_wei=1_000,
+                wholesale_max_single_funding_wei=100,
+            )
         )
     with pytest.raises(ValidationError, match="replenish threshold exceeds target"):
         _settings(
-            wholesale_accounts_enabled=True,
-            wholesale_chain_id=42161,
-            wholesale_target_available_wei=100,
-            wholesale_replenish_below_wei=101,
-            wholesale_max_available_per_payee_wei=200,
-            wholesale_max_aggregate_available_wei=1_000,
-            wholesale_max_single_funding_wei=100,
+            **_production_settings(
+                wholesale_target_available_wei=100,
+                wholesale_replenish_below_wei=101,
+                wholesale_max_available_per_payee_wei=200,
+                wholesale_max_aggregate_available_wei=1_000,
+                wholesale_max_single_funding_wei=100,
+            )
         )

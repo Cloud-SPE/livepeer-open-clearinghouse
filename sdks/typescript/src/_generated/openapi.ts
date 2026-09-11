@@ -974,10 +974,9 @@ export interface paths {
         put?: never;
         /**
          * Open Job Endpoint
-         * @description Open a one-shot job. Returns broker_url + payment_envelope for
-         *     the SDK to call the broker directly (handoff mode).
+         * @description Open a one-shot job and return its route-locked spend authorization.
          *
-         *     Only routes declaring ``paid-job/v1`` are accepted.
+         *     Only wholesale-capable routes declaring ``paid-job/v1`` are accepted.
          */
         post: operations["open_job_endpoint_v1_jobs_post"];
         delete?: never;
@@ -1088,7 +1087,7 @@ export interface paths {
         put?: never;
         /**
          * Refill Session Endpoint
-         * @description Mint a top-up envelope bound to an existing session.
+         * @description Issue a higher cumulative authorization for an existing session.
          *
          *     Returns 400 ``refill_not_supported`` when ``session.refill`` is
          *     ``bounded``. Returns 402
@@ -1840,14 +1839,9 @@ export interface components {
          * CreateJobRequest
          * @description Inbound: ``POST /v1/jobs``.
          *
-         *     SDK declares its intent for an atomic / post-settled / streaming
-         *     job. ``max_total_units`` is the worst-case ceiling LOC encumbers
-         *     up front; if omitted, defaults to ``estimated_units`` (the SDK is
-         *     asserting "I know exactly what I need" — typical for case (a)).
-         *
-         *     For case (b)/(c) workloads where output_tokens are unknown,
-         *     customers should pass a generous ``max_total_units`` to give the
-         *     broker room. Refunds happen at ``/settle``.
+         *     The workload digest and caller key bind the resulting single-purpose
+         *     authorization to this request. ``max_total_units`` is the cumulative
+         *     customer authorization ceiling; it does not size wholesale funding.
          */
         CreateJobRequest: {
             /** Capability */
@@ -1865,16 +1859,16 @@ export interface components {
             max_total_units?: number | null;
             route_binding?: components["schemas"]["RouteBinding"] | null;
             /** Workload Request Digest */
-            workload_request_digest?: string | null;
+            workload_request_digest: string;
             /** Caller Public Key */
-            caller_public_key?: string | null;
+            caller_public_key: string;
         };
         /**
          * CreateJobResponse
          * @description Outbound: ``POST /v1/jobs``.
          *
-         *     Carries the broker target + minted envelope so the SDK can issue
-         *     its one-shot call to the broker directly (handoff mode). The
+         *     Carries the locked broker target and scoped authorization so the SDK can
+         *     issue its one-shot call to the broker directly (handoff mode). The
          *     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
          *     the broker's response (terminal headers for unary/multipart, or a
          *     terminal settlement lookup when stream trailers are inaccessible).
@@ -1901,16 +1895,14 @@ export interface components {
             /** Work Unit */
             work_unit: string;
             route_snapshot: components["schemas"]["RouteSnapshot"];
-            /** Payment Envelope */
-            payment_envelope?: string | null;
             /** Spend Authorization */
-            spend_authorization?: string | null;
+            spend_authorization: string;
             /**
              * Accounting Mode
-             * @default legacy_ticket
-             * @enum {string}
+             * @default wholesale_account
+             * @constant
              */
-            accounting_mode: "legacy_ticket" | "wholesale_account";
+            accounting_mode: "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
@@ -1967,8 +1959,9 @@ export interface components {
          *     The SDK declares its intent for a long-lived session: the
          *     capability + offering pair to bill against, the estimated runway
          *     (best-guess of what the session is likely to consume), and the
-         *     absolute ceiling (``max_total_units``) that LOC will encumber up
-         *     front under handoff-mode's worst-case sizing rule.
+         *     cumulative customer authorization ceiling (``max_total_units``).
+         *     The prepared session identity, request digest, and caller key bind the
+         *     authorization to one locked route and workload.
          *
          *     ``max_total_units`` MUST be >= ``estimated_runway_units`` and > 0.
          */
@@ -1987,25 +1980,26 @@ export interface components {
             estimated_runway_units: number;
             /** Max Total Units */
             max_total_units: number;
-            /** Gateway Session Id */
-            gateway_session_id?: string | null;
+            /**
+             * Gateway Session Id
+             * Format: uuid
+             */
+            gateway_session_id: string;
             /** Preparation Token */
-            preparation_token?: string | null;
+            preparation_token: string;
             route_binding?: components["schemas"]["RouteBinding"] | null;
             /** Workload Request Digest */
-            workload_request_digest?: string | null;
+            workload_request_digest: string;
             /** Caller Public Key */
-            caller_public_key?: string | null;
+            caller_public_key: string;
         };
         /**
          * CreateSessionResponse
          * @description Outbound: ``POST /v1/sessions``.
          *
-         *     Carries everything the SDK needs to open the broker-side session
-         *     and bookkeep the LOC-side lifecycle. The ``payment_envelope``
-         *     is base64-encoded wire-format Payment bytes — the SDK attaches
-         *     it as the ``Livepeer-Payment`` HTTP header when opening the broker's
-         *     paid-session/v1 control resource.
+         *     Carries everything the SDK needs to open the broker-side session and
+         *     bookkeep the LOC-side lifecycle. ``spend_authorization`` is scoped to the
+         *     locked route, session commitment, caller proof, and cumulative maximum.
          *
          *     Per exec-plan 002 handoff design, LOC never sits in the data
          *     path: ``broker_url`` is the orchestrator's HTTP/WS endpoint the
@@ -2029,16 +2023,14 @@ export interface components {
             protocol: string;
             session: components["schemas"]["SessionAxesView"];
             route_snapshot: components["schemas"]["RouteSnapshot"];
-            /** Payment Envelope */
-            payment_envelope?: string | null;
             /** Spend Authorization */
-            spend_authorization?: string | null;
+            spend_authorization: string;
             /**
              * Accounting Mode
-             * @default legacy_ticket
-             * @enum {string}
+             * @default wholesale_account
+             * @constant
              */
-            accounting_mode: "legacy_ticket" | "wholesale_account";
+            accounting_mode: "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
@@ -2602,32 +2594,25 @@ export interface components {
          * RefillSessionRequest
          * @description Inbound: ``POST /v1/sessions/{id}/refill``.
          *
-         *     Body is mostly empty in v1 — the SDK signals "broker emitted
-         *     Livepeer-Balance-Low, please mint more." The optional
-         *     ``observed_consumed_units`` is an advisory hint from the SDK's
-         *     view of broker progress. Signed broker settlements, supplied on
-         *     close/reconciliation, are authoritative for delivered work.
+         *     Revises the session's cumulative authorization cap. The request digest
+         *     binds the new revision to the updated session commitment. Wholesale
+         *     account replenishment remains an aggregate payer-payee decision.
          */
         RefillSessionRequest: {
             /** Observed Consumed Units */
             observed_consumed_units?: number | null;
             /** Max Total Units */
-            max_total_units?: number | null;
+            max_total_units: number;
             /** Workload Request Digest */
-            workload_request_digest?: string | null;
-            /** Rebind From */
-            rebind_from?: string | null;
-            /** Replaces Request Id */
-            replaces_request_id?: string | null;
+            workload_request_digest: string;
         };
         /**
          * RefillSessionResponse
          * @description Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
          *
-         *     Carries the newly-minted top-up envelope plus a fresh cap_status
-         *     snapshot. The SDK delivers ``payment_envelope`` through the authoritative
-         *     paid-session HTTP top-up URL; a control WebSocket is only an optional push
-         *     mirror.
+         *     Carries the revised cumulative spend authorization plus a fresh cap-status
+         *     snapshot. The SDK delivers it with caller proof through the paid-session
+         *     control endpoint.
          */
         RefillSessionResponse: {
             /** Work Id */
@@ -2636,23 +2621,19 @@ export interface components {
             request_id: string;
             /** Refill Seq */
             refill_seq: number;
-            /** Payment Envelope */
-            payment_envelope?: string | null;
             /** Spend Authorization */
-            spend_authorization?: string | null;
+            spend_authorization: string;
             /**
              * Accounting Mode
-             * @default legacy_ticket
-             * @enum {string}
+             * @default wholesale_account
+             * @constant
              */
-            accounting_mode: "legacy_ticket" | "wholesale_account";
+            accounting_mode: "wholesale_account";
             /** Expected Value Wei */
             expected_value_wei: string;
             /** Funded Value Wei */
             funded_value_wei: string;
             cap_status: components["schemas"]["CapStatus"];
-            /** Rebind From */
-            rebind_from?: string | null;
         };
         /**
          * RequestPasswordResetRequest

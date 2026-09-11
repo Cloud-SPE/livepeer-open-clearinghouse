@@ -15,7 +15,11 @@ const API_KEY: &str = "pymth_live_test";
 const ENCODED_SETTLEMENT: &str = "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0=";
 
 fn loc_client(loc: &MockServer) -> Client {
-    Client::new(ClientOptions::new(loc.uri(), API_KEY)).unwrap()
+    Client::new(ClientOptions::new(loc.uri(), API_KEY).with_caller_proof(
+        format!("02{}", "11".repeat(32)),
+        Arc::new(|_| Ok("CALLER-PROOF".to_string())),
+    ))
+    .unwrap()
 }
 
 fn job_open_payload(broker_url: &str) -> serde_json::Value {
@@ -27,7 +31,8 @@ fn job_open_payload(broker_url: &str) -> serde_json::Value {
         "protocol": "paid-job/v1",
         "transport": "unary",
         "work_unit": "token",
-        "payment_envelope": "BASE64ENV",
+        "spend_authorization": base64::engine::general_purpose::STANDARD.encode("authorization"),
+        "accounting_mode": "wholesale_account",
         "expected_value_wei": "100000",
         "funded_value_wei": "100000",
         "settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
@@ -57,6 +62,18 @@ fn settled_payload(actual: u64) -> serde_json::Value {
     })
 }
 
+async fn mount_session_prepare(loc: &MockServer, sid: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/prepare"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "gateway_session_id": sid,
+            "route_binding": {},
+            "preparation_token": "prepared-token"
+        })))
+        .mount(loc)
+        .await;
+}
+
 #[test]
 fn rejects_bad_api_key() {
     let err = Client::new(ClientOptions::new("https://x", "nope")).unwrap_err();
@@ -82,7 +99,8 @@ async fn submit_job_happy_path() {
 
     Mock::given(method("POST"))
         .and(path("/v1/job"))
-        .and(header("Livepeer-Payment", "BASE64ENV"))
+        .and(header("Livepeer-Authorization", "YXV0aG9yaXphdGlvbg=="))
+        .and(header("Livepeer-Caller-Proof", "CALLER-PROOF"))
         .and(header("Livepeer-Protocol", "paid-job/v1"))
         .and(header("Livepeer-Request-Id", "broker-request-1"))
         .respond_with(
@@ -389,6 +407,7 @@ async fn submit_job_maps_insufficient_credit() {
 async fn open_session_returns_handle() {
     let loc = MockServer::start().await;
     let sid = "11111111-1111-1111-1111-111111111111";
+    mount_session_prepare(&loc, sid).await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -401,7 +420,8 @@ async fn open_session_returns_handle() {
                 "descriptor_schema": "livepeer-session-test/v1",
                 "attachment": "external", "metering": "runner-reported", "refill": "extensible"
             },
-            "payment_envelope": "BASE64SESS",
+            "spend_authorization": base64::engine::general_purpose::STANDARD.encode("session-authorization"),
+            "accounting_mode": "wholesale_account",
             "expected_value_wei": "100000",
             "funded_value_wei": "200000",
             "refill_endpoint": format!("/v1/sessions/{sid}/refill"),
@@ -603,7 +623,7 @@ async fn mount_broker_and_settle(
 }
 
 #[tokio::test]
-async fn submit_job_injects_model_from_route_for_openai() {
+async fn submit_job_does_not_mutate_body_after_authorization() {
     let loc = MockServer::start().await;
     let broker = MockServer::start().await;
     Mock::given(method("POST"))
@@ -619,7 +639,7 @@ async fn submit_job_injects_model_from_route_for_openai() {
     mount_broker_and_settle(
         &loc,
         &broker,
-        json!({ "messages": [{ "role": "user", "content": "hi" }], "model": "qwen3.6-27b" }),
+        json!({ "messages": [{ "role": "user", "content": "hi" }] }),
     )
     .await;
 
@@ -939,6 +959,7 @@ async fn legacy_bare_number_wei_fields_still_parse() {
 async fn open_session_parses_wei_beyond_u64() {
     let loc = MockServer::start().await;
     let sid = "33333333-3333-3333-3333-333333333333";
+    mount_session_prepare(&loc, sid).await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -951,7 +972,8 @@ async fn open_session_parses_wei_beyond_u64() {
                 "descriptor_schema": "livepeer-session-test/v1",
                 "attachment": "external", "metering": "runner-reported", "refill": "extensible"
             },
-            "payment_envelope": "BASE64SESS",
+            "spend_authorization": base64::engine::general_purpose::STANDARD.encode("session-authorization"),
+            "accounting_mode": "wholesale_account",
             "expected_value_wei": BIG_WEI,
             "funded_value_wei": BIG_WEI,
             "refill_endpoint": format!("/v1/sessions/{sid}/refill"),

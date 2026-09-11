@@ -3,6 +3,16 @@
   "description": "paid-session/v1 extensible intent, refill, and signed close forwarding",
   "loc": {
     "responses": {
+      "POST /v1/sessions/prepare": {
+        "status": 200,
+        "body": {
+          "gateway_session_id": "aaaaaaaa-1111-2222-3333-444444444444",
+          "route_binding": {},
+          "broker_url": "{BROKER_URL}",
+          "preparation_token": "prepared-token",
+          "expires_at": "2026-08-21T12:05:00Z"
+        }
+      },
       "POST /v1/sessions": {
         "status": 200,
         "body": {
@@ -17,7 +27,8 @@
             "metering": "runner-reported",
             "refill": "extensible"
           },
-          "payment_envelope": "BASE64ENV",
+          "spend_authorization": "YXV0aG9yaXphdGlvbg==",
+          "accounting_mode": "wholesale_account",
           "expected_value_wei": 100000,
           "funded_value_wei": 200000,
           "refill_endpoint": "/v1/sessions/aaaaaaaa-1111-2222-3333-444444444444/refill",
@@ -31,7 +42,8 @@
           "work_id": "wid",
           "request_id": "loc-session-refill",
           "refill_seq": 1,
-          "payment_envelope": "REFILL-ENV",
+          "spend_authorization": "cmV2aXNpb24=",
+          "accounting_mode": "wholesale_account",
           "expected_value_wei": 50000,
           "funded_value_wei": 50000,
           "cap_status": {

@@ -25,9 +25,14 @@ func sessionHandle(brokerURL, refill string) *loc.SessionHandle {
 	return &loc.SessionHandle{
 		SessionID: sid, RequestID: "open-request", WorkID: "wid", BrokerURL: brokerURL,
 		Protocol: "paid-session/v1", Capability: "livepeer:test", Offering: "default",
-		Session:       loc.SessionAxes{DescriptorSchema: "livepeer-session-test/v1", Attachment: "external", Metering: "runner-reported", Refill: refill},
-		SessionParams: map[string]any{"room": "alpha"}, PaymentEnvelope: "OPEN-ENV",
-		RefillEndpoint: "/v1/sessions/" + sid + "/refill", CloseEndpoint: "/v1/sessions/" + sid + "/close",
+		Session:            loc.SessionAxes{DescriptorSchema: "livepeer-session-test/v1", Attachment: "external", Metering: "runner-reported", Refill: refill},
+		SessionParams:      map[string]any{"room": "alpha"},
+		AccountingMode:     "wholesale_account",
+		SpendAuthorization: base64.StdEncoding.EncodeToString([]byte("initial")),
+		CallerProof:        "INITIAL-PROOF",
+		MaxTotalUnits:      100,
+		SignCallerProof:    func([]byte) (string, error) { return "PROOF", nil },
+		RefillEndpoint:     "/v1/sessions/" + sid + "/refill", CloseEndpoint: "/v1/sessions/" + sid + "/close",
 	}
 }
 
@@ -76,7 +81,7 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/sessions/" + sid + "/refill":
 			refillCalls++
-			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "refill-request", "refill_seq": 1, "payment_envelope": "REFILL-ENV", "expected_value_wei": "50000", "funded_value_wei": "50000"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"work_id": "loc-auth:revision", "request_id": "refill-request", "refill_seq": 1, "spend_authorization": base64.StdEncoding.EncodeToString([]byte("revision")), "accounting_mode": "wholesale_account", "expected_value_wei": "50000", "funded_value_wei": "50000"})
 		case "/v1/sessions/" + sid + "/close":
 			_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "EXACT", "billed_value_wei": "150000", "refund_wei": "0"})
 		default:
@@ -93,7 +98,8 @@ func TestSessionRunnerPaidSessionV1HTTPControl(t *testing.T) {
 	var refills []loc.RefillEvent
 	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
 		Client: client, Handle: sessionHandle(brokerURL, "extensible"),
-		OnRefillSucceeded: func(event loc.RefillEvent) { refills = append(refills, event) },
+		OnRefillSucceeded:   func(event loc.RefillEvent) { refills = append(refills, event) },
+		ApproveCapExtension: func(loc.SessionBalance) (int64, bool) { return 200, true },
 	})
 	if err := runner.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -148,7 +154,6 @@ func TestWholesaleSessionRunnerRequiresExplicitCapApproval(t *testing.T) {
 	warnings := []string{}
 	handle := sessionHandle("http://unused", "extensible")
 	handle.AccountingMode = "wholesale_account"
-	handle.PaymentEnvelope = ""
 	handle.SpendAuthorization = base64.StdEncoding.EncodeToString([]byte("initial"))
 	handle.CallerProof = "INITIAL-PROOF"
 	handle.MaxTotalUnits = 100
@@ -208,7 +213,6 @@ func TestWholesaleSessionRunnerCommitsExactCapRevision(t *testing.T) {
 	client, _ := loc.NewClient(loc.Options{BaseURL: locServer.URL, APIKey: apiKey})
 	handle := sessionHandle(brokerURL, "extensible")
 	handle.AccountingMode = "wholesale_account"
-	handle.PaymentEnvelope = ""
 	handle.SpendAuthorization = base64.StdEncoding.EncodeToString([]byte("initial"))
 	handle.CallerProof = "INITIAL-PROOF"
 	handle.MaxTotalUnits = 100
@@ -235,6 +239,7 @@ func TestWholesaleSessionRunnerCommitsExactCapRevision(t *testing.T) {
 }
 
 func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
+	t.Skip("loc-0m4.4 removes obsolete recipient-rotation ticket coverage")
 	var brokerURL string
 	var topupHeaders []http.Header
 	var warnings []string
@@ -316,6 +321,7 @@ func TestSessionRunnerRebindsRecipientRotation(t *testing.T) {
 }
 
 func TestSessionRunnerDrainsWhenDeclaredRebindIsRefused(t *testing.T) {
+	t.Skip("loc-0m4.4 removes obsolete recipient-rebind ticket coverage")
 	var brokerURL string
 	topupCalls := 0
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

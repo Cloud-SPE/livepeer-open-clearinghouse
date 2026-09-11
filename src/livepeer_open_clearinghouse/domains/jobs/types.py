@@ -16,14 +16,9 @@ from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 class CreateJobRequest(BaseModel):
     """Inbound: ``POST /v1/jobs``.
 
-    SDK declares its intent for an atomic / post-settled / streaming
-    job. ``max_total_units`` is the worst-case ceiling LOC encumbers
-    up front; if omitted, defaults to ``estimated_units`` (the SDK is
-    asserting "I know exactly what I need" — typical for case (a)).
-
-    For case (b)/(c) workloads where output_tokens are unknown,
-    customers should pass a generous ``max_total_units`` to give the
-    broker room. Refunds happen at ``/settle``.
+    The workload digest and caller key bind the resulting single-purpose
+    authorization to this request. ``max_total_units`` is the cumulative
+    customer authorization ceiling; it does not size wholesale funding.
     """
 
     capability: str = Field(min_length=1)
@@ -32,15 +27,15 @@ class CreateJobRequest(BaseModel):
     estimated_units: int = Field(gt=0)
     max_total_units: int | None = Field(default=None, gt=0)
     route_binding: RouteBinding | None = None
-    workload_request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    caller_public_key: str | None = Field(default=None, pattern=r"^(02|03)[0-9a-f]{64}$")
+    workload_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    caller_public_key: str = Field(pattern=r"^(02|03)[0-9a-f]{64}$")
 
 
 class CreateJobResponse(BaseModel):
     """Outbound: ``POST /v1/jobs``.
 
-    Carries the broker target + minted envelope so the SDK can issue
-    its one-shot call to the broker directly (handoff mode). The
+    Carries the locked broker target and scoped authorization so the SDK can
+    issue its one-shot call to the broker directly (handoff mode). The
     ``settle_endpoint`` is the LOC URL the SDK posts to after reading
     the broker's response (terminal headers for unary/multipart, or a
     terminal settlement lookup when stream trailers are inaccessible).
@@ -54,9 +49,8 @@ class CreateJobResponse(BaseModel):
     transport: Literal["unary", "stream", "multipart"]
     work_unit: str
     route_snapshot: RouteSnapshot
-    payment_envelope: str | None = None
-    spend_authorization: str | None = None
-    accounting_mode: Literal["legacy_ticket", "wholesale_account"] = "legacy_ticket"
+    spend_authorization: str
+    accounting_mode: Literal["wholesale_account"] = "wholesale_account"
     expected_value_wei: WeiDecimal
     funded_value_wei: WeiDecimal
     settle_endpoint: str

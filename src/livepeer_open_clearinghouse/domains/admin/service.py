@@ -89,7 +89,7 @@ async def wholesale_overview(
         or 0
     )
     aggregate_limit = Decimal(settings.wholesale_max_aggregate_available_wei)
-    limit_exceeded = settings.wholesale_accounts_enabled and projected > aggregate_limit
+    limit_exceeded = projected > aggregate_limit
     headroom = max(Decimal(0), aggregate_limit - projected)
     stale_cutoff = (
         now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo is not None else now
@@ -132,8 +132,7 @@ async def wholesale_overview(
                 age_seconds=age,
                 stale=age > WHOLESALE_STALE_AFTER_SECONDS,
                 over_per_payee_limit=(
-                    settings.wholesale_accounts_enabled
-                    and Decimal(account.available_value_wei)
+                    Decimal(account.available_value_wei)
                     > Decimal(settings.wholesale_max_available_per_payee_wei)
                 ),
             )
@@ -170,7 +169,7 @@ async def wholesale_overview(
     return WholesaleOverview(
         generated_at=now,
         limits=WholesaleLimitsView(
-            enabled=settings.wholesale_accounts_enabled,
+            enabled=True,
             target_available_wei=settings.wholesale_target_available_wei,
             replenish_below_wei=settings.wholesale_replenish_below_wei,
             max_available_per_payee_wei=settings.wholesale_max_available_per_payee_wei,

@@ -41,7 +41,6 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         database_url="sqlite+aiosqlite:///:memory:",
-        wholesale_accounts_enabled=True,
         wholesale_chain_id=42161,
         wholesale_target_available_wei=1000,
         wholesale_replenish_below_wei=250,

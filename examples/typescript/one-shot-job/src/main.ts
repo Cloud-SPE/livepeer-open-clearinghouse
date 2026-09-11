@@ -6,8 +6,8 @@
  *     pnpm --filter @livepeer/example-one-shot-job start
  *
  * The SDK handles the full handoff dance: opens a job via POST /v1/jobs
- * (which mints a payment envelope), calls the broker directly with the
- * envelope as Livepeer-Payment, reads the broker's Livepeer-Work-Units
+ * for a route-locked spend authorization, calls the broker directly with the
+ * authorization and caller proof, reads the broker's Livepeer-Work-Units
  * header from the response, and posts settle back to LOC.
  */
 

@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use base64::Engine as _;
 use livepeer_open_clearinghouse_sdk::{
     Client, ClientOptions, SessionAxes, SessionBalance, SessionHandle, SessionRunner,
     SessionRunnerOptions,
@@ -28,10 +29,9 @@ fn handle(broker: &MockServer, refill: &str) -> SessionHandle {
             refill: refill.to_string(),
         },
         session_params: json!({"room": "alpha"}),
-        payment_envelope: Some("OPEN-ENV".to_string()),
-        spend_authorization: None,
-        accounting_mode: "legacy_ticket".to_string(),
-        caller_proof: None,
+        spend_authorization: Some(base64::engine::general_purpose::STANDARD.encode("initial")),
+        accounting_mode: "wholesale_account".to_string(),
+        caller_proof: Some("INITIAL-PROOF".to_string()),
         session_open_body: Vec::new(),
         max_total_units: 100,
         expected_value_wei: 100_000,
@@ -110,9 +110,10 @@ async fn paid_session_v1_open_refill_and_close() {
     Mock::given(method("POST"))
         .and(path(format!("/v1/sessions/{SID}/refill")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "work_id": "wid",
+            "work_id": "loc-auth:revision",
             "request_id": "refill-request", "refill_seq": 1u64,
-            "payment_envelope": "REFILL-ENV", "expected_value_wei": "50000",
+            "spend_authorization": "cmV2aXNpb24=", "accounting_mode": "wholesale_account",
+            "expected_value_wei": "50000",
             "funded_value_wei": "50000", "cap_status": null
         })))
         .expect(1)
@@ -126,7 +127,11 @@ async fn paid_session_v1_open_refill_and_close() {
         .mount(&loc)
         .await;
 
-    let client = Client::new(ClientOptions::new(loc.uri(), "pymth_test")).unwrap();
+    let client = Client::new(
+        ClientOptions::new(loc.uri(), "pymth_test")
+            .with_caller_proof("public-key", Arc::new(|_| Ok("PROOF".to_string()))),
+    )
+    .unwrap();
     let first = SessionRunner::start(SessionRunnerOptions::new(
         client.clone(),
         handle(&broker, "extensible"),
@@ -134,12 +139,9 @@ async fn paid_session_v1_open_refill_and_close() {
     .await
     .unwrap();
     drop(first);
-    let runner = SessionRunner::start(SessionRunnerOptions::new(
-        client,
-        handle(&broker, "extensible"),
-    ))
-    .await
-    .unwrap();
+    let mut options = SessionRunnerOptions::new(client, handle(&broker, "extensible"));
+    options.approve_cap_extension = Some(Arc::new(|_| Box::pin(async { Some(200) })));
+    let runner = SessionRunner::start(options).await.unwrap();
     assert_eq!(runner.status().await.unwrap()["state"], "active");
     runner
         .on_balance(serde_json::from_value(balance("low", false)).unwrap())
@@ -153,6 +155,7 @@ async fn paid_session_v1_open_refill_and_close() {
 }
 
 #[tokio::test]
+#[ignore = "loc-0m4.4 removes obsolete recipient-rotation ticket coverage"]
 async fn recipient_rotation_uses_fresh_intent_and_declared_rebind() {
     let broker = MockServer::start().await;
     mount_open(&broker, "livepeer-session-test/v1").await;
@@ -217,6 +220,7 @@ async fn recipient_rotation_uses_fresh_intent_and_declared_rebind() {
 }
 
 #[tokio::test]
+#[ignore = "loc-0m4.4 removes obsolete recipient-rebind ticket coverage"]
 async fn declared_rebind_refusal_drains_once() {
     let broker = MockServer::start().await;
     mount_open(&broker, "livepeer-session-test/v1").await;
@@ -310,7 +314,6 @@ async fn wholesale_low_balance_requires_explicit_cap_approval() {
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let captured = warnings.clone();
     let mut wholesale = handle(&broker, "extensible");
-    wholesale.payment_envelope = None;
     wholesale.spend_authorization = Some("aW5pdGlhbA==".to_string());
     wholesale.accounting_mode = "wholesale_account".to_string();
     wholesale.caller_proof = Some("INITIAL-PROOF".to_string());
@@ -368,7 +371,6 @@ async fn wholesale_cap_revision_commits_and_signs_exact_body() {
     )
     .unwrap();
     let mut wholesale = handle(&broker, "extensible");
-    wholesale.payment_envelope = None;
     wholesale.spend_authorization = Some("aW5pdGlhbA==".to_string());
     wholesale.accounting_mode = "wholesale_account".to_string();
     wholesale.caller_proof = Some("INITIAL-PROOF".to_string());

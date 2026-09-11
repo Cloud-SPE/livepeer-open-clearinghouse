@@ -8,6 +8,7 @@ Endpoints implemented (mirror the real LOC API surface):
 
   POST /v1/jobs                   — mint a one-shot job
   POST /v1/jobs/{id}/settle       — settle a job (idempotent)
+  POST /v1/sessions/prepare       — lock the session route
   POST /v1/sessions               — open a session
   POST /v1/sessions/{id}/refill   — refill a session
   POST /v1/sessions/{id}/close    — close a session
@@ -175,6 +176,10 @@ def build_app(scenario: dict[str, Any]) -> FastAPI:
     @app.post("/v1/jobs/{job_id}/settle")
     async def jobs_settle(job_id: str, request: Request) -> JSONResponse:
         return await _record_and_respond("POST", f"/v1/jobs/{job_id}/settle", request)
+
+    @app.post("/v1/sessions/prepare")
+    async def sessions_prepare(request: Request) -> JSONResponse:
+        return await _record_and_respond("POST", "/v1/sessions/prepare", request)
 
     @app.post("/v1/sessions")
     async def sessions_open(request: Request) -> JSONResponse:

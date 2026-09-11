@@ -3,13 +3,11 @@
 The load-bearing design decisions behind Livepeer Open Clearinghouse, written down so future
 agent runs can reason about them without re-deriving them from code.
 
-> **Protocol epochs:** This file describes the currently implemented legacy
-> funding model. The approved target is
-> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md):
-> customer maxima become single-purpose authorization caps, while tickets fund
-> only bounded shortfall in a shared LOC payer-payee wholesale account. LOC
-> preserves this legacy behavior until Modules publishes the versioned wire
-> contract and fails closed rather than mixing the two models.
+> **Payment protocol:** LOC is wholesale-account only. Customer maxima are
+> single-purpose authorization caps, while tickets fund only bounded shortfall
+> in a shared LOC payer-payee account. Routes without the complete signed
+> wholesale contract fail closed. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
 
 ## What Livepeer Open Clearinghouse is
 
@@ -64,25 +62,21 @@ On-chain identity is the operator's, not the user's.
 **Trade-off:** Livepeer Open Clearinghouse must absorb short-term variance from probabilistic
 micropayments. See `docs/RELIABILITY.md`.
 
-### 3. Charge ticket EV at issuance (legacy protocol only)
+### 3. Price verified usage separately from wholesale funding
 
-When `payment-daemon.CreatePayment` returns `expected_value`, Livepeer Open Clearinghouse
-decrements the user's balance by that exact amount and never revisits.
-On-chain redemption outcomes are not observed.
+LOC holds the customer's maximum under its retail pricing policy, then charges
+verified actual usage from durable broker-signed evidence. Ticket EV funds
+only bounded shortfall in the shared payer-payee wholesale account and is not
+a customer billing event.
 
-**Why:** removes a whole feedback loop. No need for the orchestrator to
-report back, no need to watch the chain for redemption events, no race
-between "ticket issued" and "ticket settled." The user sees a deterministic
-bill. The operator's wallet, integrated across all users, pays out roughly
-what was charged in EV terms.
+**Why:** a workload ceiling, wholesale funding requirement, and retail charge
+are different quantities. Collapsing them overfunds reusable accounts and
+makes customer billing depend on probabilistic payment mechanics.
 
-**Trade-off:** Livepeer Open Clearinghouse's pooled wallet eats short-term lottery variance —
-favorable in expectation, unfavorable in any given window. Acceptable for
-MVP scale. This is not the future customer-billing rule: under design 002,
-ticket EV funds LOC's wholesale account and verified actual usage is priced in
-a separate customer ledger.
+**Trade-off:** LOC must independently reconcile durable broker state and keep
+the customer and wholesale ledgers consistent even when the SDK never reports.
 
-### 4. Job-sizing is "N work units," not "X wei of funding" (legacy protocol)
+### 4. Job-sizing sets authorization, not funding
 
 The app developer asks for tickets in units of work (e.g., "200 tokens",
 "30 video frames"). Livepeer Open Clearinghouse multiplies by `price_per_work_unit_wei` from

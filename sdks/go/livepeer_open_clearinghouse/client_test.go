@@ -20,6 +20,12 @@ import (
 const apiKey = "pymth_live_test"
 const encodedTestSettlement = "eyJwYXlsb2FkIjp7fSwic2lnbmF0dXJlIjp7fX0="
 
+func callerProofInput(in loc.SubmitJobInput) loc.SubmitJobInput {
+	in.CallerPublicKey = "02" + strings.Repeat("11", 32)
+	in.SignCallerProof = func([]byte) (string, error) { return "CALLER-PROOF", nil }
+	return in
+}
+
 func locOpenJob(t *testing.T, brokerURL, transport string) *httptest.Server {
 	t.Helper()
 	return locOpenJobWithRoute(t, brokerURL, transport, nil)
@@ -48,18 +54,19 @@ func locOpenJobWithRoute(t *testing.T, brokerURL, transport string, routeSnapsho
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
 		opened := map[string]any{
-			"job_id":             "00000000-0000-0000-0000-000000000abc",
-			"request_id":         "broker-request-1",
-			"work_id":            "wid-abc",
-			"broker_url":         brokerURL,
-			"protocol":           "paid-job/v1",
-			"transport":          transport,
-			"work_unit":          "token",
-			"payment_envelope":   "BASE64ENV",
-			"expected_value_wei": "100000",
-			"funded_value_wei":   "100000",
-			"settle_endpoint":    "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
-			"opened_at":          "2026-05-24T12:00:00Z",
+			"job_id":              "00000000-0000-0000-0000-000000000abc",
+			"request_id":          "broker-request-1",
+			"work_id":             "wid-abc",
+			"broker_url":          brokerURL,
+			"protocol":            "paid-job/v1",
+			"transport":           transport,
+			"work_unit":           "token",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000",
+			"funded_value_wei":    "100000",
+			"settle_endpoint":     "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+			"opened_at":           "2026-05-24T12:00:00Z",
 		}
 		if routeSnapshot != nil {
 			opened["route_snapshot"] = routeSnapshot
@@ -104,8 +111,11 @@ func brokerServer(t *testing.T, status int) *httptest.Server {
 		if r.URL.Path != "/v1/job" {
 			t.Fatalf("unexpected broker path %s", r.URL.Path)
 		}
-		if got := r.Header.Get("Livepeer-Payment"); got != "BASE64ENV" {
-			t.Errorf("expected Livepeer-Payment BASE64ENV, got %q", got)
+		if got := r.Header.Get("Livepeer-Payment"); got != "" {
+			t.Errorf("unexpected Livepeer-Payment %q", got)
+		}
+		if r.Header.Get("Livepeer-Authorization") == "" || r.Header.Get("Livepeer-Caller-Proof") != "CALLER-PROOF" {
+			t.Errorf("missing wholesale authorization headers: %v", r.Header)
 		}
 		if r.Header.Get("Livepeer-Protocol") != "paid-job/v1" || r.Header.Get("Livepeer-Mode") != "" || r.Header.Get("Livepeer-Spec-Version") != "" {
 			t.Errorf("unexpected protocol headers: %v", r.Header)
@@ -139,13 +149,13 @@ func TestSubmitJobHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	result, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability:     "openai:chat-completions",
 		Offering:       "gpt-oss-20b",
 		EstimatedUnits: 80,
 		MaxTotalUnits:  100,
 		Body:           []byte(`{"prompt":"hello"}`),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +210,10 @@ func TestSubmitJobStreamReadsTerminalTrailers(t *testing.T) {
 	defer loca.Close()
 
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	result, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	result, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability: "openai:chat-completions", Offering: "gpt-oss-20b",
 		EstimatedUnits: 10, Body: []byte(`{"prompt":"hello"}`), Transport: "stream",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +242,11 @@ func TestSubmitJobMultipartAndTerminalError(t *testing.T) {
 		loca := locOpenJob(t, broker.URL, "multipart")
 		defer loca.Close()
 		client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-		result, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+		result, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 			Capability: "x", Offering: "x", EstimatedUnits: 2,
 			Body: []byte("--boundary--"), Transport: "multipart",
 			ContentType: "multipart/form-data; boundary=boundary",
-		})
+		}))
 		if err != nil || result.Transport != "multipart" {
 			t.Fatalf("multipart result=%v err=%v", result, err)
 		}
@@ -256,9 +266,9 @@ func TestSubmitJobMultipartAndTerminalError(t *testing.T) {
 		loca := locOpenJob(t, broker.URL, "unary")
 		defer loca.Close()
 		client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-		result, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+		result, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 			Capability: "x", Offering: "x", EstimatedUnits: 1, Body: []byte(`{}`),
-		})
+		}))
 		if err != nil || result.Status != http.StatusTooManyRequests || result.ActualUnits != 0 {
 			t.Fatalf("terminal error result=%v err=%v", result, err)
 		}
@@ -278,9 +288,9 @@ func TestSubmitJobRejectsWorkUnitDrift(t *testing.T) {
 	loca := locOpenJob(t, broker.URL, "unary")
 	defer loca.Close()
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	_, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	_, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability: "x", Offering: "x", EstimatedUnits: 3, Body: []byte(`{}`),
-	})
+	}))
 	var protocolErr *loc.BrokerProtocolError
 	if !errors.As(err, &protocolErr) || protocolErr.Code != "work_unit_mismatch" {
 		t.Fatalf("expected work_unit_mismatch, got %v", err)
@@ -302,12 +312,12 @@ func TestSubmitJobMapsInsufficientCredit(t *testing.T) {
 	defer loca.Close()
 
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-	_, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	_, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability:     "x",
 		Offering:       "x",
 		EstimatedUnits: 1,
 		Body:           []byte(`{}`),
-	})
+	}))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -326,6 +336,13 @@ func TestSubmitJobMapsInsufficientCredit(t *testing.T) {
 func TestOpenSession(t *testing.T) {
 	loca := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/sessions/prepare" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"gateway_session_id": "11111111-1111-1111-1111-111111111111",
+				"route_binding":      map[string]any{}, "preparation_token": "prepared-token",
+			})
+			return
+		}
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"session_id": "11111111-1111-1111-1111-111111111111",
@@ -337,12 +354,13 @@ func TestOpenSession(t *testing.T) {
 				"descriptor_schema": "livepeer-session-test/v1", "attachment": "external",
 				"metering": "runner-reported", "refill": "extensible",
 			},
-			"payment_envelope":   "BASE64SESS",
-			"expected_value_wei": "100000",
-			"funded_value_wei":   "200000",
-			"refill_endpoint":    "/v1/sessions/11111111-1111-1111-1111-111111111111/refill",
-			"close_endpoint":     "/v1/sessions/11111111-1111-1111-1111-111111111111/close",
-			"opened_at":          "2026-05-24T12:00:00Z",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("session-authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000",
+			"funded_value_wei":    "200000",
+			"refill_endpoint":     "/v1/sessions/11111111-1111-1111-1111-111111111111/refill",
+			"close_endpoint":      "/v1/sessions/11111111-1111-1111-1111-111111111111/close",
+			"opened_at":           "2026-05-24T12:00:00Z",
 		})
 	}))
 	defer loca.Close()
@@ -354,6 +372,8 @@ func TestOpenSession(t *testing.T) {
 		DescriptorSchema:     "livepeer-session-test/v1",
 		EstimatedRunwayUnits: 100,
 		MaxTotalUnits:        200,
+		CallerPublicKey:      "02" + strings.Repeat("11", 32),
+		SignCallerProof:      func([]byte) (string, error) { return "CALLER-PROOF", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +468,7 @@ func TestSubmitJobInjectsRouteModel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := client.SubmitJob(context.Background(), in); err != nil {
+		if _, err := client.SubmitJob(context.Background(), callerProofInput(in)); err != nil {
 			t.Fatalf("SubmitJob: %v", err)
 		}
 		return *captured
@@ -462,13 +482,13 @@ func TestSubmitJobInjectsRouteModel(t *testing.T) {
 		return out
 	}
 
-	t.Run("fills model from route", func(t *testing.T) {
+	t.Run("does not mutate an authorized body", func(t *testing.T) {
 		got := decode(t, submit(t, routeWithModel, loc.SubmitJobInput{
 			Capability: "openai:chat-completions", Offering: "qwen3.6-27b", EstimatedUnits: 1,
 			Body: []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":48}`),
 		}))
-		if got["model"] != "qwen/qwen3.6-27b" {
-			t.Fatalf("model = %v; want route model", got["model"])
+		if got["model"] != nil {
+			t.Fatalf("authorized body was mutated with model %v", got["model"])
 		}
 		if got["max_tokens"] != float64(48) || got["messages"] == nil {
 			t.Fatalf("other fields not preserved: %v", got)
@@ -540,9 +560,9 @@ func TestErrorMapsFastAPIValidationBody(t *testing.T) {
 		}))
 		t.Cleanup(loca.Close)
 		client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: apiKey})
-		_, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+		_, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 			Capability: "x", Offering: "x", EstimatedUnits: 1, Body: []byte(`{}`),
-		})
+		}))
 		return err
 	}
 
@@ -662,10 +682,10 @@ func submitStream(t *testing.T, brokerURL string) (*loc.JobResult, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	return client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability: "openai:chat-completions", Offering: "x", EstimatedUnits: 10,
 		Body: []byte(`{"messages":[]}`), Transport: "stream",
-	})
+	}))
 }
 
 func TestSubmitJobRecoversClaimViaExchange(t *testing.T) {

@@ -90,6 +90,8 @@ def test_route_binding_is_part_of_open_idempotency_fingerprint() -> None:
             estimated_units=100,
             max_total_units=100,
             route_binding=binding,
+            workload_request_digest="44" * 32,
+            caller_public_key="02" + "55" * 32,
         )
         return service.create_request_fingerprint(
             operation="jobs.create",

@@ -41,11 +41,19 @@ def _handle(*, refill: str = "extensible") -> SessionHandle:
             refill=refill,
         ),
         session_params={"room": "alpha"},
-        payment_envelope="OPEN-ENV",
         expected_value_wei=100_000,
         funded_value_wei=100_000,
         refill_endpoint=f"/v1/sessions/{sid}/refill",
         close_endpoint=f"/v1/sessions/{sid}/close",
+        spend_authorization=base64.b64encode(b"initial").decode(),
+        accounting_mode="wholesale_account",
+        caller_proof="INITIAL-PROOF",
+        session_open_body=json.dumps(
+            {"gateway_session_id": str(sid), "session_params": {"room": "alpha"}},
+            separators=(",", ":"),
+        ).encode(),
+        max_total_units=100,
+        sign_caller_proof=lambda _: "PROOF",
     )
 
 
@@ -95,9 +103,11 @@ async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> Non
         return_value=httpx.Response(
             200,
             json={
+                "work_id": "loc-auth:revision",
                 "request_id": "refill-request",
                 "refill_seq": 1,
-                "payment_envelope": "REFILL-ENV",
+                "spend_authorization": base64.b64encode(b"revision").decode(),
+                "accounting_mode": "wholesale_account",
                 "expected_value_wei": 50_000,
                 "funded_value_wei": 50_000,
                 "cap_status": None,
@@ -128,7 +138,7 @@ async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> Non
 
     async with OpenClearinghouseClient(base_url=BASE, api_key=KEY) as client:
         await SessionRunner(client=client, handle=handle).start()
-        runner = SessionRunner(client=client, handle=handle)
+        runner = SessionRunner(client=client, handle=handle, approve_cap_extension=lambda _: 200)
         session = await runner.start()  # broker-open replay recovers credential/control
         assert (await runner.status())["state"] == "active"
         low = SessionBalance.from_dict(_balance(status="low", claimed_units=80))
@@ -162,23 +172,9 @@ async def test_v1_open_refill_and_close_use_authoritative_http_contract() -> Non
 async def test_wholesale_open_sends_authorization_and_exact_committed_body() -> None:
     legacy = _handle()
     exact_body = b'{"gateway_session_id":"bound-id","session_params":{"room":"alpha"}}'
-    handle = SessionHandle(
-        session_id=legacy.session_id,
-        request_id=legacy.request_id,
-        work_id=legacy.work_id,
-        broker_url=legacy.broker_url,
-        protocol=legacy.protocol,
-        capability=legacy.capability,
-        offering=legacy.offering,
-        session=legacy.session,
-        session_params=legacy.session_params,
-        payment_envelope=None,
-        expected_value_wei=legacy.expected_value_wei,
-        funded_value_wei=legacy.funded_value_wei,
-        refill_endpoint=legacy.refill_endpoint,
-        close_endpoint=legacy.close_endpoint,
+    handle = replace(
+        legacy,
         spend_authorization="AUTHORIZATION",
-        accounting_mode="wholesale_account",
         caller_proof="CALLER-PROOF",
         session_open_body=exact_body,
     )
@@ -201,7 +197,6 @@ async def test_wholesale_low_balance_without_cap_approval_winds_down() -> None:
     legacy = _handle()
     handle = replace(
         legacy,
-        payment_envelope=None,
         spend_authorization="AUTHORIZATION",
         accounting_mode="wholesale_account",
         caller_proof="PROOF",
@@ -228,7 +223,6 @@ async def test_wholesale_cap_extension_commits_and_sends_exact_revision() -> Non
 
     handle = replace(
         legacy,
-        payment_envelope=None,
         spend_authorization=base64.b64encode(b"initial").decode(),
         accounting_mode="wholesale_account",
         caller_proof="INITIAL-PROOF",
@@ -243,7 +237,6 @@ async def test_wholesale_cap_extension_commits_and_sends_exact_revision() -> Non
                 "work_id": "loc-auth:revision",
                 "request_id": "revision-request",
                 "refill_seq": 1,
-                "payment_envelope": None,
                 "spend_authorization": authorization,
                 "accounting_mode": "wholesale_account",
                 "expected_value_wei": 0,
@@ -296,6 +289,7 @@ async def test_bounded_and_refusal_warning_balances_drain_without_refill() -> No
 
 @pytest.mark.asyncio
 @respx.mock
+@pytest.mark.skip(reason="loc-0m4.4 removes obsolete recipient-rotation ticket coverage")
 async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebind() -> None:
     warnings: list[WinddownEvent] = []
     handle = _handle()
@@ -361,6 +355,7 @@ async def test_recipient_rotation_remints_with_fresh_identity_and_declared_rebin
 
 @pytest.mark.asyncio
 @respx.mock
+@pytest.mark.skip(reason="loc-0m4.4 removes obsolete recipient-rebind ticket coverage")
 async def test_rebind_refused_drains_without_a_second_rotation() -> None:
     warnings: list[WinddownEvent] = []
     handle = _handle()

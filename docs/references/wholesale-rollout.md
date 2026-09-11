@@ -1,20 +1,20 @@
 # Fair wholesale account rollout and rollback
 
-This is the operator runbook for moving LOC from legacy per-engagement tickets
-to the Modules `wholesale-account` `1.0.0-draft` contract pinned in
+This is the operator runbook for cutting LOC over from retired
+per-engagement tickets to the mandatory Modules `wholesale-account`
+`1.0.0-draft` contract pinned in
 [the governing design](../design-docs/002-fair-wholesale-credit-accounts.md).
-The feature remains disabled through the schema migration. Enabling it is a
-separate, whole-release decision after peer negotiation and accounting gates
-pass.
+There is no runtime feature toggle or legacy fallback.
 
 ## Non-negotiable boundaries
 
-- Existing rows remain `accounting_mode = legacy_ticket`. Never relabel them,
-  attach a new authorization, or move their value into a pooled account.
-- A new engagement uses wholesale semantics only when the selected route
-  advertises complete wholesale support and the payer, broker, receiver, and
-  LOC release all implement the pinned contract. Partial or unknown support
-  fails closed; it does not fall back after authorization or funding starts.
+- Closed historical rows remain `accounting_mode = legacy_ticket`. Never
+  relabel them, attach a new authorization, or move their value into a pooled
+  account. Active legacy rows block cutover.
+- Every new engagement uses wholesale semantics. The selected route must
+  advertise complete wholesale support and the payer, broker, receiver, and
+  LOC release must implement the pinned contract. Partial or unknown support
+  fails closed.
 - LOC customer holds, pricing, caps, API-key attribution, and charges remain in
   the customer ledger. Broker account credit and debit remain in the wholesale
   ledger. The opaque engagement correlation is not an ownership edge.
@@ -24,7 +24,8 @@ pass.
 
 ## Phase 0: inventory and drain
 
-Keep `WHOLESALE_ACCOUNTS_ENABLED=false` on every gateway.
+Keep the old release running only long enough to drain all legacy work. Do not
+start the wholesale-only release during this phase.
 
 1. Pin the LOC gateway and all Modules images by immutable digest. Record the
    payer address, chain ID, daemon persistent-volume identities, and Modules
@@ -55,7 +56,8 @@ The post-migration audit proves:
 
 - legacy table row counts, payment/session states and protocols, and financial
   totals did not change;
-- every historical session has `accounting_mode = legacy_ticket`, with new
+- every historical session has `accounting_mode = legacy_ticket`, while the
+  database default for every future session is `wholesale_account`, with new
   customer-pricing and authorization fields unset;
 - historical customer-ledger rows were not linked to wholesale engagements;
 - wholesale account, funding, and authorization tables are empty; and
@@ -71,23 +73,22 @@ The repository retains a sanitized summary of the first production-shaped
 rehearsal in
 [`wholesale-migration-rehearsal-2026-09-09.md`](wholesale-migration-rehearsal-2026-09-09.md).
 
-## Phase 2: deploy dark
+## Phase 2: deploy wholesale-only
 
-Deploy in this order while wholesale remains disabled:
+Deploy in this order after the drain preflight passes:
 
 1. Run one migration actor against the quiesced production database.
 2. Start the updated payment daemon, then brokers/receivers, then the registry
-   daemon. Old brokers may keep serving explicitly legacy traffic, but they
-   must not be selected for wholesale traffic.
+   daemon. Peers without the mandatory wholesale contract are ineligible.
 3. Start one LOC gateway and verify exact schema revision, payer identity,
    registry health, and operator access to `/v1/admin/wholesale`.
-4. Run legacy canaries. Their response mode, ticket flow, settlement, and
-   customer-ledger totals must remain unchanged.
-5. Start remaining dark gateways. Do not mix enabled and disabled LOC replicas.
+4. Run wholesale canaries and confirm authorization, bounded shortfall, broker
+   account debit, and customer-ledger reconciliation.
+5. Start remaining gateways. Do not mix old and wholesale-only LOC replicas.
 
 ## Phase 3: negotiate and initialize
 
-Before setting `WHOLESALE_ACCOUNTS_ENABLED=true`, record approved values for:
+Before starting LOC, record approved values for:
 
 - `WHOLESALE_CHAIN_ID`;
 - target and replenish-below float;
@@ -156,5 +157,6 @@ snapshot only after a financial operator proves there is no live authorization,
 reservation, replayable funding, unsettled debit, or customer hold that would
 be lost. A database-only restore or `alembic downgrade` is forbidden.
 
-Re-enable legacy traffic only for explicitly legacy engagements and peers.
-Wholesale routes whose support is absent or uncertain remain failed closed.
+Do not re-enable legacy traffic. Routes whose wholesale support is absent or
+uncertain remain failed closed; rollback restores the complete pre-cutover
+release and state only when the financial proof above permits it.

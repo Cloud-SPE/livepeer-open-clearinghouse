@@ -37,7 +37,7 @@ def test_matrix_names_every_required_rollout_invariant(runner: ModuleType, tmp_p
         "loc_retry_crash_and_concurrency",
         "modules_payer_receiver_contract",
         "modules_broker_account_contract",
-        "legacy_regression",
+        "wholesale_only_cutover",
     }
 
 

@@ -3,6 +3,7 @@ package openclearinghouse_test
 import (
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -65,18 +66,19 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_id":             "00000000-0000-0000-0000-000000000abc",
-			"request_id":         "broker-request-1",
-			"work_id":            "wid",
-			"broker_url":         brokerSrv.URL,
-			"protocol":           "paid-job/v1",
-			"transport":          "unary",
-			"work_unit":          "token",
-			"payment_envelope":   "BASE64",
-			"expected_value_wei": "100000",
-			"funded_value_wei":   "100000",
-			"settle_endpoint":    "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
-			"opened_at":          "2026-05-25T00:00:00Z",
+			"job_id":              "00000000-0000-0000-0000-000000000abc",
+			"request_id":          "broker-request-1",
+			"work_id":             "wid",
+			"broker_url":          brokerSrv.URL,
+			"protocol":            "paid-job/v1",
+			"transport":           "unary",
+			"work_unit":           "token",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000",
+			"funded_value_wei":    "100000",
+			"settle_endpoint":     "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+			"opened_at":           "2026-05-25T00:00:00Z",
 		})
 	})
 	mux.HandleFunc("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle", func(w http.ResponseWriter, r *http.Request) {
@@ -112,12 +114,12 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	_, err = client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability:     "x",
 		Offering:       "y",
 		EstimatedUnits: 100,
 		Body:           []byte(`{"hello":"world"}`),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

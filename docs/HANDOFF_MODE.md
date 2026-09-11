@@ -9,9 +9,8 @@ exec-plan-002 rewrite. Companion to:
 - The architecture overview: [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - The reliability + state machines: [`docs/RELIABILITY.md`](RELIABILITY.md)
 
-> **Current protocol reference:** Sections 2–9 describe the implemented
-> paid-job/session contract. They are preserved for compatibility. Under the
-> approved future design, tickets fund bounded shortfall in LOC's shared
+> **Current protocol reference:** The only supported job/session contract uses
+> LOC-issued scoped authorizations. Tickets fund bounded shortfall in LOC's shared
 > payer-payee account, the caller carries a separate single-purpose
 > authorization, session maxima are cumulative caps, and SDK reporting is a
 > fast path rather than a correctness dependency. See
@@ -21,19 +20,19 @@ exec-plan-002 rewrite. Companion to:
 
 ## 1. What handoff mode is
 
-LOC is the **control plane**: it authorizes the customer, mints
-payment envelopes, encumbers worst-case spend against the user
-balance, accepts settle reports, and runs reconciliation.
+LOC is the **control plane**: it authorizes the customer, locks the route,
+issues a single-purpose authorization, encumbers worst-case retail spend
+against the user balance, and runs independent reconciliation.
 
 LOC is **not** in the data plane: the customer's SDK talks to the
-orchestrator-side broker directly using the minted envelope as the
-`Livepeer-Payment` header.
+orchestrator-side broker directly using `Livepeer-Authorization` and a
+`Livepeer-Caller-Proof` over that authorization.
 
 This is the central operational fact. It changes the blast radius
 of an LOC outage from "every active session dies" to "no new
-mints; existing work continues." It also means **the SDK is
-load-bearing for refills, settlement reporting, and graceful
-close** — see §5.
+authorizations; existing authorized work continues." SDK callbacks are a fast
+path, never an accounting-correctness dependency; LOC reconciles durable
+broker-signed status by its request/session ID.
 
 ---
 
@@ -316,7 +315,7 @@ The customer-facing onboarding doc should make clear:
 > the SDK source as your reference implementation.
 
 This support policy does not make the SDK an accounting principal. With the
-future account/authorization protocol, raw HTTP remains supported and LOC must
+account/authorization protocol, raw HTTP remains supported and LOC must
 recover authoritative broker state by its own request/session ID even when no
 SDK callback arrives.
 
@@ -325,8 +324,8 @@ SDK callback arrives.
 Raw callers follow the same versioned flow as the official SDKs. They must
 serialize the workload body once, retain those exact bytes, and send its
 lowercase SHA-256 digest plus their compressed secp256k1 public key when they
-open the LOC job. If LOC returns `accounting_mode: wholesale_account`, the
-caller signs the opaque decoded `spend_authorization` according to the
+open the LOC job. LOC returns `accounting_mode: wholesale_account`; the caller
+signs the opaque decoded `spend_authorization` according to the
 published Modules contract and sends the original body bytes with
 `Livepeer-Authorization` and `Livepeer-Caller-Proof` to the returned broker.
 The caller must not decode, reconstruct, or canonicalize the authorization.
@@ -341,9 +340,9 @@ preparation and authorization; it never reuses the old proof.
 
 The OpenAPI document is authoritative for LOC request and response fields.
 The Modules protocol specification is authoritative for caller-proof signing
-and broker headers. `accounting_mode: legacy_ticket` continues to use
-`Livepeer-Payment`; an unknown mode or incomplete wholesale response fails
-closed. Settlement callbacks remain a latency optimization: LOC reconciles
+and broker headers. LOC has no legacy payment-envelope mode: an unknown mode,
+an incomplete authorization response, or a route without the signed wholesale
+feature marker fails closed. Settlement callbacks remain a latency optimization: LOC reconciles
 from durable broker status by its issued request or session ID.
 
 This text is suitable for inclusion in customer-facing onboarding
@@ -360,8 +359,8 @@ If you're integrating against an old version of LOC that exposes
 
 | Old | New | Notes |
 |---|---|---|
-| `POST /v1/payments/mint` | `POST /v1/jobs` | New endpoint mints + tells you the broker URL in one call |
-| (call broker yourself with `Livepeer-Payment` header) | (call broker yourself with `Livepeer-Payment` header) | Identical pattern — the SDK still drives the broker call |
+| `POST /v1/payments/mint` | `POST /v1/jobs` | Locks a wholesale-capable route and returns a scoped authorization |
+| (call broker yourself with `Livepeer-Payment` header) | (call broker with `Livepeer-Authorization` + `Livepeer-Caller-Proof`) | Caller proof binds authorization to the exact workload bytes |
 | `POST /v1/usage/report` | `POST /v1/jobs/{job_id}/settle` | New endpoint takes `actual_units` (was `actual_work_units`) and returns `cap_status` |
 | (no equivalent — legacy didn't support refills) | `POST /v1/sessions` + `/refill` + `/close` | Long-running sessions are a new first-class concept |
 

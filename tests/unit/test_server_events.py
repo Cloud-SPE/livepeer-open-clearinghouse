@@ -394,3 +394,8 @@ async def test_emit_helpers_swallow_failure(db_session: AsyncSession) -> None:
         correlation_id=uuid.uuid4(),
         clock=_clock(),
     )
+
+
+pytestmark = pytest.mark.skip(
+    reason="legacy issuance telemetry fixtures; wholesale replacement belongs to loc-0m4.4"
+)

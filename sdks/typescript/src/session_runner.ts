@@ -131,31 +131,14 @@ export class SessionRunner {
       "Livepeer-Offering": this.handle.offering,
       "Livepeer-Request-Id": this.handle.requestId,
     };
-    if (this.handle.accountingMode === "wholesale_account") {
-      if (this.handle.spendAuthorization == null || this.handle.callerProof == null) {
-        throw protocolError("wholesale session is missing authorization headers");
-      }
-      headers["Livepeer-Authorization"] = this.handle.spendAuthorization;
-      headers["Livepeer-Caller-Proof"] = this.handle.callerProof;
-      if (this.handle.paymentEnvelope !== null) {
-        headers["Livepeer-Payment"] = this.handle.paymentEnvelope;
-      }
-    } else if (this.handle.paymentEnvelope !== null) {
-      headers["Livepeer-Payment"] = this.handle.paymentEnvelope;
-    } else {
-      throw protocolError("legacy session is missing Livepeer-Payment");
-    }
+    headers["Livepeer-Authorization"] = this.handle.spendAuthorization;
+    headers["Livepeer-Caller-Proof"] = this.handle.callerProof;
     const response = await this.fetchImpl(
       `${this.handle.brokerUrl.replace(/\/+$/, "")}/v1/session`,
       {
         method: "POST",
         headers,
-        body:
-          this.handle.sessionOpenBody ??
-          JSON.stringify({
-            gateway_session_id: this.handle.sessionId,
-            session_params: this.handle.sessionParams,
-          }),
+        body: this.handle.sessionOpenBody,
       },
     );
     if (!response.ok) throw protocolError(`broker session-open failed: ${String(response.status)}`);
@@ -197,36 +180,35 @@ export class SessionRunner {
       });
       return;
     }
-    if (this.handle.accountingMode === "wholesale_account") {
-      if (this.pendingRefill !== null) {
-        await this.refill(balance.claimed_units, this.pendingRefillMaxTotalUnits ?? undefined);
-        return;
+    if (this.pendingRefill !== null) {
+      if (this.pendingRefillMaxTotalUnits === null) {
+        throw protocolError("wholesale refill lost its cumulative cap");
       }
-      if (this.approveCapExtension === undefined) {
-        await this.onWinddownWarning?.({
-          reason: "wholesale_cap_extension_required",
-          projectedEndAt: null,
-        });
-        return;
-      }
-      const newMax = await this.approveCapExtension(balance);
-      if (newMax === null) {
-        await this.onWinddownWarning?.({
-          reason: "wholesale_cap_extension_declined",
-          projectedEndAt: null,
-        });
-        return;
-      }
-      if (this.handle.maxTotalUnits === undefined || newMax <= this.handle.maxTotalUnits) {
-        throw protocolError("wholesale cap extension must increase maxTotalUnits");
-      }
-      await this.refill(balance.claimed_units, newMax);
+      await this.refill(balance.claimed_units, this.pendingRefillMaxTotalUnits);
       return;
     }
-    await this.refill(balance.claimed_units);
+    if (this.approveCapExtension === undefined) {
+      await this.onWinddownWarning?.({
+        reason: "wholesale_cap_extension_required",
+        projectedEndAt: null,
+      });
+      return;
+    }
+    const newMax = await this.approveCapExtension(balance);
+    if (newMax === null) {
+      await this.onWinddownWarning?.({
+        reason: "wholesale_cap_extension_declined",
+        projectedEndAt: null,
+      });
+      return;
+    }
+    if (newMax <= this.handle.maxTotalUnits) {
+      throw protocolError("wholesale cap extension must increase maxTotalUnits");
+    }
+    await this.refill(balance.claimed_units, newMax);
   }
 
-  private async refill(observedUnits: number, maxTotalUnits?: number): Promise<void> {
+  private async refill(observedUnits: number, maxTotalUnits: number): Promise<void> {
     const session = await this.start();
     this.pendingRefillKey ??= crypto.randomUUID();
     if (this.pendingRefill === null) {
@@ -234,21 +216,19 @@ export class SessionRunner {
         const refillOptions: {
           observedConsumedUnits: number;
           requestId: string;
-          maxTotalUnits?: number;
-          workloadRequestDigest?: string;
+          maxTotalUnits: number;
+          workloadRequestDigest: string;
         } = {
           observedConsumedUnits: observedUnits,
           requestId: this.pendingRefillKey,
+          maxTotalUnits,
+          workloadRequestDigest: await sha256EmptyObject(),
         };
-        if (maxTotalUnits !== undefined) {
-          refillOptions.maxTotalUnits = maxTotalUnits;
-          refillOptions.workloadRequestDigest = await sha256EmptyObject();
-        }
         this.pendingRefill = (await this.client.refillSession(
           this.handle.sessionId,
           refillOptions,
         )) as Record<string, unknown>;
-        this.pendingRefillMaxTotalUnits = maxTotalUnits ?? null;
+        this.pendingRefillMaxTotalUnits = maxTotalUnits;
       } catch (error) {
         if (error instanceof OpenClearinghouseError) {
           await this.onRefillRefused?.({
@@ -264,37 +244,7 @@ export class SessionRunner {
       }
     }
     const refill = this.pendingRefill;
-    let response = await this.postTopup(session, refill);
-    if (brokerError(response) === "recipient_rotated") {
-      if (refill.rebind_from !== null && refill.rebind_from !== undefined) {
-        await this.endUnrecoverableRotation();
-        return;
-      }
-      const predecessor = String(refill.work_id);
-      const replacementKey = crypto.randomUUID();
-      this.pendingRefillKey = replacementKey;
-      try {
-        this.pendingRefill = (await this.client.refillSession(this.handle.sessionId, {
-          observedConsumedUnits: observedUnits,
-          requestId: replacementKey,
-          rebindFrom: predecessor,
-          replacesRequestId: String(refill.request_id),
-        })) as Record<string, unknown>;
-      } catch (error) {
-        if (error instanceof OpenClearinghouseError) {
-          await this.onRefillRefused?.({
-            refillSeq: null,
-            expectedValueWei: null,
-            fundedValueWei: null,
-            capStatus: null,
-            error,
-          });
-          return;
-        }
-        throw error;
-      }
-      response = await this.postTopup(session, this.pendingRefill);
-    }
+    const response = await this.postTopup(session, refill);
     if (brokerError(response) === "recipient_rotated") {
       await this.endUnrecoverableRotation();
       return;
@@ -304,22 +254,17 @@ export class SessionRunner {
       return;
     }
     if (!response.ok) throw protocolError(`broker topup failed: ${String(response.status)}`);
-    const acceptedRefill = this.pendingRefill;
-    if (acceptedRefill.rebind_from !== null && acceptedRefill.rebind_from !== undefined) {
-      session.workId = String(acceptedRefill.work_id);
-    }
+    const acceptedRefill = refill;
     const brokerResult = (await response.json()) as { balance?: SessionBalance };
-    if (acceptedRefill.accounting_mode === "wholesale_account") {
-      if (maxTotalUnits === undefined) {
-        throw protocolError("wholesale refill lost its cumulative cap");
-      }
-      this.handle = {
-        ...this.handle,
-        spendAuthorization: String(acceptedRefill.spend_authorization),
-        callerProof: this.pendingRefillProof,
-        maxTotalUnits,
-      };
+    if (this.pendingRefillProof === null) {
+      throw protocolError("wholesale refill lost its caller proof");
     }
+    this.handle = {
+      ...this.handle,
+      spendAuthorization: String(acceptedRefill.spend_authorization),
+      callerProof: this.pendingRefillProof,
+      maxTotalUnits,
+    };
     if (brokerResult.balance?.will_refuse_next_refill) {
       await this.onWinddownWarning?.({
         reason: "broker_will_refuse_next_refill",
@@ -348,40 +293,18 @@ export class SessionRunner {
       "Content-Type": "application/json",
       "Livepeer-Request-Id": String(refill.request_id),
     };
-    if (refill.accounting_mode === "wholesale_account") {
-      if (
-        typeof refill.spend_authorization !== "string" ||
-        refill.spend_authorization.length === 0
-      ) {
-        throw protocolError("wholesale refill is missing spend authorization");
-      }
-      const authorization = refill.spend_authorization;
-      const proof = await callerProof(authorization, this.handle.signCallerProof);
-      if (authorization.length === 0 || proof === null) {
-        throw protocolError("wholesale refill is missing authorization credentials");
-      }
-      headers["Livepeer-Authorization"] = authorization;
-      headers["Livepeer-Caller-Proof"] = proof;
-      this.pendingRefillProof = proof;
-      if (refill.payment_envelope != null) {
-        if (typeof refill.payment_envelope !== "string") {
-          throw protocolError("wholesale refill returned an invalid payment envelope");
-        }
-        headers["Livepeer-Payment"] = refill.payment_envelope;
-      }
-    } else {
-      if (typeof refill.payment_envelope !== "string") {
-        throw protocolError("legacy refill is missing a payment envelope");
-      }
-      headers["Livepeer-Payment"] = refill.payment_envelope;
+    if (refill.accounting_mode !== "wholesale_account") {
+      throw protocolError("LOC returned a non-wholesale refill");
     }
-    const rebindFrom = refill.rebind_from;
-    if (rebindFrom !== null && rebindFrom !== undefined) {
-      if (typeof rebindFrom !== "string" || rebindFrom.length === 0) {
-        throw protocolError("LOC returned an invalid rotation predecessor");
-      }
-      headers["Livepeer-Rebind-From"] = rebindFrom;
+    if (typeof refill.spend_authorization !== "string" || refill.spend_authorization.length === 0) {
+      throw protocolError("wholesale refill is missing spend authorization");
     }
+    const authorization = refill.spend_authorization;
+    const proof = await callerProof(authorization, this.handle.signCallerProof);
+    if (proof === null) throw protocolError("wholesale refill is missing caller proof");
+    headers["Livepeer-Authorization"] = authorization;
+    headers["Livepeer-Caller-Proof"] = proof;
+    this.pendingRefillProof = proof;
     return this.fetchImpl(session.control.topupUrl, {
       method: "POST",
       headers,

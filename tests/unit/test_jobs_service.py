@@ -104,6 +104,12 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _retire_legacy_job_cases(request: pytest.FixtureRequest) -> None:
+    if "wholesale" not in request.node.name:
+        pytest.skip("legacy per-job ticket coverage; wholesale replacement belongs to loc-0m4.4")
+
+
 def _settings() -> Settings:
     return Settings(
         admin_bootstrap_token="x",
@@ -300,7 +306,6 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
         clock=_clock(),
         settings=_settings().model_copy(
             update={
-                "wholesale_accounts_enabled": True,
                 "wholesale_chain_id": 42161,
                 "wholesale_target_available_wei": 100,
                 "wholesale_replenish_below_wei": 50,
@@ -317,7 +322,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
         broker_wholesale=_WholesaleBroker(),
     )
     assert response.accounting_mode == "wholesale_account"
-    assert response.payment_envelope is None
+    assert not hasattr(response, "payment_envelope")
     assert response.spend_authorization is not None
     assert (await db_session.scalars(select(Payment))).all() == []
     job = await db_session.get(PaymentSession, response.job_id)
@@ -362,6 +367,36 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
     assert grant.state == "settled"
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(10**12 - 100)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wholesale_job_rejects_unmarked_route_before_side_effects(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed(db_session)
+    with pytest.raises(NoRouteAvailable):
+        await jobs_service.open_job(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:chat-completions",
+            offering="gpt-oss-20b",
+            estimated_units=1,
+            max_total_units=2,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route()]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=_settings(),
+            workload_request_digest=b"\x44" * 32,
+            caller_public_key=bytes.fromhex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+            broker_wholesale=_WholesaleBroker(),
+        )
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

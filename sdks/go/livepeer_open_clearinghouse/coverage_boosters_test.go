@@ -9,6 +9,7 @@ package openclearinghouse_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -109,8 +110,9 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 			"job_id":     "00000000-0000-0000-0000-00000000abcd",
 			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
 			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
-			"payment_envelope":   "ENV",
-			"expected_value_wei": "100000", "funded_value_wei": "100000",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000", "funded_value_wei": "100000",
 			"settle_endpoint": "/v1/jobs/00000000-0000-0000-0000-00000000abcd/settle",
 			"opened_at":       "2026-05-25T00:00:00Z",
 		})
@@ -136,10 +138,10 @@ func TestSubmitJobRetriesOn503ThenSucceeds(t *testing.T) {
 	loca := httptest.NewServer(mux)
 	defer loca.Close()
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: "pymth_live_t"})
-	res, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	res, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability: "x", Offering: "y", EstimatedUnits: 100,
 		Body: []byte(`{"hello":"world"}`),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,8 +172,9 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 			"job_id":     "11111111-1111-1111-1111-111111111111",
 			"request_id": "broker-request-1", "work_id": "wid", "broker_url": broker.URL,
 			"protocol": "paid-job/v1", "transport": "unary", "work_unit": "token",
-			"payment_envelope":   "ENV",
-			"expected_value_wei": "100000", "funded_value_wei": "100000",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000", "funded_value_wei": "100000",
 			"settle_endpoint": "/v1/jobs/11111111-1111-1111-1111-111111111111/settle",
 			"opened_at":       "2026-05-25T00:00:00Z",
 		})
@@ -183,10 +186,10 @@ func TestSubmitJobGivesUpAfterSettle5xxRetries(t *testing.T) {
 	loca := httptest.NewServer(mux)
 	defer loca.Close()
 	client, _ := loc.NewClient(loc.Options{BaseURL: loca.URL, APIKey: "pymth_live_t"})
-	_, err := client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	_, err := client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability: "x", Offering: "y", EstimatedUnits: 100,
 		Body: []byte(`{}`),
-	})
+	}))
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}

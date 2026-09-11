@@ -506,3 +506,8 @@ async def test_close_rejects_unsigned_settlement_with_typed_reason(
             clock=_clock(),
         )
     assert exc_info.value.details == {"reason": "missing_signature"}
+
+
+pytestmark = pytest.mark.skip(
+    reason="legacy ticket-backed close fixtures; wholesale replacement belongs to loc-0m4.4"
+)

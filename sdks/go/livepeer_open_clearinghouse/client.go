@@ -114,7 +114,6 @@ type JobOpenResponse struct {
 	Protocol           string `json:"protocol"`
 	Transport          string `json:"transport"`
 	WorkUnit           string `json:"work_unit"`
-	PaymentEnvelope    string `json:"payment_envelope"`
 	SpendAuthorization string `json:"spend_authorization"`
 	AccountingMode     string `json:"accounting_mode"`
 	ExpectedValueWei   Wei    `json:"expected_value_wei"`
@@ -186,7 +185,7 @@ type JobResult struct {
 }
 
 // SessionHandle is the outbound from OpenSession (case d). Carries the
-// broker URL + minted envelope; the caller drives the broker WS/RTMP
+// broker URL + scoped authorization; the caller drives the broker WS/RTMP
 // wire today.
 type SessionHandle struct {
 	SessionID          string                       `json:"session_id"`
@@ -198,7 +197,6 @@ type SessionHandle struct {
 	Offering           string                       `json:"-"`
 	Session            SessionAxes                  `json:"session"`
 	SessionParams      map[string]any               `json:"-"`
-	PaymentEnvelope    string                       `json:"payment_envelope"`
 	SpendAuthorization string                       `json:"spend_authorization"`
 	AccountingMode     string                       `json:"accounting_mode"`
 	CallerProof        string                       `json:"-"`
@@ -335,10 +333,8 @@ type SubmitJobInput struct {
 	Offering       string
 	EstimatedUnits int64
 	// Body is forwarded to the broker as-is; callers marshal JSON
-	// themselves. For `openai:*` capabilities with a JSON object body
-	// that has no `model` key, SubmitJob fills `model` from the route
-	// LOC selected (route_snapshot.extra.openai.model) — the offering
-	// picks the model, so callers normally leave it out.
+	// themselves. Its exact bytes are hashed into the scoped authorization,
+	// so SubmitJob never mutates them after LOC locks the route.
 	Body            []byte
 	ContentType     string // defaults to application/json if Body starts with {/[, else octet-stream
 	MaxTotalUnits   int64  // optional; defaults to EstimatedUnits
@@ -378,8 +374,8 @@ func normalizedTransport(transport string) string {
 }
 
 // SubmitJob is the load-bearing convenience method: opens a job via
-// POST /v1/jobs (which mints a payment envelope), calls the broker
-// with that envelope as Livepeer-Payment, reads Livepeer-Work-Units
+// POST /v1/jobs, calls the broker with a scoped authorization and caller
+// proof, reads Livepeer-Work-Units
 // from the broker's response, then settles via POST /v1/jobs/{id}/settle.
 //
 // Returns the broker's response body + status alongside the LOC-side
@@ -400,8 +396,8 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	if transport == "multipart" && !strings.HasPrefix(strings.ToLower(in.ContentType), "multipart/form-data") {
 		return nil, &BrokerProtocolError{Code: "protocol_transport_mismatch", Message: "multipart transport requires multipart/form-data Content-Type"}
 	}
-	if (in.CallerPublicKey == "") != (in.SignCallerProof == nil) {
-		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof must be supplied together"}
+	if in.CallerPublicKey == "" || in.SignCallerProof == nil {
+		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof are required"}
 	}
 	digest := sha256.Sum256(in.Body)
 	c.telemetry.Emit(EmitTelemetryOptions{
@@ -474,13 +470,7 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 	endpoint := strings.TrimRight(job.BrokerURL, "/") + "/v1/job"
 	accountingMode := job.AccountingMode
-	if accountingMode == "" {
-		accountingMode = "legacy_ticket"
-	}
 	brokerBody := in.Body
-	if accountingMode == "legacy_ticket" {
-		brokerBody = injectRouteModel(in.Body, contentType, in.Capability, job.RouteSnapshot)
-	}
 
 	brokerCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -490,27 +480,18 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	}
 	req.Header.Set("Livepeer-Capability", in.Capability)
 	req.Header.Set("Livepeer-Offering", in.Offering)
-	if accountingMode == "wholesale_account" {
-		proof, proofErr := signCallerAuthorization(job.SpendAuthorization, in.SignCallerProof)
-		if proofErr != nil {
-			return nil, proofErr
-		}
-		if job.SpendAuthorization == "" || proof == "" {
-			return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
-		}
-		req.Header.Set("Livepeer-Authorization", job.SpendAuthorization)
-		req.Header.Set("Livepeer-Caller-Proof", proof)
-		if job.PaymentEnvelope != "" {
-			req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
-		}
-	} else if accountingMode == "legacy_ticket" {
-		if job.PaymentEnvelope == "" {
-			return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned no payment envelope for legacy accounting"}
-		}
-		req.Header.Set("Livepeer-Payment", job.PaymentEnvelope)
-	} else {
+	if accountingMode != "wholesale_account" {
 		return nil, &BrokerProtocolError{Code: "protocol_unsupported", Message: fmt.Sprintf("LOC returned unsupported accounting mode %q", accountingMode)}
 	}
+	proof, proofErr := signCallerAuthorization(job.SpendAuthorization, in.SignCallerProof)
+	if proofErr != nil {
+		return nil, proofErr
+	}
+	if job.SpendAuthorization == "" || proof == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
+	}
+	req.Header.Set("Livepeer-Authorization", job.SpendAuthorization)
+	req.Header.Set("Livepeer-Caller-Proof", proof)
 	req.Header.Set("Livepeer-Protocol", job.Protocol)
 	req.Header.Set("Livepeer-Request-Id", job.RequestID)
 	req.Header.Set("Content-Type", contentType)
@@ -696,48 +677,6 @@ func (c *Client) SubmitJob(ctx context.Context, in SubmitJobInput) (*JobResult, 
 	return out, nil
 }
 
-// routeOpenAIModel returns route_snapshot.extra.openai.model when it is a
-// non-empty string, else "".
-func routeOpenAIModel(snapshot map[string]any) string {
-	extra, _ := snapshot["extra"].(map[string]any)
-	openai, _ := extra["openai"].(map[string]any)
-	model, _ := openai["model"].(string)
-	return model
-}
-
-// injectRouteModel returns body with `model` set from the route when the
-// capability is OpenAI-shaped, the body is a JSON object without `model`,
-// and the route advertises one. Anything else is returned untouched.
-func injectRouteModel(body []byte, contentType, capability string, snapshot map[string]any) []byte {
-	if !strings.HasPrefix(capability, "openai:") {
-		return body
-	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "application/json") {
-		return body
-	}
-	model := routeOpenAIModel(snapshot)
-	if model == "" {
-		return body
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
-		return body
-	}
-	if _, present := fields["model"]; present {
-		return body
-	}
-	encodedModel, err := json.Marshal(model)
-	if err != nil {
-		return body
-	}
-	fields["model"] = encodedModel
-	out, err := json.Marshal(fields)
-	if err != nil {
-		return body
-	}
-	return out
-}
-
 // ---- sessions (case d) ----
 
 // OpenSessionInput collects the arguments for OpenSession.
@@ -771,8 +710,8 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 	if in.RequestID == "" {
 		in.RequestID = newUUIDv4()
 	}
-	if (in.CallerPublicKey == "") != (in.SignCallerProof == nil) {
-		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof must be supplied together"}
+	if in.CallerPublicKey == "" || in.SignCallerProof == nil {
+		return nil, &BrokerProtocolError{Code: "caller_proof_scope_invalid", Message: "CallerPublicKey and SignCallerProof are required"}
 	}
 	type preparation struct {
 		GatewaySessionID string         `json:"gateway_session_id"`
@@ -780,17 +719,13 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 		PreparationToken string         `json:"preparation_token"`
 	}
 	var prepared preparation
-	var sessionOpenBody []byte
-	if in.CallerPublicKey != "" {
-		prepareBody := map[string]any{"capability": in.Capability, "offering": in.Offering, "descriptor_schema": in.DescriptorSchema}
-		if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/prepare", prepareBody, &prepared, http.Header{"Idempotency-Key": []string{in.RequestID + ":prepare"}}); err != nil {
-			return nil, err
-		}
-		var err error
-		sessionOpenBody, err = json.Marshal(map[string]any{"gateway_session_id": prepared.GatewaySessionID, "session_params": in.SessionParams})
-		if err != nil {
-			return nil, fmt.Errorf("openclearinghouse: encode session commitment: %w", err)
-		}
+	prepareBody := map[string]any{"capability": in.Capability, "offering": in.Offering, "descriptor_schema": in.DescriptorSchema}
+	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/prepare", prepareBody, &prepared, http.Header{"Idempotency-Key": []string{in.RequestID + ":prepare"}}); err != nil {
+		return nil, err
+	}
+	sessionOpenBody, err := json.Marshal(map[string]any{"gateway_session_id": prepared.GatewaySessionID, "session_params": in.SessionParams})
+	if err != nil {
+		return nil, fmt.Errorf("openclearinghouse: encode session commitment: %w", err)
 	}
 	body := map[string]any{
 		"capability":             in.Capability,
@@ -800,14 +735,12 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 		"estimated_runway_units": in.EstimatedRunwayUnits,
 		"max_total_units":        in.MaxTotalUnits,
 	}
-	if in.CallerPublicKey != "" {
-		digest := sha256.Sum256(sessionOpenBody)
-		body["gateway_session_id"] = prepared.GatewaySessionID
-		body["preparation_token"] = prepared.PreparationToken
-		body["route_binding"] = prepared.RouteBinding
-		body["workload_request_digest"] = hex.EncodeToString(digest[:])
-		body["caller_public_key"] = in.CallerPublicKey
-	}
+	digest := sha256.Sum256(sessionOpenBody)
+	body["gateway_session_id"] = prepared.GatewaySessionID
+	body["preparation_token"] = prepared.PreparationToken
+	body["route_binding"] = prepared.RouteBinding
+	body["workload_request_digest"] = hex.EncodeToString(digest[:])
+	body["caller_public_key"] = in.CallerPublicKey
 	var out SessionHandle
 	headers := http.Header{"Idempotency-Key": []string{in.RequestID}}
 	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions", body, &out, headers); err != nil {
@@ -819,28 +752,15 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 	if out.Session.DescriptorSchema != in.DescriptorSchema {
 		return nil, fmt.Errorf("openclearinghouse: descriptor schema mismatch")
 	}
-	if len(sessionOpenBody) == 0 {
-		var err error
-		sessionOpenBody, err = json.Marshal(map[string]any{"gateway_session_id": out.SessionID, "session_params": in.SessionParams})
-		if err != nil {
-			return nil, fmt.Errorf("openclearinghouse: encode session open: %w", err)
-		}
-	}
-	if out.AccountingMode == "" {
-		out.AccountingMode = "legacy_ticket"
-	}
 	proof, err := signCallerAuthorization(out.SpendAuthorization, in.SignCallerProof)
 	if err != nil {
 		return nil, err
 	}
-	if out.AccountingMode == "legacy_ticket" && out.PaymentEnvelope == "" {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned no payment envelope for legacy accounting"}
-	}
-	if out.AccountingMode == "wholesale_account" && (out.SpendAuthorization == "" || proof == "") {
-		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
-	}
-	if out.AccountingMode != "legacy_ticket" && out.AccountingMode != "wholesale_account" {
+	if out.AccountingMode != "wholesale_account" {
 		return nil, &BrokerProtocolError{Code: "protocol_unsupported", Message: fmt.Sprintf("LOC returned unsupported accounting mode %q", out.AccountingMode)}
+	}
+	if out.SpendAuthorization == "" || proof == "" {
+		return nil, &BrokerProtocolError{Code: "broker_protocol_error", Message: "LOC returned an incomplete wholesale authorization"}
 	}
 	out.Capability = in.Capability
 	out.Offering = in.Offering
@@ -863,67 +783,6 @@ func (c *Client) OpenSession(ctx context.Context, in OpenSessionInput) (*Session
 		},
 	})
 	return &out, nil
-}
-
-// RefillSession mints a top-up bound to an existing session. The caller
-// is responsible for delivering the returned envelope to the broker via
-// the mode-specific channel (control-WS frame or HTTP POST to topup_url).
-func (c *Client) RefillSession(ctx context.Context, sessionID string, observedConsumedUnits *int64, requestID, rebindFrom, replacesRequestID string) (map[string]any, error) {
-	c.telemetry.Emit(EmitTelemetryOptions{
-		EventType:     "session.refill_requested",
-		CorrelationID: sessionID,
-	})
-	refillStarted := time.Now()
-	body := map[string]any{}
-	if observedConsumedUnits != nil {
-		body["observed_consumed_units"] = *observedConsumedUnits
-	} else {
-		body["observed_consumed_units"] = nil
-	}
-	if rebindFrom != "" {
-		body["rebind_from"] = rebindFrom
-		body["replaces_request_id"] = replacesRequestID
-	}
-	var out map[string]any
-	if requestID == "" {
-		requestID = newUUIDv4()
-	}
-	headers := http.Header{"Idempotency-Key": []string{requestID}}
-	if err := c.doWithHeaders(ctx, http.MethodPost, "/v1/sessions/"+sessionID+"/refill", body, &out, headers); err != nil {
-		var locErr *Error
-		if errors.As(err, &locErr) && locErr.Status == 402 {
-			c.telemetry.Emit(EmitTelemetryOptions{
-				EventType:     "session.refill_denied",
-				CorrelationID: sessionID,
-				Payload: map[string]interface{}{
-					"which":         locErr.Details["which"],
-					"remaining_wei": locErr.Details["remaining_wei"],
-				},
-			})
-		} else {
-			c.telemetry.Emit(EmitTelemetryOptions{
-				EventType:     "session.error",
-				CorrelationID: sessionID,
-				Payload: map[string]interface{}{
-					"phase":       "refill",
-					"error_class": fmt.Sprintf("%T", err),
-					"error_code":  errorCode(err),
-				},
-			})
-		}
-		return nil, err
-	}
-	c.telemetry.Emit(EmitTelemetryOptions{
-		EventType:     "session.refill_granted",
-		CorrelationID: sessionID,
-		Payload: map[string]interface{}{
-			"latency_ms":       time.Since(refillStarted).Milliseconds(),
-			"refill_seq":       out["refill_seq"],
-			"funded_value_wei": weiTelemetryAny(out["funded_value_wei"]),
-			"cap_status":       out["cap_status"],
-		},
-	})
-	return out, nil
 }
 
 // ReviseSessionAuthorization explicitly increases a wholesale session's

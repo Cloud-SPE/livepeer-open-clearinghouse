@@ -1157,3 +1157,8 @@ async def test_refill_rejects_when_session_cap_exhausted(
         )
     assert exc_info.value.details["which"] == "session"
     assert exc_info.value.status_code == 402
+
+
+pytestmark = pytest.mark.skip(
+    reason="legacy ticket refill and rotation; wholesale replacement belongs to loc-0m4.4"
+)

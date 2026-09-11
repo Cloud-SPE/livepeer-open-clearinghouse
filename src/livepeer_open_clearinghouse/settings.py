@@ -93,8 +93,7 @@ class Settings(BaseSettings):
     job_conservative_charge_after_seconds: int = Field(default=0, ge=0)
     session_reconciliation_interval_seconds: int = Field(default=60, ge=0)
 
-    # ---- wholesale-account rollout (disabled until explicitly configured) ----
-    wholesale_accounts_enabled: bool = False
+    # ---- mandatory wholesale-account policy ----
     wholesale_chain_id: int = Field(default=0, ge=0)
     wholesale_target_available_wei: int = Field(default=0, ge=0)
     wholesale_replenish_below_wei: int = Field(default=0, ge=0)
@@ -146,7 +145,7 @@ class Settings(BaseSettings):
     def reject_unsafe_production_defaults(self) -> Settings:
         """Fail startup instead of silently running production with dev trust."""
 
-        if self.wholesale_accounts_enabled:
+        if self.app_env == "prod":
             wholesale_values = (
                 self.wholesale_chain_id,
                 self.wholesale_target_available_wei,

@@ -8,6 +8,7 @@ close_session in try/except + emit.
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from typing import Any
@@ -20,6 +21,11 @@ from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
 from livepeer_open_clearinghouse_sdk.errors import OpenClearinghouseError
 
 pytestmark = pytest.mark.asyncio
+CALLER_PUBLIC_KEY = "02" + "11" * 32
+
+
+def _sign_caller_proof(_: bytes) -> str:
+    return "CALLER-PROOF"
 
 
 def _captured_event_types(captured: list[dict]) -> list[str]:
@@ -58,6 +64,8 @@ async def test_submit_job_mint_failure_emits_request_error() -> None:
                 offering="y",
                 estimated_units=1,
                 body={"hello": "world"},
+                caller_public_key=CALLER_PUBLIC_KEY,
+                sign_caller_proof=_sign_caller_proof,
             )
         await client.aclose()
     types = _captured_event_types(captured)
@@ -123,7 +131,7 @@ async def test_refill_session_402_emits_session_refill_denied() -> None:
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
         client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
-            await client.refill_session(sid)
+            await client.refill_session(sid, max_total_units=100, workload_request_digest="a" * 64)
         await client.aclose()
     types = _captured_event_types(captured)
     assert "session.refill_requested" in types
@@ -155,7 +163,7 @@ async def test_refill_non_402_error_emits_session_error() -> None:
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
         client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
         with pytest.raises(OpenClearinghouseError):
-            await client.refill_session(sid)
+            await client.refill_session(sid, max_total_units=100, workload_request_digest="a" * 64)
         await client.aclose()
     types = _captured_event_types(captured)
     assert "session.error" in types
@@ -213,7 +221,8 @@ async def test_open_session_emits_session_opened() -> None:
             "metering": "runner-reported",
             "refill": "extensible",
         },
-        "payment_envelope": "BASE64",
+        "spend_authorization": base64.b64encode(b"session-authorization").decode(),
+        "accounting_mode": "wholesale_account",
         "expected_value_wei": 1000,
         "funded_value_wei": 2000,
         "refill_endpoint": f"/v1/sessions/{sid}/refill",
@@ -221,6 +230,16 @@ async def test_open_session_emits_session_opened() -> None:
         "opened_at": "2026-05-25T00:00:00Z",
     }
     with respx.mock(base_url="http://loc.test", assert_all_called=False) as mock:
+        mock.post("/v1/sessions/prepare").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "gateway_session_id": str(sid),
+                    "route_binding": {},
+                    "preparation_token": "prepared-token",
+                },
+            )
+        )
         mock.post("/v1/sessions").mock(return_value=httpx.Response(200, json=payload))
         mock.post("/v1/telemetry").mock(side_effect=_capture_telemetry)
         client = OpenClearinghouseClient(base_url="http://loc.test", api_key="pymth_live_test")
@@ -230,6 +249,8 @@ async def test_open_session_emits_session_opened() -> None:
             descriptor_schema="livepeer-session-test/v1",
             estimated_runway_units=10,
             max_total_units=100,
+            caller_public_key=CALLER_PUBLIC_KEY,
+            sign_caller_proof=_sign_caller_proof,
         )
         await client.aclose()
     assert "session.opened" in _captured_event_types(captured)

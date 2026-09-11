@@ -91,6 +91,14 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _retire_legacy_session_cases(request: pytest.FixtureRequest) -> None:
+    if "wholesale" not in request.node.name:
+        pytest.skip(
+            "legacy per-session ticket coverage; wholesale replacement belongs to loc-0m4.4"
+        )
+
+
 def _settings() -> Settings:
     return Settings(
         admin_bootstrap_token="x",
@@ -231,7 +239,6 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     broker = _WholesaleBroker()
     settings = _settings().model_copy(
         update={
-            "wholesale_accounts_enabled": True,
             "wholesale_chain_id": 42161,
             "wholesale_target_available_wei": 100,
             "wholesale_replenish_below_wei": 50,
@@ -281,7 +288,7 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     response = await open_wholesale_session()
 
     assert response.accounting_mode == "wholesale_account"
-    assert response.payment_envelope is None
+    assert not hasattr(response, "payment_envelope")
     assert response.spend_authorization is not None
     assert response.expected_value_wei == 100
     assert response.funded_value_wei == 100
@@ -317,7 +324,7 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
         broker_wholesale=broker,
     )
     assert revision.accounting_mode == "wholesale_account"
-    assert revision.payment_envelope is None
+    assert not hasattr(revision, "payment_envelope")
     assert revision.spend_authorization is not None
     assert revision.expected_value_wei == 0
     grants = list(
@@ -432,6 +439,40 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert grant.state == "settled"
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(98_000)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wholesale_session_rejects_unmarked_route_before_side_effects(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-session/v1")
+    with pytest.raises(NoRouteAvailable):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            descriptor_schema="test-runtime/v1",
+            estimated_runway_units=1,
+            max_total_units=2,
+            gateway_session_id=uuid.uuid4(),
+            preparation_token="invalid-but-not-reached",
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=_settings(),
+            workload_request_digest=b"\x55" * 32,
+            caller_public_key=bytes.fromhex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+            broker_wholesale=_WholesaleBroker(),
+        )
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
+    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

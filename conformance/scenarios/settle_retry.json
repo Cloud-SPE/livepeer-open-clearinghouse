@@ -13,7 +13,8 @@
           "protocol": "paid-job/v1",
           "transport": "unary",
           "work_unit": "token",
-          "payment_envelope": "BASE64ENV",
+          "spend_authorization": "YXV0aG9yaXphdGlvbg==",
+          "accounting_mode": "wholesale_account",
           "expected_value_wei": 10000,
           "funded_value_wei": 10000,
           "settle_endpoint": "/v1/jobs/11111111-aaaa-bbbb-cccc-222222222222/settle"

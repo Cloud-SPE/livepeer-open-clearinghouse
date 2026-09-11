@@ -10,7 +10,7 @@ Two flows:
   and settles via ``POST /v1/jobs/{id}/settle``.
 
 * ``open_session`` — long-running interactive work (case d). Returns a
-  ``SessionHandle`` carrying the broker URL + minted envelope; SDK
+  ``SessionHandle`` carrying the broker URL + scoped spend authorization; SDK
   consumer drives the broker WS / RTMP wire today. Companion
   ``refill_session`` and ``close_session`` helpers cover the LOC-side
   refill / close calls.

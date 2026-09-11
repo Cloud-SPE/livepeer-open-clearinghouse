@@ -42,11 +42,10 @@ from livepeer_open_clearinghouse.providers.db import (
 class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     """A long-running interaction opened via ``POST /v1/sessions``.
 
-    The session encumbers ``funded_value_wei`` (= ``max_total_units``
-    times the offering's EV-per-unit) from the user's balance at
-    mint, guaranteeing per-session refill is bounded by construction.
-    Encumbered value is released back to the balance at close as
-    ``funded_value_wei - billed_value_wei``.
+    The session holds a customer-price ceiling derived from
+    ``max_total_units`` and retains an independent wholesale-price ceiling for
+    broker authorization. Actual customer billing is computed from durable
+    broker-signed usage and the pinned customer pricing policy.
     """
 
     __table_args__ = (
@@ -67,9 +66,9 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)
     protocol: Mapped[str] = mapped_column(nullable=False)
-    # Legacy rows couple customer exposure to a Payment. Wholesale rows carry
-    # an explicit pricing snapshot and authorization identity instead.
-    accounting_mode: Mapped[str] = mapped_column(nullable=False, default="legacy_ticket")
+    # Closed historical rows may retain ``legacy_ticket`` for audit only. New
+    # and active engagements must be ``wholesale_account``.
+    accounting_mode: Mapped[str] = mapped_column(nullable=False, default="wholesale_account")
     customer_pricing: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     customer_max_debit_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
     authorization_id: Mapped[str | None] = mapped_column(nullable=True, unique=True)

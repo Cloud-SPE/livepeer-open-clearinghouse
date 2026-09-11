@@ -20,17 +20,19 @@ from livepeer_open_clearinghouse_sdk.session_runner import SessionBalance, Sessi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", ["case_d_extensible_session"], indirect=True)
-async def test_case_d_extensible_open_refill_close(sdk_client, call_logs) -> None:
+async def test_case_d_extensible_open_refill_close(sdk_client, call_logs, caller_proof) -> None:
     handle = await sdk_client.open_session(
         capability="cap.live",
         offering="off.live",
         descriptor_schema="livepeer-session-test/v1",
         estimated_runway_units=100,
         max_total_units=500,
+        caller_public_key=caller_proof[0],
+        sign_caller_proof=caller_proof[1],
     )
     assert handle.session_id is not None
 
-    runner = SessionRunner(client=sdk_client, handle=handle)
+    runner = SessionRunner(client=sdk_client, handle=handle, approve_cap_extension=lambda _: 600)
     broker_session = await runner.start()
     assert broker_session.runtime_schema == "livepeer-session-test/v1"
     assert (await runner.status())["state"] == "active"

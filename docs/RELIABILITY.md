@@ -3,13 +3,11 @@
 The reliability principles for Livepeer Open Clearinghouse. Read this before changing
 anything in `domains/billing`, `domains/payments`, or `domains/usage`.
 
-> **Version boundary:** Detailed mint, refill, `work_id`, and settlement rules
-> below apply to the current legacy protocol. The approved future invariants
-> are in
+> **Version boundary:** LOC admits new work only through the wholesale-account
+> contract in
 > [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
-> LOC must preserve legacy semantics until a versioned Modules contract ships
-> and must fail closed rather than combine legacy tickets with new shared
-> account authorizations.
+> Legacy rows may remain as closed audit history, but no legacy issuance,
+> refill, or route fallback is supported.
 
 ## The principle
 
@@ -31,7 +29,7 @@ Return an error rather than serve work whenever:
 - The user's `funded_value_wei` would exceed available balance.
 - A usage record cannot be written idempotently.
 
-For the future wholesale-account protocol, fail closed also when any selected
+Fail closed also when any selected
 peer cannot prove support for the complete account, single-purpose
 authorization, atomic reservation, and durable-status semantics. A partial
 feature match is not a compatibility mode.

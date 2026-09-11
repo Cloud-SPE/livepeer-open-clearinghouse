@@ -3,7 +3,7 @@
 Endpoints landed:
 
   * ``POST   /v1/sessions``                 — open a session
-  * ``POST   /v1/sessions/{id}/refill``     — mint a top-up
+  * ``POST   /v1/sessions/{id}/refill``     — revise the cumulative cap
   * ``POST   /v1/sessions/{id}/close``      — explicit close
   * ``GET    /v1/sessions/{id}``            — status / balance (customer)
 
@@ -180,16 +180,8 @@ async def open_session_endpoint(
             clock=clock,
             settings=settings,
             request_id=claim.broker_request_id,
-            workload_request_digest=(
-                bytes.fromhex(body.workload_request_digest)
-                if body.workload_request_digest is not None
-                else None
-            ),
-            caller_public_key=(
-                bytes.fromhex(body.caller_public_key)
-                if body.caller_public_key is not None
-                else None
-            ),
+            workload_request_digest=bytes.fromhex(body.workload_request_digest),
+            caller_public_key=bytes.fromhex(body.caller_public_key),
             broker_wholesale=broker_wholesale,
         )
     except OpenClearinghouseError as exc:
@@ -266,7 +258,7 @@ async def refill_session_endpoint(
         Header(alias="Idempotency-Key", min_length=1, max_length=255),
     ],
 ) -> RefillSessionResponse:
-    """Mint a top-up envelope bound to an existing session.
+    """Issue a higher cumulative authorization for an existing session.
 
     Returns 400 ``refill_not_supported`` when ``session.refill`` is
     ``bounded``. Returns 402
@@ -302,18 +294,12 @@ async def refill_session_endpoint(
             user_id=user_id,
             api_key_id=api_key_id,
             observed_consumed_units=body.observed_consumed_units,
-            rebind_from=body.rebind_from,
-            replaces_request_id=body.replaces_request_id,
             daemon=daemon,
             clock=clock,
             settings=settings,
             request_id=claim.broker_request_id,
             max_total_units=body.max_total_units,
-            workload_request_digest=(
-                bytes.fromhex(body.workload_request_digest)
-                if body.workload_request_digest is not None
-                else None
-            ),
+            workload_request_digest=bytes.fromhex(body.workload_request_digest),
             broker_wholesale=broker_wholesale,
         )
     except OpenClearinghouseError as exc:

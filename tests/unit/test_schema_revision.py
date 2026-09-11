@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -36,5 +37,19 @@ async def test_schema_guard_rejects_old_or_new_revision() -> None:
     session = AsyncMock()
     session.execute.return_value = result
 
-    with pytest.raises(RuntimeError, match="expected 0026, found 0013"):
+    with pytest.raises(RuntimeError, match="expected 0027, found 0013"):
         await require_compatible_schema(session)
+
+
+@pytest.mark.unit
+def test_wholesale_cutover_migration_blocks_active_legacy_engagements() -> None:
+    migration = (
+        Path(__file__).parents[2] / "migrations/versions/0027_wholesale_only_cutover.py"
+    ).read_text()
+
+    assert "accounting_mode = 'legacy_ticket'" in migration
+    assert "state IN ('open', 'draining')" in migration
+    assert "p.status IN ('reserved', 'issued')" in migration
+    assert "p.session_id IS NULL OR s.state IN ('open', 'draining')" in migration
+    assert 'server_default="wholesale_account"' in migration
+    assert "cannot be downgraded" in migration

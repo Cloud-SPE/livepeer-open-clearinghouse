@@ -5,14 +5,13 @@ Composes the same primitives ``sessions.service`` uses
 ``billing.encumber_for_session`` / ``release_session_encumbrance``)
 but gated on the authoritative ``paid-job/v1`` protocol.
 
-A job is just a short-lived ``payment_session`` row with a job-class
-protocol. The mint path mirrors ``sessions.service.open_session``; the
-settle path mirrors ``sessions.service.close_session``. Differences:
+A job is a short-lived ``payment_session`` row with a job-class protocol.
+Opening issues a scoped authorization and replenishes only bounded shortfall
+in the shared payer-payee account. Settlement mirrors session close.
 
   - Protocol gate: ``paid-job/v1`` instead of ``paid-session/v1``.
-  - Initial mint is sized for ``max_total_units`` (jobs are
-    one-shot — no refills — so the full worst case lives in the
-    single ticket).
+  - ``max_total_units`` bounds the job authorization and customer hold; it is
+    not a wholesale funding target.
   - Response shape uses ``job_id`` naming (just sugar over
     ``session_id``) and exposes a single ``settle_endpoint``
     instead of refill+close pair.
@@ -20,9 +19,7 @@ settle path mirrors ``sessions.service.close_session``. Differences:
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import time
 import uuid
 from datetime import UTC, timedelta
 from decimal import Decimal
@@ -60,7 +57,6 @@ from livepeer_open_clearinghouse.errors import (
     NoRouteAvailable,
     NoSettlementDelegation,
     OpenClearinghouseError,
-    SpendCapExceeded,
 )
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
@@ -72,14 +68,7 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
-    AcceptedPrice,
-    CreatePaymentRequest,
-    FundingIntent,
-    MintOutcomeUnknown,
     PaymentDaemonClient,
-    PaymentDaemonError,
-    QuoteRef,
-    validate_funding_response,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     RegistryClient,
@@ -332,7 +321,6 @@ async def _open_wholesale_job(
         transport=transport,
         work_unit=route.work_unit,
         route_snapshot=route.snapshot_view(),
-        payment_envelope=None,
         spend_authorization=auth_response.authorization_b64,
         accounting_mode="wholesale_account",
         expected_value_wei=int(plan.shortfall_wei),
@@ -359,19 +347,15 @@ async def open_job(
     transport: Literal["unary", "stream", "multipart"] = "unary",
     route_binding: RouteBinding | None = None,
     request_id: str | None = None,
-    workload_request_digest: bytes | None = None,
-    caller_public_key: bytes | None = None,
+    workload_request_digest: bytes,
+    caller_public_key: bytes,
     broker_wholesale: BrokerWholesaleAccountClient | None = None,
 ) -> CreateJobResponse:
-    """Open a one-shot job (cases a/b/c) under handoff mode.
+    """Open a one-shot job with a route-locked wholesale authorization.
 
-        Behaves like ``sessions.service.open_session`` except the protocol
-    gate is ``paid-job/v1``, and the initial mint funds the full
-    worst case (no refills are possible for jobs).
-
-    Defaults ``max_total_units`` to ``estimated_units`` when the SDK
-    doesn't supply it — typical for case (a) where the SDK knows
-    exactly what it needs.
+    ``max_total_units`` defaults to ``estimated_units``. It bounds both the
+    customer hold and broker debit authority, but does not size a job-specific
+    payment ticket; funding replenishes the shared payer-payee account.
     """
     broker_request_id = request_id or str(uuid.uuid4())
     effective_max = max_total_units if max_total_units is not None else estimated_units
@@ -390,19 +374,15 @@ async def open_job(
         transport=transport,
         binding=route_binding,
     )
-    protocol = route.protocol
-    if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
-        if workload_request_digest is None or caller_public_key is None:
-            raise sessions_service.InvalidSessionRequest(
-                message="wholesale route requires workload_request_digest and caller_public_key"
-            )
-        if broker_wholesale is None:
-            raise DaemonUnavailable(
-                daemon="wholesale-account", reason="broker account client is unavailable"
-            )
+    if not route.features.wholesale_accounts:
+        raise NoRouteAvailable(capability=capability, offering=offering)
+    if broker_wholesale is None:
+        raise DaemonUnavailable(
+            daemon="wholesale-account", reason="broker account client is unavailable"
+        )
 
-    # Worst case = full max_total_units (jobs have no refills, so the
-    # initial mint funds the entire envelope).
+    # The cumulative ceiling determines customer exposure and authorization
+    # scope, independently of aggregate wholesale funding.
     price_wei = Decimal(route.price_per_work_unit_wei)
     worst_case_value_wei = sessions_service._bill_value_wei(
         units=effective_max,
@@ -428,191 +408,30 @@ async def open_job(
             required_wei=int(worst_case_value_wei),
         )
 
-    if settings.wholesale_accounts_enabled and route.features.wholesale_accounts:
-        assert workload_request_digest is not None
-        assert caller_public_key is not None
-        assert broker_wholesale is not None
-        return await _open_wholesale_job(
-            db,
-            user_id=user_id,
-            api_key_id=api_key_id,
-            route=route,
-            estimated_units=estimated_units,
-            max_total_units=effective_max,
-            max_debit_wei=worst_case_value_wei,
-            request_id=broker_request_id,
-            request_digest=workload_request_digest,
-            caller_public_key=caller_public_key,
-            broker=broker_wholesale,
-            daemon=daemon,
-            clock=clock,
-            settings=settings,
-            sdk_identity=sdk_identity,
-            spend_period_seconds=cfg.spend_period_seconds,
-            spend_period_cap_wei=cfg.spend_period_cap_wei,
-            transport=transport,
-        )
-
-    # Daemon mint sized for the full worst case (one ticket covers
-    # the whole job).
-    mint_started_ns = time.monotonic_ns()
-    mint_request_id = f"loc:{broker_request_id}"
-    daemon_request = CreatePaymentRequest(
-        mint_request_id=mint_request_id,
-        recipient=sessions_service._eth_address_to_bytes(route.eth_address),
-        ticket_params_base_url=route.worker_url,
-        accepted_price=AcceptedPrice(
-            capability=route.capability,
-            offering=route.offering,
-            price_per_unit_wei=route.price_per_work_unit_wei,
-            units_per_price=route.units_per_price,
-            work_unit_name=route.work_unit,
-            quote_ref=QuoteRef(
-                quote_id=route.quote_id,
-                quote_version=route.quote_version,
-                constraint_fingerprint=route.constraint_fingerprint,
-                route_fingerprint=route.route_fingerprint,
-            ),
-        ),
-        funding=FundingIntent(
-            funded_value_wei=worst_case_value_wei,
-            estimated_units=estimated_units,
-            max_total_units=effective_max,
-        ),
-    )
-    try:
-        daemon_response = validate_funding_response(
-            daemon_request, await daemon.create_payment(daemon_request)
-        )
-    except MintOutcomeUnknown as exc:
-        from livepeer_open_clearinghouse.errors import IdempotencyOutcomeUnknown  # noqa: PLC0415
-
-        raise IdempotencyOutcomeUnknown from exc
-    except PaymentDaemonError as exc:
-        raise DaemonUnavailable(
-            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
-        ) from exc
-    if (
-        daemon_response.creation_round <= 0
-        or daemon_response.ticket_validity_period <= 0
-        or daemon_response.expires_after_round
-        != daemon_response.creation_round + daemon_response.ticket_validity_period - 1
-    ):
-        raise DaemonUnavailable(
-            daemon="payment-daemon",
-            reason="invalid payment envelope expiry",
-        )
-
-    # Write payment_session (one row backs each job).
-    job_row = await sessions_service.create_session(
+    assert broker_wholesale is not None
+    return await _open_wholesale_job(
         db,
         user_id=user_id,
         api_key_id=api_key_id,
-        work_id=daemon_response.work_id,
-        capability=route.capability,
-        offering=route.offering,
-        protocol=protocol,
-        route_snapshot=route.snapshot(),
-        broker_request_id=broker_request_id,
+        route=route,
         estimated_units=estimated_units,
         max_total_units=effective_max,
-        funded_value_wei=worst_case_value_wei,
-        clock=clock,
-        sdk_identity=sdk_identity,
-    )
-
-    # Write Payment row tied to the job.
-    payment = Payment(
-        user_id=user_id,
-        api_key_id=api_key_id,
-        session_id=job_row.id,
-        work_id=daemon_response.work_id,
-        mint_request_id=mint_request_id,
-        sender_eth_address="0x" + daemon_response.sender.hex(),
-        recipient_eth_address=route.eth_address,
-        capability=route.capability,
-        offering=route.offering,
-        work_units_requested=estimated_units,
-        price_per_work_unit_wei=price_wei,
-        funded_value_wei=daemon_response.funded_value_wei,
-        expected_value_wei=daemon_response.expected_value,
-        creation_round=daemon_response.creation_round,
-        expires_after_round=daemon_response.expires_after_round,
-        ticket_validity_period=daemon_response.ticket_validity_period,
-        ticket_validity_period_observed_at=(daemon_response.ticket_validity_period_observed_at),
-        reserved_wei=daemon_response.expected_value,
-        refunded_wei=Decimal(0),
-        status="issued",
-    )
-    db.add(payment)
-    await db.flush()
-
-    # Encumber worst case
-    try:
-        await billing_service.encumber_for_session(
-            db,
-            user_id=user_id,
-            payment_id=payment.id,
-            amount_wei=worst_case_value_wei,
-            clock=clock,
-            period_seconds=cfg.spend_period_seconds,
-            cap_wei=cfg.spend_period_cap_wei,
-        )
-    except SpendCapExceeded as exc:
-        cap_wei = int(exc.details.get("cap_wei", 0))
-        spent_wei = int(exc.details.get("would_be_spent_wei", 0))
-        await telemetry_events.emit_mint_refused(
-            db,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            capability=capability,
-            offering=offering,
-            which_cap="spend_period",
-            remaining_wei=max(cap_wei - spent_wei, 0),
-            clock=clock,
-        )
-        raise
-
-    mint_latency_ms = (time.monotonic_ns() - mint_started_ns) // 1_000_000
-    await telemetry_events.emit_mint_served(
-        db,
-        api_key_id=api_key_id,
-        user_id=user_id,
-        capability=capability,
-        offering=offering,
-        protocol=protocol,
-        estimated_units=estimated_units,
-        funded_value_wei=int(worst_case_value_wei),
-        mint_latency_ms=int(mint_latency_ms),
-        correlation_id=job_row.id,
-        clock=clock,
-    )
-    await telemetry_events.emit_sha_mismatch_if_unapproved(
-        db,
-        api_key_id=api_key_id,
-        user_id=user_id,
-        sdk_identity=sdk_identity,
-        clock=clock,
-    )
-
-    return CreateJobResponse(
-        job_id=job_row.id,
+        max_debit_wei=worst_case_value_wei,
         request_id=broker_request_id,
-        work_id=daemon_response.work_id,
-        broker_url=route.worker_url,
-        protocol=protocol,
+        request_digest=workload_request_digest,
+        caller_public_key=caller_public_key,
+        broker=broker_wholesale,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+        sdk_identity=sdk_identity,
+        spend_period_seconds=cfg.spend_period_seconds,
+        spend_period_cap_wei=cfg.spend_period_cap_wei,
         transport=transport,
-        work_unit=route.work_unit,
-        route_snapshot=route.snapshot_view(),
-        payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
-        expected_value_wei=int(daemon_response.expected_value),
-        funded_value_wei=int(worst_case_value_wei),
-        settle_endpoint=_settle_endpoint_for(job_row.id),
-        opened_at=job_row.opened_at,
     )
 
 
-async def settle_job(  # noqa: PLR0912, PLR0915 — explicit legacy/wholesale accounting split
+async def settle_job(  # noqa: PLR0912, PLR0915 — explicit settlement state machine
     db: AsyncSession,
     *,
     job_id: uuid.UUID,
@@ -644,35 +463,21 @@ async def settle_job(  # noqa: PLR0912, PLR0915 — explicit legacy/wholesale ac
 
     if job_row.state == sessions_service.SESSION_STATE_CLOSED:
         raise JobAlreadySettled(current_state=job_row.state)
-
-    # Initial payment for price context
-    initial_payment_row = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == job_id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
-    if initial_payment_row is None and job_row.accounting_mode != "wholesale_account":
-        raise JobNotFound  # defensive
+    if job_row.accounting_mode != "wholesale_account":
+        raise SettlementVerificationFailed(reason="legacy_accounting_disabled")
 
     snapshot = job_row.route_snapshot or {}
-    authorization_id: str | None = None
-    authorized_value_wei: int | None = None
-    if job_row.accounting_mode == "wholesale_account":
-        grant = await db.scalar(
-            select(SpendAuthorizationGrant).where(
-                SpendAuthorizationGrant.session_id == job_id,
-                SpendAuthorizationGrant.authorization_id == job_row.authorization_id,
-            )
+    grant = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == job_id,
+            SpendAuthorizationGrant.authorization_id == job_row.authorization_id,
         )
-        if grant is None:
-            raise SettlementVerificationFailed(reason="missing_authorization")
-        authorization_id = grant.authorization_id
-        authorized_value_wei = int(grant.max_debit_wei)
-        price_wei = Decimal(str(snapshot.get("price_per_work_unit_wei", "0")))
-    else:
-        assert initial_payment_row is not None
-        price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
+    )
+    if grant is None:
+        raise SettlementVerificationFailed(reason="missing_authorization")
+    authorization_id = grant.authorization_id
+    authorized_value_wei = int(grant.max_debit_wei)
+    price_wei = Decimal(str(snapshot.get("price_per_work_unit_wei", "0")))
     expected_work_unit = str(snapshot.get("work_unit", ""))
     if work_unit != expected_work_unit:
         raise WorkUnitMismatch(expected=expected_work_unit, received=work_unit)
@@ -736,21 +541,17 @@ async def settle_job(  # noqa: PLR0912, PLR0915 — explicit legacy/wholesale ac
         )
         raise SettlementVerificationFailed(reason="outcome_mismatch")
     wholesale_billed_value_wei = Decimal(verified.billed_value_wei)
-    if job_row.accounting_mode == "wholesale_account":
-        if job_row.customer_pricing is None or job_row.customer_max_debit_wei is None:
-            raise SettlementVerificationFailed(reason="missing_customer_pricing")
-        pricing = CustomerPricingSnapshot.model_validate(job_row.customer_pricing)
-        billed_value_wei = billing_service.calculate_customer_charge(
-            pricing,
-            actual_units=verified.actual_units,
-            wholesale_debit_wei=wholesale_billed_value_wei,
-        )
-        if billed_value_wei > job_row.customer_max_debit_wei:
-            raise SettlementVerificationFailed(reason="customer_cap_exceeded")
-        refund_wei = job_row.customer_max_debit_wei - billed_value_wei
-    else:
-        billed_value_wei = wholesale_billed_value_wei
-        refund_wei = job_row.funded_value_wei - billed_value_wei
+    if job_row.customer_pricing is None or job_row.customer_max_debit_wei is None:
+        raise SettlementVerificationFailed(reason="missing_customer_pricing")
+    pricing = CustomerPricingSnapshot.model_validate(job_row.customer_pricing)
+    billed_value_wei = billing_service.calculate_customer_charge(
+        pricing,
+        actual_units=verified.actual_units,
+        wholesale_debit_wei=wholesale_billed_value_wei,
+    )
+    if billed_value_wei > job_row.customer_max_debit_wei:
+        raise SettlementVerificationFailed(reason="customer_cap_exceeded")
+    refund_wei = job_row.customer_max_debit_wei - billed_value_wei
 
     # Transition state
     await sessions_service.transition_state(
@@ -763,35 +564,25 @@ async def settle_job(  # noqa: PLR0912, PLR0915 — explicit legacy/wholesale ac
 
     # Release encumbrance if there's unused value to refund.
     if refund_wei > 0:
-        if job_row.accounting_mode == "wholesale_account":
-            await billing_service.release_customer_engagement(
-                db,
-                user_id=user_id,
-                engagement_id=job_row.id,
-                amount_wei=refund_wei,
-            )
-        else:
-            assert initial_payment_row is not None
-            await billing_service.release_session_encumbrance(
-                db,
-                user_id=user_id,
-                payment_id=initial_payment_row.id,
-                amount_wei=refund_wei,
-            )
+        await billing_service.release_customer_engagement(
+            db,
+            user_id=user_id,
+            engagement_id=job_row.id,
+            amount_wei=refund_wei,
+        )
 
     # Finalize fields
     final_outcome = verified.outcome
     job_row.actual_units = actual_units
     job_row.billed_value_wei = billed_value_wei
     job_row.outcome = final_outcome
-    if job_row.accounting_mode == "wholesale_account":
-        assert job_row.authorization_id is not None
-        await sessions_service.mark_spend_authorization_settled(
-            db,
-            engagement_id=job_row.id,
-            authorization_id=job_row.authorization_id,
-            clock=clock,
-        )
+    assert job_row.authorization_id is not None
+    await sessions_service.mark_spend_authorization_settled(
+        db,
+        engagement_id=job_row.id,
+        authorization_id=job_row.authorization_id,
+        clock=clock,
+    )
     job_row.breakdown = {
         **(job_row.breakdown or {}),
         "broker_job_id": broker_job_id,
@@ -866,6 +657,7 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
                 select(PaymentSession)
                 .where(
                     PaymentSession.protocol == PAID_JOB_PROTOCOL,
+                    PaymentSession.accounting_mode == "wholesale_account",
                     PaymentSession.state == sessions_service.SESSION_STATE_OPEN,
                     (PaymentSession.last_polled_at.is_(None))
                     | (PaymentSession.last_polled_at < cutoff),
@@ -1056,21 +848,8 @@ async def _request_non_admission(
 
 
 async def _job_payer_scope(db: AsyncSession, job_row: PaymentSession) -> tuple[str, str] | None:
-    """Return immutable payer/payee scope for either accounting adapter."""
+    """Return the immutable wholesale payer/payee scope."""
 
-    initial_payment = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == job_row.id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
-    if initial_payment is not None and initial_payment.sender_eth_address is not None:
-        return (
-            initial_payment.sender_eth_address.lower(),
-            initial_payment.recipient_eth_address.lower(),
-        )
-    if job_row.accounting_mode != "wholesale_account":
-        return None
     grant = await db.scalar(
         select(SpendAuthorizationGrant).where(
             SpendAuthorizationGrant.session_id == job_row.id,

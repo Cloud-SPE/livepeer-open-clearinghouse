@@ -12,15 +12,6 @@ function errorProperty(error: unknown, key: string): unknown {
     : undefined;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    !(value instanceof Uint8Array)
-  );
-}
-
 export type CallerProofSigner = (authorization: Uint8Array) => string | Promise<string>;
 
 function encodeBody(body: unknown): string | Uint8Array {
@@ -54,32 +45,6 @@ export async function callerProof(
     });
   }
   return proof;
-}
-
-/**
- * Fill `model` for `openai:*` capabilities from the route LOC selected.
- *
- * Only applies when the body is a JSON object with no own `model` key
- * and the job's `route_snapshot.extra.openai.model` is a non-empty
- * string; every other body is returned as-is.
- */
-function withRouteModel(
-  capability: string,
-  body: unknown,
-  routeSnapshot: { extra?: Record<string, unknown> } | undefined,
-): unknown {
-  if (!capability.startsWith("openai:") || !isPlainObject(body)) {
-    return body;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "model")) {
-    return body;
-  }
-  const openai = routeSnapshot?.extra?.openai;
-  const model = isPlainObject(openai) ? openai.model : undefined;
-  if (typeof model !== "string" || model.length === 0) {
-    return body;
-  }
-  return { ...body, model };
 }
 
 // ---- Wei parsing ---------------------------------------------------------
@@ -167,13 +132,12 @@ export interface SessionHandle {
   offering: string;
   session: SessionAxes;
   sessionParams: Record<string, unknown>;
-  paymentEnvelope: string | null;
-  spendAuthorization?: string | null;
-  accountingMode?: "legacy_ticket" | "wholesale_account";
-  callerProof?: string | null;
-  sessionOpenBody?: string;
-  maxTotalUnits?: number;
-  signCallerProof?: CallerProofSigner;
+  spendAuthorization: string;
+  accountingMode: "wholesale_account";
+  callerProof: string;
+  sessionOpenBody: string;
+  maxTotalUnits: number;
+  signCallerProof: CallerProofSigner;
   expectedValueWei: bigint;
   fundedValueWei: bigint;
   refillEndpoint: string;
@@ -288,7 +252,7 @@ export class OpenClearinghouseClient {
    * One-shot mint → broker call → settle for cases (a)/(b)/(c).
    *
    * Composes `POST /v1/jobs` (mint), the broker's `POST /v1/job` with the
-   * minted envelope, then `POST /v1/jobs/{id}/settle` reading
+   * scoped authorization, then `POST /v1/jobs/{id}/settle` reading
    * `Livepeer-Work-Units` from the broker's response.
    *
    * `estimatedUnits` is the SDK's best guess; `maxTotalUnits` is the
@@ -298,10 +262,8 @@ export class OpenClearinghouseClient {
    * Broker-level non-2xx is returned in JobResult.status, not raised —
    * only LOC-side errors raise OpenClearinghouseError.
    *
-   * For `openai:*` capabilities you don't need a `model` field in a JSON
-   * `body`: when it is absent the SDK fills it from the route selected
-   * by LOC (`route_snapshot.extra.openai.model`). A caller-supplied
-   * `model` is always sent untouched.
+   * The exact body is hashed into the scoped authorization and is therefore
+   * never mutated after LOC selects and locks the route.
    */
   async submitJob(args: {
     capability: string;
@@ -327,8 +289,8 @@ export class OpenClearinghouseClient {
         "multipart transport requires a pre-encoded body and multipart/form-data contentType",
       );
     }
-    if ((args.callerPublicKey === undefined) !== (args.signCallerProof === undefined)) {
-      throw new TypeError("callerPublicKey and signCallerProof must be supplied together");
+    if (!args.callerPublicKey || !args.signCallerProof) {
+      throw new TypeError("callerPublicKey and signCallerProof are required");
     }
     const authorizationBody = encodeBody(args.body);
 
@@ -353,9 +315,8 @@ export class OpenClearinghouseClient {
       protocol: string;
       transport: "unary" | "stream" | "multipart";
       work_unit: string;
-      payment_envelope?: string | null;
-      spend_authorization?: string | null;
-      accounting_mode?: string;
+      spend_authorization: string;
+      accounting_mode: string;
       expected_value_wei: string;
       funded_value_wei: string;
       settle_endpoint: string;
@@ -373,7 +334,7 @@ export class OpenClearinghouseClient {
           estimated_units: args.estimatedUnits,
           max_total_units: args.maxTotalUnits ?? null,
           workload_request_digest: await sha256Hex(authorizationBody),
-          caller_public_key: args.callerPublicKey ?? null,
+          caller_public_key: args.callerPublicKey,
         },
         { "Idempotency-Key": requestId },
       );
@@ -415,12 +376,9 @@ export class OpenClearinghouseClient {
       );
     }
 
-    // 2. Call the broker directly with the minted envelope
-    const accountingMode = job.accounting_mode ?? "legacy_ticket";
-    const brokerBody =
-      accountingMode === "wholesale_account"
-        ? args.body
-        : withRouteModel(args.capability, args.body, job.route_snapshot);
+    // 2. Call the broker directly with the scoped authorization.
+    const accountingMode = job.accounting_mode;
+    const brokerBody = args.body;
     let payload: string | Uint8Array;
     const baseHeaders: Record<string, string> = {
       "Livepeer-Capability": args.capability,
@@ -428,22 +386,15 @@ export class OpenClearinghouseClient {
       "Livepeer-Protocol": job.protocol,
       "Livepeer-Request-Id": job.request_id,
     };
-    if (accountingMode === "wholesale_account") {
-      const proof = await callerProof(job.spend_authorization, args.signCallerProof);
-      if (job.spend_authorization == null || proof == null) {
-        throw new BrokerProtocolError("LOC returned an incomplete wholesale authorization");
-      }
-      baseHeaders["Livepeer-Authorization"] = job.spend_authorization;
-      baseHeaders["Livepeer-Caller-Proof"] = proof;
-      if (job.payment_envelope != null) baseHeaders["Livepeer-Payment"] = job.payment_envelope;
-    } else if (accountingMode === "legacy_ticket") {
-      if (job.payment_envelope == null || job.payment_envelope.length === 0) {
-        throw new BrokerProtocolError("LOC returned no payment envelope for legacy accounting");
-      }
-      baseHeaders["Livepeer-Payment"] = job.payment_envelope;
-    } else {
+    if (accountingMode !== "wholesale_account") {
       throw new BrokerProtocolError(`LOC returned unsupported accounting mode ${accountingMode}`);
     }
+    const proof = await callerProof(job.spend_authorization, args.signCallerProof);
+    if (!job.spend_authorization || proof == null) {
+      throw new BrokerProtocolError("LOC returned an incomplete wholesale authorization");
+    }
+    baseHeaders["Livepeer-Authorization"] = job.spend_authorization;
+    baseHeaders["Livepeer-Caller-Proof"] = proof;
     if (brokerBody instanceof Uint8Array) {
       payload = brokerBody;
       baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
@@ -451,8 +402,7 @@ export class OpenClearinghouseClient {
       payload = brokerBody;
       baseHeaders["Content-Type"] = args.contentType ?? "application/octet-stream";
     } else {
-      payload =
-        accountingMode === "wholesale_account" ? authorizationBody : JSON.stringify(brokerBody);
+      payload = authorizationBody;
       baseHeaders["Content-Type"] = "application/json";
     }
     if (requestedTransport === "stream") {
@@ -702,37 +652,30 @@ export class OpenClearinghouseClient {
     callerPublicKey?: string;
     signCallerProof?: CallerProofSigner;
   }): Promise<SessionHandle> {
-    if ((args.callerPublicKey === undefined) !== (args.signCallerProof === undefined)) {
-      throw new TypeError("callerPublicKey and signCallerProof must be supplied together");
+    if (!args.callerPublicKey || !args.signCallerProof) {
+      throw new TypeError("callerPublicKey and signCallerProof are required");
     }
     this.emitSdkInitOnce();
     const locRequestId = args.requestId ?? crypto.randomUUID();
     const sessionParams = args.sessionParams ?? {};
-    let prepared:
-      | {
-          gateway_session_id: string;
-          route_binding: Record<string, unknown>;
-          preparation_token: string;
-        }
-      | undefined;
-    let sessionOpenBody = "";
-    if (args.callerPublicKey !== undefined) {
-      const preparation = await this.request<NonNullable<typeof prepared>>(
-        "POST",
-        "/v1/sessions/prepare",
-        {
-          capability: args.capability,
-          offering: args.offering,
-          descriptor_schema: args.descriptorSchema,
-        },
-        { "Idempotency-Key": `${locRequestId}:prepare` },
-      );
-      prepared = preparation;
-      sessionOpenBody = JSON.stringify({
-        gateway_session_id: preparation.gateway_session_id,
-        session_params: sessionParams,
-      });
-    }
+    const prepared = await this.request<{
+      gateway_session_id: string;
+      route_binding: Record<string, unknown>;
+      preparation_token: string;
+    }>(
+      "POST",
+      "/v1/sessions/prepare",
+      {
+        capability: args.capability,
+        offering: args.offering,
+        descriptor_schema: args.descriptorSchema,
+      },
+      { "Idempotency-Key": `${locRequestId}:prepare` },
+    );
+    const sessionOpenBody = JSON.stringify({
+      gateway_session_id: prepared.gateway_session_id,
+      session_params: sessionParams,
+    });
     const openBody: Record<string, unknown> = {
       capability: args.capability,
       offering: args.offering,
@@ -741,15 +684,13 @@ export class OpenClearinghouseClient {
       estimated_runway_units: args.estimatedRunwayUnits,
       max_total_units: args.maxTotalUnits,
     };
-    if (prepared !== undefined) {
-      Object.assign(openBody, {
-        gateway_session_id: prepared.gateway_session_id,
-        preparation_token: prepared.preparation_token,
-        route_binding: prepared.route_binding,
-        workload_request_digest: await sha256Hex(sessionOpenBody),
-        caller_public_key: args.callerPublicKey,
-      });
-    }
+    Object.assign(openBody, {
+      gateway_session_id: prepared.gateway_session_id,
+      preparation_token: prepared.preparation_token,
+      route_binding: prepared.route_binding,
+      workload_request_digest: await sha256Hex(sessionOpenBody),
+      caller_public_key: args.callerPublicKey,
+    });
     const data = await this.request<{
       session_id: string;
       request_id: string;
@@ -757,9 +698,8 @@ export class OpenClearinghouseClient {
       broker_url: string;
       protocol: string;
       session: SessionAxes;
-      payment_envelope?: string | null;
-      spend_authorization?: string | null;
-      accounting_mode?: string;
+      spend_authorization: string;
+      accounting_mode: string;
       expected_value_wei: string;
       funded_value_wei: string;
       refill_endpoint: string;
@@ -772,21 +712,12 @@ export class OpenClearinghouseClient {
     if (data.session.descriptor_schema !== args.descriptorSchema) {
       throw new BrokerProtocolError("LOC returned an unexpected descriptor schema");
     }
-    if (prepared === undefined) {
-      sessionOpenBody = JSON.stringify({
-        gateway_session_id: data.session_id,
-        session_params: sessionParams,
-      });
-    }
-    const accountingMode = data.accounting_mode ?? "legacy_ticket";
-    if (accountingMode !== "legacy_ticket" && accountingMode !== "wholesale_account") {
+    const accountingMode = data.accounting_mode;
+    if (accountingMode !== "wholesale_account") {
       throw new BrokerProtocolError(`LOC returned unsupported accounting mode ${accountingMode}`);
     }
     const proof = await callerProof(data.spend_authorization, args.signCallerProof);
-    if (accountingMode === "legacy_ticket" && !data.payment_envelope) {
-      throw new BrokerProtocolError("LOC returned no payment envelope for legacy accounting");
-    }
-    if (accountingMode === "wholesale_account" && (!data.spend_authorization || proof == null)) {
+    if (!data.spend_authorization || proof == null) {
       throw new BrokerProtocolError("LOC returned an incomplete wholesale authorization");
     }
     this._telemetry.emit({
@@ -812,13 +743,12 @@ export class OpenClearinghouseClient {
       offering: args.offering,
       session: data.session,
       sessionParams,
-      paymentEnvelope: data.payment_envelope ?? null,
-      spendAuthorization: data.spend_authorization ?? null,
-      accountingMode,
+      spendAuthorization: data.spend_authorization,
+      accountingMode: "wholesale_account",
       callerProof: proof,
       sessionOpenBody,
       maxTotalUnits: args.maxTotalUnits,
-      ...(args.signCallerProof === undefined ? {} : { signCallerProof: args.signCallerProof }),
+      signCallerProof: args.signCallerProof,
       expectedValueWei: parseWei(data.expected_value_wei),
       fundedValueWei: parseWei(data.funded_value_wei),
       refillEndpoint: data.refill_endpoint,
@@ -831,11 +761,9 @@ export class OpenClearinghouseClient {
     opts: {
       observedConsumedUnits?: number;
       requestId?: string;
-      rebindFrom?: string;
-      replacesRequestId?: string;
-      maxTotalUnits?: number;
-      workloadRequestDigest?: string;
-    } = {},
+      maxTotalUnits: number;
+      workloadRequestDigest: string;
+    },
   ): Promise<unknown> {
     this._telemetry.emit({
       eventType: "session.refill_requested",
@@ -846,14 +774,8 @@ export class OpenClearinghouseClient {
     const body: Record<string, unknown> = {
       observed_consumed_units: opts.observedConsumedUnits ?? null,
     };
-    if (opts.maxTotalUnits !== undefined) {
-      body.max_total_units = opts.maxTotalUnits;
-      body.workload_request_digest = opts.workloadRequestDigest;
-    }
-    if (opts.rebindFrom !== undefined) {
-      body.rebind_from = opts.rebindFrom;
-      body.replaces_request_id = opts.replacesRequestId;
-    }
+    body.max_total_units = opts.maxTotalUnits;
+    body.workload_request_digest = opts.workloadRequestDigest;
     let result: Record<string, unknown>;
     try {
       result = await this.request<Record<string, unknown>>(

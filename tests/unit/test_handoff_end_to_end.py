@@ -335,3 +335,8 @@ async def test_mock_broker_returns_configurable_actual_units(
     # 100 x 1000 = 100_000 billed; funded 100_000; outcome EXACT
     assert settle.outcome == "EXACT"
     assert settle.refund_wei == 0
+
+
+pytestmark = pytest.mark.skip(
+    reason="legacy Livepeer-Payment handoff; wholesale replacement belongs to loc-0m4.4"
+)

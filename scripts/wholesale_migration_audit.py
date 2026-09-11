@@ -217,8 +217,16 @@ async def collect_report(database_url: str, phase: Literal["pre", "post"]) -> Au
             active_sessions = sum(session_states.get(value, 0) for value in ("open", "draining"))
             if active_sessions:
                 blockers.append(f"{active_sessions} legacy sessions are open or draining")
-            active_payments = sum(
-                payment_statuses.get(value, 0) for value in ("reserved", "issued")
+            active_payments = int(
+                await connection.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM payment AS p
+                    LEFT JOIN payment_session AS s ON s.id = p.session_id
+                    WHERE p.status IN ('reserved', 'issued')
+                      AND (p.session_id IS NULL OR s.state IN ('open', 'draining'))
+                    """
+                )
             )
             if active_payments:
                 blockers.append(f"{active_payments} legacy payments are reserved or issued")

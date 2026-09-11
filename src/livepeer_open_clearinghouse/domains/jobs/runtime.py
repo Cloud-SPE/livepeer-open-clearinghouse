@@ -63,10 +63,9 @@ async def open_job_endpoint(
     ],
     sdk_identity: Annotated[str | None, Header(alias="Livepeer-Open-Clearinghouse-SDK")] = None,
 ) -> CreateJobResponse:
-    """Open a one-shot job. Returns broker_url + payment_envelope for
-    the SDK to call the broker directly (handoff mode).
+    """Open a one-shot job and return its route-locked spend authorization.
 
-    Only routes declaring ``paid-job/v1`` are accepted.
+    Only wholesale-capable routes declaring ``paid-job/v1`` are accepted.
     """
     api_key, user = pair
     api_key_id = api_key.id
@@ -106,16 +105,8 @@ async def open_job_endpoint(
             clock=clock,
             settings=settings,
             request_id=claim.broker_request_id,
-            workload_request_digest=(
-                bytes.fromhex(body.workload_request_digest)
-                if body.workload_request_digest is not None
-                else None
-            ),
-            caller_public_key=(
-                bytes.fromhex(body.caller_public_key)
-                if body.caller_public_key is not None
-                else None
-            ),
+            workload_request_digest=bytes.fromhex(body.workload_request_digest),
+            caller_public_key=bytes.fromhex(body.caller_public_key),
             broker_wholesale=broker_wholesale,
         )
     except OpenClearinghouseError as exc:

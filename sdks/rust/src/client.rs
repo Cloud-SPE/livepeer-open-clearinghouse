@@ -7,7 +7,7 @@
 //!   settle composing `POST /v1/jobs` + the broker's `POST /v1/job` +
 //!   `POST /v1/jobs/{id}/settle`.
 //! - [`Client::open_session`] — case (d). Returns a [`SessionHandle`]
-//!   carrying the broker URL + minted envelope; the caller drives the
+//!   carrying the broker URL + scoped spend authorization; the caller drives the
 //!   broker WS/RTMP wire today.
 
 use std::{sync::Arc, time::Duration};
@@ -72,10 +72,7 @@ pub struct JobOpenResponse {
     pub protocol: String,
     pub transport: String,
     pub work_unit: String,
-    pub payment_envelope: Option<String>,
-    #[serde(default)]
     pub spend_authorization: Option<String>,
-    #[serde(default = "legacy_accounting_mode")]
     pub accounting_mode: String,
     #[serde(deserialize_with = "crate::wei::deserialize_wei")]
     pub expected_value_wei: u128,
@@ -138,10 +135,7 @@ pub struct SessionHandle {
     pub session: SessionAxes,
     #[serde(skip)]
     pub session_params: Value,
-    pub payment_envelope: Option<String>,
-    #[serde(default)]
     pub spend_authorization: Option<String>,
-    #[serde(default = "legacy_accounting_mode")]
     pub accounting_mode: String,
     #[serde(skip)]
     pub caller_proof: Option<String>,
@@ -156,10 +150,6 @@ pub struct SessionHandle {
     pub refill_endpoint: String,
     pub close_endpoint: String,
     pub opened_at: String,
-}
-
-fn legacy_accounting_mode() -> String {
-    "legacy_ticket".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -446,6 +436,11 @@ impl Client {
                 "multipart transport requires a bytes body and multipart/form-data content_type",
             ));
         }
+        if self.caller_public_key.is_none() || self.caller_proof_signer.is_none() {
+            return Err(OpenClearinghouseError::invalid_argument(
+                "caller public key and proof signer are required",
+            ));
+        }
         let authorization_body = match &in_.body {
             JobBody::Json(value) => serde_json::to_vec(value)?,
             JobBody::Bytes(bytes) => bytes.to_vec(),
@@ -550,61 +545,34 @@ impl Client {
             .header("Livepeer-Protocol", &job.protocol)
             .header("Livepeer-Request-Id", &job.request_id);
 
-        match job.accounting_mode.as_str() {
-            "wholesale_account" => {
-                let proof = self.caller_proof(job.spend_authorization.as_deref())?;
-                let (Some(authorization), Some(proof)) =
-                    (job.spend_authorization.as_deref(), proof)
-                else {
-                    return Err(OpenClearinghouseError::broker_protocol(
-                        "broker_protocol_error",
-                        "LOC returned an incomplete wholesale authorization",
-                    ));
-                };
-                req = req
-                    .header("Livepeer-Authorization", authorization)
-                    .header("Livepeer-Caller-Proof", proof);
-                if let Some(payment) = &job.payment_envelope {
-                    req = req.header("Livepeer-Payment", payment);
-                }
-            }
-            "legacy_ticket" => {
-                let payment = job.payment_envelope.as_deref().ok_or_else(|| {
-                    OpenClearinghouseError::broker_protocol(
-                        "broker_protocol_error",
-                        "LOC returned no payment envelope for legacy accounting",
-                    )
-                })?;
-                req = req.header("Livepeer-Payment", payment);
-            }
-            mode => {
-                return Err(OpenClearinghouseError::broker_protocol(
-                    "protocol_unsupported",
-                    format!("LOC returned unsupported accounting mode {mode}"),
-                ));
-            }
+        if job.accounting_mode != "wholesale_account" {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "protocol_unsupported",
+                format!(
+                    "LOC returned unsupported accounting mode {}",
+                    job.accounting_mode
+                ),
+            ));
         }
+        let proof = self.caller_proof(job.spend_authorization.as_deref())?;
+        let (Some(authorization), Some(proof)) = (job.spend_authorization.as_deref(), proof) else {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "LOC returned an incomplete wholesale authorization",
+            ));
+        };
+        req = req
+            .header("Livepeer-Authorization", authorization)
+            .header("Livepeer-Caller-Proof", proof);
 
         if transport == "stream" {
             req = req.header("Accept", "text/event-stream");
         }
 
         req = match &in_.body {
-            JobBody::Json(v) => {
-                let body = if job.accounting_mode == "wholesale_account" {
-                    v.clone()
-                } else {
-                    route_model_for(in_.capability, job.route_snapshot.as_ref())
-                        .map_or_else(|| v.clone(), |model| with_model(v, model))
-                };
-                req.header("Content-Type", "application/json").body(
-                    if job.accounting_mode == "wholesale_account" {
-                        authorization_body
-                    } else {
-                        serde_json::to_vec(&body)?
-                    },
-                )
-            }
+            JobBody::Json(_) => req
+                .header("Content-Type", "application/json")
+                .body(authorization_body),
             JobBody::Bytes(b) => {
                 let content_type = in_.content_type.unwrap_or("application/octet-stream");
                 req.header("Content-Type", content_type).body(b.to_vec())
@@ -873,31 +841,27 @@ impl Client {
             .request_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let prepared: Option<SessionPreparation> = if self.caller_public_key.is_some() {
-            Some(
-                self.request_with_headers(
-                    Method::POST,
-                    "/v1/sessions/prepare",
-                    Some(&serde_json::json!({
-                        "capability": in_.capability,
-                        "offering": in_.offering,
-                        "descriptor_schema": in_.descriptor_schema,
-                    })),
-                    &[("Idempotency-Key", format!("{request_id}:prepare").as_str())],
-                )
-                .await?,
+        if self.caller_public_key.is_none() || self.caller_proof_signer.is_none() {
+            return Err(OpenClearinghouseError::invalid_argument(
+                "caller public key and proof signer are required",
+            ));
+        }
+        let prepared: SessionPreparation = self
+            .request_with_headers(
+                Method::POST,
+                "/v1/sessions/prepare",
+                Some(&serde_json::json!({
+                    "capability": in_.capability,
+                    "offering": in_.offering,
+                    "descriptor_schema": in_.descriptor_schema,
+                })),
+                &[("Idempotency-Key", format!("{request_id}:prepare").as_str())],
             )
-        } else {
-            None
-        };
-        let mut session_open_body = if let Some(preparation) = &prepared {
-            serde_json::to_vec(&serde_json::json!({
-                "gateway_session_id": preparation.gateway_session_id,
-                "session_params": in_.session_params,
-            }))?
-        } else {
-            Vec::new()
-        };
+            .await?;
+        let session_open_body = serde_json::to_vec(&serde_json::json!({
+            "gateway_session_id": prepared.gateway_session_id,
+            "session_params": in_.session_params,
+        }))?;
         let mut open_body = serde_json::json!({
             "capability": in_.capability,
             "offering": in_.offering,
@@ -906,17 +870,17 @@ impl Client {
             "estimated_runway_units": in_.estimated_runway_units,
             "max_total_units": in_.max_total_units,
         });
-        if let Some(preparation) = &prepared {
-            open_body["gateway_session_id"] = Value::String(preparation.gateway_session_id.clone());
-            open_body["preparation_token"] = Value::String(preparation.token.clone());
-            open_body["route_binding"] = preparation.route_binding.clone();
-            open_body["workload_request_digest"] =
-                Value::String(format!("{:x}", Sha256::digest(&session_open_body)));
-            open_body["caller_public_key"] = self
-                .caller_public_key
+        open_body["gateway_session_id"] = Value::String(prepared.gateway_session_id.clone());
+        open_body["preparation_token"] = Value::String(prepared.token.clone());
+        open_body["route_binding"] = prepared.route_binding.clone();
+        open_body["workload_request_digest"] =
+            Value::String(format!("{:x}", Sha256::digest(&session_open_body)));
+        open_body["caller_public_key"] = Value::String(
+            self.caller_public_key
                 .as_ref()
-                .map_or(Value::Null, |value| Value::String(value.clone()));
-        }
+                .expect("caller key checked above")
+                .clone(),
+        );
         let mut handle: SessionHandle = self
             .request_with_headers(
                 Method::POST,
@@ -937,33 +901,21 @@ impl Client {
                 "session descriptor schema mismatch",
             ));
         }
-        if session_open_body.is_empty() {
-            session_open_body = serde_json::to_vec(&serde_json::json!({
-                "gateway_session_id": handle.session_id,
-                "session_params": in_.session_params,
-            }))?;
-        }
         let proof = self.caller_proof(handle.spend_authorization.as_deref())?;
-        match handle.accounting_mode.as_str() {
-            "wholesale_account" if handle.spend_authorization.is_none() || proof.is_none() => {
-                return Err(OpenClearinghouseError::broker_protocol(
-                    "broker_protocol_error",
-                    "LOC returned an incomplete wholesale authorization",
-                ));
-            }
-            "legacy_ticket" if handle.payment_envelope.is_none() => {
-                return Err(OpenClearinghouseError::broker_protocol(
-                    "broker_protocol_error",
-                    "LOC returned no payment envelope for legacy accounting",
-                ));
-            }
-            "wholesale_account" | "legacy_ticket" => {}
-            mode => {
-                return Err(OpenClearinghouseError::broker_protocol(
-                    "protocol_unsupported",
-                    format!("LOC returned unsupported accounting mode {mode}"),
-                ));
-            }
+        if handle.accounting_mode != "wholesale_account" {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "protocol_unsupported",
+                format!(
+                    "LOC returned unsupported accounting mode {}",
+                    handle.accounting_mode
+                ),
+            ));
+        }
+        if handle.spend_authorization.is_none() || proof.is_none() {
+            return Err(OpenClearinghouseError::broker_protocol(
+                "broker_protocol_error",
+                "LOC returned an incomplete wholesale authorization",
+            ));
         }
         handle.capability = in_.capability.to_string();
         handle.offering = in_.offering.to_string();
@@ -990,102 +942,6 @@ impl Client {
             )
             .await;
         Ok(handle)
-    }
-
-    pub async fn refill_session(
-        &self,
-        session_id: &str,
-        observed_consumed_units: Option<u64>,
-        request_id: Option<&str>,
-        rebind_from: Option<&str>,
-        replaces_request_id: Option<&str>,
-    ) -> Result<Value, OpenClearinghouseError> {
-        self.telemetry
-            .emit(
-                "session.refill_requested",
-                crate::telemetry::EmitOptions {
-                    correlation_id: Some(session_id.to_string()),
-                    ..Default::default()
-                },
-            )
-            .await;
-        let started = std::time::Instant::now();
-        let mut body = serde_json::json!({
-            "observed_consumed_units": observed_consumed_units,
-        });
-        if let Some(rebind_from) = rebind_from {
-            body["rebind_from"] = Value::String(rebind_from.to_string());
-            body["replaces_request_id"] =
-                replaces_request_id.map_or(Value::Null, |value| Value::String(value.to_string()));
-        }
-        let idempotency_key =
-            request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToString::to_string);
-        let result: Value = match self
-            .request_with_headers(
-                Method::POST,
-                &format!("/v1/sessions/{session_id}/refill"),
-                Some(&body),
-                &[("Idempotency-Key", idempotency_key.as_str())],
-            )
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                if let OpenClearinghouseError::Api {
-                    status, details, ..
-                } = &e
-                {
-                    if *status == 402 {
-                        self.telemetry
-                            .emit(
-                                "session.refill_denied",
-                                crate::telemetry::EmitOptions {
-                                    correlation_id: Some(session_id.to_string()),
-                                    payload: Some(serde_json::json!({
-                                        "which": details.get("which"),
-                                        "remaining_wei": details.get("remaining_wei"),
-                                    })),
-                                    ..Default::default()
-                                },
-                            )
-                            .await;
-                    } else {
-                        self.telemetry
-                            .emit(
-                                "session.error",
-                                crate::telemetry::EmitOptions {
-                                    correlation_id: Some(session_id.to_string()),
-                                    payload: Some(serde_json::json!({
-                                        "phase": "refill",
-                                        "error_code": telemetry_error_code(&e),
-                                    })),
-                                    ..Default::default()
-                                },
-                            )
-                            .await;
-                    }
-                }
-                return Err(e);
-            }
-        };
-        #[allow(clippy::cast_possible_truncation)]
-        let latency_ms = started.elapsed().as_millis() as u64;
-        self.telemetry
-            .emit(
-                "session.refill_granted",
-                crate::telemetry::EmitOptions {
-                    correlation_id: Some(session_id.to_string()),
-                    payload: Some(serde_json::json!({
-                        "latency_ms": latency_ms,
-                        "refill_seq": result.get("refill_seq"),
-                        "funded_value_wei": result.get("funded_value_wei"),
-                        "cap_status": result.get("cap_status"),
-                    })),
-                    ..Default::default()
-                },
-            )
-            .await;
-        Ok(result)
     }
 
     /// Explicitly increases a wholesale session's cumulative cap. The
@@ -1271,33 +1127,6 @@ impl Client {
             status.as_u16(),
             body_value,
         ))
-    }
-}
-
-/// `route_snapshot.extra.openai.model` when `capability` is an `openai:*`
-/// capability and the route advertises a non-empty model.
-fn route_model_for<'r>(capability: &str, route_snapshot: Option<&'r Value>) -> Option<&'r str> {
-    if !capability.starts_with("openai:") {
-        return None;
-    }
-    route_snapshot?
-        .get("extra")?
-        .get("openai")?
-        .get("model")?
-        .as_str()
-        .filter(|model| !model.is_empty())
-}
-
-/// Insert `model` into a JSON object body that does not already carry one.
-/// Non-object bodies and bodies with an explicit `model` are returned as-is.
-fn with_model(body: &Value, model: &str) -> Value {
-    match body {
-        Value::Object(map) if !map.contains_key("model") => {
-            let mut map = map.clone();
-            map.insert("model".to_string(), Value::String(model.to_string()));
-            Value::Object(map)
-        }
-        other => other.clone(),
     }
 }
 

@@ -135,8 +135,8 @@ your-app-server  │   Livepeer Open Clearinghouse    │   orch (real Livepeer
 
 ──────────────────────────────────────────►
 2. POST {broker_url}/v1/job
-   Livepeer-Payment: <legacy payment>, or
-   Livepeer-Authorization + Livepeer-Caller-Proof: <wholesale credential>
+   Livepeer-Authorization: <scoped authorization>
+   Livepeer-Caller-Proof: <signature over authorization>
    (your normal request body)
                                        returns inference result
 ◄──────────────────────────────────────────

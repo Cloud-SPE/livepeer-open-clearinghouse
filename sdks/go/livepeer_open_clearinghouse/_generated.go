@@ -35,15 +35,12 @@ func (e CreateJobRequestTransport) Valid() bool {
 
 // Defines values for CreateJobResponseAccountingMode.
 const (
-	CreateJobResponseAccountingModeLegacyTicket     CreateJobResponseAccountingMode = "legacy_ticket"
 	CreateJobResponseAccountingModeWholesaleAccount CreateJobResponseAccountingMode = "wholesale_account"
 )
 
 // Valid indicates whether the value is a known member of the CreateJobResponseAccountingMode enum.
 func (e CreateJobResponseAccountingMode) Valid() bool {
 	switch e {
-	case CreateJobResponseAccountingModeLegacyTicket:
-		return true
 	case CreateJobResponseAccountingModeWholesaleAccount:
 		return true
 	default:
@@ -74,15 +71,12 @@ func (e CreateJobResponseTransport) Valid() bool {
 
 // Defines values for CreateSessionResponseAccountingMode.
 const (
-	CreateSessionResponseAccountingModeLegacyTicket     CreateSessionResponseAccountingMode = "legacy_ticket"
 	CreateSessionResponseAccountingModeWholesaleAccount CreateSessionResponseAccountingMode = "wholesale_account"
 )
 
 // Valid indicates whether the value is a known member of the CreateSessionResponseAccountingMode enum.
 func (e CreateSessionResponseAccountingMode) Valid() bool {
 	switch e {
-	case CreateSessionResponseAccountingModeLegacyTicket:
-		return true
 	case CreateSessionResponseAccountingModeWholesaleAccount:
 		return true
 	default:
@@ -116,15 +110,12 @@ func (e JobStatusResponseAccountingOutcome) Valid() bool {
 
 // Defines values for RefillSessionResponseAccountingMode.
 const (
-	RefillSessionResponseAccountingModeLegacyTicket     RefillSessionResponseAccountingMode = "legacy_ticket"
 	RefillSessionResponseAccountingModeWholesaleAccount RefillSessionResponseAccountingMode = "wholesale_account"
 )
 
 // Valid indicates whether the value is a known member of the RefillSessionResponseAccountingMode enum.
 func (e RefillSessionResponseAccountingMode) Valid() bool {
 	switch e {
-	case RefillSessionResponseAccountingModeLegacyTicket:
-		return true
 	case RefillSessionResponseAccountingModeWholesaleAccount:
 		return true
 	default:
@@ -698,23 +689,18 @@ type CreateApiKeyResponse struct {
 
 // CreateJobRequest Inbound: “POST /v1/jobs“.
 //
-// SDK declares its intent for an atomic / post-settled / streaming
-// job. “max_total_units“ is the worst-case ceiling LOC encumbers
-// up front; if omitted, defaults to “estimated_units“ (the SDK is
-// asserting "I know exactly what I need" — typical for case (a)).
-//
-// For case (b)/(c) workloads where output_tokens are unknown,
-// customers should pass a generous “max_total_units“ to give the
-// broker room. Refunds happen at “/settle“.
+// The workload digest and caller key bind the resulting single-purpose
+// authorization to this request. “max_total_units“ is the cumulative
+// customer authorization ceiling; it does not size wholesale funding.
 type CreateJobRequest struct {
-	CallerPublicKey       *string                   `json:"caller_public_key,omitempty"`
+	CallerPublicKey       string                    `json:"caller_public_key"`
 	Capability            string                    `json:"capability"`
 	EstimatedUnits        int                       `json:"estimated_units"`
 	MaxTotalUnits         *int                      `json:"max_total_units,omitempty"`
 	Offering              string                    `json:"offering"`
 	RouteBinding          *RouteBinding             `json:"route_binding,omitempty"`
 	Transport             CreateJobRequestTransport `json:"transport"`
-	WorkloadRequestDigest *string                   `json:"workload_request_digest,omitempty"`
+	WorkloadRequestDigest string                    `json:"workload_request_digest"`
 }
 
 // CreateJobRequestTransport defines model for CreateJobRequest.Transport.
@@ -722,8 +708,8 @@ type CreateJobRequestTransport string
 
 // CreateJobResponse Outbound: “POST /v1/jobs“.
 //
-// Carries the broker target + minted envelope so the SDK can issue
-// its one-shot call to the broker directly (handoff mode). The
+// Carries the locked broker target and scoped authorization so the SDK can
+// issue its one-shot call to the broker directly (handoff mode). The
 // “settle_endpoint“ is the LOC URL the SDK posts to after reading
 // the broker's response (terminal headers for unary/multipart, or a
 // terminal settlement lookup when stream trailers are inaccessible).
@@ -734,14 +720,13 @@ type CreateJobResponse struct {
 	FundedValueWei   string                           `json:"funded_value_wei"`
 	JobId            openapi_types.UUID               `json:"job_id"`
 	OpenedAt         time.Time                        `json:"opened_at"`
-	PaymentEnvelope  *string                          `json:"payment_envelope,omitempty"`
 	Protocol         string                           `json:"protocol"`
 	RequestId        string                           `json:"request_id"`
 
 	// RouteSnapshot Immutable public route declaration used to authorize one open.
 	RouteSnapshot      RouteSnapshot              `json:"route_snapshot"`
 	SettleEndpoint     string                     `json:"settle_endpoint"`
-	SpendAuthorization *string                    `json:"spend_authorization,omitempty"`
+	SpendAuthorization string                     `json:"spend_authorization"`
 	Transport          CreateJobResponseTransport `json:"transport"`
 	WorkId             string                     `json:"work_id"`
 	WorkUnit           string                     `json:"work_unit"`
@@ -774,31 +759,30 @@ type CreateSdkApprovalRequest struct {
 // The SDK declares its intent for a long-lived session: the
 // capability + offering pair to bill against, the estimated runway
 // (best-guess of what the session is likely to consume), and the
-// absolute ceiling (“max_total_units“) that LOC will encumber up
-// front under handoff-mode's worst-case sizing rule.
+// cumulative customer authorization ceiling (“max_total_units“).
+// The prepared session identity, request digest, and caller key bind the
+// authorization to one locked route and workload.
 //
 // “max_total_units“ MUST be >= “estimated_runway_units“ and > 0.
 type CreateSessionRequest struct {
-	CallerPublicKey       *string                 `json:"caller_public_key,omitempty"`
+	CallerPublicKey       string                  `json:"caller_public_key"`
 	Capability            string                  `json:"capability"`
 	DescriptorSchema      string                  `json:"descriptor_schema"`
 	EstimatedRunwayUnits  int                     `json:"estimated_runway_units"`
-	GatewaySessionId      *openapi_types.UUID     `json:"gateway_session_id,omitempty"`
+	GatewaySessionId      openapi_types.UUID      `json:"gateway_session_id"`
 	MaxTotalUnits         int                     `json:"max_total_units"`
 	Offering              string                  `json:"offering"`
-	PreparationToken      *string                 `json:"preparation_token,omitempty"`
+	PreparationToken      string                  `json:"preparation_token"`
 	RouteBinding          *RouteBinding           `json:"route_binding,omitempty"`
 	SessionParams         *map[string]interface{} `json:"session_params,omitempty"`
-	WorkloadRequestDigest *string                 `json:"workload_request_digest,omitempty"`
+	WorkloadRequestDigest string                  `json:"workload_request_digest"`
 }
 
 // CreateSessionResponse Outbound: “POST /v1/sessions“.
 //
-// Carries everything the SDK needs to open the broker-side session
-// and bookkeep the LOC-side lifecycle. The “payment_envelope“
-// is base64-encoded wire-format Payment bytes — the SDK attaches
-// it as the “Livepeer-Payment“ HTTP header when opening the broker's
-// paid-session/v1 control resource.
+// Carries everything the SDK needs to open the broker-side session and
+// bookkeep the LOC-side lifecycle. “spend_authorization“ is scoped to the
+// locked route, session commitment, caller proof, and cumulative maximum.
 //
 // Per exec-plan 002 handoff design, LOC never sits in the data
 // path: “broker_url“ is the orchestrator's HTTP/WS endpoint the
@@ -812,7 +796,6 @@ type CreateSessionResponse struct {
 	ExpectedValueWei string                               `json:"expected_value_wei"`
 	FundedValueWei   string                               `json:"funded_value_wei"`
 	OpenedAt         time.Time                            `json:"opened_at"`
-	PaymentEnvelope  *string                              `json:"payment_envelope,omitempty"`
 	Protocol         string                               `json:"protocol"`
 	RefillEndpoint   string                               `json:"refill_endpoint"`
 	RequestId        string                               `json:"request_id"`
@@ -823,7 +806,7 @@ type CreateSessionResponse struct {
 	// Session Authoritative paid-session/v1 offering axes selected for the session.
 	Session            SessionAxesView    `json:"session"`
 	SessionId          openapi_types.UUID `json:"session_id"`
-	SpendAuthorization *string            `json:"spend_authorization,omitempty"`
+	SpendAuthorization string             `json:"spend_authorization"`
 	WorkId             string             `json:"work_id"`
 }
 
@@ -1138,25 +1121,20 @@ type PrepareSessionResponse struct {
 
 // RefillSessionRequest Inbound: “POST /v1/sessions/{id}/refill“.
 //
-// Body is mostly empty in v1 — the SDK signals "broker emitted
-// Livepeer-Balance-Low, please mint more." The optional
-// “observed_consumed_units“ is an advisory hint from the SDK's
-// view of broker progress. Signed broker settlements, supplied on
-// close/reconciliation, are authoritative for delivered work.
+// Revises the session's cumulative authorization cap. The request digest
+// binds the new revision to the updated session commitment. Wholesale
+// account replenishment remains an aggregate payer-payee decision.
 type RefillSessionRequest struct {
-	MaxTotalUnits         *int    `json:"max_total_units,omitempty"`
-	ObservedConsumedUnits *int    `json:"observed_consumed_units,omitempty"`
-	RebindFrom            *string `json:"rebind_from,omitempty"`
-	ReplacesRequestId     *string `json:"replaces_request_id,omitempty"`
-	WorkloadRequestDigest *string `json:"workload_request_digest,omitempty"`
+	MaxTotalUnits         int    `json:"max_total_units"`
+	ObservedConsumedUnits *int   `json:"observed_consumed_units,omitempty"`
+	WorkloadRequestDigest string `json:"workload_request_digest"`
 }
 
 // RefillSessionResponse Outbound: “POST /v1/sessions/{id}/refill“ success (200).
 //
-// Carries the newly-minted top-up envelope plus a fresh cap_status
-// snapshot. The SDK delivers “payment_envelope“ through the authoritative
-// paid-session HTTP top-up URL; a control WebSocket is only an optional push
-// mirror.
+// Carries the revised cumulative spend authorization plus a fresh cap-status
+// snapshot. The SDK delivers it with caller proof through the paid-session
+// control endpoint.
 type RefillSessionResponse struct {
 	AccountingMode *RefillSessionResponseAccountingMode `json:"accounting_mode,omitempty"`
 
@@ -1178,11 +1156,9 @@ type RefillSessionResponse struct {
 	CapStatus          CapStatus `json:"cap_status"`
 	ExpectedValueWei   string    `json:"expected_value_wei"`
 	FundedValueWei     string    `json:"funded_value_wei"`
-	PaymentEnvelope    *string   `json:"payment_envelope,omitempty"`
-	RebindFrom         *string   `json:"rebind_from,omitempty"`
 	RefillSeq          int       `json:"refill_seq"`
 	RequestId          string    `json:"request_id"`
-	SpendAuthorization *string   `json:"spend_authorization,omitempty"`
+	SpendAuthorization string    `json:"spend_authorization"`
 	WorkId             string    `json:"work_id"`
 }
 

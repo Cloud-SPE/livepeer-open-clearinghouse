@@ -139,21 +139,11 @@ func (r *SessionRunner) Start(ctx context.Context) error {
 	req.Header.Set("Livepeer-Capability", r.handle.Capability)
 	req.Header.Set("Livepeer-Offering", r.handle.Offering)
 	req.Header.Set("Livepeer-Request-Id", r.handle.RequestID)
-	if r.handle.AccountingMode == "wholesale_account" {
-		if r.handle.SpendAuthorization == "" || r.handle.CallerProof == "" {
-			return fmt.Errorf("openclearinghouse: wholesale session is missing authorization headers")
-		}
-		req.Header.Set("Livepeer-Authorization", r.handle.SpendAuthorization)
-		req.Header.Set("Livepeer-Caller-Proof", r.handle.CallerProof)
-		if r.handle.PaymentEnvelope != "" {
-			req.Header.Set("Livepeer-Payment", r.handle.PaymentEnvelope)
-		}
-	} else {
-		if r.handle.PaymentEnvelope == "" {
-			return fmt.Errorf("openclearinghouse: legacy session is missing Livepeer-Payment")
-		}
-		req.Header.Set("Livepeer-Payment", r.handle.PaymentEnvelope)
+	if r.handle.AccountingMode != "wholesale_account" || r.handle.SpendAuthorization == "" || r.handle.CallerProof == "" {
+		return fmt.Errorf("openclearinghouse: wholesale session is missing authorization headers")
 	}
+	req.Header.Set("Livepeer-Authorization", r.handle.SpendAuthorization)
+	req.Header.Set("Livepeer-Caller-Proof", r.handle.CallerProof)
 	res, err := r.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("openclearinghouse: broker session-open: %w", err)
@@ -260,22 +250,18 @@ func (r *SessionRunner) OnBalance(ctx context.Context, balance SessionBalance) {
 		r.fireWinddown(WinddownEvent{Reason: "bounded_runway_exhausting"})
 		return
 	}
-	var maxTotalUnits int64
-	if r.handle.AccountingMode == "wholesale_account" {
-		if r.approveCapExtension == nil {
-			r.fireWinddown(WinddownEvent{Reason: "wholesale_cap_extension_required"})
-			return
-		}
-		var approved bool
-		maxTotalUnits, approved = r.approveCapExtension(balance)
-		if !approved {
-			r.fireWinddown(WinddownEvent{Reason: "wholesale_cap_extension_declined"})
-			return
-		}
-		if maxTotalUnits <= r.handle.MaxTotalUnits {
-			r.fireRefillRefused(RefillEvent{Error: fmt.Errorf("wholesale cap extension must increase MaxTotalUnits")})
-			return
-		}
+	if r.approveCapExtension == nil {
+		r.fireWinddown(WinddownEvent{Reason: "wholesale_cap_extension_required"})
+		return
+	}
+	maxTotalUnits, approved := r.approveCapExtension(balance)
+	if !approved {
+		r.fireWinddown(WinddownEvent{Reason: "wholesale_cap_extension_declined"})
+		return
+	}
+	if maxTotalUnits <= r.handle.MaxTotalUnits {
+		r.fireRefillRefused(RefillEvent{Error: fmt.Errorf("wholesale cap extension must increase MaxTotalUnits")})
+		return
 	}
 	if err := r.refill(ctx, balance.ClaimedUnits, maxTotalUnits); err != nil {
 		r.fireRefillRefused(RefillEvent{Error: err})
@@ -291,18 +277,14 @@ func (r *SessionRunner) refill(ctx context.Context, observed, maxTotalUnits int6
 		r.pendingKey = newUUIDv4()
 	}
 	key, refill := r.pendingKey, r.pendingRefill
-	if refill != nil && r.handle.AccountingMode == "wholesale_account" {
+	if refill != nil {
 		maxTotalUnits = r.pendingMaxTotalUnits
 	}
 	r.mu.Unlock()
 	if refill == nil {
+		digest := sha256.Sum256([]byte("{}"))
 		var err error
-		if r.handle.AccountingMode == "wholesale_account" {
-			digest := sha256.Sum256([]byte("{}"))
-			refill, err = r.client.ReviseSessionAuthorization(ctx, r.handle.SessionID, observed, maxTotalUnits, hex.EncodeToString(digest[:]), key)
-		} else {
-			refill, err = r.client.RefillSession(ctx, r.handle.SessionID, &observed, key, "", "")
-		}
+		refill, err = r.client.ReviseSessionAuthorization(ctx, r.handle.SessionID, observed, maxTotalUnits, hex.EncodeToString(digest[:]), key)
 		if err != nil {
 			return err
 		}
@@ -314,34 +296,6 @@ func (r *SessionRunner) refill(ctx context.Context, observed, maxTotalUnits int6
 	res, err := r.postTopup(ctx, refill)
 	if err != nil {
 		return err
-	}
-	if brokerError(res) == "recipient_rotated" {
-		_ = res.Body.Close()
-		if r.handle.AccountingMode == "wholesale_account" {
-			r.endUnrecoverableRotation()
-			return nil
-		}
-		if refill["rebind_from"] != nil {
-			r.endUnrecoverableRotation()
-			return nil
-		}
-		predecessor := fmt.Sprint(refill["work_id"])
-		replacementKey := newUUIDv4()
-		r.mu.Lock()
-		r.pendingKey = replacementKey
-		r.mu.Unlock()
-		refill, err = r.client.RefillSession(ctx, r.handle.SessionID, &observed,
-			replacementKey, predecessor, fmt.Sprint(refill["request_id"]))
-		if err != nil {
-			return err
-		}
-		r.mu.Lock()
-		r.pendingRefill = refill
-		r.mu.Unlock()
-		res, err = r.postTopup(ctx, refill)
-		if err != nil {
-			return err
-		}
 	}
 	defer func() { _ = res.Body.Close() }()
 	if brokerError(res) == "recipient_rotated" {
@@ -355,19 +309,12 @@ func (r *SessionRunner) refill(ctx context.Context, observed, maxTotalUnits int6
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("broker topup: %d", res.StatusCode)
 	}
-	if refill["rebind_from"] != nil {
-		r.mu.Lock()
-		r.broker.WorkID = fmt.Sprint(refill["work_id"])
-		r.mu.Unlock()
+	authorization, ok := refill["spend_authorization"].(string)
+	if !ok || authorization == "" {
+		return fmt.Errorf("openclearinghouse: wholesale refill is missing spend_authorization")
 	}
-	if refill["accounting_mode"] == "wholesale_account" {
-		authorization, ok := refill["spend_authorization"].(string)
-		if !ok || authorization == "" {
-			return fmt.Errorf("openclearinghouse: wholesale refill is missing spend_authorization")
-		}
-		r.handle.SpendAuthorization = authorization
-		r.handle.MaxTotalUnits = maxTotalUnits
-	}
+	r.handle.SpendAuthorization = authorization
+	r.handle.MaxTotalUnits = maxTotalUnits
 	event := refillEvent(refill)
 	r.fireRefillSucceeded(event)
 	r.mu.Lock()
@@ -386,31 +333,24 @@ func (r *SessionRunner) postTopup(ctx context.Context, refill map[string]any) (*
 	}
 	req.Header.Set("Authorization", "Bearer "+r.broker.Credential)
 	req.Header.Set("Content-Type", "application/json")
-	if refill["accounting_mode"] == "wholesale_account" {
-		authorization, ok := refill["spend_authorization"].(string)
-		if !ok || authorization == "" {
-			return nil, fmt.Errorf("openclearinghouse: wholesale refill is missing spend_authorization")
-		}
-		proof, signErr := signCallerAuthorization(authorization, r.handle.SignCallerProof)
-		if signErr != nil {
-			return nil, signErr
-		}
-		if proof == "" {
-			return nil, fmt.Errorf("openclearinghouse: wholesale refill is missing authorization credentials")
-		}
-		req.Header.Set("Livepeer-Authorization", authorization)
-		req.Header.Set("Livepeer-Caller-Proof", proof)
-		if refill["payment_envelope"] != nil {
-			req.Header.Set("Livepeer-Payment", fmt.Sprint(refill["payment_envelope"]))
-		}
-		r.handle.CallerProof = proof
-	} else {
-		req.Header.Set("Livepeer-Payment", fmt.Sprint(refill["payment_envelope"]))
+	if refill["accounting_mode"] != "wholesale_account" {
+		return nil, fmt.Errorf("openclearinghouse: LOC returned a non-wholesale refill")
 	}
+	authorization, ok := refill["spend_authorization"].(string)
+	if !ok || authorization == "" {
+		return nil, fmt.Errorf("openclearinghouse: wholesale refill is missing spend_authorization")
+	}
+	proof, signErr := signCallerAuthorization(authorization, r.handle.SignCallerProof)
+	if signErr != nil {
+		return nil, signErr
+	}
+	if proof == "" {
+		return nil, fmt.Errorf("openclearinghouse: wholesale refill is missing authorization credentials")
+	}
+	req.Header.Set("Livepeer-Authorization", authorization)
+	req.Header.Set("Livepeer-Caller-Proof", proof)
+	r.handle.CallerProof = proof
 	req.Header.Set("Livepeer-Request-Id", fmt.Sprint(refill["request_id"]))
-	if rebindFrom := refill["rebind_from"]; rebindFrom != nil {
-		req.Header.Set("Livepeer-Rebind-From", fmt.Sprint(rebindFrom))
-	}
 	return r.http.Do(req)
 }
 

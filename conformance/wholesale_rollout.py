@@ -126,11 +126,10 @@ def _cases(repo: Path, modules: Path) -> list[Case]:
         ),
         _pytest_case(
             repo,
-            "legacy_regression",
-            "The legacy job/session path remains unchanged while wholesale is version-gated.",
-            "tests/unit/test_open_session_service.py::test_open_session_writes_session_payment_and_encumbrance",
-            "tests/unit/test_refill_session_service.py",
-            "tests/unit/test_close_session_service.py",
+            "wholesale_only_cutover",
+            "The schema blocks active legacy work and every request boundary requires wholesale authorization inputs.",
+            "tests/unit/test_schema_revision.py::test_wholesale_cutover_migration_blocks_active_legacy_engagements",
+            "tests/unit/test_wholesale_request_contract.py",
         ),
     ]
 
@@ -180,8 +179,8 @@ def run(repo: Path, modules: Path, artifacts: Path, *, live_stack: bool) -> dict
         results.append(
             _run_case(
                 Case(
-                    "real_process_legacy_control",
-                    "Pinned real LOC and Modules processes preserve legacy negotiation, retry, restart, SDK, and raw-HTTP behavior.",
+                    "real_process_wholesale_control",
+                    "Pinned real LOC and Modules processes prove wholesale-only SDK and raw-HTTP behavior.",
                     repo,
                     (
                         uv,

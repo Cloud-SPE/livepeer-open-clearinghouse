@@ -8,10 +8,10 @@ Structurally identical to sessions: each job creates a
 The split exists at the endpoint surface because customers (and
 their SDKs) treat jobs and sessions as distinct concepts:
 
-  - Jobs are one-shot. They mint, the SDK calls the broker once,
-    settles with actual units, and closes. No refills.
-  - Sessions are long-running. They mint, refill on broker-emitted
-    balance-low, and close on customer/operator signal.
+  - Jobs are one-shot. LOC authorizes one request, the SDK calls the broker,
+    and durable signed usage closes the customer hold.
+  - Sessions are long-running. LOC revises a cumulative authorization cap and
+    closes from durable broker-signed status.
 
 Both share the underlying ``payment_session`` table. Job accounting is
 authorized by the broker's signed settlement and checked against the

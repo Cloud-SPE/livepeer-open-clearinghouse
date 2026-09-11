@@ -7,9 +7,9 @@ Run with:
     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \\
     uv run --package loc-example-one-shot-job python examples/python/one-shot-job/main.py
 
-The SDK handles the full handoff dance for you: opens a job via
-POST /v1/jobs (which mints a payment envelope), calls the broker
-directly with the envelope as Livepeer-Payment, reads the broker's
+The SDK handles the full handoff dance for you: obtains a route-locked
+spend authorization via POST /v1/jobs, calls the broker directly with
+the authorization and caller proof, reads the broker's
 Livepeer-Work-Units header from the response, and posts the settle
 record back to LOC via POST /v1/jobs/{id}/settle.
 """
