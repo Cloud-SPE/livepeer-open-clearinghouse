@@ -51,7 +51,9 @@ async def test_list_capabilities_offerings_carry_extra() -> None:
     offering = chat.offerings[0]
     # The route's extra metadata must survive the capability aggregation —
     # gateways read keys like extra["openai"]["model"] from it.
-    assert offering.extra == {"interaction_mode": "http-stream@v0"}
+    assert offering.protocol == "paid-job/v1"
+    assert offering.job is not None
+    assert offering.job.transports == {"unary", "stream", "multipart"}
 
 
 @pytest.mark.unit
@@ -60,4 +62,5 @@ async def test_list_orchestrators_offerings_carry_extra() -> None:
     orchs = await client.list_orchestrators(capability="openai:chat-completions")
     assert orchs
     offering = orchs[0].capabilities[0].offerings[0]
-    assert offering.extra == {"interaction_mode": "http-stream@v0"}
+    assert offering.protocol == "paid-job/v1"
+    assert offering.job is not None

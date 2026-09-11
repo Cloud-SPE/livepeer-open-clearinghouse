@@ -3,6 +3,12 @@
 The load-bearing design decisions behind Livepeer Open Clearinghouse, written down so future
 agent runs can reason about them without re-deriving them from code.
 
+> **Payment protocol:** LOC is wholesale-account only. Customer maxima are
+> single-purpose authorization caps, while tickets fund only bounded shortfall
+> in a shared LOC payer-payee account. Authorization-only accounting is
+> intrinsic to Network Protocol 3.0 paid routes; unknown protocols fail closed. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+
 ## What Livepeer Open Clearinghouse is
 
 A single Python service that sits between Livepeer application developers and
@@ -11,8 +17,9 @@ the Livepeer payment infrastructure. It does four things:
 1. Authenticates app developers (API keys) and operators (web sessions).
 2. Tracks wei-denominated credit per user.
 3. Discovers orchestrators and capabilities via `service-registry-daemon`.
-4. Mints signed Livepeer payment tickets via `payment-daemon`, charging the
-   user's credit by ticket expected value (EV) at issuance.
+4. Issues scoped spend authorizations and funds bounded shared-account
+   shortfalls through `payment-daemon`; customer charges follow verified
+   actual usage in LOC's separate retail ledger.
 
 ## What Livepeer Open Clearinghouse is not (MVP)
 
@@ -56,23 +63,21 @@ On-chain identity is the operator's, not the user's.
 **Trade-off:** Livepeer Open Clearinghouse must absorb short-term variance from probabilistic
 micropayments. See `docs/RELIABILITY.md`.
 
-### 3. Charge ticket EV at issuance ("Option A")
+### 3. Price verified usage separately from wholesale funding
 
-When `payment-daemon.CreatePayment` returns `expected_value`, Livepeer Open Clearinghouse
-decrements the user's balance by that exact amount and never revisits.
-On-chain redemption outcomes are not observed.
+LOC holds the customer's maximum under its retail pricing policy, then charges
+verified actual usage from durable broker-signed evidence. Ticket EV funds
+only bounded shortfall in the shared payer-payee wholesale account and is not
+a customer billing event.
 
-**Why:** removes a whole feedback loop. No need for the orchestrator to
-report back, no need to watch the chain for redemption events, no race
-between "ticket issued" and "ticket settled." The user sees a deterministic
-bill. The operator's wallet, integrated across all users, pays out roughly
-what was charged in EV terms.
+**Why:** a workload ceiling, wholesale funding requirement, and retail charge
+are different quantities. Collapsing them overfunds reusable accounts and
+makes customer billing depend on probabilistic payment mechanics.
 
-**Trade-off:** Livepeer Open Clearinghouse's pooled wallet eats short-term lottery variance —
-favorable in expectation, unfavorable in any given window. Acceptable for
-MVP scale; revisit if it stops being acceptable.
+**Trade-off:** LOC must independently reconcile durable broker state and keep
+the customer and wholesale ledgers consistent even when the SDK never reports.
 
-### 4. Job-sizing is "N work units," not "X wei of funding"
+### 4. Job-sizing sets authorization, not funding
 
 The app developer asks for tickets in units of work (e.g., "200 tokens",
 "30 video frames"). Livepeer Open Clearinghouse multiplies by `price_per_work_unit_wei` from
@@ -87,6 +92,9 @@ Discovery (`Select`) gives Livepeer Open Clearinghouse the rate; Livepeer Open C
 up-front (e.g., LLM completions), the app dev declares `max_work_units`,
 Livepeer Open Clearinghouse reserves credit for the max, and refunds the delta after the app
 dev reports actuals back. See `domains/usage`.
+
+Under design 002, `max_work_units` still expresses a customer authorization
+ceiling, but it no longer commands LOC to mint the corresponding ticket EV.
 
 ### 5. Discovery is a thin pass-through
 
@@ -129,15 +137,17 @@ a whole toolchain (bundler, transpiler, css processor) from the surface
 area. Matches the conventions established in `livepeer-modules-openai`.
 See `docs/FRONTEND.md`.
 
-### 9. Livepeer Open Clearinghouse fronts every external call from app devs
+### 9. Livepeer Open Clearinghouse fronts every control-plane call from app devs
 
 App developers talk only to Livepeer Open Clearinghouse. They never address `payment-daemon`
 or `service-registry-daemon` directly. Livepeer Open Clearinghouse can therefore enforce
 billing on every call without trusting clients.
 
-**Why:** keeps the auth/billing model simple. A v2 might issue scoped
-tokens for app devs to talk to daemons directly (taking Livepeer Open Clearinghouse out of
-the hot path); that's an optimization, not a feature.
+**Why:** keeps customer authentication and billing policy in LOC. In handoff
+mode, the customer or SDK may invoke the selected broker directly, but only
+with LOC-issued, route-locked authority. The future Modules contract makes
+that authority single-purpose; it never grants generic access to LOC's pooled
+wholesale credit.
 
 ## When in doubt
 

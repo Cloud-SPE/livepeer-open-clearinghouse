@@ -2,6 +2,19 @@ package openclearinghouse
 
 import "fmt"
 
+// BrokerProtocolError reports a paid-job/v1 response that cannot be
+// safely settled because required broker evidence is absent or contradictory.
+type BrokerProtocolError struct {
+	Code    string
+	Message string
+	Status  int
+	Details map[string]any
+}
+
+func (e *BrokerProtocolError) Error() string {
+	return "open-clearinghouse: broker protocol: " + e.Message
+}
+
 // Error wraps Livepeer Open Clearinghouse's response envelope:
 //
 //	{"error": {"code": "...", "message": "...", "details": {...}}}

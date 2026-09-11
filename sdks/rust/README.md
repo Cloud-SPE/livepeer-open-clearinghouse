@@ -78,7 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })),
             max_total_units: Some(2000),
             request_id: None,
-            spec_version: None,
+            transport: Some("unary"),
+            content_type: None,
         })
         .await
     {
@@ -117,20 +118,26 @@ ph.close_session(CloseSessionInput {
 
 Method surface:
 
-| | |
-|---|---|
-| `list_capabilities()` | discovery |
-| `list_orchestrators(capability)` | discovery |
-| `submit_job(SubmitJobInput)` | one-shot job (cases a/b/c) |
-| `open_session(OpenSessionInput)` | open long-running session (case d) |
-| `refill_session(...)` | top up an open session |
-| `close_session(CloseSessionInput)` | settle + close a session |
-| `telemetry()` | direct access to the (mandatory) `TelemetryEmitter` |
+|                                    |                                                     |
+| ---------------------------------- | --------------------------------------------------- |
+| `list_capabilities()`              | discovery                                           |
+| `list_orchestrators(capability)`   | discovery                                           |
+| `submit_job(SubmitJobInput)`       | one-shot job (cases a/b/c)                          |
+| `open_session(OpenSessionInput)`   | open long-running session (case d)                  |
+| `refill_session(...)`              | top up an open session                              |
+| `close_session(CloseSessionInput)` | settle + close a session                            |
+| `telemetry()`                      | direct access to the (mandatory) `TelemetryEmitter` |
 
 The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on
 every call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
+
+For wholesale-capable routes, configure `ClientOptions::with_caller_proof`
+with the compressed caller public key and an `Arc<CallerProofSigner>`. The
+callback receives opaque decoded authorization bytes and returns the base64
+caller proof. The SDK retains the exact committed body and never takes
+custody of the caller's private key.
 
 `OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`,
 and `Config` variants. Call `.kind()` for the high-level `ErrorKind`

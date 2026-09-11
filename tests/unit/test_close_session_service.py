@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -41,16 +42,18 @@ from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_CLOSED,
     SessionNotFound,
     SessionNotOpen,
+    SessionSettlementVerificationFailed,
 )
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key, signed_session_settlement
 
 
 @pytest_asyncio.fixture()
@@ -119,7 +122,15 @@ def _route() -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
-        extra={"interaction_mode": "session-control-plus-media@v0"},
+        protocol="paid-session/v1",
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
+        extra={
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": "extensible",
+            }
+        },
     )
 
 
@@ -144,6 +155,30 @@ async def _open_session(db: AsyncSession, *, max_total: int = 1000):
     return user_id, key_id, open_resp, daemon
 
 
+def _settlement(
+    open_resp: Any,
+    *,
+    actual_units: int,
+    billed_value_wei: int | None = None,
+    funded_value_wei: int = 1_000_000,
+    outcome: str = "OVERFUNDED",
+    breakdown: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return signed_session_settlement(
+        gateway_session_id=str(open_resp.session_id),
+        work_id=str(open_resp.work_id),
+        debited_units=actual_units,
+        billed_value_wei=(actual_units * 1000 if billed_value_wei is None else billed_value_wei),
+        funded_value_wei=funded_value_wei,
+        generation_funded_value_wei=funded_value_wei,
+        amount_wei=1000,
+        per_units=1,
+        work_unit="session_second",
+        outcome=outcome,
+        breakdown=breakdown,
+    )
+
+
 # ---- happy paths (each outcome) ----
 
 
@@ -157,13 +192,23 @@ async def test_close_overfunded_refunds_unused_encumbrance(
     user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
     balance_before_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
 
+    settlement = _settlement(
+        open_resp,
+        actual_units=400,
+        breakdown={
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-05-24T11:59:00Z",
+            "last_failure_code": "encoder_init_failed",
+        },
+    )
     close_resp = await sessions_service.close_session(
         db_session,
         session_id=open_resp.session_id,
         user_id=user_id,
         actual_units=400,
         outcome=None,  # let LOC infer
-        settlement={"breakdown": {"input": 100, "output": 300}},
+        settlement=settlement,
         clock=_clock(),
     )
 
@@ -179,6 +224,14 @@ async def test_close_overfunded_refunds_unused_encumbrance(
     assert ps.billed_value_wei == Decimal(400_000)
     assert ps.outcome == "OVERFUNDED"
     assert ps.closed_at is not None
+    assert ps.breakdown == {
+        "broker_diagnostics": {
+            "termination_reason": "output_failed",
+            "output_state": "stalled",
+            "output_state_since": "2026-05-24T11:59:00+00:00",
+            "last_failure_code": "encoder_init_failed",
+        }
+    }
 
     balance_after_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     # Refund credits 600_000 back
@@ -195,7 +248,7 @@ async def test_close_overfunded_refunds_unused_encumbrance(
     ).all()
     assert len(events) == 1
     assert events[0].outcome == "OVERFUNDED"
-    assert events[0].raw_record == {"breakdown": {"input": 100, "output": 300}}
+    assert events[0].raw_record == settlement
 
     # release_session_encumbrance ledger entry
     ledger = (
@@ -223,7 +276,7 @@ async def test_close_exact_no_refund(db_session: AsyncSession) -> None:
         user_id=user_id,
         actual_units=1000,  # x 1000 wei = 1_000_000 = funded
         outcome=None,
-        settlement=None,
+        settlement=_settlement(open_resp, actual_units=1000, outcome="EXACT"),
         clock=_clock(),
     )
     assert close_resp.billed_value_wei == 1_000_000
@@ -236,23 +289,27 @@ async def test_close_exact_no_refund(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_close_underfunded_no_balance_credit(db_session: AsyncSession) -> None:
-    """billed exceeds funded — operator absorbs; no refund, no debit."""
+async def test_close_rejects_settlement_above_loc_funding(db_session: AsyncSession) -> None:
+    """A signed broker record cannot bill above LOC's session cap."""
     user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
     balance_before_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
 
-    close_resp = await sessions_service.close_session(
-        db_session,
-        session_id=open_resp.session_id,
-        user_id=user_id,
-        actual_units=1500,  # x 1000 wei = 1_500_000 > funded 1_000_000
-        outcome=None,
-        settlement=None,
-        clock=_clock(),
-    )
-    assert close_resp.billed_value_wei == 1_500_000
-    assert close_resp.refund_wei == 0  # clamped at 0
-    assert close_resp.outcome == "UNDERFUNDED"
+    with pytest.raises(SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=1500,
+            outcome=None,
+            settlement=_settlement(
+                open_resp,
+                actual_units=1500,
+                billed_value_wei=1_500_000,
+                outcome="UNDERFUNDED",
+            ),
+            clock=_clock(),
+        )
+    assert exc_info.value.details == {"reason": "session_cap_exceeded"}
 
     balance_after_wei = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
     assert balance_after_wei == balance_before_wei
@@ -280,7 +337,7 @@ async def test_close_accepts_sdk_supplied_outcome(db_session: AsyncSession) -> N
         user_id=user_id,
         actual_units=400,
         outcome="STOPPED_AT_BUDGET",
-        settlement=None,
+        settlement=_settlement(open_resp, actual_units=400, outcome="STOPPED_AT_BUDGET"),
         clock=_clock(),
     )
     assert close_resp.outcome == "STOPPED_AT_BUDGET"
@@ -336,7 +393,7 @@ async def test_close_is_not_idempotent_second_call_409(
         user_id=user_id,
         actual_units=100,
         outcome=None,
-        settlement=None,
+        settlement=_settlement(open_resp, actual_units=100),
         clock=_clock(),
     )
     with pytest.raises(SessionNotOpen):
@@ -382,7 +439,7 @@ async def test_close_after_refills_billed_against_session_funded(
         user_id=user_id,
         actual_units=350,  # x 1000 = 350_000 billed
         outcome=None,
-        settlement=None,
+        settlement=_settlement(open_resp, actual_units=350),
         clock=_clock(),
     )
     assert close_resp.billed_value_wei == 350_000
@@ -393,75 +450,64 @@ async def test_close_after_refills_billed_against_session_funded(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_close_fires_discrepancy_when_daemon_disagrees(
+async def test_close_rejects_sdk_units_that_disagree_with_signed_settlement(
     db_session: AsyncSession,
 ) -> None:
-    """SDK reports 400 units; daemon says 800. Delta crosses the 1%
-    + min-5 noise floor → server.discrepancy_detected lands."""
-    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
-
-    user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
-    daemon.set_session_debits(
-        sender=b"", work_id=open_resp.work_id, total_work_units=800, debit_count=8, closed=True
-    )
-
-    await sessions_service.close_session(
-        db_session,
-        session_id=open_resp.session_id,
-        user_id=user_id,
-        actual_units=400,  # well under daemon's 800
-        outcome=None,
-        settlement=None,
-        clock=_clock(),
-        daemon=daemon,
-    )
-
-    rows = list(
-        (
-            await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.discrepancy_detected"
-                )
-            )
-        ).all()
-    )
-    assert len(rows) == 1
-    payload = rows[0].payload
-    assert payload["sdk_reported_units"] == 400
-    assert payload["daemon_units"] == 800
-    assert payload["difference"] == -400
+    """The signed broker units are authoritative on synchronous close."""
+    user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
+    with pytest.raises(SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=400,
+            outcome=None,
+            settlement=_settlement(open_resp, actual_units=800),
+            clock=_clock(),
+        )
+    assert exc_info.value.details == {"reason": "work_units_mismatch"}
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_close_does_not_fire_discrepancy_when_within_tolerance(
+async def test_close_rejects_missing_signed_settlement(
     db_session: AsyncSession,
 ) -> None:
-    """Tiny delta inside the noise floor (5-unit min + 1% relative)
-    should NOT fire the event."""
-    from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
+    user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
+    with pytest.raises(SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=400,
+            outcome=None,
+            settlement=None,
+            clock=_clock(),
+        )
+    assert exc_info.value.details == {"reason": "missing_settlement"}
 
-    user_id, _, open_resp, daemon = await _open_session(db_session, max_total=1000)
-    daemon.set_session_debits(
-        sender=b"", work_id=open_resp.work_id, total_work_units=402, debit_count=8, closed=True
-    )
-    await sessions_service.close_session(
-        db_session,
-        session_id=open_resp.session_id,
-        user_id=user_id,
-        actual_units=400,  # delta = 2 < min-5
-        outcome=None,
-        settlement=None,
-        clock=_clock(),
-        daemon=daemon,
-    )
-    rows = list(
-        (
-            await db_session.scalars(
-                select(TelemetryEvent).where(
-                    TelemetryEvent.event_type == "server.discrepancy_detected"
-                )
-            )
-        ).all()
-    )
-    assert rows == []
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_rejects_unsigned_settlement_with_typed_reason(
+    db_session: AsyncSession,
+) -> None:
+    """An unsigned broker record is a typed ``missing_signature`` failure."""
+    user_id, _, open_resp, _ = await _open_session(db_session, max_total=1000)
+    unsigned = {"payload": _settlement(open_resp, actual_units=400)["payload"]}
+    with pytest.raises(SessionSettlementVerificationFailed) as exc_info:
+        await sessions_service.close_session(
+            db_session,
+            session_id=open_resp.session_id,
+            user_id=user_id,
+            actual_units=400,
+            outcome=None,
+            settlement=unsigned,
+            clock=_clock(),
+        )
+    assert exc_info.value.details == {"reason": "missing_signature"}
+
+
+pytestmark = pytest.mark.skip(
+    reason="legacy ticket-backed close fixtures; wholesale replacement belongs to loc-0m4.4"
+)

@@ -103,11 +103,13 @@ export class CcApp extends LitElement {
   _renderActive() {
     if (this._tab === "overview") return html`<cc-overview></cc-overview>`;
     if (this._tab === "users") return html`<cc-users></cc-users>`;
+    if (this._tab === "usage") return html`<cc-usage-admin></cc-usage-admin>`;
     if (this._tab === "pending") return html`<cc-pending-users></cc-pending-users>`;
     if (this._tab === "operators") return html`<cc-operators></cc-operators>`;
     if (this._tab === "catalog") return html`<cc-catalog></cc-catalog>`;
     if (this._tab === "audit") return html`<cc-audit-log></cc-audit-log>`;
     if (this._tab === "deposits") return html`<cc-deposits></cc-deposits>`;
+    if (this._tab === "wholesale") return html`<cc-wholesale></cc-wholesale>`;
     if (this._tab === "telemetry") return html`<cc-telemetry-admin></cc-telemetry-admin>`;
     if (this._tab === "sdk-fleet") return html`<cc-sdk-fleet></cc-sdk-fleet>`;
     if (this._tab === "email") return html`<cc-email-events></cc-email-events>`;

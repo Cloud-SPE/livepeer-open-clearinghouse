@@ -3,6 +3,7 @@ package openclearinghouse_test
 import (
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -54,6 +55,9 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	brokerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Livepeer-Work-Units", "42")
+		w.Header().Set("Livepeer-Work-Unit", "token")
+		w.Header().Set("Livepeer-Job-Id", "broker-job-1")
+		w.Header().Set("Livepeer-Settlement", encodedTestSettlement)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	t.Cleanup(brokerSrv.Close)
@@ -62,15 +66,19 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_id":             "00000000-0000-0000-0000-000000000abc",
-			"work_id":            "wid",
-			"broker_url":         brokerSrv.URL,
-			"mode":               "http-reqresp@v0",
-			"payment_envelope":   "BASE64",
-			"expected_value_wei": 100000,
-			"funded_value_wei":   100000,
-			"settle_endpoint":    "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
-			"opened_at":          "2026-05-25T00:00:00Z",
+			"job_id":              "00000000-0000-0000-0000-000000000abc",
+			"request_id":          "broker-request-1",
+			"work_id":             "wid",
+			"broker_url":          brokerSrv.URL,
+			"protocol":            "paid-job/v1",
+			"transport":           "unary",
+			"work_unit":           "token",
+			"spend_authorization": base64.StdEncoding.EncodeToString([]byte("authorization")),
+			"accounting_mode":     "wholesale_account",
+			"expected_value_wei":  "100000",
+			"funded_value_wei":    "100000",
+			"settle_endpoint":     "/v1/jobs/00000000-0000-0000-0000-000000000abc/settle",
+			"opened_at":           "2026-05-25T00:00:00Z",
 		})
 	})
 	mux.HandleFunc("/v1/jobs/00000000-0000-0000-0000-000000000abc/settle", func(w http.ResponseWriter, r *http.Request) {
@@ -82,8 +90,8 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 			"job_id":           "00000000-0000-0000-0000-000000000abc",
 			"work_id":          "wid",
 			"actual_units":     au,
-			"billed_value_wei": 0,
-			"refund_wei":       100000,
+			"billed_value_wei": "0",
+			"refund_wei":       "100000",
 			"outcome":          "OVERFUNDED",
 			"closed_at":        "2026-05-25T00:00:30Z",
 			"cap_status":       map[string]any{"session_pct_used": 0, "will_refuse_next_refill": false},
@@ -106,12 +114,12 @@ func TestTelemetryFlushOnSubmitJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.SubmitJob(context.Background(), loc.SubmitJobInput{
+	_, err = client.SubmitJob(context.Background(), callerProofInput(loc.SubmitJobInput{
 		Capability:     "x",
 		Offering:       "y",
 		EstimatedUnits: 100,
 		Body:           []byte(`{"hello":"world"}`),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,4 +231,126 @@ func TestTelemetryBufferOverflowDropsOldest(t *testing.T) {
 	// noisy; just confirm the API works with a manual emitter.
 	_ = tem
 	client.Close(context.Background())
+}
+
+// Pinned with:
+//
+//	python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL,'loc-test-chat-abc'))"
+//
+// so the Python, TypeScript, Go and Rust SDKs derive the same id for the
+// same request id.
+const pinnedChatCorrelationID = "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6"
+
+func TestTelemetryCorrelationID(t *testing.T) {
+	t.Parallel()
+	t.Run("uuid passes through lowercased", func(t *testing.T) {
+		t.Parallel()
+		for _, in := range []string{
+			"11111111-2222-3333-4444-555555555555",
+			"6BA7B811-9DAD-11D1-80B4-00C04FD430C8",
+			"ab6ae49d-69c6-579d-8f36-8b7eaeed58a6",
+			"00000000-0000-0000-0000-000000000000",
+		} {
+			if got := loc.TelemetryCorrelationID(in); got != strings.ToLower(in) {
+				t.Errorf("%q -> %q; want lowercased pass-through", in, got)
+			}
+		}
+	})
+	t.Run("non-uuid maps to pinned uuid5", func(t *testing.T) {
+		t.Parallel()
+		first := loc.TelemetryCorrelationID("loc-test-chat-abc")
+		if first != pinnedChatCorrelationID {
+			t.Fatalf("got %q; want %q", first, pinnedChatCorrelationID)
+		}
+		for i := 0; i < 3; i++ {
+			if again := loc.TelemetryCorrelationID("loc-test-chat-abc"); again != first {
+				t.Fatalf("not deterministic: %q vs %q", again, first)
+			}
+		}
+		if loc.TelemetryCorrelationID("loc-test-chat-abd") == first {
+			t.Fatal("different inputs collided")
+		}
+	})
+	t.Run("near-misses are not treated as uuids", func(t *testing.T) {
+		t.Parallel()
+		for _, in := range []string{
+			"11111111-2222-3333-4444-55555555555",   // too short
+			"11111111-2222-3333-4444-5555555555555", // too long
+			"11111111222233334444555555555555",      // no hyphens
+			"1111111g-2222-3333-4444-555555555555",  // non-hex
+			"{11111111-2222-3333-4444-555555555555}",
+		} {
+			got := loc.TelemetryCorrelationID(in)
+			if got == strings.ToLower(in) {
+				t.Errorf("%q passed through; want uuid5 derivation", in)
+			}
+			if len(got) != 36 || got[14] != '5' {
+				t.Errorf("%q -> %q; want a v5 uuid", in, got)
+			}
+		}
+	})
+}
+
+// TestTelemetryEmitSendsUUIDCorrelationID checks the wire: an arbitrary
+// request id given as CorrelationID reaches the gateway as a UUID.
+func TestTelemetryEmitSendsUUIDCorrelationID(t *testing.T) {
+	srv, batches, mu := captureServer(t)
+	client, err := loc.NewClient(loc.Options{BaseURL: srv.URL, APIKey: "pymth_live_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Telemetry().Emit(loc.EmitTelemetryOptions{
+		EventType:     "session.refill_denied", // critical -> immediate flush
+		CorrelationID: "loc-test-chat-abc",
+	})
+	client.Close(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	var got string
+	for _, b := range *batches {
+		events, _ := b["events"].([]any)
+		for _, e := range events {
+			m, _ := e.(map[string]any)
+			if cid, ok := m["correlation_id"].(string); ok {
+				got = cid
+			}
+		}
+	}
+	if got != pinnedChatCorrelationID {
+		t.Fatalf("wire correlation_id = %q; want %q", got, pinnedChatCorrelationID)
+	}
+}
+
+// TestTelemetryEmitNilPayloadEncodesAsObject checks the wire: an Emit
+// without a Payload must send "payload":{} — the gateway schema requires
+// an object and rejects the whole batch on null.
+func TestTelemetryEmitNilPayloadEncodesAsObject(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		raw []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		raw = append(raw, buf...)
+		mu.Unlock()
+		w.WriteHeader(202)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := loc.NewClient(loc.Options{BaseURL: srv.URL, APIKey: "pymth_live_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Telemetry().Emit(loc.EmitTelemetryOptions{EventType: "session.closed"}) // critical -> flush; no Payload
+	client.Close(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(string(raw), `"payload":null`) {
+		t.Fatalf("payload encoded as null: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"payload":{}`) {
+		t.Fatalf(`expected "payload":{} on the wire, got %s`, raw)
+	}
 }

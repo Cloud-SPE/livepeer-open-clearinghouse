@@ -5,27 +5,34 @@ sessions work in Livepeer Open Clearinghouse since the
 exec-plan-002 rewrite. Companion to:
 
 - The design doc:
-  [`docs/exec-plans/active/002-long-running-sessions.md`](exec-plans/active/002-long-running-sessions.md)
+  [`docs/exec-plans/completed/002-long-running-sessions.md`](exec-plans/completed/002-long-running-sessions.md)
 - The architecture overview: [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - The reliability + state machines: [`docs/RELIABILITY.md`](RELIABILITY.md)
+
+> **Current protocol reference:** The only supported job/session contract uses
+> LOC-issued scoped authorizations. Tickets fund bounded shortfall in LOC's shared
+> payer-payee account, the caller carries a separate single-purpose
+> authorization, session maxima are cumulative caps, and SDK reporting is a
+> fast path rather than a correctness dependency. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
 
 ---
 
 ## 1. What handoff mode is
 
-LOC is the **control plane**: it authorizes the customer, mints
-payment envelopes, encumbers worst-case spend against the user
-balance, accepts settle reports, and runs reconciliation.
+LOC is the **control plane**: it authorizes the customer, locks the route,
+issues a single-purpose authorization, encumbers worst-case retail spend
+against the user balance, and runs independent reconciliation.
 
 LOC is **not** in the data plane: the customer's SDK talks to the
-orchestrator-side broker directly using the minted envelope as the
-`Livepeer-Payment` header.
+orchestrator-side broker directly using `Livepeer-Authorization` and a
+`Livepeer-Caller-Proof` over that authorization.
 
 This is the central operational fact. It changes the blast radius
 of an LOC outage from "every active session dies" to "no new
-mints; existing work continues." It also means **the SDK is
-load-bearing for refills, settlement reporting, and graceful
-close** — see §5.
+authorizations; existing authorized work continues." SDK callbacks are a fast
+path, never an accounting-correctness dependency; LOC reconciles durable
+broker-signed status by its request/session ID.
 
 ---
 
@@ -33,6 +40,7 @@ close** — see §5.
 
 | Path | Use |
 |---|---|
+| `GET  /v1/routes` | Select a route and obtain its stable `route_binding` and complete `route_snapshot` |
 | `POST /v1/jobs` | Open a one-shot job (cases a/b/c — atomic, post-settled, streaming) |
 | `POST /v1/jobs/{id}/settle` | Report actual_units; reconcile billing |
 | `POST /v1/sessions` | Open a long-running session (case d) |
@@ -46,6 +54,36 @@ The customer SDK (`OpenClearinghouseClient.submit_job`,
 `open_session`, etc.) wraps these. Direct HTTP is supported for
 non-Python languages without an official SDK; see the OpenAPI doc
 at `/openapi.json`.
+
+### Caller-stable route selection
+
+A gateway that separates discovery from payment open sends the
+`route_binding` returned by `GET /v1/routes` on `POST /v1/jobs` or
+`POST /v1/sessions`. The binding contains only the signed quote identity and
+route/constraint fingerprints. LOC resolves all matching candidates through
+the registry and requires an exact binding match before it mints. A stale or
+unknown binding returns `409 route_binding_mismatch` without charging or
+minting.
+
+LOC never trusts a caller-supplied broker URL, price, descriptor, estimator, or
+settlement key. Those values come from the registry's verified route and are
+returned as an immutable `route_snapshot`. The snapshot includes the selected
+protocol axes, declared transports or session descriptor, work unit and
+estimator, pricing denominator, quote identity and fingerprints, settlement
+delegation, broker URL, and signed offering metadata. The same snapshot is
+persisted with the payment session and returned by every idempotent replay.
+
+Every snapshot carries `schema_version: "route-snapshot/v1"`. Registry
+`uint64` values are encoded as canonical decimal strings at the JSON boundary
+(`units_per_price`, `quote_version`, and settlement-key publication sequence).
+Gateways must keep them as strings in JavaScript/TypeScript; converting them to
+`number` can lose route identity above `Number.MAX_SAFE_INTEGER`. LOC parses
+them back to bounded integers only for internal arithmetic and rejects
+non-canonical or out-of-range values.
+
+`route_binding` is part of the open request's idempotency fingerprint. Reusing
+an `Idempotency-Key` with a different binding returns
+`409 request_id_reuse`; replay never silently selects a new route.
 
 ---
 
@@ -86,26 +124,24 @@ calculations changed. The encumbered value is released at close as
 
 ## 4. Refill policy (case d)
 
-For long-running sessions, LOC's refill behavior depends on the
-session's *mode* (declared by the offering's
-`interaction_mode` in the registry):
+For long-running sessions, LOC requires `paid-session/v1` and persists the
+offering's declared session axes at open. Refill behavior comes only from
+`session.refill`:
 
-- **`ws-realtime@v0`** — bounded. NO refill is possible. The
-  initial mint funds the whole session; broker closes when balance
-  hits zero. SDK fires `on_winddown_warning` when
-  `Livepeer-Balance-Low` arrives, but cannot extend. Size
-  `max_total_units` for the full session duration up front.
-- **`session-control-plus-media@v0`** — extensible. SDK delivers
-  the LOC-minted top-up via a `session.topup` JSON frame on the
-  control WS.
-- **`live-session-remote-runner@v0` / `live-session-gateway-ingest@v0`** —
-  extensible. SDK delivers via `POST {control.topup_url}` to the
-  broker (URL captured at session open).
-- **`rtmp-ingress-hls-egress@v0`** — extensible. SDK delivers via
-  the control WS (mirrors session-control-plus-media).
+- **`bounded`** — LOC never mints a refill. Size `max_total_units` for the
+  complete session and drain when the broker advertises exhaustion.
+- **`extensible`** — the SDK requests a successor authorization from LOC and submits it
+  to the broker's authoritative HTTP `topup_url`. A control WebSocket may
+  mirror state, but is not a separate delivery contract.
 
 The SDK's `SessionRunner` (per language) handles the refill loop
-automatically for extensible modes — see §5.
+automatically for extensible offerings — see §5.
+
+The broker's open operation is idempotent. After an SDK process restart, the
+runner repeats the same `POST /v1/session` with the original
+`Livepeer-Request-Id`; the recorded response supplies a usable credential and
+the current status, top-up, and end URLs. LOC does not persist broker
+credentials or enter the broker control path.
 
 ### Refill refusal
 
@@ -121,37 +157,46 @@ When LOC refuses a refill (cap_reached or daemon failure):
 - Session exits with `outcome: "cap_reached"` once the broker
   closes
 
+### Authorization revision
+
+An extensible session refill issues a successor authorization whose
+`predecessor_authorization_id` names the current grant and whose maximum is the
+new cumulative cap. The broker atomically admits the successor before making
+it current. A refused revision remains pending for an exact retry; LOC does not
+mint a replacement ticket-session identity or perform ticket-session rebinds.
+
 ---
 
 ## 5. SDK criticality
 
-Because LOC isn't in the data path, the SDK is **part of the
-platform**. It's responsible for:
+Because LOC isn't in the data path, the SDK is **part of the platform under
+the current protocol**. It's responsible for:
 
-1. **Refill loop** (case d-extensible): subscribing to
-   `Livepeer-Balance-Low` from the broker, calling LOC's refill
-   endpoint, delivering the returned envelope back to the broker
-   via the mode-specific channel.
+1. **Refill loop** (an offering with `session.refill=extensible`): consuming
+   the normative `balance` object from broker status/top-up responses or the
+   optional events WebSocket, calling LOC's refill endpoint, and delivering
+   the returned authorization through the authoritative HTTP top-up URL. The SDK
+   reuses the same request ID across both hops until delivery succeeds.
 2. **Settle reporting** (cases a/b/c): reading
    `Livepeer-Work-Units` from the broker response, posting to
    LOC's settle endpoint.
-3. **Graceful close** on disconnect / shutdown / cap-refusal.
+3. **Graceful close** on shutdown or cap-refusal. An optional events WebSocket
+   disconnect is not, by itself, authoritative session termination.
 4. **Identity reporting** via the
    `Livepeer-Open-Clearinghouse-SDK: <lang>/<semver>/<git_sha7>`
    header on every LOC request.
 
 The official SDKs (`sdks/python`, `sdks/typescript`,
 `sdks/go`, `sdks/rust`) implement all of this. Custom
-SDKs are tolerated for languages we don't ship but unsupported —
-LOC's reconciliation janitor + daemon ledger compensate for
-buggy/missing SDK behavior so the operator isn't left with
-incorrect bills, but SLA / support tickets only honor official
-SDK use.
+SDKs are tolerated for languages we don't ship but unsupported.
+Every SDK must forward the broker-signed terminal settlement; LOC
+fails closed if the envelope is missing, invalid, replayed, forked,
+or inconsistent with its pinned route and session state.
 
-The trust model (see design doc § "Trust model"): payer-daemon
-`GetSessionDebits` is authoritative. SDK self-reports are
-convenience for the synchronous path; the janitor cross-checks
-out-of-band and corrects discrepancies.
+The trust model (see design doc § "Trust model"): the broker-signed
+`paid-session/v1` settlement chain is authoritative. SDK fields are
+only consistency assertions. LOC does not use payer-daemon debit
+polling for final accounting.
 
 ---
 
@@ -198,31 +243,27 @@ conformance".
 
 ## 7. Operator incident playbook: SDK discrepancy spike
 
-**Symptom**: admin SPA's discrepancy-leaderboard view shows a
-single API key (or a small cluster) with rising
-`discrepancy_count` over the last hour.
+**Symptom**: session close returns
+`settlement_verification_failed`.
 
 **Triage steps**:
 
-1. Pull the recent `server.discrepancy_detected` events for that
-   API key:
-   ```
-   SELECT * FROM payment_settlement
-   WHERE raw_record->>'reconciled_by' = 'janitor'
-     AND created_at > now() - interval '1 hour'
-     AND session_id IN (
-       SELECT id FROM payment_session WHERE api_key_id = '<key>'
-     );
-   ```
-2. Check the SDK identity for the API key (admin SPA → user
-   detail → recent sessions). If it's a known-good version, the
-   issue is likely upstream (broker debiting more than the SDK
-   expected).
-3. If SDK version is stale, contact the customer to upgrade.
-4. If SDK version is current AND discrepancies are consistent,
-   investigate the broker — call `GetSessionDebits` directly to
-   confirm the daemon ledger is the right number, then check
-   payee-side `payment-daemon` logs for the affected work_ids.
+1. Inspect the failure reason and the stored route snapshot's
+   delegated settlement keys.
+2. Compare the signed `gateway_session_id`, `session_id`, current and
+   predecessor `work_id`, rotation generation, price, unit, and
+   `settlement_seq` with the durable LOC session.
+3. If the SDK omitted or malformed `Livepeer-Settlement`, require an
+   SDK upgrade. If the signature or signed fields disagree, preserve
+   the envelope and investigate the broker; do not finalize manually.
+
+If the SDK disappears before close, LOC's slow reconciliation job queries
+`GET /v1/settlement/{gateway_session_id}` at the pinned broker URL. It never
+queries by `work_id`, because multiple logical sessions may share that payment
+identity. A terminal envelope passes the same signature, identity, rotation,
+price, unit, cap, and sequence checks as an SDK-forwarded close before LOC
+releases any encumbrance. Missing, active, malformed, or mismatched records
+leave the session open and fail closed financially.
 
 **Self-protection**: per design Q#3, the LOC-side encumbrance is
 worst-case at session open. Customers can never be billed more
@@ -241,18 +282,49 @@ The customer-facing onboarding doc should make clear:
 > protocol — minting envelopes, calling brokers, reporting
 > settlements, refilling sessions — depends on SDK behavior that
 > custom clients are likely to get wrong (HTTP trailer reading,
-> mode-specific topup delivery, balance-low handling, graceful
+> protocol top-up delivery, balance handling, graceful
 > close).
 >
-> Custom clients are tolerated — the gateway's reconciliation
-> janitor + daemon ledger ensure you'll never be billed
-> incorrectly — but you forfeit SLA-grade support: incident
+> Custom clients are tolerated, but every close must forward the
+> broker-signed terminal settlement and invalid evidence fails closed.
+> You also forfeit SLA-grade support: incident
 > response, latency guarantees, and the published broker quality
 > scores all assume an official SDK is in use.
 >
 > If you need a language we don't ship, the OpenAPI document at
 > `/openapi.json` is the authoritative wire contract. Use it +
 > the SDK source as your reference implementation.
+
+This support policy does not make the SDK an accounting principal. With the
+account/authorization protocol, raw HTTP remains supported and LOC must
+recover authoritative broker state by its own request/session ID even when no
+SDK callback arrives.
+
+### Raw HTTP parity for wholesale accounts
+
+Raw callers follow the same versioned flow as the official SDKs. They must
+serialize the workload body once, retain those exact bytes, and send its
+lowercase SHA-256 digest plus their compressed secp256k1 public key when they
+open the LOC job. LOC returns `accounting_mode: wholesale_account`; the caller
+signs the opaque decoded `spend_authorization` according to the
+published Modules contract and sends the original body bytes with
+`Livepeer-Authorization` and `Livepeer-Caller-Proof` to the returned broker.
+The caller must not decode, reconstruct, or canonicalize the authorization.
+
+Sessions add one step because their LOC-issued ID is part of the broker-open
+body. Call `POST /v1/sessions/prepare`, construct and retain the exact
+`{"gateway_session_id": ..., "session_params": ...}` bytes, then call
+`POST /v1/sessions` with the preparation token, returned route binding, body
+digest, and caller public key. Send those retained bytes and the two
+authorization headers to the locked broker. A route change starts a new
+preparation and authorization; it never reuses the old proof.
+
+The OpenAPI document is authoritative for LOC request and response fields.
+The Modules protocol specification is authoritative for caller-proof signing
+and broker headers. LOC has no legacy payment-envelope mode: an unknown paid
+protocol or incomplete authorization response fails closed. Settlement
+callbacks remain a latency optimization: LOC reconciles from durable broker
+status by its issued request or session ID.
 
 This text is suitable for inclusion in customer-facing onboarding
 emails, the portal first-login flow, and the API docs landing
@@ -268,8 +340,8 @@ If you're integrating against an old version of LOC that exposes
 
 | Old | New | Notes |
 |---|---|---|
-| `POST /v1/payments/mint` | `POST /v1/jobs` | New endpoint mints + tells you the broker URL in one call |
-| (call broker yourself with `Livepeer-Payment` header) | (call broker yourself with `Livepeer-Payment` header) | Identical pattern — the SDK still drives the broker call |
+| `POST /v1/payments/mint` | `POST /v1/jobs` | Locks a wholesale-capable route and returns a scoped authorization |
+| (call broker yourself with `Livepeer-Payment` header) | (call broker with `Livepeer-Authorization` + `Livepeer-Caller-Proof`) | Caller proof binds authorization to the exact workload bytes |
 | `POST /v1/usage/report` | `POST /v1/jobs/{job_id}/settle` | New endpoint takes `actual_units` (was `actual_work_units`) and returns `cap_status` |
 | (no equivalent — legacy didn't support refills) | `POST /v1/sessions` + `/refill` + `/close` | Long-running sessions are a new first-class concept |
 
@@ -309,9 +381,8 @@ case-(d) workloads.
 ## 10. Pointers + further reading
 
 - Design doc + decision log:
-  [`docs/exec-plans/active/002-long-running-sessions.md`](exec-plans/active/002-long-running-sessions.md)
-- Mode reference (upstream): the four "Case (d) modes" sub-table
-  in the design doc § Q#1
+  [`docs/exec-plans/completed/002-long-running-sessions.md`](exec-plans/completed/002-long-running-sessions.md)
+- Protocol references: upstream `paid-job/v1` and `paid-session/v1`
 - Upstream protocol repo:
   [`livepeer-cloud-spe/livepeer-network-modules`](https://github.com/Cloud-SPE/livepeer-network-modules)
 - Per-SDK README: `sdks/{python,typescript,go,rust}/README.md`

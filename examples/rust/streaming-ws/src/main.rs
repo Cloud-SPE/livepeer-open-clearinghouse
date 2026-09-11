@@ -1,4 +1,4 @@
-//! Streaming session with WS topup (session-control-plus-media@v0).
+//! paid-session/v1 session with an optional broker events WebSocket.
 //!
 //! ```bash
 //! OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
@@ -30,19 +30,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open_session(OpenSessionInput {
             capability: "livepeer:live-video-control",
             offering: "session-control-plus-media",
+            descriptor_schema: "livepeer.session.video-control/v1",
+            session_params: serde_json::json!({}),
             estimated_runway_units: 1000,
             max_total_units: 10000,
+            request_id: None,
         })
         .await?;
-    println!("session opened: {} (mode={})", handle.session_id, handle.mode);
+    println!(
+        "session opened: {} (protocol={})",
+        handle.session_id, handle.protocol
+    );
 
     let mut opts = SessionRunnerOptions::new(client, handle);
     opts.on_refill_succeeded = Some(Arc::new(|e: RefillEvent| {
         Box::pin(async move {
-            println!(
-                "refill {:?}: +{:?} wei",
-                e.refill_seq, e.funded_value_wei
-            );
+            println!("refill {:?}: +{:?} wei", e.refill_seq, e.funded_value_wei);
         })
     }));
     opts.on_refill_refused = Some(Arc::new(|e: RefillEvent| {

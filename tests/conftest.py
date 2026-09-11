@@ -19,6 +19,7 @@ def test_settings() -> Settings:
     lifespan, which would otherwise require a live Postgres.
     """
     return Settings(
+        _env_file=None,
         app_env="dev",
         database_url="postgresql+asyncpg://test:test@localhost:5432/test",
         admin_bootstrap_token=None,

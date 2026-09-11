@@ -3,6 +3,12 @@
 The reliability principles for Livepeer Open Clearinghouse. Read this before changing
 anything in `domains/billing`, `domains/payments`, or `domains/usage`.
 
+> **Version boundary:** LOC admits new work only through the wholesale-account
+> contract in
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+> Legacy rows may remain as closed audit history, but no legacy issuance,
+> refill, or route fallback is supported.
+
 ## The principle
 
 **Under-billing is a liability. Over-billing is recoverable.** Every design
@@ -23,6 +29,11 @@ Return an error rather than serve work whenever:
 - The user's `funded_value_wei` would exceed available balance.
 - A usage record cannot be written idempotently.
 
+Fail closed also when any selected
+peer cannot prove support for the complete account, single-purpose
+authorization, atomic reservation, and durable-status semantics. A partial
+feature match is not a compatibility mode.
+
 For app-dev-facing failures, the canonical response is `402 Payment
 Required` with a structured error body:
 
@@ -38,33 +49,150 @@ Required` with a structured error body:
 
 Other error codes: `SPEND_CAP_EXCEEDED`, `ACCOUNT_NOT_APPROVED`,
 `API_KEY_REVOKED`, `DAEMON_UNAVAILABLE`, `RESERVATION_NOT_FOUND`,
-`DUPLICATE_REQUEST` (for idempotency violations).
+`IDEMPOTENCY_KEY_REUSE`, `IDEMPOTENCY_IN_PROGRESS`, and
+`IDEMPOTENCY_OUTCOME_UNKNOWN`.
 
 ## Idempotency
 
-### Ticket-mint requests
+### Job creation, session creation, and session refills
 
-`POST /v1/payments/mint` accepts an `Idempotency-Key` header. Livepeer Open Clearinghouse:
+`POST /v1/jobs`, `POST /v1/sessions`, and
+`POST /v1/sessions/{id}/refill` require an `Idempotency-Key` header.
+Keys are scoped by account and endpoint operation, not by API key, so changing
+credentials does not weaken replay protection. LOC stores a canonical request
+fingerprint; reusing a key with different content returns
+`IDEMPOTENCY_KEY_REUSE`.
 
-1. Looks up `(api_key_id, idempotency_key)` in a short-lived index.
-2. If present and the prior request completed: returns the prior response,
-   does not call `CreatePayment` again, does not decrement again.
-3. If present and the prior request is in-flight: returns `409` with
-   `IN_PROGRESS` so the client retries later.
-4. If absent: records the key with `status=in_flight`, processes the
-   request, then writes `status=completed` with the response payload.
+Before calling `CreatePayment`, LOC commits an `in_flight` claim with a stable
+`request_id`. A completed response or deterministic failure is retained for 24
+hours and replayed exactly without another mint or balance mutation. A concurrent
+identical request returns `IDEMPOTENCY_IN_PROGRESS`.
 
-The DB write is the source of truth. If the daemon call succeeds but the
-DB write of `status=completed` fails, the next replay of the same
-idempotency key blocks until the in-flight record times out (configurable;
-default 60s). This is a deliberate "fail closed" trade-off — better to
-delay than to double-charge.
+When an open carries a `route_binding`, that binding is part of the canonical
+request fingerprint. LOC resolves it against the registry's authoritative
+`SelectMany` result before minting and returns `route_binding_mismatch` if the
+signed candidate no longer exists. LOC persists and replays the resulting full
+route snapshot; an idempotent replay never re-runs route selection. Changing
+the binding under the same key is request reuse, not failover.
+
+LOC derives a stable payer `mint_request_id` from the durable request claim, so
+an ordinary lost response can replay the daemon's recorded result. After the
+in-flight timeout, LOC atomically reclaims the existing claim and retries only
+that same mint ID; it never invents a replacement mint identity during
+recovery. Concurrent recovery attempts therefore still have one winner.
+
+The payer reserves a mint ID durably before signing and serializes calls sharing
+that ID. A completed mint replays its exact response, allowing LOC to finish
+the original business transaction once after a crash or lost daemon response.
+If the payer crashed after reservation but before recording a response, it
+returns `FAILED_PRECONDITION` instead of signing again. LOC records that as the
+stable terminal `IDEMPOTENCY_OUTCOME_UNKNOWN` result and tells the customer to
+start a new intent with a new `Idempotency-Key`. This is deliberately
+fail-closed: an unavailable response costs a new intent; guessing on a possibly
+signed ticket risks paying twice. LOC retains outcome-unknown claims as
+permanent tombstones rather than deleting them with ordinary terminal replay
+records, so the old customer key can never silently become a fresh mint.
+
+A refill uses the same durable key across both mutable hops. LOC returns its
+stable `request_id` with the payment envelope; the SDK sends that value as the
+broker's required `Livepeer-Request-Id`. An LOC retry therefore replays one
+payer mint, and a broker retry replays one credit and lease extension. A new
+refill intent gets a new key; transport retries of that intent do not.
+
+For paid jobs, `max_total_units` is only the caller's pre-execution funding
+ceiling. LOC reserves `bill(max_total_units)` and does not treat the estimate
+as evidence of delivered work. Terminal accounting comes exclusively from the
+broker-signed settlement. LOC verifies its unit against the route snapshot and
+rejects signed units or billed value above the persisted ceiling; otherwise it
+bills the signed actual amount and releases the unused reservation. LOC never
+parses workload media to determine usage.
+
+### Jobs that never reach broker admission
+
+Once LOC returns a signed payment envelope, it cannot revoke it. The broker or
+another holder may submit a winning ticket at any point in its chain validity
+window, and neither a caller assertion, a broker refusal, nor a payee non-use
+attestation proves otherwise. Ticket validity is governance mutable and the
+contract evaluates the current value at redemption, so a mint-time
+`expires_after_round` is telemetry rather than permanent retirement proof.
+Governance can extend or revive an issued envelope. LOC therefore never
+automatically refunds, releases on expiry, or attempts re-encumbrance.
+
+Before applying a conservative full charge, LOC polls the snapshotted broker's
+`GET /v1/exchange/{request_id}` using the request ID LOC created. `IN_FLIGHT`
+and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence;
+after that silence LOC directly requests an attributable record from
+`POST /v1/non-admission/{request_id}` using scope from its immutable route and
+payment records. LOC verifies the signature, delegated key, request/work/payment
+identities, full quote reference, broker identity, observation time, and record
+coverage before retaining `NOT_ADMITTED` as append-only audit evidence. Invalid
+or unverifiable evidence remains unresolved. `ADMITTED_OUTCOME_UNKNOWN` and
+`ADMITTED_EVIDENCE_EXPIRED` both prove admission without usable settlement
+evidence. None authorizes a refund or an accounting mutation.
+
+Only `SETTLED` carrying an original signed settlement can close the job
+accurately. LOC ignores unsigned response hints and verifies the signed request
+ID, broker job ID, work ID, work unit, unit totals, quote identity, billing
+curve, signature, and snapshotted delegation before changing financial state.
+A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
+
+If no valid signed settlement is recoverable by the configured operational
+deadline, LOC may finalize a distinct `conservative_full_charge`. That outcome
+must never be represented as broker-settled usage, a successful network debit,
+or fabricated work units. Signed non-admission remains attributable audit and
+dispute evidence, not refund authority. The deadline is configured with
+`JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS`; its safe default is `0` (disabled), so
+operators must select and document a nonzero billing policy deliberately.
+An unreachable broker, timeout, or malformed lookup response is retained as a
+LOC-observed `LOOKUP_FAILED` result: it is not broker evidence, but it also must
+not bypass an operator's configured deadline forever. LOC retries it before the
+deadline and applies the same distinct conservative outcome after the deadline.
+
+Two rules keep the reconciler honest about what it cannot fix. A route
+whose snapshot carries no `settlement_keys` is refused at open
+(`no_settlement_delegation`), because nothing minted against it could ever
+verify. And when a recovered broker record fails verification against the
+immutable snapshot, the reconciler records a `settlement_block` (reason, the
+record's signature, first/last seen) on the row, emits one
+`server.settlement_verification_failed` event, and stops re-verifying that
+record; only a different record, or an operator, changes the outcome.
+
+Long-running sessions use the same evidence rule. The attention view flags an
+open session after two hours without a LOC-recorded successful funding event,
+but elapsed time is only an operational alarm: it does not prove that the
+broker lease ended and never releases a customer hold automatically. The view
+also reports sessions closed in the last 24 hours after at least 60 seconds
+with zero metered units, or any zero-unit session whose signed terminal
+diagnosis is `output_failed`. The broker's signed settlement supplies the safe
+termination reason, output state/timestamp, and failure code; LOC persists and
+exposes those fields without relying on an SDK callback. Older brokers omit
+the diagnosis and retain the duration-based compatibility behavior.
+
+**Operator recourse.** `POST /v1/admin/jobs/{id}/resolve` closes an open job
+or session on an explicit operator decision: `refund_hold` releases the
+encumbrance, `accept_reported` charges the broker-reported units at the
+snapshot price (the fair outcome when the broker did the work but the record
+cannot be verified, e.g. a snapshot pinned before delegation), `charge_full`
+charges the funded value. It writes the same settlement event and encumbrance
+release a verified close would, plus an `operator_audit` row, and is
+idempotent per row. The admin console exposes it on unresolved rows.
+
+There is deliberately no customer-authorized `abandon` endpoint. A broker
+refusal may improve telemetry but cannot release money because a broker that
+received the envelope could retain it and submit it later. Neither chain
+telemetry nor broker assertions retire the exact envelope under the current
+contract. Automatic refund requires immutable ticket validity or a
+per-envelope retirement mechanism.
+
+Refill funding follows the Modules cumulative ceiling curve. For cumulative
+target `U`, `bill(U) = ceil(U × amount_wei / per_units)`; a refill requests
+`bill(U_after) - bill(U_before)`. Rounding each increment independently is a
+billing error because it can overfund by up to one wei per refill.
 
 ### Usage reports
 
-`POST /v1/usage/report` is keyed on `(api_key_id, payment_work_id)`. A
-duplicate report for the same `work_id` is a no-op (returns the first
-report's reconciled state). The first report wins.
+There is no customer usage-report endpoint. Usage is derived from settled
+`payment_session` rows (see `docs/product-specs/006-usage-visibility.md`).
 
 ## State machines
 
@@ -156,11 +284,16 @@ replenish job become the two hot spots that need attention.
 Return `503 SERVICE_UNAVAILABLE` to the caller. Do not charge. Do not record
 a payment row.
 
-### `payment-daemon.CreatePayment` returns an error
+### Broker rejects a session top-up
 
-If the error is `INVALID_RECIPIENT_RAND` (session rotation), retry once
-with a fresh `Select` call. If the second attempt also fails, return `503`
-to the caller. Do not charge.
+An extensible refill is a predecessor-bound authorization revision, not a new
+ticket-session generation. The SDK preserves the LOC request ID and successor
+authorization after any non-success response so the same operation can be
+retried exactly. It never requests a recipient rotation or sends a
+ticket-session rebind header. Bounded offerings refuse revisions and drain
+their existing authorized runway.
+
+### `payment-daemon.CreatePayment` returns an error
 
 If the error is sender-validation-related (deposit zero, withdraw round
 imminent), return `503 DAEMON_DEPOSIT_INSUFFICIENT` to the caller. This is

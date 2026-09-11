@@ -66,6 +66,15 @@ the relevant fields through unchanged.
 ### `SelectMany(capability, offering, …) → []SelectedRoute`
 
 Same filter as `Select` but returns all payment-ready routes for failover.
+LOC also uses this call to verify a caller-stable `route_binding`: quote ID,
+quote version, constraint fingerprint, and route fingerprint must all match one
+authoritative candidate. LOC then snapshots that candidate; it does not accept
+caller-supplied pricing, broker URL, protocol axes, or settlement delegation.
+
+The gRPC `uint64` values remain integers internally, but LOC's HTTP/OpenAPI
+surface serializes them as canonical decimal strings so JavaScript gateways
+cannot truncate a quote or pricing denominator. Route snapshots identify their
+wire shape with `schema_version: "route-snapshot/v1"`.
 
 ### `ResolveByAddress(eth_address, allow_legacy_fallback, allow_unsigned, force_refresh) → ResolveResult`
 
@@ -157,7 +166,7 @@ schema_version: string
 |---|---|---|
 | `--mode=resolver` | — | daemon mode |
 | `--socket` | `/var/run/livepeer-service-registry.sock` | UDS path |
-| `--chain-rpc` | — | Ethereum JSON-RPC; required for chain discovery |
+| `--chain-rpc-urls` | — | Comma-separated Ethereum JSON-RPC endpoints, primary first; required for chain discovery |
 | `--chain-id` | `42161` | sanity-check |
 | `--service-registry-address` | (resolved via Controller) | `ServiceRegistry` contract |
 | `--store-path` | `/var/lib/livepeer/registry-cache.db` | BoltDB cache |

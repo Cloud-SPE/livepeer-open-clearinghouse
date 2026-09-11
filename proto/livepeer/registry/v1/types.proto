@@ -44,6 +44,20 @@ message Capability {
   string             work_unit  = 2;
   repeated Offering  offerings  = 3;
   bytes              extra_json = 4;  // arbitrary JSON, opaque
+
+  // How a client computes a funding ceiling for this capability. Absent
+  // for capabilities whose requests already carry their own ceiling.
+  Estimator work_unit_estimator = 5;
+}
+
+// Signed, registry-projected declaration of the client-side ceiling
+// estimator. LOC relays this contract without interpreting media.
+message Estimator {
+  string id        = 1;
+  string rounding  = 2;
+  string exactness = 3;
+  string package   = 4;
+  string fixtures  = 5;
 }
 
 // Offering is a priced tier under a capability. The id is opaque to the

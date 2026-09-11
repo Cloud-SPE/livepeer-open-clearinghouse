@@ -7,57 +7,82 @@ PR-3 of exec-plan 002 ships the building blocks:
   - ``get_session`` / ``get_session_by_work_id`` retrieve.
   - ``transition_state`` enforces the lifecycle state machine.
   - ``record_settlement`` appends a ``payment_settlement`` event.
-  - ``mark_polled`` updates ``last_polled_at`` for the janitor.
-
-The actual ``POST /v1/sessions`` handler, refill mint flow, and
-janitor task land in subsequent PRs. These helpers are written so
-those callers can compose them without re-implementing the state
-machine or repo queries.
+The HTTP handlers compose these operations without re-implementing
+the state machine or repo queries.
 """
 
 from __future__ import annotations
 
 import base64
-import time
+import hmac
+import json
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
+from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSession,
     PaymentSettlement,
+    SpendAuthorizationGrant,
 )
 from livepeer_open_clearinghouse.domains.sessions.types import (
     CapStatus,
     CloseSessionResponse,
     CreateSessionResponse,
+    PrepareSessionResponse,
     RefillSessionResponse,
+    SessionAxesView,
     SessionStatusResponse,
 )
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
+from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
+from livepeer_open_clearinghouse.domains.wholesale.types import (
+    WholesaleFundingLimits,
+    WholesaleFundingPlan,
+)
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
     NoRouteAvailable,
+    NoSettlementDelegation,
     OpenClearinghouseError,
-    SpendCapExceeded,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerSettlementClient,
+    BrokerSettlementQueryError,
+    BrokerWholesaleAccountClient,
+    BrokerWholesaleAccountError,
+    SpendAuthorizationState,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
-    AcceptedPrice,
-    CreatePaymentRequest,
-    FundingIntent,
+    CreateSpendAuthorizationRequest,
+    CreateSpendAuthorizationResponse,
     PaymentDaemonClient,
-    PaymentDaemonError,
-    QuoteRef,
 )
-from livepeer_open_clearinghouse.providers.registry_daemon import RegistryClient
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    RegistryClient,
+    RouteBinding,
+    RouteSnapshot,
+    SelectedRoute,
+    SessionAxes,
+    select_bound_route,
+)
+from livepeer_open_clearinghouse.providers.settlement_verification import (
+    SessionSettlementExpectation,
+    SettlementVerificationError,
+    VerifiedSessionSettlement,
+    verify_session_settlement,
+)
 from livepeer_open_clearinghouse.settings import Settings
 
 # Valid session lifecycle states. Mirrors the docstring on
@@ -98,29 +123,15 @@ class SessionNotFound(SessionsServiceError):
     code = "session_not_found"
 
 
-class ModeNotDeclared(OpenClearinghouseError):
-    """Offering didn't declare an interaction_mode in its registry extra."""
+class ProtocolNotSupportedForSession(OpenClearinghouseError):
+    """The selected route is not a paid-session/v1 offering."""
 
-    def __init__(self, *, capability: str, offering: str) -> None:
+    def __init__(self, *, protocol: str) -> None:
         super().__init__(
-            code="mode_not_declared",
+            code="protocol_not_supported_for_session",
             message=(
-                f"offering {capability}/{offering} does not declare an "
-                "interaction_mode; cannot open a session"
-            ),
-            status_code=400,
-        )
-
-
-class ModeNotSupportedForSession(OpenClearinghouseError):
-    """Mode is known upstream but isn't a session-open mode (case d)."""
-
-    def __init__(self, *, mode: str) -> None:
-        super().__init__(
-            code="mode_not_supported_for_session",
-            message=(
-                f"mode {mode!r} is not a long-running session mode; use "
-                "POST /v1/jobs for atomic / streaming / multipart workloads"
+                f"protocol {protocol!r} is not accepted by POST /v1/sessions; "
+                "paid jobs use POST /v1/jobs"
             ),
             status_code=400,
         )
@@ -137,16 +148,39 @@ class InvalidSessionRequest(OpenClearinghouseError):
         )
 
 
-class RefillNotSupportedForMode(OpenClearinghouseError):
-    """The session's mode is in the (d-bounded) set — no topup possible."""
+class RouteBindingMismatch(OpenClearinghouseError):
+    """The selected route is no longer an authoritative registry candidate."""
 
-    def __init__(self, *, mode: str) -> None:
+    def __init__(self, *, binding: RouteBinding) -> None:
         super().__init__(
-            code="refill_not_supported_for_mode",
+            code="route_binding_mismatch",
+            message="the selected route binding is unavailable or has changed",
+            status_code=409,
+            details={"route_binding": binding.model_dump(mode="json")},
+        )
+
+
+class SessionSettlementVerificationFailed(OpenClearinghouseError):
+    """A broker claim cannot authorize session accounting."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            code="settlement_verification_failed",
+            message="the signed session settlement could not be verified",
+            status_code=400,
+            details={"reason": reason},
+        )
+
+
+class RefillNotSupported(OpenClearinghouseError):
+    """The offering declared a bounded paid session."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="refill_not_supported",
             message=(
-                f"mode {mode!r} does not support mid-session topup; "
-                "this session is bounded by its initial mint and will "
-                "end when the funded runway is exhausted"
+                "this offering declares session.refill='bounded'; the session "
+                "will end when its funded runway is exhausted"
             ),
             status_code=400,
         )
@@ -179,20 +213,19 @@ class SessionCapReached(OpenClearinghouseError):
         )
 
 
-# Modes that POST /v1/sessions accepts. The http-* modes are
-# single-shot and go through POST /v1/jobs (Phase 2 PR-N).
-SESSION_OPEN_MODES: frozenset[str] = frozenset(
-    {
-        "ws-realtime@v0",
-        "session-control-plus-media@v0",
-        "rtmp-ingress-hls-egress@v0",
-        "live-session-remote-runner@v0",
-        "live-session-gateway-ingest@v0",
-    }
-)
+PAID_SESSION_PROTOCOL = "paid-session/v1"
 
 
 _ETH_ADDRESS_HEX_LEN = 40  # 20 bytes hex-encoded
+
+
+def _bill_value_wei(*, units: int, amount_wei: Decimal, per_units: int) -> Decimal:
+    """Apply Modules v2 cumulative billing: ceil(units x amount / per_units)."""
+
+    if per_units < 1:
+        raise ValueError("per_units must be positive")
+    amount = int(amount_wei)
+    return Decimal((units * amount + per_units - 1) // per_units)
 
 
 def _eth_address_to_bytes(addr: str) -> bytes:
@@ -208,6 +241,151 @@ def _eth_address_to_bytes(addr: str) -> bytes:
     return bytes.fromhex(stripped)
 
 
+async def record_spend_authorization_grant(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    user_id: uuid.UUID,
+    route: SelectedRoute,
+    request: CreateSpendAuthorizationRequest,
+    response: CreateSpendAuthorizationResponse,
+) -> SpendAuthorizationGrant:
+    """Persist a signed grant without retiring any predecessor implicitly."""
+
+    engagement = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if engagement is None or engagement.user_id != user_id:
+        raise SessionNotFound
+    if engagement.accounting_mode != "wholesale_account":
+        raise InvalidSessionRequest(message="legacy engagement cannot record an authorization")
+    if engagement.route_snapshot != route.snapshot():
+        raise InvalidSessionRequest(message="authorization route differs from locked engagement")
+    if response.authorization_id != request.authorization_id:
+        raise InvalidSessionRequest(message="authorization signer changed identity")
+    expected_session_id = str(engagement_id) if request.protocol == PAID_SESSION_PROTOCOL else ""
+    if request.session_id != expected_session_id:
+        raise InvalidSessionRequest(message="authorization session identity changed")
+    if request.revision == 0 and engagement.broker_request_id != request.request_id:
+        raise InvalidSessionRequest(message="authorization request identity changed")
+
+    existing = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == engagement_id,
+            SpendAuthorizationGrant.revision == request.revision,
+        )
+    )
+    if existing is not None:
+        expected = (
+            request.authorization_id,
+            request.predecessor_authorization_id or None,
+            request.request_id,
+            request.request_digest.hex(),
+            request.caller_public_key.hex(),
+            response.authorization_bytes,
+            request.protocol,
+            response.payer.hex(),
+            request.chain_id,
+            request.denomination,
+            request.max_debit_wei,
+            request.max_total_units,
+            request.not_before,
+            request.expires_at,
+        )
+        actual = (
+            existing.authorization_id,
+            existing.predecessor_authorization_id,
+            existing.request_id,
+            existing.request_digest,
+            existing.caller_public_key,
+            existing.authorization_bytes,
+            existing.protocol,
+            existing.payer_eth_address.removeprefix("0x"),
+            existing.chain_id,
+            existing.denomination,
+            existing.max_debit_wei,
+            existing.max_total_units,
+            _normalized_utc(existing.not_before),
+            _normalized_utc(existing.expires_at),
+        )
+        if actual != expected:
+            raise InvalidSessionRequest(message="authorization revision replay changed scope")
+        return existing
+
+    if request.revision > 0:
+        predecessor = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == engagement_id,
+                SpendAuthorizationGrant.authorization_id == request.predecessor_authorization_id,
+            )
+        )
+        if predecessor is None:
+            raise InvalidSessionRequest(message="authorization predecessor is not retained")
+
+    grant = SpendAuthorizationGrant(
+        session_id=engagement_id,
+        authorization_id=request.authorization_id,
+        revision=request.revision,
+        predecessor_authorization_id=request.predecessor_authorization_id or None,
+        request_id=request.request_id,
+        request_digest=request.request_digest.hex(),
+        caller_public_key=request.caller_public_key.hex(),
+        authorization_bytes=response.authorization_bytes,
+        protocol=request.protocol,
+        route_snapshot=route.snapshot(),
+        payer_eth_address="0x" + response.payer.hex(),
+        chain_id=request.chain_id,
+        denomination=request.denomination,
+        max_debit_wei=request.max_debit_wei,
+        max_total_units=request.max_total_units,
+        not_before=request.not_before,
+        expires_at=request.expires_at,
+        state="issued",
+        retired_at=None,
+    )
+    db.add(grant)
+    engagement.authorization_id = request.authorization_id
+    engagement.work_id = request.authorization_id
+    await db.flush()
+    return grant
+
+
+async def mark_spend_authorization_settled(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    authorization_id: str,
+    clock: Clock,
+) -> SpendAuthorizationGrant:
+    """Record terminal broker-signed use without deleting grant history."""
+
+    grant = await db.scalar(
+        select(SpendAuthorizationGrant)
+        .where(
+            SpendAuthorizationGrant.session_id == engagement_id,
+            SpendAuthorizationGrant.authorization_id == authorization_id,
+        )
+        .with_for_update()
+    )
+    if grant is None:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    if grant.state not in {"issued", "admitted", "settled"}:
+        raise SessionSettlementVerificationFailed(reason="authorization_state_conflict")
+    grant.state = "settled"
+    grant.retired_at = grant.retired_at or clock.now()
+    await db.flush()
+    return grant
+
+
+def _normalized_utc(value: datetime) -> datetime:
+    """Normalize SQLite's timezone-naive UTC persistence for replay checks."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 async def create_session(
     session: AsyncSession,
     *,
@@ -216,12 +394,18 @@ async def create_session(
     work_id: str,
     capability: str,
     offering: str,
-    mode: str,
+    protocol: str,
+    route_snapshot: dict[str, Any] | None = None,
+    broker_request_id: str | None = None,
     estimated_units: int,
     max_total_units: int,
     funded_value_wei: Decimal,
     clock: Clock,
     sdk_identity: str | None = None,
+    accounting_mode: str = "wholesale_account",
+    customer_pricing: dict[str, Any] | None = None,
+    customer_max_debit_wei: Decimal | None = None,
+    session_id: uuid.UUID | None = None,
 ) -> PaymentSession:
     """Create a new session in the ``open`` state and return it.
 
@@ -230,22 +414,151 @@ async def create_session(
     """
     now = clock.now()
     row = PaymentSession(
+        id=session_id or uuid.uuid4(),
         user_id=user_id,
         api_key_id=api_key_id,
         work_id=work_id,
         capability=capability,
         offering=offering,
-        mode=mode,
+        protocol=protocol,
+        route_snapshot=route_snapshot,
+        broker_request_id=broker_request_id,
         state=SESSION_STATE_OPEN,
         estimated_units=estimated_units,
         max_total_units=max_total_units,
         funded_value_wei=funded_value_wei,
+        accounting_mode=accounting_mode,
+        customer_pricing=customer_pricing,
+        customer_max_debit_wei=customer_max_debit_wei,
         opened_at=now,
         sdk_identity=sdk_identity,
     )
     session.add(row)
     await session.flush()
     return row
+
+
+async def claim_wholesale_engagement(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    route: SelectedRoute,
+    broker_request_id: str,
+    estimated_units: int,
+    max_total_units: int,
+    max_debit_wei: Decimal,
+    clock: Clock,
+    sdk_identity: str | None,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+    gateway_session_id: uuid.UUID | None = None,
+) -> PaymentSession:
+    """Create and hold one wholesale engagement, or resume its exact replay."""
+
+    if gateway_session_id is not None:
+        id_owner = await db.get(PaymentSession, gateway_session_id)
+        if id_owner is not None and (
+            id_owner.user_id != user_id or id_owner.broker_request_id != broker_request_id
+        ):
+            raise InvalidSessionRequest(message="gateway_session_id is already in use")
+    existing = await db.scalar(
+        select(PaymentSession).where(
+            PaymentSession.user_id == user_id,
+            PaymentSession.broker_request_id == broker_request_id,
+            PaymentSession.accounting_mode == "wholesale_account",
+        )
+    )
+    pricing = CustomerPricingSnapshot(
+        plan_id="wholesale-pass-through",
+        kind="wholesale_pass_through",
+        work_unit=route.work_unit,
+    ).model_dump(mode="json")
+    if existing is not None:
+        requested_scope = (
+            api_key_id,
+            route.capability,
+            route.offering,
+            route.protocol,
+            route.snapshot(),
+            estimated_units,
+            max_total_units,
+            max_debit_wei,
+            pricing,
+        )
+        recorded_scope = (
+            existing.api_key_id,
+            existing.capability,
+            existing.offering,
+            existing.protocol,
+            existing.route_snapshot,
+            existing.estimated_units,
+            existing.max_total_units,
+            existing.customer_max_debit_wei,
+            existing.customer_pricing,
+        )
+        if recorded_scope != requested_scope:
+            raise InvalidSessionRequest(message="wholesale engagement replay changed scope")
+        return existing
+
+    engagement = await create_session(
+        db,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        work_id="",
+        capability=route.capability,
+        offering=route.offering,
+        protocol=route.protocol,
+        route_snapshot=route.snapshot(),
+        broker_request_id=broker_request_id,
+        estimated_units=estimated_units,
+        max_total_units=max_total_units,
+        funded_value_wei=max_debit_wei,
+        clock=clock,
+        sdk_identity=sdk_identity,
+        accounting_mode="wholesale_account",
+        customer_pricing=pricing,
+        customer_max_debit_wei=max_debit_wei,
+        session_id=gateway_session_id,
+    )
+    await billing_service.encumber_customer_engagement(
+        db,
+        user_id=user_id,
+        engagement_id=engagement.id,
+        amount_wei=max_debit_wei,
+        clock=clock,
+        period_seconds=spend_period_seconds,
+        cap_wei=spend_period_cap_wei,
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        winner = await db.scalar(
+            select(PaymentSession).where(
+                PaymentSession.user_id == user_id,
+                PaymentSession.broker_request_id == broker_request_id,
+                PaymentSession.accounting_mode == "wholesale_account",
+            )
+        )
+        if winner is None:
+            raise
+        return await claim_wholesale_engagement(
+            db,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            route=route,
+            broker_request_id=broker_request_id,
+            estimated_units=estimated_units,
+            max_total_units=max_total_units,
+            max_debit_wei=max_debit_wei,
+            clock=clock,
+            sdk_identity=sdk_identity,
+            spend_period_seconds=spend_period_seconds,
+            spend_period_cap_wei=spend_period_cap_wei,
+            gateway_session_id=gateway_session_id,
+        )
+    return engagement
 
 
 async def get_session(session: AsyncSession, session_id: uuid.UUID) -> PaymentSession | None:
@@ -366,6 +679,271 @@ def _close_endpoint_for(session_id: uuid.UUID) -> str:
     return f"/v1/sessions/{session_id}/close"
 
 
+_PREPARATION_DOMAIN = b"loc-session-preparation/v1\x00"
+_PREPARATION_TTL = timedelta(minutes=5)
+
+
+def _encode_preparation(payload: dict[str, Any], settings: Settings) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signature = hmac.digest(
+        settings.session_secret.get_secret_value().encode(), _PREPARATION_DOMAIN + raw, "sha256"
+    )
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=") + "." + signature.hex()
+
+
+def _decode_preparation(token: str, settings: Settings) -> dict[str, Any]:
+    try:
+        encoded, supplied_signature = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        expected_signature = hmac.digest(
+            settings.session_secret.get_secret_value().encode(),
+            _PREPARATION_DOMAIN + raw,
+            "sha256",
+        )
+        if not hmac.compare_digest(bytes.fromhex(supplied_signature), expected_signature):
+            raise ValueError
+        payload = json.loads(raw)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise InvalidSessionRequest(message="invalid session preparation token") from exc
+    if not isinstance(payload, dict):
+        raise InvalidSessionRequest(message="invalid session preparation token")
+    return payload
+
+
+async def prepare_session(
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    capability: str,
+    offering: str,
+    descriptor_schema: str,
+    route_binding: RouteBinding | None,
+    registry: RegistryClient,
+    clock: Clock,
+    settings: Settings,
+) -> PrepareSessionResponse:
+    """Issue a route-locked session identity before body commitment."""
+
+    route = await select_bound_route(
+        registry, capability=capability, offering=offering, binding=route_binding
+    )
+    if route is None:
+        if route_binding is not None:
+            raise RouteBindingMismatch(binding=route_binding)
+        raise NoRouteAvailable(capability=capability, offering=offering)
+    if route.protocol != PAID_SESSION_PROTOCOL:
+        raise ProtocolNotSupportedForSession(protocol=route.protocol)
+    if route.session is None or route.session.descriptor_schema != descriptor_schema:
+        raise InvalidSessionRequest(message="prepared route descriptor schema changed")
+    gateway_session_id = uuid.uuid4()
+    expires_at = clock.now() + _PREPARATION_TTL
+    binding = route.binding
+    payload = {
+        "user_id": str(user_id),
+        "api_key_id": str(api_key_id),
+        "gateway_session_id": str(gateway_session_id),
+        "capability": capability,
+        "offering": offering,
+        "descriptor_schema": descriptor_schema,
+        "route_binding": binding.model_dump(mode="json"),
+        "expires_at": expires_at.isoformat(),
+    }
+    return PrepareSessionResponse(
+        gateway_session_id=gateway_session_id,
+        route_binding=binding,
+        broker_url=route.worker_url,
+        preparation_token=_encode_preparation(payload, settings),
+        expires_at=expires_at,
+    )
+
+
+def _verify_prepared_session(
+    *,
+    token: str,
+    gateway_session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    capability: str,
+    offering: str,
+    descriptor_schema: str,
+    route: SelectedRoute,
+    clock: Clock,
+    settings: Settings,
+) -> None:
+    payload = _decode_preparation(token, settings)
+    expected = {
+        "user_id": str(user_id),
+        "api_key_id": str(api_key_id),
+        "gateway_session_id": str(gateway_session_id),
+        "capability": capability,
+        "offering": offering,
+        "descriptor_schema": descriptor_schema,
+        "route_binding": route.binding.model_dump(mode="json"),
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        raise InvalidSessionRequest(message="session preparation scope changed")
+    try:
+        expires_at = datetime.fromisoformat(str(payload["expires_at"]))
+    except (KeyError, ValueError) as exc:
+        raise InvalidSessionRequest(message="invalid session preparation expiry") from exc
+    if expires_at <= clock.now():
+        raise InvalidSessionRequest(message="session preparation expired")
+
+
+async def _replenish_wholesale_account(
+    db: AsyncSession,
+    *,
+    route: SelectedRoute,
+    payer_eth_address: str,
+    mint_request_id: str,
+    correlation_id: str,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+) -> WholesaleFundingPlan:
+    """Bring one shared account to target only after its low-water threshold."""
+
+    observation = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer_eth_address,
+        payee_eth_address=route.eth_address,
+        chain_id=settings.wholesale_chain_id,
+    )
+    limits = WholesaleFundingLimits(
+        target_available_wei=Decimal(settings.wholesale_target_available_wei),
+        replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
+        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
+        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
+        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
+    )
+    plan = await wholesale_service.plan_observed_account_shortfall(
+        db,
+        observation=observation,
+        limits=limits,
+    )
+    funding = await wholesale_service.claim_account_funding(
+        db,
+        route=route,
+        observation=observation,
+        plan=plan,
+        limits=limits,
+        mint_request_id=mint_request_id,
+        correlation_id=correlation_id,
+        protocol_version=wholesale_service.WHOLESALE_ACCOUNT_PROTOCOL_VERSION,
+    )
+    await wholesale_service.complete_account_funding(
+        db,
+        funding=funding,
+        route=route,
+        observation=observation,
+        plan=plan,
+        payer_eth_address=payer_eth_address,
+        chain_id=settings.wholesale_chain_id,
+        broker=broker,
+        daemon=daemon,
+        acknowledged_at=clock.now(),
+    )
+    return plan
+
+
+async def _open_wholesale_session(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    route: SelectedRoute,
+    session_axes: SessionAxes,
+    estimated_runway_units: int,
+    max_total_units: int,
+    max_debit_wei: Decimal,
+    request_id: str,
+    request_digest: bytes,
+    caller_public_key: bytes,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+    sdk_identity: str | None,
+    spend_period_seconds: int,
+    spend_period_cap_wei: int,
+    gateway_session_id: uuid.UUID,
+) -> CreateSessionResponse:
+    """Create a cumulative-cap session and replenish only shared runway."""
+
+    session_row = await claim_wholesale_engagement(
+        db,
+        user_id=user_id,
+        api_key_id=api_key_id,
+        broker_request_id=request_id,
+        estimated_units=estimated_runway_units,
+        max_total_units=max_total_units,
+        max_debit_wei=max_debit_wei,
+        route=route,
+        clock=clock,
+        sdk_identity=sdk_identity,
+        spend_period_seconds=spend_period_seconds,
+        spend_period_cap_wei=spend_period_cap_wei,
+        gateway_session_id=gateway_session_id,
+    )
+
+    now = clock.now()
+    authorization_id = f"loc-auth:{request_id}"
+    auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+        daemon=daemon,
+        route=route,
+        authorization_id=authorization_id,
+        request_id=request_id,
+        session_id=str(session_row.id),
+        request_digest=request_digest,
+        caller_public_key=caller_public_key,
+        max_debit_wei=max_debit_wei,
+        max_total_units=max_total_units,
+        not_before=now,
+        expires_at=now + timedelta(minutes=5),
+        chain_id=settings.wholesale_chain_id,
+    )
+    await record_spend_authorization_grant(
+        db,
+        engagement_id=session_row.id,
+        user_id=user_id,
+        route=route,
+        request=auth_request,
+        response=auth_response,
+    )
+    await db.commit()
+
+    payer = "0x" + auth_response.payer.hex()
+    plan = await _replenish_wholesale_account(
+        db,
+        route=route,
+        payer_eth_address=payer,
+        mint_request_id=f"loc-account:{request_id}",
+        correlation_id=str(session_row.id),
+        broker=broker,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
+
+    return CreateSessionResponse(
+        session_id=session_row.id,
+        request_id=request_id,
+        work_id=authorization_id,
+        broker_url=route.worker_url,
+        protocol=route.protocol,
+        session=SessionAxesView.model_validate(session_axes.model_dump(mode="json")),
+        route_snapshot=route.snapshot_view(),
+        spend_authorization=auth_response.authorization_b64,
+        accounting_mode="wholesale_account",
+        expected_value_wei=int(plan.shortfall_wei),
+        funded_value_wei=int(plan.shortfall_wei),
+        refill_endpoint=_refill_endpoint_for(session_row.id),
+        close_endpoint=_close_endpoint_for(session_row.id),
+        opened_at=session_row.opened_at,
+    )
+
+
 async def open_session(
     db: AsyncSession,
     *,
@@ -380,61 +958,65 @@ async def open_session(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    descriptor_schema: str,
+    route_binding: RouteBinding | None = None,
+    request_id: str | None = None,
+    workload_request_digest: bytes,
+    caller_public_key: bytes,
+    broker_wholesale: BrokerWholesaleAccountClient | None = None,
+    gateway_session_id: uuid.UUID,
+    preparation_token: str,
 ) -> CreateSessionResponse:
-    """Open a long-running session (case d) under handoff mode.
+    """Open a prepared, route-locked session on the wholesale account.
 
-    Composes:
-
-      1. Sanity-check the request shape (``max_total_units`` vs.
-         ``estimated_runway_units``).
-      2. Route discovery via the registry; read the mode from
-         ``route.extra["interaction_mode"]``.
-      3. Validate the mode is one of :data:`SESSION_OPEN_MODES`.
-      4. Compute ``worst_case_value_wei = max_total_units x price``.
-      5. Mint the initial ticket via the payer-daemon sized to
-         ``initial_runway_value_wei = estimated_runway_units x price``
-         (NOT worst-case — the daemon decides per-ticket sizing;
-         worst-case is for the LOC-side encumbrance only).
-      6. Write the ``payment_session`` row (``state=open``,
-         ``funded_value_wei=worst_case``).
-      7. Write the ``Payment`` row for the initial ticket, linked
-         via ``session_id``.
-      8. Encumber ``worst_case_value_wei`` from the user balance via
-         ``billing.encumber_for_session`` (also counts against the
-         spend-period cap).
-      9. Return the typed response.
-
-    Returns 4xx via typed exceptions on validation failures; 5xx via
-    :class:`DaemonUnavailable` if the daemon call fails.
+    The cumulative maximum bounds customer exposure and the signed broker
+    authorization. Only bounded account shortfall is ticket-funded.
     """
+    broker_request_id = request_id or str(uuid.uuid4())
     if max_total_units < estimated_runway_units:
         raise InvalidSessionRequest(message="max_total_units must be >= estimated_runway_units")
 
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # ---- 2. Discovery
-    route = await registry.select(capability, offering)
+    route = await select_bound_route(
+        registry,
+        capability=capability,
+        offering=offering,
+        binding=route_binding,
+    )
     if route is None:
+        if route_binding is not None:
+            raise RouteBindingMismatch(binding=route_binding)
         raise NoRouteAvailable(capability=capability, offering=offering)
 
-    # ---- 3. Mode declaration + validation
-    mode = route.interaction_mode
-    if mode is None:
-        raise ModeNotDeclared(capability=capability, offering=offering)
-    if mode not in SESSION_OPEN_MODES:
-        raise ModeNotSupportedForSession(mode=mode)
+    # ---- 3. Protocol declaration + validation
+    protocol = route.protocol
+    if protocol != PAID_SESSION_PROTOCOL:
+        raise ProtocolNotSupportedForSession(protocol=protocol)
+    if not route.settlement_keys:
+        raise NoSettlementDelegation(capability=capability, offering=offering)
+    session_axes = route.session
+    if session_axes is None:  # pragma: no cover - SelectedRoute validates this
+        raise InvalidSessionRequest(message="session route declaration is unavailable")
+    if session_axes.descriptor_schema != descriptor_schema:
+        raise InvalidSessionRequest(
+            message=(
+                f"offering declares descriptor schema {session_axes.descriptor_schema!r}; "
+                f"the client requested {descriptor_schema!r}"
+            )
+        )
 
-    # ---- 4. Worst-case encumbrance + initial mint sizing
+    # ---- 4. Cumulative authorization and customer-exposure ceiling
     price_wei = Decimal(route.price_per_work_unit_wei)
-    units_per_price = Decimal(route.units_per_price or 1)
-    worst_case_value_wei = price_wei * Decimal(max_total_units) / units_per_price
-    initial_runway_value_wei = price_wei * Decimal(estimated_runway_units) / units_per_price
+    worst_case_value_wei = _bill_value_wei(
+        units=max_total_units,
+        amount_wei=price_wei,
+        per_units=route.units_per_price,
+    )
 
-    # Up-front balance check against the worst case so we fail fast
-    # before paying the daemon. (The encumber call later will also
-    # check, but that path raises InsufficientCredit AFTER mint —
-    # we'd rather not leave a paid-but-not-encumbered ticket
-    # outstanding.)
+    # Fail before issuing authorization or funding the shared account. The
+    # engagement hold later repeats this check transactionally.
     balance = await billing_service.get_balance(db, user_id=user_id)
     if balance.amount_wei < worst_case_value_wei:
         await telemetry_events.emit_mint_refused(
@@ -452,134 +1034,42 @@ async def open_session(
             required_wei=int(worst_case_value_wei),
         )
 
-    # ---- 5. Daemon call (initial ticket sized for runway)
-    mint_started_ns = time.monotonic_ns()
-    daemon_request = CreatePaymentRequest(
-        recipient=_eth_address_to_bytes(route.eth_address),
-        ticket_params_base_url=route.worker_url,
-        accepted_price=AcceptedPrice(
-            capability=route.capability,
-            offering=route.offering,
-            price_per_unit_wei=route.price_per_work_unit_wei,
-            units_per_price=route.units_per_price,
-            work_unit_name=route.work_unit,
-            quote_ref=QuoteRef(
-                quote_id=route.quote_id,
-                quote_version=route.quote_version,
-                constraint_fingerprint=route.constraint_fingerprint,
-                route_fingerprint=route.route_fingerprint,
-            ),
-        ),
-        funding=FundingIntent(
-            funded_value_wei=initial_runway_value_wei,
-            estimated_units=estimated_runway_units,
-            max_total_units=max_total_units,
-        ),
-    )
-    try:
-        daemon_response = await daemon.create_payment(daemon_request)
-    except PaymentDaemonError as exc:
-        raise DaemonUnavailable(
-            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
-        ) from exc
-
-    # ---- 6. Write payment_session
-    session_row = await create_session(
-        db,
+    _verify_prepared_session(
+        token=preparation_token,
+        gateway_session_id=gateway_session_id,
         user_id=user_id,
         api_key_id=api_key_id,
-        work_id=daemon_response.work_id,
-        capability=route.capability,
-        offering=route.offering,
-        mode=mode,
-        estimated_units=estimated_runway_units,
-        max_total_units=max_total_units,
-        funded_value_wei=worst_case_value_wei,
-        clock=clock,
-        sdk_identity=sdk_identity,
-    )
-
-    # ---- 7. Write Payment for the initial ticket, linked to session
-    payment = Payment(
-        user_id=user_id,
-        api_key_id=api_key_id,
-        session_id=session_row.id,
-        work_id=daemon_response.work_id,
-        recipient_eth_address=route.eth_address,
-        capability=route.capability,
-        offering=route.offering,
-        work_units_requested=estimated_runway_units,
-        price_per_work_unit_wei=price_wei,
-        funded_value_wei=daemon_response.funded_value_wei,
-        expected_value_wei=daemon_response.expected_value,
-        reserved_wei=daemon_response.expected_value,
-        refunded_wei=Decimal(0),
-        status="issued",
-    )
-    db.add(payment)
-    await db.flush()
-
-    # ---- 8. Encumber worst-case from the user balance
-    try:
-        await billing_service.encumber_for_session(
-            db,
-            user_id=user_id,
-            payment_id=payment.id,
-            amount_wei=worst_case_value_wei,
-            clock=clock,
-            period_seconds=cfg.spend_period_seconds,
-            cap_wei=cfg.spend_period_cap_wei,
-        )
-    except SpendCapExceeded as exc:
-        cap_wei = int(exc.details.get("cap_wei", 0))
-        spent_wei = int(exc.details.get("would_be_spent_wei", 0))
-        await telemetry_events.emit_mint_refused(
-            db,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            capability=capability,
-            offering=offering,
-            which_cap="spend_period",
-            remaining_wei=max(cap_wei - spent_wei, 0),
-            clock=clock,
-        )
-        raise
-
-    # ---- 9. Emit server.mint_served + sdk_sha_mismatch if applicable
-    mint_latency_ms = (time.monotonic_ns() - mint_started_ns) // 1_000_000
-    await telemetry_events.emit_mint_served(
-        db,
-        api_key_id=api_key_id,
-        user_id=user_id,
         capability=capability,
         offering=offering,
-        mode=mode,
-        estimated_units=estimated_runway_units,
-        funded_value_wei=int(worst_case_value_wei),
-        mint_latency_ms=int(mint_latency_ms),
-        correlation_id=session_row.id,
+        descriptor_schema=descriptor_schema,
+        route=route,
         clock=clock,
+        settings=settings,
     )
-    await telemetry_events.emit_sha_mismatch_if_unapproved(
+    if broker_wholesale is None:
+        raise DaemonUnavailable(
+            daemon="wholesale-account", reason="broker account client is unavailable"
+        )
+    return await _open_wholesale_session(
         db,
-        api_key_id=api_key_id,
         user_id=user_id,
-        sdk_identity=sdk_identity,
+        api_key_id=api_key_id,
+        route=route,
+        session_axes=session_axes,
+        estimated_runway_units=estimated_runway_units,
+        max_total_units=max_total_units,
+        max_debit_wei=worst_case_value_wei,
+        request_id=broker_request_id,
+        request_digest=workload_request_digest,
+        caller_public_key=caller_public_key,
+        broker=broker_wholesale,
+        daemon=daemon,
         clock=clock,
-    )
-
-    # ---- 10. Return the typed response
-    return CreateSessionResponse(
-        session_id=session_row.id,
-        work_id=daemon_response.work_id,
-        broker_url=route.worker_url,
-        mode=mode,
-        payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
-        expected_value_wei=int(daemon_response.expected_value),
-        funded_value_wei=int(worst_case_value_wei),
-        refill_endpoint=_refill_endpoint_for(session_row.id),
-        close_endpoint=_close_endpoint_for(session_row.id),
-        opened_at=session_row.opened_at,
+        settings=settings,
+        sdk_identity=sdk_identity,
+        spend_period_seconds=cfg.spend_period_seconds,
+        spend_period_cap_wei=cfg.spend_period_cap_wei,
+        gateway_session_id=gateway_session_id,
     )
 
 
@@ -596,11 +1086,191 @@ _CAP_IMMINENT_THRESHOLD = 0.95
 
 
 async def _session_billed_so_far_wei(db: AsyncSession, session_id: uuid.UUID) -> Decimal:
-    """Sum ``expected_value_wei`` across all Payment rows tied to this session."""
+    """Sum accepted issued value, excluding rotation-rejected envelopes."""
     result = await db.scalars(
-        select(Payment.expected_value_wei).where(Payment.session_id == session_id)
+        select(Payment.expected_value_wei).where(
+            Payment.session_id == session_id,
+            Payment.status != "refused",
+        )
     )
     return Decimal(sum((Decimal(v) for v in result.all()), Decimal(0)))
+
+
+async def _session_funded_units(db: AsyncSession, session_id: uuid.UUID) -> int:
+    """Return the cumulative unit target funded across every session mint."""
+
+    result = await db.scalars(
+        select(Payment.work_units_requested).where(
+            Payment.session_id == session_id,
+            Payment.status != "refused",
+        )
+    )
+    return sum(int(units) for units in result.all())
+
+
+def _route_from_persisted_snapshot(session_row: PaymentSession) -> SelectedRoute:
+    """Rehydrate the typed route without consulting mutable discovery state."""
+
+    snapshot = RouteSnapshot.model_validate(session_row.route_snapshot)
+    return SelectedRoute(
+        worker_url=snapshot.broker_url,
+        eth_address=snapshot.eth_address,
+        capability=snapshot.capability,
+        offering=snapshot.offering,
+        price_per_work_unit_wei=snapshot.price_per_work_unit_wei,
+        work_unit=snapshot.work_unit,
+        units_per_price=snapshot.units_per_price,
+        quote_id=snapshot.quote_id,
+        quote_version=snapshot.quote_version,
+        constraint_fingerprint=bytes.fromhex(snapshot.constraint_fingerprint),
+        route_fingerprint=bytes.fromhex(snapshot.route_fingerprint),
+        protocol=snapshot.protocol,
+        settlement_keys=snapshot.settlement_keys,
+        work_unit_estimator=snapshot.work_unit_estimator,
+        extra=snapshot.extra,
+    )
+
+
+async def _refill_wholesale_session(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    user_id: uuid.UUID,
+    requested_max_total_units: int,
+    request_digest: bytes,
+    request_id: str,
+    broker: BrokerWholesaleAccountClient | None,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+    cfg: billing_service.ResolvedBillingConfig,
+) -> RefillSessionResponse:
+    """Increase one cumulative cap without minting a session-sized ticket."""
+
+    if broker is None:
+        raise DaemonUnavailable(
+            daemon="wholesale-account", reason="broker account client is unavailable"
+        )
+    route = _route_from_persisted_snapshot(session_row)
+    session_axes = route.session
+    if session_axes is None or session_axes.refill != "extensible":
+        raise RefillNotSupported
+
+    authorization_id = f"loc-auth:{request_id}"
+    revision_grant = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == session_row.id,
+            SpendAuthorizationGrant.authorization_id == authorization_id,
+        )
+    )
+    if revision_grant is None:
+        if requested_max_total_units <= session_row.max_total_units:
+            raise InvalidSessionRequest(
+                message="wholesale cap revision must increase max_total_units"
+            )
+        if session_row.authorization_id is None:
+            raise InvalidSessionRequest(message="wholesale session has no current authorization")
+        predecessor = await db.scalar(
+            select(SpendAuthorizationGrant).where(
+                SpendAuthorizationGrant.session_id == session_row.id,
+                SpendAuthorizationGrant.authorization_id == session_row.authorization_id,
+            )
+        )
+        if predecessor is None:
+            raise InvalidSessionRequest(message="authorization predecessor is unavailable")
+        new_wholesale_cap = _bill_value_wei(
+            units=requested_max_total_units,
+            amount_wei=route.price_per_work_unit_wei,
+            per_units=route.units_per_price,
+        )
+        if session_row.customer_pricing is None or session_row.customer_max_debit_wei is None:
+            raise InvalidSessionRequest(message="wholesale customer pricing is unavailable")
+        pricing = CustomerPricingSnapshot.model_validate(session_row.customer_pricing)
+        new_customer_cap = billing_service.calculate_customer_charge(
+            pricing,
+            actual_units=requested_max_total_units,
+            wholesale_debit_wei=new_wholesale_cap,
+        )
+        incremental_hold = new_customer_cap - session_row.customer_max_debit_wei
+        if incremental_hold <= 0:
+            raise InvalidSessionRequest(message="cap revision did not increase customer exposure")
+        next_revision = predecessor.revision + 1
+        await billing_service.increase_customer_engagement_cap(
+            db,
+            user_id=user_id,
+            engagement_id=session_row.id,
+            revision=next_revision,
+            amount_wei=incremental_hold,
+            clock=clock,
+            period_seconds=cfg.spend_period_seconds,
+            cap_wei=cfg.spend_period_cap_wei,
+        )
+        now = clock.now()
+        auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+            daemon=daemon,
+            route=route,
+            authorization_id=authorization_id,
+            request_id=request_id,
+            session_id=str(session_row.id),
+            request_digest=request_digest,
+            caller_public_key=bytes.fromhex(predecessor.caller_public_key),
+            max_debit_wei=new_wholesale_cap,
+            max_total_units=requested_max_total_units,
+            not_before=now,
+            expires_at=now + timedelta(minutes=5),
+            chain_id=settings.wholesale_chain_id,
+            revision=next_revision,
+            predecessor_authorization_id=predecessor.authorization_id,
+        )
+        revision_grant = await record_spend_authorization_grant(
+            db,
+            engagement_id=session_row.id,
+            user_id=user_id,
+            route=route,
+            request=auth_request,
+            response=auth_response,
+        )
+        session_row.max_total_units = requested_max_total_units
+        session_row.funded_value_wei = new_wholesale_cap
+        session_row.customer_max_debit_wei = new_customer_cap
+        session_row.refill_seq = next_revision
+        await db.commit()
+    elif (
+        revision_grant.request_id != request_id
+        or revision_grant.max_total_units != requested_max_total_units
+        or revision_grant.request_digest != request_digest.hex()
+    ):
+        raise InvalidSessionRequest(message="authorization revision replay changed scope")
+
+    plan = await _replenish_wholesale_account(
+        db,
+        route=route,
+        payer_eth_address=revision_grant.payer_eth_address,
+        mint_request_id=f"loc-account:{request_id}",
+        correlation_id=str(session_row.id),
+        broker=broker,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
+    cap_status = await _compute_cap_status(
+        db,
+        session_row=session_row,
+        user_id=user_id,
+        next_mint_value_wei=Decimal(0),
+        cfg=cfg,
+        clock=clock,
+    )
+    return RefillSessionResponse(
+        work_id=revision_grant.authorization_id,
+        request_id=request_id,
+        refill_seq=revision_grant.revision,
+        spend_authorization=base64.b64encode(revision_grant.authorization_bytes).decode("ascii"),
+        accounting_mode="wholesale_account",
+        expected_value_wei=int(plan.shortfall_wei),
+        funded_value_wei=int(plan.shortfall_wei),
+        cap_status=cap_status,
+    )
 
 
 async def refill_session(
@@ -613,44 +1283,23 @@ async def refill_session(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    request_id: str | None = None,
+    max_total_units: int,
+    workload_request_digest: bytes,
+    broker_wholesale: BrokerWholesaleAccountClient | None = None,
 ) -> RefillSessionResponse:
-    """Mint a top-up bound to an existing session's work_id.
+    """Increase an open session's cumulative scoped authorization cap.
 
-    Pre-conditions (in order):
-
-      1. Session exists, belongs to caller's user.
-      2. Session is in ``open`` state.
-      3. Session's mode is in :data:`SESSION_OPEN_MODES` AND NOT
-         in the (d-bounded) set (currently just ``ws-realtime@v0``).
-         Bounded sessions reject with 400.
-      4. Cumulative minted EV + next mint EV <= session funded
-         (worst-case). If not, refuse with ``cap_reached: session``.
-      5. Spend-period cap has room for the next mint. If not,
-         refuse with ``cap_reached: spend_period`` (the encumbrance
-         at open recorded the worst case against the window, so
-         this is usually a no-op — but cap could shrink between
-         opens, so we re-check).
-
-    On success: mints via daemon (re-using the same
-    ``(recipient, capability, offering, funded_value_wei,
-    broker_url)`` session-cache key per the daemon's convention so
-    the new ticket attaches to the same ``work_id``), writes a new
-    Payment row tied to the session via ``session_id``, increments
-    ``last_debit_seq``, and returns the envelope plus a fresh
-    ``cap_status``.
-
-    Notes:
-      - Worst-case encumbrance was done at open; no additional
-        balance debit at refill (the funded value is already
-        reserved).
-      - ``observed_consumed_units`` is advisory only — the daemon's
-        ledger is authoritative; the SDK's hint is logged for
-        triage but not used to size the mint.
+    The revision increases the customer hold as needed and may replenish a
+    bounded shortfall in the shared payer-payee account. It never mints a
+    session-sized ticket. ``observed_consumed_units`` remains advisory only.
     """
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
 
     # 1. Session exists + ownership
-    session_row = await db.get(PaymentSession, session_id)
+    session_row = await db.scalar(
+        select(PaymentSession).where(PaymentSession.id == session_id).with_for_update()
+    )
     if session_row is None or session_row.user_id != user_id:
         raise SessionNotFound
 
@@ -658,171 +1307,23 @@ async def refill_session(
     if session_row.state != SESSION_STATE_OPEN:
         raise SessionNotOpen(current_state=session_row.state)
 
-    # 3. Mode check — refill only works on (d-extensible)
-    if session_row.mode == "ws-realtime@v0":
-        raise RefillNotSupportedForMode(mode=session_row.mode)
-
-    # Pull pricing context from the most recent Payment on this session
-    # (the initial mint's price; all refills use the same price).
-    initial_payment_row = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == session_id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
-    if initial_payment_row is None:
-        # Should never happen — open_session writes one. Defensive.
-        raise SessionNotFound
-
-    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    next_mint_units = session_row.estimated_units  # refill chunk = runway size
-    next_mint_value_wei = price_wei * Decimal(next_mint_units)
-
-    # 4. Per-session cap check
-    billed_so_far = await _session_billed_so_far_wei(db, session_id)
-    session_remaining = session_row.funded_value_wei - billed_so_far
-    if next_mint_value_wei > session_remaining:
-        await telemetry_events.emit_refill_denied(
-            db,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            session_id=session_id,
-            refill_seq=session_row.last_debit_seq + 1,
-            which_cap="session",
-            remaining_wei=int(session_remaining),
-            clock=clock,
+    broker_request_id = request_id or str(uuid.uuid4())
+    if session_row.accounting_mode != "wholesale_account":
+        raise InvalidSessionRequest(
+            message="legacy sessions cannot be refilled by the wholesale-only release"
         )
-        raise SessionCapReached(
-            which="session",
-            remaining_wei=int(session_remaining),
-            advice=(
-                "session would exceed max_total_units; "
-                "open a new session with a higher max_total_units to continue"
-            ),
-        )
-
-    # 5. Spend-period cap check
-    period_room = await billing_service.remaining_window_room(
-        db,
-        user_id=user_id,
-        clock=clock,
-        period_seconds=cfg.spend_period_seconds,
-        cap_wei=cfg.spend_period_cap_wei,
-    )
-    if next_mint_value_wei > period_room:
-        period_remaining_int = int(period_room) if period_room != Decimal("Infinity") else 0
-        await telemetry_events.emit_refill_denied(
-            db,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            session_id=session_id,
-            refill_seq=session_row.last_debit_seq + 1,
-            which_cap="spend_period",
-            remaining_wei=period_remaining_int,
-            clock=clock,
-        )
-        raise SessionCapReached(
-            which="spend_period",
-            remaining_wei=period_remaining_int,
-            advice=(
-                "rolling spend-period cap reached; raise the cap at "
-                "/portal/billing or wait for period rollover"
-            ),
-        )
-
-    # ---- Daemon call. Same session-cache key as the initial mint so
-    # the daemon reuses recipient_rand_hash and increments nonce.
-    daemon_request = CreatePaymentRequest(
-        recipient=_eth_address_to_bytes(initial_payment_row.recipient_eth_address),
-        ticket_params_base_url="",  # daemon uses its cached value
-        accepted_price=AcceptedPrice(
-            capability=initial_payment_row.capability,
-            offering=initial_payment_row.offering,
-            price_per_unit_wei=price_wei,
-            units_per_price=1,
-            work_unit_name="",
-            quote_ref=QuoteRef(
-                quote_id="",
-                quote_version=0,
-                constraint_fingerprint=b"\x00" * 32,
-                route_fingerprint=b"\x00" * 32,
-            ),
-        ),
-        funding=FundingIntent(
-            funded_value_wei=next_mint_value_wei,
-            estimated_units=next_mint_units,
-            max_total_units=next_mint_units,
-        ),
-    )
-    try:
-        daemon_response = await daemon.create_payment(daemon_request)
-    except PaymentDaemonError as exc:
-        raise DaemonUnavailable(
-            daemon="payment-daemon", reason=str(exc) or exc.__class__.__name__
-        ) from exc
-
-    # ---- Persist the top-up Payment row + bump last_debit_seq
-    refill_payment = Payment(
-        user_id=user_id,
-        api_key_id=api_key_id,
-        session_id=session_id,
-        work_id=session_row.work_id,
-        recipient_eth_address=initial_payment_row.recipient_eth_address,
-        capability=initial_payment_row.capability,
-        offering=initial_payment_row.offering,
-        work_units_requested=next_mint_units,
-        price_per_work_unit_wei=price_wei,
-        funded_value_wei=daemon_response.funded_value_wei,
-        expected_value_wei=daemon_response.expected_value,
-        reserved_wei=daemon_response.expected_value,
-        refunded_wei=Decimal(0),
-        status="issued",
-    )
-    db.add(refill_payment)
-    session_row.last_debit_seq = session_row.last_debit_seq + 1
-    await db.flush()
-
-    # ---- Record a payment_settlement event
-    await record_settlement(
-        db,
-        session_id,
-        event_type="refill_granted",
-        clock=clock,
-        billed_value_wei=daemon_response.expected_value,
-        raw_record={
-            "refill_seq": session_row.last_debit_seq,
-            "observed_consumed_units": observed_consumed_units,
-        },
-    )
-
-    # ---- Build cap_status block
-    cap_status = await _compute_cap_status(
+    return await _refill_wholesale_session(
         db,
         session_row=session_row,
         user_id=user_id,
-        next_mint_value_wei=next_mint_value_wei,
+        requested_max_total_units=max_total_units,
+        request_digest=workload_request_digest,
+        request_id=broker_request_id,
+        broker=broker_wholesale,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
         cfg=cfg,
-        clock=clock,
-    )
-
-    await telemetry_events.emit_refill_served(
-        db,
-        api_key_id=api_key_id,
-        user_id=user_id,
-        session_id=session_id,
-        refill_seq=session_row.last_debit_seq,
-        funded_value_wei=int(daemon_response.funded_value_wei),
-        cap_status=cap_status.model_dump(),
-        clock=clock,
-    )
-
-    return RefillSessionResponse(
-        work_id=session_row.work_id,
-        refill_seq=session_row.last_debit_seq,
-        payment_envelope=base64.b64encode(daemon_response.payment_bytes).decode("ascii"),
-        expected_value_wei=int(daemon_response.expected_value),
-        funded_value_wei=int(daemon_response.funded_value_wei),
-        cap_status=cap_status,
     )
 
 
@@ -832,6 +1333,7 @@ async def _compute_cap_status(
     session_row: PaymentSession,
     user_id: uuid.UUID,
     next_mint_value_wei: Decimal,
+    session_units_exhausted: bool = False,
     cfg: billing_service.ResolvedBillingConfig,
     clock: Clock,
 ) -> CapStatus:
@@ -878,6 +1380,7 @@ async def _compute_cap_status(
         session_remaining_wei=session_row.funded_value_wei - session_billed,
         next_mint_value_wei=next_mint_value_wei,
         spend_period_pct=spend_period_pct,
+        session_units_exhausted=session_units_exhausted,
     )
 
     return CapStatus(
@@ -896,8 +1399,11 @@ def _project_next_refusal(
     session_remaining_wei: Decimal,
     next_mint_value_wei: Decimal,
     spend_period_pct: float | None,
+    session_units_exhausted: bool = False,
 ) -> tuple[bool, str | None]:
     """Predict whether the *next* refill request will be refused."""
+    if session_units_exhausted:
+        return True, "session_cap_imminent"
     if session_pct >= _CAP_IMMINENT_THRESHOLD and next_mint_value_wei > session_remaining_wei:
         return True, "session_cap_imminent"
     if spend_period_pct is not None and spend_period_pct >= _CAP_IMMINENT_THRESHOLD:
@@ -916,8 +1422,8 @@ def _infer_close_outcome(*, funded: Decimal, billed: Decimal) -> str:
     Mirrors the upstream `SettlementOutcome` enum:
       - EXACT          : billed == funded
       - OVERFUNDED     : billed < funded (the common path)
-      - UNDERFUNDED    : billed > funded (broker debited more than the
-                        ticket face value covered — unusual but possible)
+      - UNDERFUNDED    : billed > funded (broker exceeded the authorized
+                        wholesale ceiling — invalid in normal operation)
 
     `STOPPED_AT_BUDGET` and `TOPPED_UP` are SDK-supplied; we don't
     infer them.
@@ -929,7 +1435,77 @@ def _infer_close_outcome(*, funded: Decimal, billed: Decimal) -> str:
     return "EXACT"
 
 
-async def close_session(
+async def _verify_close_settlement(
+    db: AsyncSession,
+    *,
+    session_row: PaymentSession,
+    settlement: dict[str, Any] | None,
+    require_terminal: bool = True,
+) -> VerifiedSessionSettlement:
+    """Verify and bind an authoritative broker settlement."""
+
+    if settlement is None:
+        raise SessionSettlementVerificationFailed(reason="missing_settlement")
+    if settlement.get("signature") is None:
+        raise SessionSettlementVerificationFailed(reason="missing_signature")
+    snapshot = session_row.route_snapshot or {}
+    settlement_keys = snapshot.get("settlement_keys")
+    if not isinstance(settlement_keys, list) or not settlement_keys:
+        raise SessionSettlementVerificationFailed(reason="missing_delegation")
+    predecessor_work_id = ""
+    if session_row.rotation_generation > 0:
+        if not session_row.predecessor_work_id:
+            raise SessionSettlementVerificationFailed(reason="missing_rotation_predecessor")
+        predecessor_work_id = session_row.predecessor_work_id
+    payload = settlement.get("payload")
+    authorization_hint = payload.get("authorization_id") if isinstance(payload, dict) else None
+    if not isinstance(authorization_hint, str) or not authorization_hint:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    grant = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == session_row.id,
+            SpendAuthorizationGrant.authorization_id == authorization_hint,
+        )
+    )
+    if grant is None:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    authorization_id = grant.authorization_id
+    authorized_value_wei = int(grant.max_debit_wei)
+    # A revision can be durably issued before aggregate funding succeeds. The
+    # broker may therefore close against a still-delivered predecessor; bind
+    # work_id to the cryptographically selected grant, not LOC's newest pointer.
+    expected_work_id = grant.authorization_id
+    amount_wei = int(snapshot["price_per_work_unit_wei"])
+    try:
+        return verify_session_settlement(
+            settlement,
+            settlement_keys=settlement_keys,
+            expected=SessionSettlementExpectation(
+                gateway_session_id=str(session_row.id),
+                broker_session_id=session_row.broker_session_id,
+                work_id=expected_work_id,
+                predecessor_work_id=predecessor_work_id,
+                rotation_generation=session_row.rotation_generation,
+                work_unit=str(snapshot["work_unit"]),
+                amount_wei=amount_wei,
+                per_units=int(snapshot["units_per_price"]),
+                quote_id=str(snapshot["quote_id"]),
+                quote_version=int(snapshot["quote_version"]),
+                constraint_fingerprint=bytes.fromhex(str(snapshot["constraint_fingerprint"])),
+                route_fingerprint=bytes.fromhex(str(snapshot["route_fingerprint"])),
+                funded_value_wei=int(session_row.funded_value_wei),
+                last_settlement_seq=session_row.last_settlement_seq,
+                authorization_id=authorization_id,
+                authorized_value_wei=authorized_value_wei,
+                require_terminal=require_terminal,
+            ),
+        )
+    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+        reason = exc.code if isinstance(exc, SettlementVerificationError) else "invalid_snapshot"
+        raise SessionSettlementVerificationFailed(reason=reason) from exc
+
+
+async def close_session(  # noqa: PLR0915 — explicit settlement state machine
     db: AsyncSession,
     *,
     session_id: uuid.UUID,
@@ -938,7 +1514,6 @@ async def close_session(
     outcome: str | None,
     settlement: dict[str, Any] | None,
     clock: Clock,
-    daemon: PaymentDaemonClient | None = None,
 ) -> CloseSessionResponse:
     """Explicitly close a session and finalize accounting.
 
@@ -949,8 +1524,8 @@ async def close_session(
 
     Performs (in order):
       1. transition_state to ``closed``.
-      2. Compute ``billed_value_wei = actual_units x price`` (price
-         read from the initial mint's Payment row).
+      2. Verify the broker-signed terminal settlement against the pinned
+         route keys, gateway session identity, rotation chain, and price.
       3. Compute ``refund_wei = funded_value_wei - billed_value_wei``
          (the worst-case encumbrance minus what was actually used).
       4. ``release_session_encumbrance(refund_wei)`` — credits the
@@ -962,11 +1537,8 @@ async def close_session(
          numbers and any raw SettlementRecord from the SDK.
       7. Return the typed response.
 
-    Per the trust model: ``actual_units`` is SDK-reported and trusted
-    on this synchronous path. The reconciliation janitor (PR-8) does
-    the daemon cross-check via ``GetSessionDebits`` and corrects any
-    divergence. v1 daemon client does not yet expose GetSessionDebits;
-    once it does, this function will also verify inline.
+    The signed broker record is authoritative. SDK-reported units and outcome
+    are accepted only when they agree with that record.
     """
     # 1. Lookup + ownership
     session_row = await db.get(PaymentSession, session_id)
@@ -975,20 +1547,41 @@ async def close_session(
 
     if session_row.state == SESSION_STATE_CLOSED:
         raise SessionNotOpen(current_state=session_row.state)
+    if session_row.accounting_mode != "wholesale_account":
+        raise SessionSettlementVerificationFailed(reason="legacy_accounting_disabled")
 
     # 2. Compute billed + refund
-    initial_payment_row = await db.scalar(
-        select(Payment)
-        .where(Payment.session_id == session_id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
+    try:
+        verified = await _verify_close_settlement(
+            db,
+            session_row=session_row,
+            settlement=settlement,
+        )
+        if actual_units != verified.debited_units:
+            raise SessionSettlementVerificationFailed(reason="work_units_mismatch")
+    except SessionSettlementVerificationFailed as exc:
+        await telemetry_events.emit_settlement_verification_failed(
+            db,
+            api_key_id=session_row.api_key_id,
+            user_id=user_id,
+            session_id=session_id,
+            protocol=session_row.protocol,
+            reason=str(exc.details.get("reason", "unknown")),
+            clock=clock,
+        )
+        raise
+    wholesale_billed_value_wei = Decimal(verified.billed_value_wei)
+    if session_row.customer_pricing is None or session_row.customer_max_debit_wei is None:
+        raise SessionSettlementVerificationFailed(reason="missing_customer_pricing")
+    pricing = CustomerPricingSnapshot.model_validate(session_row.customer_pricing)
+    billed_value_wei = billing_service.calculate_customer_charge(
+        pricing,
+        actual_units=verified.debited_units,
+        wholesale_debit_wei=wholesale_billed_value_wei,
     )
-    if initial_payment_row is None:
-        raise SessionNotFound  # defensive — open writes one
-
-    price_wei = Decimal(initial_payment_row.price_per_work_unit_wei)
-    billed_value_wei = price_wei * Decimal(actual_units)
-    refund_wei = session_row.funded_value_wei - billed_value_wei
+    if billed_value_wei > session_row.customer_max_debit_wei:
+        raise SessionSettlementVerificationFailed(reason="customer_cap_exceeded")
+    refund_wei = session_row.customer_max_debit_wei - billed_value_wei
 
     # 3. Transition state (open or draining → closed)
     await transition_state(
@@ -1002,20 +1595,60 @@ async def close_session(
     # 4. Release encumbrance (refund unused). Skip if billed exceeded
     # funded — operator absorbs that delta; no balance change.
     if refund_wei > 0:
-        await billing_service.release_session_encumbrance(
+        await billing_service.release_customer_engagement(
             db,
             user_id=user_id,
-            payment_id=initial_payment_row.id,
+            engagement_id=session_row.id,
             amount_wei=refund_wei,
         )
 
     # 5. Finalize payment_session fields
-    final_outcome = outcome or _infer_close_outcome(
-        funded=session_row.funded_value_wei, billed=billed_value_wei
-    )
-    session_row.actual_units = actual_units
+    signed_outcome = verified.outcome
+    if signed_outcome == "SETTLEMENT_OUTCOME_UNSPECIFIED":
+        signed_outcome = _infer_close_outcome(
+            funded=session_row.funded_value_wei, billed=billed_value_wei
+        )
+    if outcome is not None and outcome != signed_outcome:
+        raise SessionSettlementVerificationFailed(reason="outcome_mismatch")
+    final_outcome = signed_outcome
+    session_row.actual_units = verified.debited_units
     session_row.billed_value_wei = billed_value_wei
     session_row.outcome = final_outcome
+    session_row.broker_session_id = verified.broker_session_id
+    session_row.last_settlement_seq = verified.settlement_seq
+    diagnostics = {
+        key: value
+        for key, value in {
+            "termination_reason": verified.termination_reason,
+            "output_state": verified.output_state,
+            "output_state_since": (
+                verified.output_state_since.isoformat()
+                if verified.output_state_since is not None
+                else None
+            ),
+            "last_failure_code": verified.last_failure_code,
+        }.items()
+        if value is not None
+    }
+    prior_breakdown = dict(session_row.breakdown or {})
+    prior_breakdown.pop("settlement_block", None)
+    if diagnostics:
+        prior_breakdown["broker_diagnostics"] = diagnostics
+    session_row.breakdown = prior_breakdown or None
+    payload = settlement.get("payload") if settlement is not None else None
+    settled_authorization_id = (
+        payload.get("authorization_id") if isinstance(payload, dict) else None
+    )
+    if not isinstance(settled_authorization_id, str) or not settled_authorization_id:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    session_row.authorization_id = settled_authorization_id
+    session_row.work_id = settled_authorization_id
+    await mark_spend_authorization_settled(
+        db,
+        engagement_id=session_row.id,
+        authorization_id=settled_authorization_id,
+        clock=clock,
+    )
     await db.flush()
 
     # 6. Append close settlement event
@@ -1024,36 +1657,229 @@ async def close_session(
         session_id,
         event_type="close",
         clock=clock,
-        actual_units=actual_units,
+        actual_units=verified.debited_units,
         billed_value_wei=billed_value_wei,
         outcome=final_outcome,
         raw_record=settlement,
     )
-
-    # 6b. Inline daemon cross-check: SDK report vs payer-daemon
-    # ledger. Best-effort — never breaks the close path. Tolerance
-    # is the smaller of 1% or 5 units to suppress benign rounding
-    # noise; anything bigger is operator signal.
-    if daemon is not None:
-        await _emit_discrepancy_if_diverged(
-            db,
-            session_row=session_row,
-            sdk_units=actual_units,
-            daemon=daemon,
-            clock=clock,
-        )
 
     # 7. Response
     assert session_row.closed_at is not None  # transition_state set it
     return CloseSessionResponse(
         session_id=session_row.id,
         work_id=session_row.work_id,
-        actual_units=actual_units,
+        actual_units=verified.debited_units,
         billed_value_wei=int(billed_value_wei),
         refund_wei=int(max(refund_wei, Decimal(0))),
         outcome=final_outcome,
         closed_at=session_row.closed_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation janitor (background task)
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_JANITOR_INTERVAL_SECONDS = 60
+
+
+async def reconcile_spend_authorization_states(
+    db: AsyncSession,
+    *,
+    broker: BrokerWholesaleAccountClient,
+    clock: Clock,
+    batch_limit: int = 100,
+) -> int:
+    """Advance local grants only from their locked broker's durable state.
+
+    This does not settle customer billing: that still requires the signed
+    workload settlement. It records the irrevocable receiver state needed to
+    decide whether an old route reservation may eventually be retired safely.
+    """
+
+    grants = list(
+        (
+            await db.scalars(
+                select(SpendAuthorizationGrant)
+                .join(PaymentSession, PaymentSession.id == SpendAuthorizationGrant.session_id)
+                .where(
+                    PaymentSession.accounting_mode == "wholesale_account",
+                    SpendAuthorizationGrant.state.in_(("issued", "admitted", "outcome_unknown")),
+                )
+                .order_by(SpendAuthorizationGrant.created_at.asc())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+    changed = 0
+    terminal = {
+        SpendAuthorizationState.SETTLED,
+        SpendAuthorizationState.EXPIRED_UNUSED,
+        SpendAuthorizationState.SUPERSEDED,
+    }
+    for grant in grants:
+        snapshot = grant.route_snapshot or {}
+        broker_url = snapshot.get("broker_url")
+        if not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            observed = await broker.get_spend_authorization(
+                broker_url=broker_url,
+                payer_eth_address=grant.payer_eth_address,
+                authorization_id=grant.authorization_id,
+            )
+        except BrokerWholesaleAccountError:
+            continue
+        next_state = observed.state.value
+        if next_state == grant.state:
+            continue
+        # Receiver state is monotonic. Never let an inconsistent observation
+        # resurrect a reservation or turn an admitted grant into unused expiry.
+        if grant.state == "admitted" and observed.state in {
+            SpendAuthorizationState.ISSUED,
+            SpendAuthorizationState.EXPIRED_UNUSED,
+        }:
+            continue
+        if grant.state == "outcome_unknown" and observed.state not in terminal:
+            continue
+        grant.state = next_state
+        if observed.state in terminal:
+            grant.retired_at = grant.retired_at or clock.now()
+        changed += 1
+    await db.flush()
+    return changed
+
+
+async def reconcile_open_sessions(
+    db: AsyncSession,
+    *,
+    settlement_client: BrokerSettlementClient,
+    clock: Clock,
+    interval_seconds: int = DEFAULT_JANITOR_INTERVAL_SECONDS,
+    batch_limit: int = 100,
+) -> int:
+    """Finalize silent sessions from broker-signed terminal settlements.
+
+    The lookup uses LOC's globally unique ``payment_session.id`` as the
+    Modules ``gateway_session_id``. ``work_id`` is intentionally never used:
+    several broker sessions share the same payer-payee wholesale account.
+    """
+    cutoff = clock.now() - timedelta(seconds=interval_seconds)
+    rows = list(
+        (
+            await db.scalars(
+                select(PaymentSession)
+                .where(
+                    # Paid jobs share this table but settle through the
+                    # request-ID exchange lookup in jobs.service; brokers
+                    # key GET /v1/settlement by broker job id, so asking
+                    # with a LOC job id only produces 401s.
+                    PaymentSession.protocol == PAID_SESSION_PROTOCOL,
+                    PaymentSession.accounting_mode == "wholesale_account",
+                    PaymentSession.state.in_((SESSION_STATE_OPEN, SESSION_STATE_DRAINING)),
+                    (PaymentSession.last_polled_at.is_(None))
+                    | (PaymentSession.last_polled_at < cutoff),
+                )
+                .order_by(PaymentSession.last_polled_at.asc().nulls_first())
+                .limit(batch_limit)
+            )
+        ).all()
+    )
+
+    finalized = 0
+    for session_row in rows:
+        snapshot = session_row.route_snapshot or {}
+        broker_url = snapshot.get("broker_url", snapshot.get("worker_url"))
+        if not isinstance(broker_url, str) or not broker_url:
+            continue
+        try:
+            settlement = await settlement_client.get_settlement(
+                broker_url=broker_url,
+                gateway_session_id=session_row.id,
+            )
+        except BrokerSettlementQueryError:
+            continue
+
+        await mark_polled(db, session_row.id, clock=clock)
+        if settlement is None:
+            continue
+
+        block = (session_row.breakdown or {}).get("settlement_block")
+        signature = settlement.get("signature") if isinstance(settlement, dict) else None
+        signature_value = signature.get("value") if isinstance(signature, dict) else None
+        if isinstance(block, dict) and block.get("signature") == signature_value:
+            # Same broker record that already failed against this snapshot;
+            # nothing changed, so do not re-verify or re-report it.
+            continue
+        try:
+            verified = await _verify_close_settlement(
+                db,
+                session_row=session_row,
+                settlement=settlement,
+                require_terminal=False,
+            )
+        except SessionSettlementVerificationFailed as exc:
+            reason = str(exc.details.get("reason", "unknown"))
+            if reason == "settlement_replay":
+                # The broker's latest record is one LOC already applied
+                # (the open or a refill). Nothing newer to verify yet; the
+                # SDK close will bring the terminal record.
+                continue
+            session_row.breakdown = {
+                **(session_row.breakdown or {}),
+                "settlement_block": {
+                    "reason": reason,
+                    "signature": signature_value,
+                    "first_seen": clock.now().isoformat(),
+                    "last_seen": clock.now().isoformat(),
+                    "attempts": 1,
+                },
+            }
+            await db.flush()
+            await telemetry_events.emit_settlement_verification_failed(
+                db,
+                api_key_id=session_row.api_key_id,
+                user_id=session_row.user_id,
+                session_id=session_row.id,
+                protocol=session_row.protocol,
+                reason=reason,
+                clock=clock,
+            )
+            continue
+        if verified.state != "closed":
+            continue
+
+        try:
+            close_response = await close_session(
+                db,
+                session_id=session_row.id,
+                user_id=session_row.user_id,
+                actual_units=verified.debited_units,
+                outcome=None,
+                settlement=settlement,
+                clock=clock,
+            )
+        except SessionNotOpen:
+            continue
+        finalized += 1
+        opened_at = session_row.opened_at
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=clock.now().tzinfo)
+        await telemetry_events.emit_session_janitor_finalized(
+            db,
+            api_key_id=session_row.api_key_id,
+            user_id=session_row.user_id,
+            session_id=session_row.id,
+            actual_units=close_response.actual_units,
+            billed_value_wei=int(close_response.billed_value_wei),
+            refund_wei=int(close_response.refund_wei),
+            outcome=close_response.outcome,
+            silence_duration_seconds=max(int((clock.now() - opened_at).total_seconds()), 0),
+            clock=clock,
+        )
+
+    return finalized
 
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1932,9 @@ async def get_session_status(
             session_row=session_row,
             user_id=user_id,
             next_mint_value_wei=Decimal(0),
+            session_units_exhausted=(
+                await _session_funded_units(db, session_id) >= session_row.max_total_units
+            ),
             cfg=cfg,
             clock=clock,
         )
@@ -1122,13 +1951,13 @@ async def get_session_status(
         work_id=session_row.work_id,
         capability=session_row.capability,
         offering=session_row.offering,
-        mode=session_row.mode,
+        protocol=session_row.protocol,
         state=session_row.state,
         estimated_units=session_row.estimated_units,
         max_total_units=session_row.max_total_units,
         funded_value_wei=int(session_row.funded_value_wei),
         billed_value_wei=billed_wei,
-        refill_count=session_row.last_debit_seq,
+        refill_count=session_row.refill_seq,
         cap_status=cap_status,
         opened_at=session_row.opened_at,
         closed_at=session_row.closed_at,
@@ -1138,175 +1967,3 @@ async def get_session_status(
 
 
 # ---------------------------------------------------------------------------
-# Reconciliation janitor (background task)
-# ---------------------------------------------------------------------------
-
-
-# Default cadence for the per-session daemon poll (overridable via the
-# scheduler-job registration call site in main.py). The doc proposed 60s
-# as the safety-net interval; we expose it here as the public default.
-DEFAULT_JANITOR_INTERVAL_SECONDS = 60
-
-
-async def reconcile_open_sessions(
-    db: AsyncSession,
-    *,
-    daemon: PaymentDaemonClient,
-    clock: Clock,
-    interval_seconds: int = DEFAULT_JANITOR_INTERVAL_SECONDS,
-    batch_limit: int = 100,
-) -> int:
-    """Walk open sessions and reconcile against the daemon's ledger.
-
-    For each open ``payment_session`` whose ``last_polled_at`` is
-    older than ``interval_seconds`` (or NULL):
-
-      1. Look up the most-recent Payment on the session to get the
-         sender address (already encoded into work_id at mint).
-      2. Call ``daemon.get_session_debits(sender, work_id)``.
-      3. ``mark_polled`` to update ``last_polled_at`` regardless of
-         outcome (so we don't tight-loop on flaky polls).
-      4. If ``closed=True`` and our row is still open: finalize via
-         :func:`close_session` with the daemon's
-         ``total_work_units`` as authoritative. This is the
-         silent-SDK / crashed-customer recovery path.
-      5. If still open and the SDK has reported nothing recently,
-         just log; no action — the session continues until either
-         the SDK closes it OR the broker does and we observe
-         ``closed=True``.
-
-    Returns the number of sessions reconciled to ``closed`` state
-    this pass. Batches at ``batch_limit`` so a backlog doesn't
-    block the scheduler tick.
-    """
-    # Build the candidates query: open sessions whose last_polled_at
-    # is older than (now - interval) OR NULL. We use the composite
-    # index ix_payment_session_state_last_polled_at.
-    now = clock.now()
-    cutoff = now - timedelta(seconds=interval_seconds)
-
-    rows_result = await db.scalars(
-        select(PaymentSession)
-        .where(
-            PaymentSession.state == SESSION_STATE_OPEN,
-            (PaymentSession.last_polled_at.is_(None)) | (PaymentSession.last_polled_at < cutoff),
-        )
-        .order_by(PaymentSession.last_polled_at.asc().nulls_first())
-        .limit(batch_limit)
-    )
-    rows = list(rows_result.all())
-
-    finalized = 0
-    for ps in rows:
-        # Find the initial Payment to get the recipient + sender address.
-        # We use sender = bytes from the payer-daemon side; today our
-        # daemon client doesn't expose the sender (it's the daemon's own
-        # signing key), so we pass empty bytes and rely on the daemon
-        # to match by work_id alone. When the real daemon needs the
-        # sender for lookup, we'll thread it through here.
-        try:
-            debits = await daemon.get_session_debits(sender=b"", work_id=ps.work_id)
-        except Exception:  # noqa: S112 — transient daemon failure; retry next tick
-            # The scheduler's outer wrapper logs the failure for the
-            # whole pass; per-session detail goes into telemetry once
-            # PR-N wires it up.
-            continue
-
-        # Update last_polled_at unconditionally.
-        await mark_polled(db, ps.id, clock=clock)
-
-        # The daemon ledger reported the session is closed. We have to
-        # finalize on our side. Use the daemon's authoritative
-        # total_work_units, no outcome (close_session will infer one).
-        if debits.closed:
-            try:
-                close_response = await close_session(
-                    db,
-                    session_id=ps.id,
-                    user_id=ps.user_id,
-                    actual_units=int(debits.total_work_units),
-                    outcome=None,
-                    settlement={"reconciled_by": "janitor"},
-                    clock=clock,
-                )
-            except SessionNotOpen:
-                # Raced with an explicit SDK close between the poll and
-                # the finalize. That's fine.
-                continue
-            finalized += 1
-            # Best-effort: how long was the session silent before the
-            # janitor finalized it? Bound by opened_at since the SDK
-            # never sent a close; precise idle measurement needs the
-            # last-debit-observed timestamp from the daemon (not yet
-            # exposed).
-            # opened_at may come back tz-naive from some drivers (SQLite);
-            # normalize both sides before subtracting.
-            opened_at_aware = (
-                ps.opened_at
-                if ps.opened_at.tzinfo is not None
-                else ps.opened_at.replace(tzinfo=now.tzinfo)
-            )
-            silence_seconds = max(
-                int((now - opened_at_aware).total_seconds()),
-                0,
-            )
-            await telemetry_events.emit_session_janitor_finalized(
-                db,
-                api_key_id=ps.api_key_id,
-                user_id=ps.user_id,
-                session_id=ps.id,
-                actual_units=close_response.actual_units,
-                billed_value_wei=int(close_response.billed_value_wei),
-                refund_wei=int(close_response.refund_wei),
-                outcome=close_response.outcome,
-                silence_duration_seconds=silence_seconds,
-                clock=clock,
-            )
-
-    return finalized
-
-
-# ---------------------------------------------------------------------------
-# Discrepancy detection — settle-time SDK-vs-daemon cross-check
-# ---------------------------------------------------------------------------
-
-
-# Tolerance below which a SDK/daemon delta is benign rounding noise.
-# Anything larger fires server.discrepancy_detected so operators can
-# investigate the API key.
-_DISCREPANCY_MIN_ABS_UNITS = 5
-_DISCREPANCY_MIN_RELATIVE = 0.01  # 1 %
-
-
-async def _emit_discrepancy_if_diverged(
-    db: AsyncSession,
-    *,
-    session_row: PaymentSession,
-    sdk_units: int,
-    daemon: PaymentDaemonClient,
-    clock: Clock,
-) -> None:
-    """Compare the SDK-reported ``actual_units`` against the daemon's
-    ``GetSessionDebits.total_work_units``. Emit
-    ``server.discrepancy_detected`` if the delta exceeds the noise
-    floor. Best-effort: any failure (daemon unreachable, parse error)
-    is swallowed."""
-    try:
-        debits = await daemon.get_session_debits(sender=b"", work_id=session_row.work_id)
-    except Exception:
-        return
-    daemon_units = int(debits.total_work_units)
-    delta = abs(sdk_units - daemon_units)
-    if delta < _DISCREPANCY_MIN_ABS_UNITS:
-        return
-    if daemon_units > 0 and (delta / daemon_units) < _DISCREPANCY_MIN_RELATIVE:
-        return
-    await telemetry_events.emit_discrepancy_detected(
-        db,
-        api_key_id=session_row.api_key_id,
-        user_id=session_row.user_id,
-        job_or_session_id=session_row.id,
-        sdk_reported_units=sdk_units,
-        daemon_units=daemon_units,
-        clock=clock,
-    )

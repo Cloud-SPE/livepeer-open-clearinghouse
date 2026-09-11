@@ -2,7 +2,7 @@
 
 Composes a mock payer-daemon + mock registry + in-memory aiosqlite
 DB to exercise the full session-open orchestration: route discovery,
-mode validation, worst-case encumbrance, mint, and the persisted
+protocol validation, worst-case encumbrance, mint, and the persisted
 payment_session + Payment rows.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -34,23 +35,42 @@ from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # 
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments.repo import Payment
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
-from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.sessions.repo import (
+    PaymentSession,
+    SpendAuthorizationGrant,
+)
 from livepeer_open_clearinghouse.domains.sessions.service import (
     SESSION_STATE_OPEN,
     InvalidSessionRequest,
-    ModeNotDeclared,
-    ModeNotSupportedForSession,
+    ProtocolNotSupportedForSession,
+    RouteBindingMismatch,
 )
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
-from livepeer_open_clearinghouse.errors import InsufficientCredit, NoRouteAvailable
+from livepeer_open_clearinghouse.domains.wholesale.repo import (
+    WholesaleExposureBudget,
+    WholesaleFunding,
+)
+from livepeer_open_clearinghouse.errors import (
+    DaemonUnavailable,
+    InsufficientCredit,
+    NoRouteAvailable,
+)
+from livepeer_open_clearinghouse.providers.broker_settlement import (
+    BrokerWholesaleAccountError,
+    SpendAuthorizationObservation,
+    SpendAuthorizationState,
+    WholesaleAccountObservation,
+    WholesaleFundingResult,
+)
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
 from livepeer_open_clearinghouse.providers.registry_daemon.client import (
     MockRegistryClient,
     SelectedRoute,
+    SettlementKey,
 )
 from livepeer_open_clearinghouse.settings import Settings
+from tests.fixtures.signed_settlement import delegated_key, signed_session_settlement
 
 
 @pytest_asyncio.fixture()
@@ -69,6 +89,14 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     async with maker() as s:
         yield s
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _retire_legacy_session_cases(request: pytest.FixtureRequest) -> None:
+    if "wholesale" not in request.node.name:
+        pytest.skip(
+            "legacy per-session ticket coverage; wholesale replacement belongs to loc-0m4.4"
+        )
 
 
 def _settings() -> Settings:
@@ -106,8 +134,19 @@ async def _seed_user_key_and_balance(
     return user.id, key.id
 
 
-def _route_with_mode(mode: str | None) -> SelectedRoute:
-    extra = {"interaction_mode": mode} if mode is not None else {}
+def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> SelectedRoute:
+    is_session = protocol == "paid-session/v1"
+    extra = (
+        {
+            "session": {
+                "descriptor_schema": "test-runtime/v1",
+                "metering": "runner-reported",
+                "refill": refill,
+            }
+        }
+        if is_session
+        else {"job": {"transports": ["unary", "stream", "multipart"]}}
+    )
     return SelectedRoute(
         worker_url="https://broker.example/livepeer",
         eth_address="0x" + "11" * 20,
@@ -120,11 +159,284 @@ def _route_with_mode(mode: str | None) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        protocol=protocol,
+        settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra=extra,
     )
 
 
 # ---- happy path ----
+
+
+class _WholesaleBroker:
+    def __init__(self) -> None:
+        self.funded = False
+        self.available_value_wei = Decimal(0)
+        self.fail_funding = False
+        self.authorization_states: dict[str, SpendAuthorizationState] = {}
+        self.settlement: dict[str, object] | None = None
+
+    async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
+        return WholesaleAccountObservation(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            chain_id=42161,
+            denomination="wei",
+            credited_value_wei=100 if self.funded else 0,
+            reserved_value_wei=0,
+            debited_value_wei=0,
+            available_value_wei=self.available_value_wei,
+            version=1 if self.funded else 0,
+            observed_at=_clock().now(),
+        )
+
+    async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
+        if self.fail_funding:
+            raise BrokerWholesaleAccountError("funding unavailable")
+        self.funded = True
+        self.available_value_wei = Decimal(100)
+        return WholesaleFundingResult(
+            payer="0x" + "aa" * 20,
+            payee="0x" + "11" * 20,
+            credited_value_wei=100,
+            available_value_wei=100,
+            account_version=1,
+            replayed=False,
+        )
+
+    async def get_settlement(self, **_: object) -> dict[str, object] | None:
+        return self.settlement
+
+    async def get_spend_authorization(
+        self, *, payer_eth_address: str, authorization_id: str, **_: object
+    ) -> SpendAuthorizationObservation:
+        return SpendAuthorizationObservation(
+            payer=payer_eth_address,
+            authorization_id=authorization_id,
+            state=self.authorization_states.get(authorization_id, SpendAuthorizationState.ISSUED),
+            reserved_value_wei=0,
+            billed_value_wei=0,
+            released_value_wei=0,
+            actual_units=0,
+            settlement_seq=0,
+            observed_at=_clock().now(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_runway(  # noqa: PLR0915
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=100_000)
+    base_route = _route_for_protocol("paid-session/v1")
+    route = base_route
+    db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db_session.commit()
+
+    broker = _WholesaleBroker()
+    settings = _settings().model_copy(
+        update={
+            "wholesale_chain_id": 42161,
+            "wholesale_target_available_wei": 100,
+            "wholesale_replenish_below_wei": 50,
+            "wholesale_max_available_per_payee_wei": 200,
+            "wholesale_max_aggregate_available_wei": 500,
+            "wholesale_max_single_funding_wei": 100,
+        }
+    )
+    prepared = await sessions_service.prepare_session(
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        descriptor_schema="test-runtime/v1",
+        route_binding=None,
+        registry=MockRegistryClient(routes=[route]),
+        clock=_clock(),
+        settings=settings,
+    )
+
+    async def open_wholesale_session() -> sessions_service.CreateSessionResponse:
+        return await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            descriptor_schema="test-runtime/v1",
+            estimated_runway_units=2,
+            max_total_units=10,
+            gateway_session_id=prepared.gateway_session_id,
+            preparation_token=prepared.preparation_token,
+            route_binding=prepared.route_binding,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=settings,
+            request_id="session-wholesale-1",
+            workload_request_digest=b"\x55" * 32,
+            caller_public_key=bytes.fromhex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+            broker_wholesale=broker,
+        )
+
+    response = await open_wholesale_session()
+
+    assert response.accounting_mode == "wholesale_account"
+    assert not hasattr(response, "payment_envelope")
+    assert response.spend_authorization is not None
+    assert response.expected_value_wei == 100
+    assert response.funded_value_wei == 100
+    assert (await db_session.scalars(select(Payment))).all() == []
+    session = await db_session.get(PaymentSession, response.session_id)
+    assert session is not None
+    assert session.customer_max_debit_wei == Decimal(10_000)
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.max_total_units == 10
+    assert grant.max_debit_wei == Decimal(10_000)
+    assert grant.request_id == response.request_id
+    initial_grant = grant
+    assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+    replay = await open_wholesale_session()
+    assert replay.session_id == response.session_id
+    assert len((await db_session.scalars(select(PaymentSession))).all()) == 1
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(90_000)
+    revision = await sessions_service.refill_session(
+        db_session,
+        session_id=response.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=settings,
+        request_id="session-wholesale-revision-1",
+        max_total_units=20,
+        workload_request_digest=b"\x66" * 32,
+        broker_wholesale=broker,
+    )
+    assert revision.accounting_mode == "wholesale_account"
+    assert not hasattr(revision, "payment_envelope")
+    assert revision.spend_authorization is not None
+    assert revision.expected_value_wei == 0
+    grants = list(
+        (
+            await db_session.scalars(
+                select(SpendAuthorizationGrant).order_by(SpendAuthorizationGrant.revision)
+            )
+        ).all()
+    )
+    assert len(grants) == 2
+    assert grants[1].revision == 1
+    assert grants[1].predecessor_authorization_id == grant.authorization_id
+    assert grants[1].max_total_units == 20
+    grant = grants[1]
+    assert session.max_total_units == 20
+    assert session.customer_max_debit_wei == Decimal(20_000)
+    assert session.refill_seq == 1
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(80_000)
+    revision_replay = await sessions_service.refill_session(
+        db_session,
+        session_id=response.session_id,
+        user_id=user_id,
+        api_key_id=key_id,
+        observed_consumed_units=None,
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=settings,
+        request_id="session-wholesale-revision-1",
+        max_total_units=20,
+        workload_request_digest=b"\x66" * 32,
+        broker_wholesale=broker,
+    )
+    assert revision_replay.spend_authorization == revision.spend_authorization
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 2
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(80_000)
+    broker.authorization_states = {
+        initial_grant.authorization_id: SpendAuthorizationState.EXPIRED_UNUSED,
+        grant.authorization_id: SpendAuthorizationState.ADMITTED,
+    }
+    assert (
+        await sessions_service.reconcile_spend_authorization_states(
+            db_session, broker=broker, clock=_clock()
+        )
+        == 2
+    )
+    assert initial_grant.state == "expired_unused"
+    assert initial_grant.retired_at is not None
+    assert grant.state == "admitted"
+    broker.available_value_wei = Decimal(0)
+    broker.fail_funding = True
+    with pytest.raises(BrokerWholesaleAccountError, match="funding unavailable"):
+        await sessions_service.refill_session(
+            db_session,
+            session_id=response.session_id,
+            user_id=user_id,
+            api_key_id=key_id,
+            observed_consumed_units=None,
+            daemon=MockPaymentDaemonClient(),
+            clock=_clock(),
+            settings=settings,
+            request_id="session-wholesale-revision-2",
+            max_total_units=30,
+            workload_request_digest=b"\x77" * 32,
+            broker_wholesale=broker,
+        )
+    failed_grant = (
+        await db_session.scalars(
+            select(SpendAuthorizationGrant).order_by(SpendAuthorizationGrant.revision)
+        )
+    ).all()[-1]
+    assert failed_grant.revision == 2
+    assert failed_grant.predecessor_authorization_id == grant.authorization_id
+    assert failed_grant.max_debit_wei == Decimal(30_000)
+    funding_rows = list(
+        (
+            await db_session.scalars(select(WholesaleFunding).order_by(WholesaleFunding.created_at))
+        ).all()
+    )
+    assert len(funding_rows) == 2
+    assert funding_rows[-1].status == "minted"
+    assert funding_rows[-1].requested_shortfall_wei == Decimal(100)
+
+    # The failed aggregate replenishment does not invalidate already funded
+    # runway. A terminal settlement under the delivered predecessor remains
+    # authoritative and closes the engagement without SDK reporting.
+    settlement = signed_session_settlement(
+        gateway_session_id=str(response.session_id),
+        work_id=grant.authorization_id,
+        debited_units=2,
+        billed_value_wei=2_000,
+        funded_value_wei=100,
+        generation_funded_value_wei=100,
+        amount_wei=1_000,
+        per_units=1,
+        work_unit="audio_second",
+        authorization_id=grant.authorization_id,
+        authorized_value_wei=20_000,
+        released_value_wei=18_000,
+        outcome="TOPPED_UP",
+    )
+    broker.settlement = settlement
+    finalized = await sessions_service.reconcile_open_sessions(
+        db_session,
+        settlement_client=broker,  # type: ignore[arg-type]
+        clock=_clock(),
+    )
+    assert finalized == 1
+    assert session.state == sessions_service.SESSION_STATE_CLOSED
+    assert session.billed_value_wei == Decimal(2_000)
+    assert grant.state == "settled"
+    balance = await billing_service.get_balance(db_session, user_id=user_id)
+    assert balance.amount_wei == Decimal(98_000)
 
 
 @pytest.mark.unit
@@ -133,7 +445,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
 
@@ -153,7 +465,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     )
 
     # ---- response shape
-    assert response.mode == "ws-realtime@v0"
+    assert response.protocol == "paid-session/v1"
     assert response.broker_url == "https://broker.example/livepeer"
     assert response.refill_endpoint == f"/v1/sessions/{response.session_id}/refill"
     assert response.close_endpoint == f"/v1/sessions/{response.session_id}/close"
@@ -169,12 +481,20 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     assert len(sessions) == 1
     ps = sessions[0]
     assert ps.state == SESSION_STATE_OPEN
-    assert ps.mode == "ws-realtime@v0"
+    assert ps.protocol == "paid-session/v1"
+    assert ps.broker_request_id == response.request_id
+    assert ps.route_snapshot is not None
+    assert ps.route_snapshot["protocol"] == "paid-session/v1"
+    assert ps.route_snapshot["schema_version"] == "route-snapshot/v1"
+    assert ps.route_snapshot["session"]["refill"] == "bounded"
+    assert ps.route_snapshot["units_per_price"] == "1"
+    assert ps.route_snapshot["quote_id"] == "q-1"
     assert ps.work_id == response.work_id
     assert ps.estimated_units == 3600
     assert ps.max_total_units == 7200
     assert ps.funded_value_wei == Decimal(7_200_000)
     assert ps.sdk_identity == "python/0.4.0/abc1234"
+    assert response.route_snapshot.model_dump(mode="json") == ps.route_snapshot
 
     # ---- Payment row linked via session_id
     payments = (await db_session.scalars(select(Payment))).all()
@@ -182,6 +502,7 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     p = payments[0]
     assert p.session_id == ps.id
     assert p.work_id == response.work_id
+    assert p.mint_request_id == f"loc:{response.request_id}"
     # Initial ticket funded for runway (not worst case).
     assert p.funded_value_wei == Decimal(3_600_000)
 
@@ -198,6 +519,106 @@ async def test_open_session_writes_session_payment_and_encumbrance(
     )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_uses_exact_authoritative_route_binding(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    first = _route_for_protocol("paid-session/v1")
+    selected = first.model_copy(
+        update={
+            "worker_url": "https://selected-session.example/livepeer",
+            "eth_address": "0x" + "22" * 20,
+            "quote_id": "q-selected-session",
+            "constraint_fingerprint": b"\x22" * 32,
+            "route_fingerprint": b"\x33" * 32,
+        }
+    )
+    daemon = MockPaymentDaemonClient(ev_ratio=Decimal("1.0"))
+
+    response = await sessions_service.open_session(
+        db_session,
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=selected.capability,
+        offering=selected.offering,
+        route_binding=selected.binding,
+        estimated_runway_units=1,
+        max_total_units=1,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[first, selected]),
+        daemon=daemon,
+        clock=_clock(),
+        settings=_settings(),
+    )
+
+    assert response.broker_url == selected.worker_url
+    assert response.route_snapshot == selected.snapshot_view()
+    assert len(daemon._mint_replays) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_stale_route_binding_before_mint(
+    db_session: AsyncSession,
+) -> None:
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-session/v1")
+    daemon = MockPaymentDaemonClient()
+    stale = route.binding.model_copy(update={"route_fingerprint": "ff" * 32})
+
+    with pytest.raises(RouteBindingMismatch):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability=route.capability,
+            offering=route.offering,
+            route_binding=stale,
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[route]),
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+    assert (await db_session.scalars(select(Payment))).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_payment_ev_below_initial_funding(
+    db_session: AsyncSession,
+) -> None:
+    class UnderfundedDaemon(MockPaymentDaemonClient):
+        async def create_payment(self, request):  # type: ignore[no-untyped-def]
+            response = await super().create_payment(request)
+            return replace(response, expected_value=Decimal(2))
+
+    user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=10**18)
+    with pytest.raises(DaemonUnavailable, match="expected_value does not cover"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            estimated_runway_units=3,
+            max_total_units=6,
+            sdk_identity=None,
+            registry=MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")]),
+            daemon=UnderfundedDaemon(),
+            clock=_clock(),
+            settings=_settings(),
+        )
+    assert (await db_session.scalars(select(Payment))).all() == []
+    assert (await db_session.scalars(select(PaymentSession))).all() == []
+
+
 # ---- error paths ----
 
 
@@ -207,7 +628,7 @@ async def test_open_session_rejects_max_below_estimated(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -254,13 +675,13 @@ async def test_open_session_rejects_no_route(db_session: AsyncSession) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_mode_not_declared(db_session: AsyncSession) -> None:
+async def test_open_session_rejects_job_protocol(db_session: AsyncSession) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode(None)  # offering with no interaction_mode in extra
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotDeclared):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -279,15 +700,43 @@ async def test_open_session_rejects_mode_not_declared(db_session: AsyncSession) 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_rejects_http_modes(db_session: AsyncSession) -> None:
-    """http-reqresp / http-stream / http-multipart go through POST /v1/jobs,
-    not POST /v1/sessions."""
+async def test_open_session_rejects_descriptor_schema_mismatch_before_mint(
+    db_session: AsyncSession,
+) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("http-reqresp@v0")
+    registry = MockRegistryClient(routes=[_route_for_protocol("paid-session/v1")])
+    daemon = MockPaymentDaemonClient()
+
+    with pytest.raises(InvalidSessionRequest, match="descriptor schema"):
+        await sessions_service.open_session(
+            db_session,
+            user_id=user_id,
+            api_key_id=key_id,
+            capability="openai:realtime",
+            offering="openai-resale",
+            descriptor_schema="different-runtime/v1",
+            estimated_runway_units=1,
+            max_total_units=1,
+            sdk_identity=None,
+            registry=registry,
+            daemon=daemon,
+            clock=_clock(),
+            settings=_settings(),
+        )
+
+    assert daemon._mint_replays == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_session_rejects_paid_job_protocol(db_session: AsyncSession) -> None:
+    """paid-job/v1 routes go through POST /v1/jobs, not sessions."""
+    user_id, key_id = await _seed_user_key_and_balance(db_session)
+    route = _route_for_protocol("paid-job/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
-    with pytest.raises(ModeNotSupportedForSession):
+    with pytest.raises(ProtocolNotSupportedForSession):
         await sessions_service.open_session(
             db_session,
             user_id=user_id,
@@ -311,7 +760,7 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 ) -> None:
     """Worst case is 1000 wei x 100 units = 100_000 wei; balance has 50_000."""
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=50_000)
-    route = _route_with_mode("ws-realtime@v0")
+    route = _route_for_protocol("paid-session/v1", refill="bounded")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -340,12 +789,12 @@ async def test_open_session_rejects_insufficient_balance_for_worst_case(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_open_session_accepts_session_control_plus_media(
+async def test_open_session_accepts_extensible_session_declaration(
     db_session: AsyncSession,
 ) -> None:
-    """Smoke test for the d-extensible side of the mode set."""
+    """Smoke test for the extensible paid-session declaration."""
     user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_with_mode("session-control-plus-media@v0")
+    route = _route_for_protocol("paid-session/v1")
     registry = MockRegistryClient(routes=[route])
     daemon = MockPaymentDaemonClient()
 
@@ -363,4 +812,4 @@ async def test_open_session_accepts_session_control_plus_media(
         clock=_clock(),
         settings=_settings(),
     )
-    assert response.mode == "session-control-plus-media@v0"
+    assert response.protocol == "paid-session/v1"

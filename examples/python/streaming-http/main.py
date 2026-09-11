@@ -1,4 +1,4 @@
-"""Streaming session with HTTP topup (live-session-remote-runner@v0).
+"""Extensible paid-session/v1 session with authoritative HTTP top-up.
 
 Run with:
 
@@ -12,11 +12,8 @@ WebSocket — the customer's media plane observes balance-low out-of-band
 and routes the signal into the runner. The runner then asks LOC for a
 refill and POSTs it to the broker's control.topup_url.
 
-Note: the Python SDK's SessionRunner doesn't currently expose a public
-``on_balance_low`` method (unlike TS/Rust/Go); this example reaches into
-the private ``_on_balance_low`` to demonstrate the flow. Customers who
-prefer a public seam can call ``client.refill_session(...)`` directly
-and POST the envelope to the broker themselves.
+The media plane passes the broker's normative balance object into the public
+``on_balance`` method.
 """
 
 from __future__ import annotations
@@ -39,10 +36,11 @@ async def main() -> None:
         handle = await client.open_session(
             capability="livepeer:remote-runner",
             offering="live-session-remote-runner",
+            descriptor_schema="livepeer.session.remote-runner/v1",
             estimated_runway_units=1000,
             max_total_units=10000,
         )
-        print(f"session opened: {handle.session_id} (mode={handle.mode})")
+        print(f"session opened: {handle.session_id} (protocol={handle.protocol})")
 
         async with SessionRunner(
             client=client,
@@ -57,7 +55,17 @@ async def main() -> None:
         ) as runner:
             # Customer-driven refill. In production this fires when the
             # media plane observes balance-low on the runner channel.
-            await runner._on_balance_low({"observed_consumed_units": 500})  # noqa: SLF001
+            await runner.on_balance(
+                {
+                    "status": "low",
+                    "claimed_units": 500,
+                    "debited_units": 500,
+                    "unit": "session_second",
+                    "runway_units": 100,
+                    "runway_seconds_estimate": 100,
+                    "will_refuse_next_refill": False,
+                }
+            )
 
             settle = await runner.close(actual_units=750, outcome="complete")
             print("==== final settlement ====")

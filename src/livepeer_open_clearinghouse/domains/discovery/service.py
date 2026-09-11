@@ -26,6 +26,11 @@ def _offering(info: object) -> OfferingView:
         id=info.id,  # type: ignore[attr-defined]
         price_per_work_unit_wei=info.price_per_work_unit_wei,  # type: ignore[attr-defined]
         work_unit=info.work_unit,  # type: ignore[attr-defined]
+        units_per_price=info.units_per_price,  # type: ignore[attr-defined]
+        protocol=info.protocol,  # type: ignore[attr-defined]
+        work_unit_estimator=info.work_unit_estimator,  # type: ignore[attr-defined]
+        job=info.job,  # type: ignore[attr-defined]
+        session=info.session,  # type: ignore[attr-defined]
         extra=getattr(info, "extra", {}) or {},
     )
 
@@ -34,6 +39,7 @@ def _capability(info: CapabilityInfo) -> CapabilityView:
     return CapabilityView(
         name=info.name,
         work_unit=info.work_unit,
+        work_unit_estimator=info.work_unit_estimator,
         offerings=[_offering(o) for o in info.offerings],
     )
 
@@ -58,6 +64,16 @@ def _route(r: SelectedRoute) -> RouteView:
         work_unit=r.work_unit,
         units_per_price=r.units_per_price,
         quote_id=r.quote_id,
+        quote_version=r.quote_version,
+        constraint_fingerprint=r.constraint_fingerprint.hex(),
+        route_fingerprint=r.route_fingerprint.hex(),
+        protocol=r.protocol,
+        settlement_keys=r.settlement_keys,
+        work_unit_estimator=r.work_unit_estimator,
+        job=r.job,
+        session=r.session,
+        route_binding=r.binding,
+        route_snapshot=r.snapshot_view(),
         extra=dict(r.extra),
     )
 

@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "captured_at": "2026-09-09T20:46:25.741247Z",
+  "status": "passed",
+  "command": "make test-wholesale-rollout",
+  "loc_revision": "c09e82eea8be77b0d71f2ae2ca885269ed1e137a",
+  "modules_revision": "2ccf3f3116a40c0d96c06534c5c350be654d5202",
+  "live_stack_required": true,
+  "cases": [
+    {"name": "negotiation_fail_closed", "status": "passed", "log_sha256": "bf22e88f0e3a0e89eddb09d252b1661a48c9dfc4bd5aa177b5efca41f2700a18"},
+    {"name": "customer_wholesale_isolation", "status": "passed", "log_sha256": "ef0e7ef49e71fa999842be0cb8d22ec1058d3a384ed5c0a2ec6efb8f434975ac"},
+    {"name": "bounded_shortfall_and_replay", "status": "passed", "log_sha256": "7548474fb14d06939e7c5c04118884c7575e481e66341dcb60a44054161cc931"},
+    {"name": "authorization_scope_revision_and_cap", "status": "passed", "log_sha256": "698857960888a8b7dfacbbedaa34caceac2111f4575220562fe736c8ada79c50"},
+    {"name": "sdk_independent_reconciliation", "status": "passed", "log_sha256": "12b244b923a290b739a003eb3101140e9d927d3db464d9bb0a855086430774c2"},
+    {"name": "loc_retry_crash_and_concurrency", "status": "passed", "log_sha256": "7cc127fe020da32868195e188da1d348871db50d57d5432fc7bef8c045a64dfd"},
+    {"name": "modules_payer_receiver_contract", "status": "passed", "log_sha256": "ec75fdf95ad9111f237940cc467fc18e44b1a7a93c936ab6b5ca1405916bc1b5"},
+    {"name": "modules_broker_account_contract", "status": "passed", "log_sha256": "14e6fc0a0aa087832bdf690b7f8d3539b2e6d470fe1aaed95062b142bcdb228a"},
+    {"name": "legacy_regression", "status": "passed", "log_sha256": "45aad9a0cb7c6e8ef1f3dc894d9bbdecc72190e4118bfcb8398f4bbb68a3d31a"},
+    {"name": "real_process_legacy_control", "status": "passed", "log_sha256": "e3210694b704042d988af9adb38da1be1e8e15dd9469e45842856a65a15a6322"}
+  ]
+}

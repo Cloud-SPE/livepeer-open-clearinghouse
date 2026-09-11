@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Example: streaming session with WS topup (session-control-plus-media@v0).",
+  "description": "Example: paid-session/v1 with an optional events WebSocket.",
   "scripts": {
     "start": "tsx src/main.ts"
   },

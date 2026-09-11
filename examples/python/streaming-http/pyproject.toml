@@ -1,7 +1,7 @@
 [project]
 name = "loc-example-streaming-http"
 version = "0.0.0"
-description = "Example: streaming session with HTTP topup (live-session-remote-runner@v0)."
+description = "Example: extensible paid-session/v1 with authoritative HTTP top-up."
 requires-python = ">=3.10"
 dependencies = ["livepeer-open-clearinghouse-sdk"]
 

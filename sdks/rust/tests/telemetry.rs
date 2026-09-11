@@ -122,3 +122,63 @@ async fn close_drains_remaining() {
         .await;
     em.close().await;
 }
+
+#[test]
+fn correlation_id_passes_uuid_through_lowercased() {
+    use livepeer_open_clearinghouse_sdk::telemetry_correlation_id;
+    assert_eq!(
+        telemetry_correlation_id("8D5C0E8A-2B7F-4C3D-9E1A-0F6B7C8D9E0F"),
+        "8d5c0e8a-2b7f-4c3d-9e1a-0f6b7c8d9e0f"
+    );
+    assert_eq!(
+        telemetry_correlation_id("8d5c0e8a2b7f4c3d9e1a0f6b7c8d9e0f"),
+        "8d5c0e8a-2b7f-4c3d-9e1a-0f6b7c8d9e0f"
+    );
+}
+
+#[test]
+fn correlation_id_derives_uuid5_for_non_uuid_values() {
+    use livepeer_open_clearinghouse_sdk::telemetry_correlation_id;
+    // python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL,'loc-test-chat-abc'))"
+    assert_eq!(
+        telemetry_correlation_id("loc-test-chat-abc"),
+        "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6"
+    );
+    assert_eq!(
+        telemetry_correlation_id("loc-test-chat-abc"),
+        telemetry_correlation_id("loc-test-chat-abc"),
+        "derivation is deterministic"
+    );
+}
+
+#[tokio::test]
+async fn emit_sends_uuid_correlation_ids_on_the_wire() {
+    use wiremock::matchers::body_partial_json;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/telemetry"))
+        .and(body_partial_json(serde_json::json!({
+            "events": [{ "correlation_id": "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6" }]
+        })))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let em = emitter(
+        &server,
+        EmitterConfig {
+            flush_interval_ms: 60_000,
+            ..Default::default()
+        },
+    );
+    em.emit(
+        "session.closed",
+        EmitOptions {
+            correlation_id: Some("loc-test-chat-abc".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    em.close().await;
+}

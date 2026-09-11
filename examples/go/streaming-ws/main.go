@@ -1,4 +1,4 @@
-// Streaming session with WS topup (session-control-plus-media@v0).
+// paid-session/v1 session with an optional broker events WebSocket.
 //
 //	OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
 //	OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
@@ -45,6 +45,8 @@ func run() error {
 	handle, err := client.OpenSession(ctx, loc.OpenSessionInput{
 		Capability:           "livepeer:live-video-control",
 		Offering:             "session-control-plus-media",
+		DescriptorSchema:     "livepeer.session.video-control/v1",
+		SessionParams:        map[string]any{},
 		EstimatedRunwayUnits: 1000,
 		MaxTotalUnits:        10000,
 	})
@@ -56,7 +58,7 @@ func run() error {
 		}
 		return err
 	}
-	fmt.Printf("session opened: %s (mode=%s)\n", handle.SessionID, handle.Mode)
+	fmt.Printf("session opened: %s (protocol=%s)\n", handle.SessionID, handle.Protocol)
 
 	runner := loc.NewSessionRunner(loc.SessionRunnerOptions{
 		Client: client,
@@ -66,11 +68,11 @@ func run() error {
 			if e.RefillSeq != nil {
 				seq = fmt.Sprintf("%d", *e.RefillSeq)
 			}
-			funded := int64(0)
-			if e.FundedValueWei != nil {
-				funded = *e.FundedValueWei
+			funded := "0"
+			if !e.FundedValueWei.IsNil() {
+				funded = e.FundedValueWei.String()
 			}
-			fmt.Printf("refill #%s: +%d wei\n", seq, funded)
+			fmt.Printf("refill #%s: +%s wei\n", seq, funded)
 		},
 		OnRefillRefused: func(e loc.RefillEvent) {
 			fmt.Printf("refill refused: %v\n", e.Error)

@@ -1,5 +1,5 @@
 /**
- * Streaming session with WS topup (session-control-plus-media@v0).
+ * paid-session/v1 session with an optional broker events WebSocket.
  *
  *     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
  *     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
@@ -21,7 +21,9 @@ async function main(): Promise<void> {
   const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
   const apiKey = process.env.OPEN_CLEARINGHOUSE_API_KEY;
   if (!baseUrl || !apiKey) {
-    throw new Error("set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY");
+    throw new Error(
+      "set OPEN_CLEARINGHOUSE_URL and OPEN_CLEARINGHOUSE_API_KEY",
+    );
   }
 
   const client = new OpenClearinghouseClient({ baseUrl, apiKey });
@@ -29,10 +31,13 @@ async function main(): Promise<void> {
   const handle = await client.openSession({
     capability: "livepeer:live-video-control",
     offering: "session-control-plus-media",
+    descriptorSchema: "livepeer.session.video-control/v1",
     estimatedRunwayUnits: 1000,
     maxTotalUnits: 10000,
   });
-  console.log(`session opened: ${handle.sessionId} (mode=${handle.mode})`);
+  console.log(
+    `session opened: ${handle.sessionId} (protocol=${handle.protocol})`,
+  );
 
   const runner = new SessionRunner({
     client,
@@ -55,7 +60,10 @@ async function main(): Promise<void> {
     // drive its own media plane on top of this WS rather than sleeping.
     await new Promise((r) => setTimeout(r, 3000));
 
-    const result = await runner.close({ actualUnits: 750, outcome: "complete" });
+    const result = await runner.close({
+      actualUnits: 750,
+      outcome: "complete",
+    });
     console.log("==== final settlement ====");
     console.log(`outcome: ${result.outcome}`);
     console.log(`billed:  ${result.billed_value_wei} wei`);

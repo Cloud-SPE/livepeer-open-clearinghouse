@@ -1,49 +1,17 @@
-"""SessionRunner — automatic refill loop for case-(d-extensible) modes.
-
-Wraps the broker-side wire (WS or HTTP-control) and the LOC-side
-refill loop into a single async context manager. Customer code
-opens a session via the SDK, hands the resulting SessionHandle to
-SessionRunner, and gets:
-
-  - Automatic subscription to `Livepeer-Balance-Low` from the broker
-  - Automatic refill: SDK calls LOC's refill endpoint, gets the
-    new envelope, delivers it to the broker via the mode-specific
-    channel
-  - Optional callbacks: ``on_refill_succeeded``, ``on_refill_refused``,
-    ``on_winddown_warning``
-  - Graceful close on cap-refusal or broker disconnect
-
-Per exec-plan 002 § "Refill delivery wire shapes (per mode)":
-
-  - ``session-control-plus-media@v0`` — WS to broker; ``session.topup``
-    JSON frame for refill delivery; ``Livepeer-Balance-Low`` is a
-    control-WS frame.
-  - ``live-session-remote-runner@v0`` / ``live-session-gateway-ingest@v0`` —
-    HTTP POST to ``control.topup_url`` (broker advertises it).
-    Balance-low signaling is mode-specific; in practice the
-    caller's media-plane disconnect is the canonical "session
-    ended" signal here.
-  - ``rtmp-ingress-hls-egress@v0`` — same WS pattern as
-    session-control-plus-media when ``control_url`` is opened;
-    otherwise balance-low manifests as an RTMP disconnect.
-  - ``ws-realtime@v0`` — BOUNDED. SessionRunner refuses to refill;
-    fires ``on_winddown_warning`` when balance-low arrives and lets
-    the session drain naturally.
-
-This is a reference implementation. Customers who need their own
-broker wire (e.g. RTMP ingest from their own encoder) can skip
-SessionRunner and call ``client.refill_session`` / ``client.close_session``
-directly while running their own broker connection.
-"""
+"""paid-session/v1 broker control driver with idempotent automatic refills."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import inspect
 import json
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -52,46 +20,76 @@ try:
     import websockets
     from websockets.asyncio.client import ClientConnection
     from websockets.exceptions import ConnectionClosed
-except ImportError as _exc:  # pragma: no cover — declared dep
-    raise ImportError(
-        "SessionRunner requires the `websockets` package. "
-        "Install with `pip install livepeer-open-clearinghouse-sdk[ws]` "
-        "or add `websockets` to your dependencies."
-    ) from _exc
+except ImportError as _exc:  # pragma: no cover - declared dependency
+    raise ImportError("SessionRunner requires the `websockets` package") from _exc
 
 from livepeer_open_clearinghouse_sdk.client import (
     OpenClearinghouseClient,
     SessionHandle,
+    _caller_proof,
 )
-from livepeer_open_clearinghouse_sdk.errors import OpenClearinghouseError
+from livepeer_open_clearinghouse_sdk.errors import BrokerProtocolError, OpenClearinghouseError
 
 _logger = logging.getLogger(__name__)
 
-# Modes that have no protocol-level topup. SessionRunner refuses to
-# refill these and fires the winddown callback instead.
-BOUNDED_MODES: frozenset[str] = frozenset({"ws-realtime@v0"})
 
-# Modes that deliver refill via a control-WS JSON frame.
-WS_TOPUP_MODES: frozenset[str] = frozenset(
-    {
-        "session-control-plus-media@v0",
-        "rtmp-ingress-hls-egress@v0",
-    }
-)
+@dataclass(frozen=True, slots=True)
+class SessionBalance:
+    status: str
+    claimed_units: int
+    debited_units: int
+    unit: str
+    runway_units: int
+    runway_seconds_estimate: int | None
+    will_refuse_next_refill: bool
 
-# Modes that deliver refill via HTTP POST to control.topup_url.
-HTTP_TOPUP_MODES: frozenset[str] = frozenset(
-    {
-        "live-session-remote-runner@v0",
-        "live-session-gateway-ingest@v0",
-    }
-)
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SessionBalance:
+        status = value.get("status")
+        if status not in {"ok", "low", "exhausted"}:
+            raise BrokerProtocolError(f"invalid session balance status {status!r}")
+        try:
+            return cls(
+                status=status,
+                claimed_units=int(value["claimed_units"]),
+                debited_units=int(value["debited_units"]),
+                unit=str(value["unit"]),
+                runway_units=int(value["runway_units"]),
+                runway_seconds_estimate=(
+                    None
+                    if value.get("runway_seconds_estimate") is None
+                    else int(value["runway_seconds_estimate"])
+                ),
+                will_refuse_next_refill=bool(value["will_refuse_next_refill"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BrokerProtocolError("broker returned a malformed balance object") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerControl:
+    status_url: str
+    topup_url: str
+    end_url: str
+    events_ws: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerSession:
+    session_id: str
+    work_id: str
+    state: str
+    runtime_schema: str
+    runtime_public: dict[str, Any]
+    grants: tuple[dict[str, Any], ...]
+    credential: str
+    lease_expires_at: str
+    balance: SessionBalance
+    control: BrokerControl
 
 
 @dataclass(frozen=True, slots=True)
 class RefillEvent:
-    """Payload to ``on_refill_succeeded`` / ``on_refill_refused``."""
-
     refill_seq: int | None
     expected_value_wei: int | None
     funded_value_wei: int | None
@@ -101,43 +99,20 @@ class RefillEvent:
 
 @dataclass(frozen=True, slots=True)
 class WinddownEvent:
-    """Payload to ``on_winddown_warning``."""
-
     reason: str
     projected_end_at: str | None
 
 
-# Convenient type aliases for the callbacks.
 RefillCallback = Callable[[RefillEvent], Awaitable[None] | None]
 WinddownCallback = Callable[[WinddownEvent], Awaitable[None] | None]
+CapExtensionCallback = Callable[[SessionBalance], Awaitable[int | None] | int | None]
 
 
 class SessionRunner:
-    """Run a long-running session with automatic refills.
+    """Open and control one paid-session/v1 broker session.
 
-    Usage::
-
-        handle = await client.open_session(...)
-        async with SessionRunner(
-            client=client,
-            handle=handle,
-            on_refill_succeeded=lambda e: print("refilled", e.refill_seq),
-            on_refill_refused=lambda e: print("refused", e.error),
-            on_winddown_warning=lambda w: print("ending:", w.reason),
-        ) as runner:
-            # ... do work over runner.broker_ws (or the mode-specific
-            # channel) ...
-            await runner.wait_closed()
-            # Final accounting:
-            print(runner.outcome, runner.billed_value_wei, runner.refund_wei)
-
-    The runner exits the context manager once the session is closed
-    (either by the customer via ``await runner.close()``, by the
-    broker via disconnect, or by LOC refusing a refill).
-
-    For ``ws-realtime@v0`` sessions: the runner connects, observes
-    balance-low signals, fires ``on_winddown_warning``, and lets
-    the broker close at balance-zero. No refills are attempted.
+    HTTP is authoritative for open, status, top-up, and end. The optional
+    control WebSocket only pushes balance and state changes early.
     """
 
     def __init__(
@@ -148,31 +123,33 @@ class SessionRunner:
         on_refill_succeeded: RefillCallback | None = None,
         on_refill_refused: RefillCallback | None = None,
         on_winddown_warning: WinddownCallback | None = None,
-        auto_close_on_disconnect: bool = True,
+        approve_cap_extension: CapExtensionCallback | None = None,
+        auto_close_on_disconnect: bool = False,
     ) -> None:
         self._client = client
         self._handle = handle
         self._on_refill_succeeded = on_refill_succeeded
         self._on_refill_refused = on_refill_refused
         self._on_winddown_warning = on_winddown_warning
+        self._approve_cap_extension = approve_cap_extension
         self._auto_close_on_disconnect = auto_close_on_disconnect
-
+        self._broker_session: BrokerSession | None = None
         self._ws: ClientConnection | None = None
-        self._control_topup_url: str | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._closed_event = asyncio.Event()
         self._final_settle: dict[str, Any] | None = None
+        self._pending_refill_key: str | None = None
+        self._pending_refill: dict[str, Any] | None = None
+        self._pending_refill_proof: str | None = None
+        self._pending_refill_max_total_units: int | None = None
+        self._closing = False
 
-        # Mode classification
-        self._is_bounded = handle.mode in BOUNDED_MODES
-        self._uses_ws_topup = handle.mode in WS_TOPUP_MODES
-        self._uses_http_topup = handle.mode in HTTP_TOPUP_MODES
-
-    # ---- public read accessors (populated on close) ----
+    @property
+    def broker_session(self) -> BrokerSession | None:
+        return self._broker_session
 
     @property
     def outcome(self) -> str | None:
-        """Settlement outcome string; None until close completes."""
         return None if self._final_settle is None else self._final_settle.get("outcome")
 
     @property
@@ -183,86 +160,124 @@ class SessionRunner:
     def refund_wei(self) -> int | None:
         return None if self._final_settle is None else self._final_settle.get("refund_wei")
 
-    # ---- async context manager ----
-
     async def __aenter__(self) -> SessionRunner:
-        await self._start()
+        await self.start()
         return self
 
     async def __aexit__(self, *_: object) -> None:
         if not self._closed_event.is_set():
             await self.close(actual_units=0)
 
-    # ---- lifecycle ----
-
-    async def _start(self) -> None:
-        """Open the broker connection appropriate to the mode."""
-        if self._uses_ws_topup or self._handle.mode in BOUNDED_MODES:
-            # Both ws-realtime and the WS-topup modes connect WS to broker.
+    async def start(self) -> BrokerSession:
+        """Idempotently open the broker session and attach optional events."""
+        if self._broker_session is not None:
+            return self._broker_session
+        url = f"{self._handle.broker_url.rstrip('/')}/v1/session"
+        headers = {
+            "Livepeer-Protocol": self._handle.protocol,
+            "Livepeer-Capability": self._handle.capability,
+            "Livepeer-Offering": self._handle.offering,
+            "Livepeer-Request-Id": self._handle.request_id,
+            "Content-Type": "application/json",
+        }
+        headers["Livepeer-Authorization"] = self._handle.spend_authorization
+        headers["Livepeer-Caller-Proof"] = self._handle.caller_proof
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
+            body = (
+                self._handle.session_open_body
+                or json.dumps(
+                    {
+                        "gateway_session_id": str(self._handle.session_id),
+                        "session_params": self._handle.session_params,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            response = await broker.post(
+                url,
+                headers=headers,
+                content=body,
+            )
+        response.raise_for_status()
+        session = self._parse_open(response.json())
+        self._broker_session = session
+        if session.control.events_ws:
             self._ws = await websockets.connect(
-                self._handle.broker_url,
-                additional_headers={
-                    "Livepeer-Payment": self._handle.payment_envelope,
-                    "Livepeer-Mode": self._handle.mode,
-                },
+                session.control.events_ws,
+                additional_headers={"Authorization": f"Bearer {session.credential}"},
             )
             self._listener_task = asyncio.create_task(self._listen_ws())
-        elif self._uses_http_topup:
-            # live-session-*: open via POST /v1/cap to get the session
-            # response which includes control.topup_url. The customer
-            # owns the media-plane wire; SessionRunner only handles
-            # refill delivery.
-            await self._open_live_session()
-        else:
-            raise OpenClearinghouseError(
-                f"SessionRunner: unsupported mode {self._handle.mode!r}",
-                code="unsupported_mode",
-                status=None,
-            )
+        return session
 
-    async def _open_live_session(self) -> None:
-        """For live-session-* modes: POST to broker /v1/cap to fetch
-        the session-open response (which carries control.topup_url)."""
+    def _parse_open(self, data: Any) -> BrokerSession:
+        if not isinstance(data, dict):
+            raise BrokerProtocolError("broker session-open response must be an object")
+        try:
+            runtime = data["runtime"]
+            control = data["control"]
+            lease = data["lease"]
+            schema = runtime["schema"]
+            if schema != self._handle.session.descriptor_schema:
+                raise BrokerProtocolError(
+                    f"broker returned descriptor {schema!r}; expected "
+                    f"{self._handle.session.descriptor_schema!r}"
+                )
+            if data["work_id"] != self._handle.work_id:
+                raise BrokerProtocolError("broker session work_id does not match the payment")
+            grants = runtime.get("grants", [])
+            if not isinstance(runtime["public"], dict) or not isinstance(grants, list):
+                raise TypeError
+            parsed_control = BrokerControl(
+                status_url=_required_string(control, "status_url"),
+                topup_url=_required_string(control, "topup_url"),
+                end_url=_required_string(control, "end_url"),
+                events_ws=_optional_string(control, "events_ws"),
+            )
+            return BrokerSession(
+                session_id=_required_string(data, "session_id"),
+                work_id=_required_string(data, "work_id"),
+                state=_required_string(data, "state"),
+                runtime_schema=str(schema),
+                runtime_public=dict(runtime["public"]),
+                grants=tuple(dict(grant) for grant in grants),
+                credential=_required_string(data, "credential"),
+                lease_expires_at=_required_string(lease, "expires_at"),
+                balance=SessionBalance.from_dict(data["balance"]),
+                control=parsed_control,
+            )
+        except BrokerProtocolError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BrokerProtocolError("broker returned a malformed session-open response") from exc
+
+    async def status(self) -> dict[str, Any]:
+        session = await self.start()
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
-            resp = await broker.post(
-                f"{self._handle.broker_url.rstrip('/')}/v1/cap",
-                headers={
-                    "Livepeer-Payment": self._handle.payment_envelope,
-                    "Livepeer-Mode": self._handle.mode,
-                    "Content-Type": "application/json",
-                },
-                json={},
+            response = await broker.get(
+                session.control.status_url,
+                headers={"Authorization": f"Bearer {session.credential}"},
             )
-        resp.raise_for_status()
-        data = resp.json()
-        control = data.get("control", {})
-        self._control_topup_url = control.get("topup_url")
-        if not self._control_topup_url:
-            raise OpenClearinghouseError(
-                "broker session-open response missing control.topup_url",
-                code="protocol_error",
-                status=None,
-            )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise BrokerProtocolError("broker session status must be an object")
+        return data
 
     async def _listen_ws(self) -> None:
-        """Read broker WS frames; dispatch balance-low signals."""
         assert self._ws is not None
         try:
             async for message in self._ws:
                 await self._handle_ws_message(message)
         except ConnectionClosed:
-            _logger.info(
-                "session_runner.ws_closed", extra={"session_id": str(self._handle.session_id)}
-            )
+            _logger.info("session_runner.events_ws_closed")
         finally:
-            if self._auto_close_on_disconnect and not self._closed_event.is_set():
-                # Broker dropped the WS; finalize on our side.
+            if self._auto_close_on_disconnect and not self._closing:
                 with contextlib.suppress(Exception):
                     await self.close(actual_units=0)
 
     async def _handle_ws_message(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
-            # Binary frames are capability payload — not our concern.
             return
         try:
             payload = json.loads(message)
@@ -270,127 +285,151 @@ class SessionRunner:
             return
         if not isinstance(payload, dict):
             return
+        if payload.get("type") == "session.balance":
+            balance = payload.get("balance")
+            if isinstance(balance, dict):
+                await self.on_balance(SessionBalance.from_dict(balance))
 
-        msg_type = payload.get("type")
-        if msg_type == "session.balance.low" or msg_type == "Livepeer-Balance-Low":
-            await self._on_balance_low(payload)
-        # session.balance.refilled is an ack from the backend that we
-        # don't need to act on directly; surface via the refill cb.
-        # Other capability frames pass through unhandled.
+    async def on_balance(self, balance: SessionBalance | dict[str, Any]) -> None:
+        """Act on a normative broker balance snapshot."""
+        parsed = (
+            balance if isinstance(balance, SessionBalance) else SessionBalance.from_dict(balance)
+        )
+        if parsed.will_refuse_next_refill:
+            await self._fire_winddown(WinddownEvent("broker_will_refuse_next_refill", None))
+            return
+        if parsed.status != "low":
+            return
+        if self._handle.session.refill == "bounded":
+            await self._fire_winddown(WinddownEvent("bounded_runway_exhausting", None))
+            return
+        if self._pending_refill is not None:
+            if self._pending_refill_max_total_units is None:
+                raise BrokerProtocolError("wholesale refill lost its cumulative cap")
+            await self._refill(
+                parsed.claimed_units,
+                max_total_units=self._pending_refill_max_total_units,
+            )
+            return
+        if self._approve_cap_extension is None:
+            await self._fire_winddown(WinddownEvent("wholesale_cap_extension_required", None))
+            return
+        new_max = self._approve_cap_extension(parsed)
+        if inspect.isawaitable(new_max):
+            new_max = await new_max
+        if new_max is None:
+            await self._fire_winddown(WinddownEvent("wholesale_cap_extension_declined", None))
+            return
+        if new_max <= self._handle.max_total_units:
+            raise BrokerProtocolError("wholesale cap extension must increase max_total_units")
+        await self._refill(parsed.claimed_units, max_total_units=new_max)
 
-    async def _on_balance_low(self, payload: dict[str, Any]) -> None:
-        if self._is_bounded:
-            # ws-realtime can't refill — fire winddown and let the
-            # broker close at balance-zero.
-            await self._fire_winddown(
-                WinddownEvent(
-                    reason="ws_session_exhausting",
-                    projected_end_at=payload.get("projected_end_at"),
+    async def _refill(self, observed_units: int, *, max_total_units: int) -> None:
+        session = await self.start()
+        if self._pending_refill_key is None:
+            self._pending_refill_key = str(uuid.uuid4())
+        if self._pending_refill is None:
+            try:
+                self._pending_refill = await self._client.refill_session(
+                    self._handle.session_id,
+                    observed_consumed_units=observed_units,
+                    request_id=self._pending_refill_key,
+                    max_total_units=max_total_units,
+                    workload_request_digest=hashlib.sha256(b"{}").hexdigest(),
                 )
-            )
-            return
+                self._pending_refill_max_total_units = max_total_units
+            except OpenClearinghouseError as exc:
+                await self._fire_refill_refused(RefillEvent(None, None, None, None, error=exc))
+                return
 
-        # Extensible mode: request a refill from LOC and deliver to broker.
-        try:
-            refill = await self._client.refill_session(
-                self._handle.session_id,
-                observed_consumed_units=payload.get("observed_consumed_units"),
-            )
-        except OpenClearinghouseError as exc:
-            event = RefillEvent(
-                refill_seq=None,
-                expected_value_wei=None,
-                funded_value_wei=None,
-                cap_status=None,
-                error=exc,
-            )
-            await self._fire_refill_refused(event)
-            # Don't kill the WS immediately — let the broker drain
-            # naturally so the customer can observe the close cleanly.
-            return
-
-        # Deliver to broker via mode-specific channel
-        envelope = refill["payment_envelope"]
-        cap_status = refill.get("cap_status", {})
-        if self._uses_ws_topup:
-            await self._deliver_topup_ws(envelope)
-        elif self._uses_http_topup:
-            await self._deliver_topup_http(envelope)
-
+        refill = self._pending_refill
+        response = await self._post_topup(session, refill)
+        response.raise_for_status()
+        broker_result = response.json()
+        authorization = refill.get("spend_authorization")
+        if not isinstance(authorization, str) or self._pending_refill_proof is None:
+            raise BrokerProtocolError("wholesale refill is missing authorization credentials")
+        self._handle = replace(
+            self._handle,
+            spend_authorization=authorization,
+            caller_proof=self._pending_refill_proof,
+            max_total_units=max_total_units,
+        )
+        if isinstance(broker_result, dict) and isinstance(broker_result.get("balance"), dict):
+            broker_balance = SessionBalance.from_dict(broker_result["balance"])
+            if broker_balance.will_refuse_next_refill:
+                await self._fire_winddown(WinddownEvent("broker_will_refuse_next_refill", None))
         await self._fire_refill_succeeded(
             RefillEvent(
                 refill_seq=refill.get("refill_seq"),
                 expected_value_wei=refill.get("expected_value_wei"),
                 funded_value_wei=refill.get("funded_value_wei"),
-                cap_status=cap_status,
+                cap_status=refill.get("cap_status"),
             )
         )
+        self._pending_refill_key = None
+        self._pending_refill = None
+        self._pending_refill_proof = None
+        self._pending_refill_max_total_units = None
 
-        # Check the winddown signal
-        if cap_status and cap_status.get("will_refuse_next_refill"):
-            await self._fire_winddown(
-                WinddownEvent(
-                    reason=cap_status.get("winddown_reason", "cap_imminent"),
-                    projected_end_at=None,
-                )
-            )
-
-    async def _deliver_topup_ws(self, envelope: str) -> None:
-        """Send the session.topup JSON frame on the control WS."""
-        assert self._ws is not None
-        frame = {
-            "type": "session.topup",
-            "body": {"payment_header": envelope},
+    async def _post_topup(self, session: BrokerSession, refill: dict[str, Any]) -> httpx.Response:
+        headers = {
+            "Authorization": f"Bearer {session.credential}",
+            "Livepeer-Request-Id": str(refill["request_id"]),
         }
-        await self._ws.send(json.dumps(frame))
-
-    async def _deliver_topup_http(self, envelope: str) -> None:
-        """POST the refill envelope to the broker's control.topup_url."""
-        assert self._control_topup_url is not None
+        if refill.get("accounting_mode") != "wholesale_account":
+            raise BrokerProtocolError("LOC returned a non-wholesale refill")
+        authorization = refill.get("spend_authorization")
+        if not isinstance(authorization, str):
+            raise BrokerProtocolError("wholesale refill is missing spend_authorization")
+        proof = await _caller_proof(authorization, self._handle.sign_caller_proof)
+        if proof is None:
+            raise BrokerProtocolError("wholesale refill is missing caller proof")
+        headers["Livepeer-Authorization"] = authorization
+        headers["Livepeer-Caller-Proof"] = proof
+        self._pending_refill_proof = proof
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
-            resp = await broker.post(
-                self._control_topup_url,
-                headers={"Livepeer-Payment": envelope, "Content-Type": "application/json"},
-                json={"gateway_session_id": str(self._handle.session_id)},
-            )
-        resp.raise_for_status()
-
-    # ---- callbacks ----
-
-    async def _fire_refill_succeeded(self, event: RefillEvent) -> None:
-        if self._on_refill_succeeded is None:
-            return
-        await _maybe_await(self._on_refill_succeeded(event))
-
-    async def _fire_refill_refused(self, event: RefillEvent) -> None:
-        if self._on_refill_refused is None:
-            return
-        await _maybe_await(self._on_refill_refused(event))
-
-    async def _fire_winddown(self, event: WinddownEvent) -> None:
-        if self._on_winddown_warning is None:
-            return
-        await _maybe_await(self._on_winddown_warning(event))
-
-    # ---- close ----
+            return await broker.post(session.control.topup_url, headers=headers, content=b"{}")
 
     async def close(
         self,
         *,
         actual_units: int,
         outcome: str | None = None,
-        settlement: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Close the session and finalize accounting on LOC.
-
-        Idempotent in spirit: a second call returns the cached final
-        settle dict from the first one.
-        """
         if self._final_settle is not None:
             return self._final_settle
-
-        # Tear down the broker WS (if any) first so the broker knows
-        # we're done.
+        self._closing = True
+        session = await self.start()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
+            response = await broker.post(
+                session.control.end_url,
+                headers={"Authorization": f"Bearer {session.credential}"},
+                json={"reason": "gateway_close"},
+            )
+        response.raise_for_status()
+        encoded_settlement = response.headers.get("livepeer-settlement")
+        if not encoded_settlement:
+            raise BrokerProtocolError(
+                "broker end response missing Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=response.status_code,
+                details={"missing_headers": ["Livepeer-Settlement"]},
+            )
+        try:
+            settlement = json.loads(base64.b64decode(encoded_settlement, validate=True))
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise BrokerProtocolError(
+                "broker end response has malformed Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=response.status_code,
+            ) from exc
+        if not isinstance(settlement, dict):
+            raise BrokerProtocolError(
+                "broker end response has malformed Livepeer-Settlement",
+                code="broker_protocol_error",
+                status=response.status_code,
+            )
         if self._ws is not None:
             with contextlib.suppress(Exception):
                 await self._ws.close()
@@ -398,24 +437,47 @@ class SessionRunner:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._listener_task
-
-        # Tell LOC the session is closed.
-        result = await self._client.close_session(
+        self._final_settle = await self._client.close_session(
             self._handle.session_id,
             actual_units=actual_units,
             outcome=outcome,
             settlement=settlement,
         )
-        self._final_settle = result
         self._closed_event.set()
-        return result
+        return self._final_settle
 
     async def wait_closed(self) -> None:
-        """Block until the session is closed (by any path)."""
         await self._closed_event.wait()
+
+    async def _fire_refill_succeeded(self, event: RefillEvent) -> None:
+        if self._on_refill_succeeded is not None:
+            await _maybe_await(self._on_refill_succeeded(event))
+
+    async def _fire_refill_refused(self, event: RefillEvent) -> None:
+        if self._on_refill_refused is not None:
+            await _maybe_await(self._on_refill_refused(event))
+
+    async def _fire_winddown(self, event: WinddownEvent) -> None:
+        if self._on_winddown_warning is not None:
+            await _maybe_await(self._on_winddown_warning(event))
+
+
+def _required_string(value: dict[str, Any], key: str) -> str:
+    result = value.get(key)
+    if not isinstance(result, str) or not result:
+        raise BrokerProtocolError(f"broker response missing {key}")
+    return result
+
+
+def _optional_string(value: dict[str, Any], key: str) -> str | None:
+    result = value.get(key)
+    if result is None:
+        return None
+    if not isinstance(result, str) or not result:
+        raise BrokerProtocolError(f"broker response has invalid {key}")
+    return result
 
 
 async def _maybe_await(value: Any) -> None:
-    """Allow callbacks to be either sync or async."""
     if asyncio.iscoroutine(value):
         await value

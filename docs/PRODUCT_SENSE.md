@@ -2,6 +2,10 @@
 
 What Livepeer Open Clearinghouse is for, who it's for, and the scope guardrails.
 
+> The payment model separates customer authorization and pricing from shared
+> wholesale funding. See
+> [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
+
 ## The pitch in one paragraph
 
 If you are building an application that uses the Livepeer network — for
@@ -58,12 +62,12 @@ The minimum that makes the value proposition real:
    Auto-replenish bounded by a spend-per-period cap. Spend-window ledger.
 4. **Discovery.** Pass-through of `service-registry-daemon.Resolve` /
    `Select` results, with the caller's API key validated.
-5. **Ticket minting.** The headline path:
-   `POST /v1/payments/mint { capability, offering, work_units }` →
-   call `Select`, check balance, call `CreatePayment`, decrement EV, return
-   `payment_bytes`.
-6. **Usage reconciliation.** For variable-cost jobs, `POST /v1/usage/report`
-   refunds the unused portion of a reserved payment.
+5. **Wholesale authorization.** LOC selects and locks a wholesale-capable
+   route, holds the customer's maximum, funds only bounded shared-account
+   shortfall, and returns a single-purpose signed authorization.
+6. **Usage reconciliation.** LOC independently verifies durable broker-signed
+   status, charges actual usage under customer pricing, and releases the hold;
+   SDK reporting is only a latency optimization.
 7. **Operator admin.** Approve users, set caps, top up, see system status.
 8. **Portal & admin SPAs.** Functional, not polished. Lit + zero-build.
 9. **Single-container Docker Compose stack.** Postgres + two daemons +
@@ -71,6 +75,13 @@ The minimum that makes the value proposition real:
 
 That's the bar. Anything beyond that is v2 unless it's load-bearing for one
 of these items.
+
+The product bar remains simple HTTP:
+LOC locks the route and grants one bounded request/session authorization;
+wholesale tickets and pooled account credit remain invisible to the customer.
+Official SDKs provide the fastest path, but raw HTTP callers receive the same
+accounting guarantees and LOC reconciles independently from broker-signed
+durable status.
 
 ## What we are explicitly not building for MVP
 
@@ -104,8 +115,8 @@ When evaluating new work, ask in order:
    Fail-closed correctness, idempotency, telemetry — yes.
 3. **If not, is it required by a guardrail (security, key custody, billing
    correctness)?** — yes.
-4. **Otherwise — it's v2.** Add it to `docs/exec-plans/tech-debt-tracker.md`
-   if it's worth remembering. Don't build it now.
+4. **Otherwise — it's v2.** Create a low-priority Beads issue with the trigger
+   that would justify it if it's worth remembering. Don't build it now.
 
 ## What success looks like
 

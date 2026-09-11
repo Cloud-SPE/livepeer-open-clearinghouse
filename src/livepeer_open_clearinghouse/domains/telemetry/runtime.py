@@ -611,8 +611,7 @@ async def admin_event_counts_endpoint(
 
     Surfaces the operator-facing real-time roll-ups documented in
     exec-plan 002 — server.refill_denied, server.mint_refused,
-    server.discrepancy_detected, server.sdk_sha_mismatch, *.error
-    rates.
+    server.sdk_sha_mismatch, and *.error rates.
     """
     from datetime import timedelta  # noqa: PLC0415
 

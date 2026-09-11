@@ -96,7 +96,9 @@ func callLLM(ctx context.Context, prompt string) error {
         }
         return err
     }
-    log.Printf("billed %d wei for %d units, outcome=%s",
+    // Wei amounts are exact decimal strings (big.Int-backed) and may
+    // exceed int64; use .String() / .Cmp() / .Int64().
+    log.Printf("billed %s wei for %d units, outcome=%s",
         result.BilledValueWei, result.ActualUnits, result.Outcome)
     return nil
 }
@@ -134,6 +136,11 @@ The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on every
 call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
+
+For wholesale-capable routes, set `CallerPublicKey` and `SignCallerProof` on
+`SubmitJobInput` or `OpenSessionInput`. The callback receives opaque decoded
+authorization bytes and returns the base64 caller proof. The SDK retains the
+exact committed body and never takes custody of the caller's private key.
 
 Errors come back as `*openclearinghouse.Error` with predicate methods:
 `IsInsufficientCredit`, `IsSpendCapExceeded`, `IsAccountNotApproved`,

@@ -1,0 +1,598 @@
+"""Verification of broker-signed Modules v2 settlement envelopes."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+import rfc8785
+from eth_hash.auto import keccak
+from eth_keys.datatypes import Signature
+from eth_keys.exceptions import BadSignature
+from google.protobuf import json_format
+from google.protobuf.message import DecodeError
+
+from livepeer_open_clearinghouse import _gen  # noqa: F401
+
+_SIGNATURE_BYTES = 65
+_SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+class SettlementVerificationError(ValueError):
+    """The settlement cannot authorize a financial state change."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class JobSettlementExpectation:
+    request_id: str
+    job_id: str
+    work_id: str
+    work_unit: str
+    actual_units: int
+    max_total_units: int
+    funded_value_wei: int
+    amount_wei: int
+    per_units: int
+    quote_id: str
+    quote_version: int
+    constraint_fingerprint: bytes
+    route_fingerprint: bytes
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedJobSettlement:
+    actual_units: int
+    billed_value_wei: int
+    outcome: str
+    issued_at: datetime
+    signing_public_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class NonAdmissionExpectation:
+    protocol: str
+    request_id: str
+    work_id: str
+    sender: bytes
+    recipient: bytes
+    quote_id: str
+    quote_version: int
+    constraint_fingerprint: bytes
+    route_fingerprint: bytes
+    broker_eth_address: str
+    job_issued_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedNonAdmission:
+    observed_at: datetime
+    coverage_started_at: datetime
+    signing_public_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSettlementExpectation:
+    gateway_session_id: str
+    broker_session_id: str | None
+    work_id: str
+    predecessor_work_id: str
+    rotation_generation: int
+    work_unit: str
+    amount_wei: int
+    per_units: int
+    quote_id: str
+    quote_version: int
+    constraint_fingerprint: bytes
+    route_fingerprint: bytes
+    funded_value_wei: int
+    last_settlement_seq: int
+    authorization_id: str | None = None
+    authorized_value_wei: int | None = None
+    require_terminal: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedSessionSettlement:
+    broker_session_id: str
+    work_id: str
+    predecessor_work_id: str
+    rotation_generation: int
+    settlement_seq: int
+    state: str
+    claimed_units: int
+    debited_units: int
+    billed_value_wei: int
+    outcome: str
+    issued_at: datetime
+    signing_public_key: str
+    termination_reason: str | None
+    output_state: str | None
+    output_state_since: datetime | None
+    last_failure_code: str | None
+
+
+def verify_job_settlement(
+    envelope: Mapping[str, Any],
+    *,
+    settlement_keys: Sequence[Mapping[str, Any]],
+    expected: JobSettlementExpectation,
+) -> VerifiedJobSettlement:
+    """Verify signature, delegation, identity, quote, units, and arithmetic."""
+
+    record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
+    _reject_failed_debit(record)
+    if record.request_id != expected.request_id:
+        raise SettlementVerificationError(
+            "request_id_mismatch", "signed gateway request id does not match"
+        )
+    if record.job_id != expected.job_id:
+        raise SettlementVerificationError("job_id_mismatch", "signed job_id does not match")
+    if record.work_id != expected.work_id:
+        raise SettlementVerificationError("work_id_mismatch", "signed work_id does not match")
+    if record.work_unit_name != expected.work_unit:
+        raise SettlementVerificationError("work_unit_mismatch", "signed work unit does not match")
+    if (
+        record.actual_units != expected.actual_units
+        or record.billed_units != expected.actual_units
+        or record.debited_units != expected.actual_units
+    ):
+        raise SettlementVerificationError("work_units_mismatch", "signed work units do not match")
+    if record.actual_units > expected.max_total_units:
+        raise SettlementVerificationError(
+            "usage_ceiling_exceeded", "signed work units exceed the funded job ceiling"
+        )
+
+    quote = record.accepted_quote_ref
+    if (
+        quote.quote_id != expected.quote_id
+        or quote.quote_version != expected.quote_version
+        or bytes(quote.constraint_fingerprint) != expected.constraint_fingerprint
+        or bytes(quote.route_fingerprint) != expected.route_fingerprint
+    ):
+        raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
+
+    billed_value = int.from_bytes(record.billed_value_wei.value, "big")
+    normative_bill = _job_normative_bill(record, expected)
+    if billed_value != normative_bill:
+        raise SettlementVerificationError(
+            "billed_value_mismatch", "signed billed value does not match normative bill(U)"
+        )
+    if expected.authorization_id is None and billed_value > expected.funded_value_wei:
+        raise SettlementVerificationError(
+            "funding_ceiling_exceeded", "signed billed value exceeds the funded job ceiling"
+        )
+    _verify_authorization_accounting(
+        record,
+        authorization_id=expected.authorization_id,
+        authorized_value_wei=expected.authorized_value_wei,
+        billed_value_wei=billed_value,
+    )
+
+    return VerifiedJobSettlement(
+        actual_units=record.actual_units,
+        billed_value_wei=billed_value,
+        outcome=record.SettlementOutcome.Name(record.outcome),
+        issued_at=issued_at,
+        signing_public_key=public_key,
+    )
+
+
+def _job_normative_bill(record: Any, expected: JobSettlementExpectation) -> int:
+    cumulative_units = record.payment_cumulative_units
+    if expected.authorization_id is not None:
+        if cumulative_units != 0:
+            raise SettlementVerificationError(
+                "payment_curve_invalid",
+                "authorization-backed settlement carries a ticket-session curve position",
+            )
+        return _bill(record.debited_units, expected.amount_wei, expected.per_units)
+    if cumulative_units < record.debited_units:
+        raise SettlementVerificationError(
+            "payment_curve_invalid", "payment cumulative units precede this job's debit"
+        )
+    return _bill(cumulative_units, expected.amount_wei, expected.per_units) - _bill(
+        cumulative_units - record.debited_units,
+        expected.amount_wei,
+        expected.per_units,
+    )
+
+
+def verify_non_admission(  # noqa: PLR0912 — every signed scope field fails closed independently
+    envelope: Mapping[str, Any],
+    *,
+    settlement_keys: Sequence[Mapping[str, Any]],
+    expected: NonAdmissionExpectation,
+) -> VerifiedNonAdmission:
+    """Verify one signed audit claim without granting it billing authority."""
+
+    payload = envelope.get("payload")
+    signature = envelope.get("signature")
+    if not isinstance(payload, dict) or not isinstance(signature, dict):
+        raise SettlementVerificationError(
+            "malformed_envelope", "payload and signature are required"
+        )
+    if signature.get("algorithm") != "secp256k1" or signature.get("canonicalization") != "jcs":
+        raise SettlementVerificationError(
+            "unsupported_signature", "unsupported non-admission signature scheme"
+        )
+    canonical = _canonicalize(payload)
+    public_key = _recover_public_key(canonical, signature.get("value"))
+    record = _parse_non_admission_record(payload)
+    observed_at = _parse_timestamp(record.observed_at, field="observed_at")
+    coverage_started_at = _parse_timestamp(record.coverage_started_at, field="coverage_started_at")
+    _authorize_key(public_key, observed_at, settlement_keys)
+
+    if record.outcome != record.NOT_ADMITTED:
+        raise SettlementVerificationError(
+            "non_admission_outcome_mismatch", "signed outcome is not NOT_ADMITTED"
+        )
+    if record.protocol != expected.protocol:
+        raise SettlementVerificationError("protocol_mismatch", "signed protocol does not match")
+    if record.request_id != expected.request_id:
+        raise SettlementVerificationError("request_id_mismatch", "signed request id does not match")
+    if record.work_id != expected.work_id:
+        raise SettlementVerificationError("work_id_mismatch", "signed work id does not match")
+    if bytes(record.sender) != expected.sender:
+        raise SettlementVerificationError("sender_mismatch", "signed sender does not match")
+    if bytes(record.recipient) != expected.recipient:
+        raise SettlementVerificationError("recipient_mismatch", "signed recipient does not match")
+    quote = record.accepted_quote_ref
+    if (
+        quote.quote_id != expected.quote_id
+        or quote.quote_version != expected.quote_version
+        or bytes(quote.constraint_fingerprint) != expected.constraint_fingerprint
+        or bytes(quote.route_fingerprint) != expected.route_fingerprint
+    ):
+        raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
+    if record.broker_eth_address.lower() != expected.broker_eth_address.lower():
+        raise SettlementVerificationError(
+            "broker_identity_mismatch", "signed broker identity does not match"
+        )
+
+    issued_at = expected.job_issued_at
+    if issued_at.tzinfo is None:
+        raise SettlementVerificationError(
+            "invalid_job_issued_at", "job issuance time must be timezone-aware"
+        )
+    if coverage_started_at > issued_at:
+        raise SettlementVerificationError(
+            "coverage_gap", "broker evidence coverage begins after job issuance"
+        )
+    if observed_at < issued_at:
+        raise SettlementVerificationError(
+            "observation_precedes_job", "broker observation predates job issuance"
+        )
+    if coverage_started_at > observed_at:
+        raise SettlementVerificationError(
+            "invalid_coverage", "broker coverage begins after its observation"
+        )
+    return VerifiedNonAdmission(
+        observed_at=observed_at,
+        coverage_started_at=coverage_started_at,
+        signing_public_key=public_key,
+    )
+
+
+def verify_session_settlement(
+    envelope: Mapping[str, Any],
+    *,
+    settlement_keys: Sequence[Mapping[str, Any]],
+    expected: SessionSettlementExpectation,
+) -> VerifiedSessionSettlement:
+    """Verify a paid-session settlement before it changes LOC accounting."""
+
+    record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
+    _reject_failed_debit(record)
+    _verify_session_identity(record, expected)
+    billed_value = _verify_session_accounting(record, expected)
+    termination_reason, output_state, output_state_since, last_failure_code = (
+        _verify_session_diagnostics(record)
+    )
+
+    return VerifiedSessionSettlement(
+        broker_session_id=record.session_id,
+        work_id=record.work_id,
+        predecessor_work_id=record.predecessor_work_id,
+        rotation_generation=record.rotation_generation,
+        settlement_seq=record.settlement_seq,
+        state=record.state,
+        claimed_units=record.claimed_units,
+        debited_units=record.debited_units,
+        billed_value_wei=billed_value,
+        outcome=record.SettlementOutcome.Name(record.outcome),
+        issued_at=issued_at,
+        signing_public_key=public_key,
+        termination_reason=termination_reason,
+        output_state=output_state,
+        output_state_since=output_state_since,
+        last_failure_code=last_failure_code,
+    )
+
+
+def _verify_session_diagnostics(
+    record: Any,
+) -> tuple[str | None, str | None, datetime | None, str | None]:
+    breakdown = dict(record.breakdown)
+    termination_reason = breakdown.get("termination_reason") or None
+    output_state = breakdown.get("output_state") or None
+    output_state_since_raw = breakdown.get("output_state_since") or None
+    last_failure_code = breakdown.get("last_failure_code") or None
+    if termination_reason is not None and _SAFE_CODE.fullmatch(termination_reason) is None:
+        raise SettlementVerificationError(
+            "termination_reason_invalid", "signed termination reason is not a safe code"
+        )
+    if output_state is not None and output_state not in {
+        "unknown",
+        "waiting",
+        "producing",
+        "stalled",
+    }:
+        raise SettlementVerificationError(
+            "output_state_invalid", "signed output state is not recognized"
+        )
+    output_state_since = (
+        _parse_timestamp(output_state_since_raw, field="output_state_since")
+        if output_state_since_raw is not None
+        else None
+    )
+    if last_failure_code is not None and _SAFE_CODE.fullmatch(last_failure_code) is None:
+        raise SettlementVerificationError(
+            "last_failure_code_invalid", "signed failure code is not safe"
+        )
+    return termination_reason, output_state, output_state_since, last_failure_code
+
+
+def _reject_failed_debit(record: Any) -> None:
+    """Refuse evidence that explicitly says the ledger did not settle."""
+
+    if record.outcome == record.DEBIT_FAILED:
+        raise SettlementVerificationError(
+            "debit_failed", "broker settlement reports that the ledger debit failed"
+        )
+
+
+def _verify_session_identity(record: Any, expected: SessionSettlementExpectation) -> None:
+    if record.gateway_session_id != expected.gateway_session_id:
+        raise SettlementVerificationError(
+            "gateway_session_id_mismatch", "signed gateway session id does not match"
+        )
+    if not record.session_id:
+        raise SettlementVerificationError("missing_session_id", "signed session id is required")
+    if expected.broker_session_id is not None and record.session_id != expected.broker_session_id:
+        raise SettlementVerificationError("session_id_mismatch", "signed session id forked")
+    if record.job_id:
+        raise SettlementVerificationError("job_id_present", "session settlement contains job_id")
+    if record.work_id != expected.work_id:
+        raise SettlementVerificationError("work_id_mismatch", "signed work id does not match")
+    if record.predecessor_work_id != expected.predecessor_work_id:
+        raise SettlementVerificationError(
+            "predecessor_mismatch", "signed predecessor work id does not match"
+        )
+    if record.rotation_generation != expected.rotation_generation:
+        raise SettlementVerificationError(
+            "rotation_generation_mismatch", "signed rotation generation does not match"
+        )
+    if record.work_unit_name != expected.work_unit:
+        raise SettlementVerificationError("work_unit_mismatch", "signed work unit does not match")
+    quote = record.accepted_quote_ref
+    if (
+        quote.quote_id != expected.quote_id
+        or quote.quote_version != expected.quote_version
+        or bytes(quote.constraint_fingerprint) != expected.constraint_fingerprint
+        or bytes(quote.route_fingerprint) != expected.route_fingerprint
+    ):
+        raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
+
+
+def _verify_session_accounting(record: Any, expected: SessionSettlementExpectation) -> int:
+
+    amount_wei = int.from_bytes(record.amount_wei.value, "big")
+    if amount_wei != expected.amount_wei or record.per_units != expected.per_units:
+        raise SettlementVerificationError("pricing_mismatch", "signed session price does not match")
+    if record.settlement_seq <= expected.last_settlement_seq:
+        raise SettlementVerificationError(
+            "settlement_replay", "signed settlement sequence is not newer"
+        )
+    if expected.require_terminal and record.state != "closed":
+        raise SettlementVerificationError(
+            "session_not_terminal", "signed settlement is not terminal"
+        )
+    if record.claimed_units != record.debited_units:
+        raise SettlementVerificationError(
+            "claim_debit_gap", "signed claimed and debited units diverge"
+        )
+    if record.actual_units != record.debited_units or record.billed_units != record.debited_units:
+        raise SettlementVerificationError(
+            "work_units_mismatch", "signed session unit totals diverge"
+        )
+    if record.generation_debited_units > record.debited_units:
+        raise SettlementVerificationError(
+            "generation_units_invalid", "generation units exceed session units"
+        )
+
+    billed_value = int.from_bytes(record.billed_value_wei.value, "big")
+    signed_funded = int.from_bytes(record.funded_value_wei.value, "big")
+    generation_billed = int.from_bytes(record.generation_billed_value_wei.value, "big")
+    if billed_value > expected.funded_value_wei or signed_funded > expected.funded_value_wei:
+        raise SettlementVerificationError(
+            "session_cap_exceeded", "signed settlement exceeds LOC session funding"
+        )
+    if generation_billed > billed_value:
+        raise SettlementVerificationError(
+            "generation_value_invalid", "generation billed value exceeds session billed value"
+        )
+    _verify_authorization_accounting(
+        record,
+        authorization_id=expected.authorization_id,
+        authorized_value_wei=expected.authorized_value_wei,
+        billed_value_wei=billed_value,
+    )
+    return billed_value
+
+
+def _verify_authorization_accounting(
+    record: Any,
+    *,
+    authorization_id: str | None,
+    authorized_value_wei: int | None,
+    billed_value_wei: int,
+) -> None:
+    """Prevent settlement evidence from crossing legacy/account semantics."""
+
+    if authorization_id is None:
+        if record.authorization_id:
+            raise SettlementVerificationError(
+                "unexpected_authorization", "legacy settlement carries account authorization"
+            )
+        return
+    if record.authorization_id != authorization_id or record.work_id != authorization_id:
+        raise SettlementVerificationError(
+            "authorization_id_mismatch", "signed authorization identity does not match"
+        )
+    if authorized_value_wei is None:
+        raise SettlementVerificationError(
+            "missing_authorization_ceiling", "LOC authorization ceiling is unavailable"
+        )
+    signed_authorized = int.from_bytes(record.authorized_value_wei.value, "big")
+    reserved = int.from_bytes(record.reserved_value_wei.value, "big")
+    released = int.from_bytes(record.released_value_wei.value, "big")
+    if signed_authorized != authorized_value_wei:
+        raise SettlementVerificationError(
+            "authorization_ceiling_mismatch", "signed authorization ceiling does not match"
+        )
+    if (
+        billed_value_wei > signed_authorized
+        or reserved > signed_authorized
+        or released > signed_authorized
+        or billed_value_wei + released > signed_authorized
+    ):
+        raise SettlementVerificationError(
+            "authorization_accounting_invalid",
+            "signed reservation, debit, or release exceeds authorization",
+        )
+
+
+def _verify_envelope(
+    envelope: Mapping[str, Any], settlement_keys: Sequence[Mapping[str, Any]]
+) -> tuple[Any, datetime, str]:
+    payload = envelope.get("payload")
+    signature = envelope.get("signature")
+    if not isinstance(payload, dict) or not isinstance(signature, dict):
+        raise SettlementVerificationError(
+            "malformed_envelope", "payload and signature are required"
+        )
+    if signature.get("algorithm") != "secp256k1" or signature.get("canonicalization") != "jcs":
+        raise SettlementVerificationError(
+            "unsupported_signature", "unsupported settlement signature scheme"
+        )
+    canonical = _canonicalize(payload)
+    public_key = _recover_public_key(canonical, signature.get("value"))
+    issued_at = _parse_issued_at(payload.get("issued_at"))
+    _authorize_key(public_key, issued_at, settlement_keys)
+    return _parse_record(payload), issued_at, public_key
+
+
+def _canonicalize(payload: dict[str, Any]) -> bytes:
+    try:
+        return rfc8785.dumps(payload)
+    except (TypeError, ValueError, rfc8785.CanonicalizationError) as exc:
+        raise SettlementVerificationError("invalid_canonical_payload", str(exc)) from exc
+
+
+def _recover_public_key(canonical: bytes, value: object) -> str:
+    if not isinstance(value, str) or not value.startswith("0x"):
+        raise SettlementVerificationError("malformed_signature", "signature must be 0x-prefixed")
+    try:
+        raw = bytearray.fromhex(value[2:])
+    except ValueError as exc:
+        raise SettlementVerificationError("malformed_signature", "signature is not hex") from exc
+    if len(raw) != _SIGNATURE_BYTES or raw[64] not in (27, 28):
+        raise SettlementVerificationError(
+            "malformed_signature", "signature must be 65 bytes with v 27/28"
+        )
+    raw[64] -= 27
+    prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
+    try:
+        recovered = Signature(bytes(raw)).recover_public_key_from_msg_hash(
+            keccak(prefix + canonical)
+        )
+    except BadSignature as exc:
+        raise SettlementVerificationError("invalid_signature", "signature recovery failed") from exc
+    return "0x04" + recovered.to_bytes().hex()
+
+
+def _parse_issued_at(value: object) -> datetime:
+    return _parse_timestamp(value, field="issued_at")
+
+
+def _parse_timestamp(value: object, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise SettlementVerificationError(f"missing_{field}", f"signed {field} is required")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SettlementVerificationError(f"invalid_{field}", f"signed {field} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise SettlementVerificationError(
+            f"invalid_{field}", f"signed {field} must be timezone-aware"
+        )
+    return parsed
+
+
+def _authorize_key(
+    public_key: str, issued_at: datetime, settlement_keys: Sequence[Mapping[str, Any]]
+) -> None:
+    for delegation in settlement_keys:
+        if delegation.get("public_key") != public_key:
+            continue
+        try:
+            not_before = datetime.fromisoformat(
+                str(delegation["not_before"]).replace("Z", "+00:00")
+            )
+            expires_at = datetime.fromisoformat(
+                str(delegation["expires_at"]).replace("Z", "+00:00")
+            )
+        except (KeyError, ValueError) as exc:
+            raise SettlementVerificationError(
+                "invalid_delegation", "pinned delegation is invalid"
+            ) from exc
+        if not_before <= issued_at <= expires_at:
+            return
+    raise SettlementVerificationError(
+        "unauthorized_signing_key", "signing key was not delegated at issued_at"
+    )
+
+
+def _parse_record(payload: dict[str, Any]):  # type: ignore[no-untyped-def]
+    from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
+
+    try:
+        return json_format.ParseDict(payload, types_pb2.SettlementRecord())
+    except (json_format.ParseError, DecodeError, ValueError) as exc:
+        raise SettlementVerificationError("malformed_payload", "invalid settlement record") from exc
+
+
+def _parse_non_admission_record(payload: dict[str, Any]):  # type: ignore[no-untyped-def]
+    from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
+
+    try:
+        return json_format.ParseDict(payload, types_pb2.NonAdmissionRecord())
+    except (json_format.ParseError, DecodeError, ValueError) as exc:
+        raise SettlementVerificationError(
+            "malformed_payload", "invalid non-admission record"
+        ) from exc
+
+
+def _bill(units: int, amount_wei: int, per_units: int) -> int:
+    if units < 0 or amount_wei < 0 or per_units <= 0:
+        raise SettlementVerificationError("invalid_pricing", "invalid pinned pricing")
+    return (units * amount_wei + per_units - 1) // per_units

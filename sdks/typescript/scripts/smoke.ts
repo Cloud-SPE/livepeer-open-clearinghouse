@@ -8,10 +8,7 @@
 // the offending hop (discovery / mint / broker / settle / public
 // manifest).
 
-import {
-  OpenClearinghouseClient,
-  OpenClearinghouseError,
-} from "../src/index.js";
+import { OpenClearinghouseClient, OpenClearinghouseError } from "../src/index.js";
 
 const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
 const apiKey = process.env.OPEN_CLEARINGHOUSE_API_KEY;
@@ -21,7 +18,7 @@ if (!baseUrl || !apiKey) {
 }
 
 let failures = 0;
-function pass(name: string, detail: string = "") {
+function pass(name: string, detail = "") {
   console.log(`  PASS  ${name}${detail ? "  —  " + detail : ""}`);
 }
 function fail(name: string, err: unknown) {
@@ -35,11 +32,11 @@ const client = new OpenClearinghouseClient({ baseUrl, apiKey });
 console.log("== STEP 1: GET /v1/sdk/manifest (public, no auth) ==");
 try {
   const res = await fetch(`${baseUrl}/v1/sdk/manifest`);
-  if (!res.ok) throw new Error(`status ${res.status}`);
+  if (!res.ok) throw new Error(`status ${String(res.status)}`);
   const data = (await res.json()) as { items: unknown[]; generated_at: string };
   if (!Array.isArray(data.items)) throw new Error("items missing");
   if (typeof data.generated_at !== "string") throw new Error("generated_at missing");
-  pass("manifest endpoint", `items=${data.items.length} generated_at=${data.generated_at}`);
+  pass("manifest endpoint", `items=${String(data.items.length)} generated_at=${data.generated_at}`);
 } catch (e) {
   fail("manifest endpoint", e);
 }
@@ -52,6 +49,7 @@ try {
   for (const c of caps) {
     for (const o of c.offerings) {
       if (c.name === "openai:chat-completions" && o.id === "vllm-qwen3.6-27b-default") {
+        if (o.price_per_work_unit_wei === null) throw new Error("offering price missing");
         chosenOffering = {
           capability: c.name,
           offering: o.id,
@@ -63,7 +61,7 @@ try {
   if (!chosenOffering) throw new Error("expected vllm-qwen3.6-27b-default not in catalog");
   pass(
     "discovery",
-    `${caps.length} capabilities — chose ${chosenOffering.capability}/${chosenOffering.offering} @ ${chosenOffering.price} wei/unit`,
+    `${String(caps.length)} capabilities — chose ${chosenOffering.capability}/${chosenOffering.offering} @ ${String(chosenOffering.price)} wei/unit`,
   );
 } catch (e) {
   fail("discovery", e);
@@ -84,10 +82,10 @@ if (!chosenOffering) {
         max_tokens: 50,
       },
     });
-    console.log(`  broker status: ${result.status}`);
-    console.log(`  actual units : ${result.actualUnits}`);
-    console.log(`  billed wei   : ${result.billedValueWei}`);
-    console.log(`  refund wei   : ${result.refundWei}`);
+    console.log(`  broker status: ${String(result.status)}`);
+    console.log(`  actual units : ${String(result.actualUnits)}`);
+    console.log(`  billed wei   : ${String(result.billedValueWei)}`);
+    console.log(`  refund wei   : ${String(result.refundWei)}`);
     console.log(`  outcome      : ${result.outcome}`);
     if (typeof result.actualUnits !== "number") throw new Error("actualUnits not a number");
     if (typeof result.billedValueWei !== "number" && typeof result.billedValueWei !== "bigint")
@@ -98,7 +96,7 @@ if (!chosenOffering) {
     if (e instanceof OpenClearinghouseError) {
       // Broker unreachable is a known dev-environment limitation; surface
       // the LOC error precisely.
-      fail("submitJob", `${e.code}: ${e.message}`);
+      fail("submitJob", `${String(e.code)}: ${e.message}`);
     } else {
       fail("submitJob", e);
     }
@@ -112,7 +110,7 @@ try {
   });
   // /balance is portal-cookie-only; an X-API-Key call should 401/403.
   // The point of this step is just to confirm the auth model is intact.
-  pass("balance auth model", `key-auth returned ${res.status} as expected`);
+  pass("balance auth model", `key-auth returned ${String(res.status)} as expected`);
 } catch (e) {
   fail("balance auth model", e);
 }
@@ -122,5 +120,6 @@ try {
 // request.completed) never flush.
 await client.close();
 
-console.log(`\n=== ${failures === 0 ? "OK" : "FAILED (" + failures + ")"}  ===`);
+const summary = failures === 0 ? "OK" : `FAILED (${String(failures)})`;
+console.log(`\n=== ${summary}  ===`);
 process.exit(failures === 0 ? 0 : 1);

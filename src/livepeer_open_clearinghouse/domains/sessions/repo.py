@@ -13,11 +13,8 @@ The `state` column on PaymentSession is the lifecycle string:
   - ``closed``    — final settlement written; encumbered value
                     released; row is read-only.
 
-`mode` is the upstream interaction-mode string
-(``ws-realtime@v0``, ``session-control-plus-media@v0``, etc.) —
-free-form on purpose so the service layer can map (d-bounded) vs
-(d-extensible) without a schema migration when new modes land
-upstream.
+`protocol` is the authoritative Modules protocol tag. `route_snapshot` is the
+immutable signed-route projection used for billing and lifecycle decisions.
 
 `outcome` follows the upstream `SettlementRecord.SettlementOutcome`
 enum (``EXACT``, ``UNDERFUNDED``, ``OVERFUNDED``,
@@ -31,7 +28,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, ForeignKey
+from sqlalchemy import JSON, BigInteger, ForeignKey, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -45,12 +42,19 @@ from livepeer_open_clearinghouse.providers.db import (
 class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
     """A long-running interaction opened via ``POST /v1/sessions``.
 
-    The session encumbers ``funded_value_wei`` (= ``max_total_units``
-    times the offering's EV-per-unit) from the user's balance at
-    mint, guaranteeing per-session refill is bounded by construction.
-    Encumbered value is released back to the balance at close as
-    ``funded_value_wei - billed_value_wei``.
+    The session holds a customer-price ceiling derived from
+    ``max_total_units`` and retains an independent wholesale-price ceiling for
+    broker authorization. Actual customer billing is computed from durable
+    broker-signed usage and the pinned customer pricing policy.
     """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "broker_request_id",
+            name="uq_payment_session_user_broker_request",
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("user.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -61,7 +65,15 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     work_id: Mapped[str] = mapped_column(nullable=False, index=True)
     capability: Mapped[str] = mapped_column(nullable=False)
     offering: Mapped[str] = mapped_column(nullable=False)
-    mode: Mapped[str] = mapped_column(nullable=False)
+    protocol: Mapped[str] = mapped_column(nullable=False)
+    # Closed historical rows may retain ``legacy_ticket`` for audit only. New
+    # and active engagements must be ``wholesale_account``.
+    accounting_mode: Mapped[str] = mapped_column(nullable=False, default="wholesale_account")
+    customer_pricing: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    customer_max_debit_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
+    authorization_id: Mapped[str | None] = mapped_column(nullable=True, unique=True)
+    route_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    broker_request_id: Mapped[str | None] = mapped_column(nullable=True)
     state: Mapped[str] = mapped_column(nullable=False, index=True)
     estimated_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
     max_total_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -73,7 +85,13 @@ class PaymentSession(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin)
     sdk_identity: Mapped[str | None] = mapped_column(nullable=True)
     opened_at: Mapped[datetime] = mapped_column(nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_debit_seq: Mapped[int] = mapped_column(nullable=False, default=0)
+    # LOC-side refill ordinal. This is deliberately not named debit_seq:
+    # the payee uses debit_seq for a different, money-authoritative key.
+    refill_seq: Mapped[int] = mapped_column(nullable=False, default=0)
+    rotation_generation: Mapped[int] = mapped_column(nullable=False, default=0)
+    predecessor_work_id: Mapped[str | None] = mapped_column(nullable=True)
+    broker_session_id: Mapped[str | None] = mapped_column(nullable=True)
+    last_settlement_seq: Mapped[int] = mapped_column(nullable=False, default=0)
     last_polled_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
@@ -86,7 +104,6 @@ class PaymentSettlement(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMix
       - ``refill_denied``     — cap blocked a refill
       - ``balance_low``       — broker emitted Livepeer-Balance-Low
       - ``close``             — session ended; final reconcile
-      - ``reconcile``         — janitor finalized a silent session
 
     Append-only by convention; rows are never updated.
     """
@@ -102,3 +119,35 @@ class PaymentSettlement(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMix
     billed_value_wei: Mapped[Decimal | None] = mapped_column(nullable=True)
     outcome: Mapped[str | None] = mapped_column(nullable=True)
     raw_record: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class SpendAuthorizationGrant(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixin):
+    """Append-only LOC record of one signed, route-locked authority revision."""
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "revision", name="uq_spend_authorization_grant_session_revision"
+        ),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("payment_session.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    authorization_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    predecessor_authorization_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    caller_public_key: Mapped[str] = mapped_column(nullable=False)
+    authorization_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    protocol: Mapped[str] = mapped_column(nullable=False)
+    route_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payer_eth_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    denomination: Mapped[str] = mapped_column(String(16), nullable=False)
+    max_debit_wei: Mapped[Decimal] = mapped_column(nullable=False)
+    max_total_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    not_before: Mapped[datetime] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -5,8 +5,8 @@
 //	go run ./examples/go/one-shot-job
 //
 // The SDK handles the handoff dance: opens a job via POST /v1/jobs
-// (mints a payment envelope), calls the broker directly with the
-// envelope as Livepeer-Payment, reads Livepeer-Work-Units from the
+// for a route-locked spend authorization, calls the broker directly with the
+// authorization and caller proof, reads Livepeer-Work-Units from the
 // broker's response, and posts settle back to LOC.
 package main
 
@@ -71,8 +71,8 @@ func run() error {
 		fmt.Println()
 		fmt.Println("==== final accounting ====")
 		fmt.Printf("actual units consumed: %d\n", result.ActualUnits)
-		fmt.Printf("billed:                %d wei\n", result.BilledValueWei)
-		fmt.Printf("refund:                %d wei\n", result.RefundWei)
+		fmt.Printf("billed:                %s wei\n", result.BilledValueWei)
+		fmt.Printf("refund:                %s wei\n", result.RefundWei)
 		fmt.Printf("outcome:               %s\n", result.Outcome)
 		if result.CapStatus.WillRefuseNextRefill {
 			reason := "unknown"

@@ -4,9 +4,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from livepeer_open_clearinghouse.providers.registry_daemon import RouteBinding, RouteSnapshot
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
+
+
+class SessionAxesView(BaseModel):
+    """Authoritative paid-session/v1 offering axes selected for the session."""
+
+    model_config = ConfigDict(extra="allow")
+
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    attachment: Literal["external"] = "external"
+    metering: Literal["runner-reported"]
+    refill: Literal["extensible", "bounded"] = "extensible"
 
 
 class CreateSessionRequest(BaseModel):
@@ -15,16 +29,39 @@ class CreateSessionRequest(BaseModel):
     The SDK declares its intent for a long-lived session: the
     capability + offering pair to bill against, the estimated runway
     (best-guess of what the session is likely to consume), and the
-    absolute ceiling (``max_total_units``) that LOC will encumber up
-    front under handoff-mode's worst-case sizing rule.
+    cumulative customer authorization ceiling (``max_total_units``).
+    The prepared session identity, request digest, and caller key bind the
+    authorization to one locked route and workload.
 
     ``max_total_units`` MUST be >= ``estimated_runway_units`` and > 0.
     """
 
     capability: str = Field(min_length=1)
     offering: str = Field(min_length=1)
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    session_params: dict[str, Any] = Field(default_factory=dict)
     estimated_runway_units: int = Field(gt=0)
     max_total_units: int = Field(gt=0)
+    gateway_session_id: uuid.UUID
+    preparation_token: str = Field(min_length=1)
+    route_binding: RouteBinding | None = None
+    workload_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    caller_public_key: str = Field(pattern=r"^(02|03)[0-9a-f]{64}$")
+
+
+class PrepareSessionRequest(BaseModel):
+    capability: str = Field(min_length=1)
+    offering: str = Field(min_length=1)
+    descriptor_schema: str = Field(pattern=r"^[a-z][a-z0-9-]*/v[0-9]+$")
+    route_binding: RouteBinding | None = None
+
+
+class PrepareSessionResponse(BaseModel):
+    gateway_session_id: uuid.UUID
+    route_binding: RouteBinding
+    broker_url: str
+    preparation_token: str
+    expires_at: datetime
 
 
 class CapStatus(BaseModel):
@@ -56,32 +93,34 @@ class CapStatus(BaseModel):
 class RefillSessionRequest(BaseModel):
     """Inbound: ``POST /v1/sessions/{id}/refill``.
 
-    Body is mostly empty in v1 — the SDK signals "broker emitted
-    Livepeer-Balance-Low, please mint more." The optional
-    ``observed_consumed_units`` is an advisory hint from the SDK's
-    view of the broker's debit ledger; LOC cross-checks via
-    ``GetSessionDebits`` and uses the daemon's number as
-    authoritative (per the trust model).
+    Revises the session's cumulative authorization cap. The request digest
+    binds the new revision to the updated session commitment. Wholesale
+    account replenishment remains an aggregate payer-payee decision.
     """
 
     observed_consumed_units: int | None = Field(default=None, ge=0)
+
+    # Wholesale extensible sessions use refill as an idempotent cumulative-cap
+    # revision, never as authority to mint the per-session maximum.
+    max_total_units: int = Field(gt=0)
+    workload_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RefillSessionResponse(BaseModel):
     """Outbound: ``POST /v1/sessions/{id}/refill`` success (200).
 
-    Carries the newly-minted top-up envelope plus a fresh cap_status
-    snapshot. The SDK delivers ``payment_envelope`` to the broker
-    via the mode-specific channel (``session.topup`` JSON frame for
-    ``session-control-plus-media@v0``; HTTP ``POST {topup_url}`` for
-    the ``live-session-*`` modes).
+    Carries the revised cumulative spend authorization plus a fresh cap-status
+    snapshot. The SDK delivers it with caller proof through the paid-session
+    control endpoint.
     """
 
     work_id: str
+    request_id: str
     refill_seq: int
-    payment_envelope: str
-    expected_value_wei: int
-    funded_value_wei: int
+    spend_authorization: str
+    accounting_mode: Literal["wholesale_account"] = "wholesale_account"
+    expected_value_wei: WeiDecimal
+    funded_value_wei: WeiDecimal
     cap_status: CapStatus
 
 
@@ -103,12 +142,12 @@ class SessionStatusResponse(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     estimated_units: int
     max_total_units: int
-    funded_value_wei: int
-    billed_value_wei: int  # cumulative across all minted tickets (live) OR final billed (closed)
+    funded_value_wei: WeiDecimal
+    billed_value_wei: WeiDecimal  # actual customer charge; final once closed
     refill_count: int
     cap_status: CapStatus | None
     opened_at: datetime
@@ -117,24 +156,39 @@ class SessionStatusResponse(BaseModel):
     outcome: str | None
 
 
+class SessionSettlementSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["secp256k1"]
+    canonicalization: Literal["jcs"]
+    value: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class SessionSettlementEnvelope(BaseModel):
+    """``Livepeer-Settlement`` as decoded by the SDK.
+
+    ``signature`` is optional only at the wire layer so an unsigned
+    broker record yields the typed ``settlement_verification_failed`` /
+    ``missing_signature`` envelope rather than a validation error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    payload: dict[str, Any]
+    signature: SessionSettlementSignature | None = None
+
+
 class CloseSessionRequest(BaseModel):
     """Inbound: ``POST /v1/sessions/{id}/close``.
 
-    SDK reports the final actual_units consumed (read from the
-    broker's ``Livepeer-Work-Units`` trailer or the equivalent
-    in-band signal) and optionally the parsed ``SettlementRecord``
-    from the broker if one was delivered.
-
-    Per the trust model in the design doc, the SDK report is
-    advisory; the payer-daemon's ``GetSessionDebits`` is the
-    authoritative source. v1 trusts the SDK report on the synchronous
-    close path; the reconciliation janitor (PR-8) does the daemon
-    cross-check and corrects any divergence.
+    SDK forwards the required broker-signed terminal settlement. The
+    reported units and optional outcome are consistency assertions;
+    signed settlement fields are authoritative for accounting.
     """
 
     actual_units: int = Field(ge=0)
     outcome: str | None = None
-    settlement: dict[str, Any] | None = None
+    settlement: SessionSettlementEnvelope
 
 
 class CloseSessionResponse(BaseModel):
@@ -148,8 +202,8 @@ class CloseSessionResponse(BaseModel):
     session_id: uuid.UUID
     work_id: str
     actual_units: int
-    billed_value_wei: int
-    refund_wei: int
+    billed_value_wei: WeiDecimal
+    refund_wei: WeiDecimal
     outcome: str
     closed_at: datetime
 
@@ -157,11 +211,9 @@ class CloseSessionResponse(BaseModel):
 class CreateSessionResponse(BaseModel):
     """Outbound: ``POST /v1/sessions``.
 
-    Carries everything the SDK needs to open the broker-side session
-    and bookkeep the LOC-side lifecycle. The ``payment_envelope``
-    is base64-encoded wire-format Payment bytes — the SDK attaches
-    it as the ``Livepeer-Payment`` HTTP header (or upgrade header,
-    for WS modes) when connecting to ``broker_url``.
+    Carries everything the SDK needs to open the broker-side session and
+    bookkeep the LOC-side lifecycle. ``spend_authorization`` is scoped to the
+    locked route, session commitment, caller proof, and cumulative maximum.
 
     Per exec-plan 002 handoff design, LOC never sits in the data
     path: ``broker_url`` is the orchestrator's HTTP/WS endpoint the
@@ -171,12 +223,16 @@ class CreateSessionResponse(BaseModel):
     """
 
     session_id: uuid.UUID
+    request_id: str
     work_id: str
     broker_url: str
-    mode: str
-    payment_envelope: str
-    expected_value_wei: int
-    funded_value_wei: int
+    protocol: str
+    session: SessionAxesView
+    route_snapshot: RouteSnapshot
+    spend_authorization: str
+    accounting_mode: Literal["wholesale_account"] = "wholesale_account"
+    expected_value_wei: WeiDecimal
+    funded_value_wei: WeiDecimal
     refill_endpoint: str
     close_endpoint: str
     opened_at: datetime

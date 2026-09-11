@@ -123,33 +123,35 @@ Each SDK maps these into typed errors. The kinds you'll see:
 your-app-server  │   Livepeer Open Clearinghouse    │   orch (real Livepeer
                  │   gateway      │    orchestrator)
 ─────────────────►                │
-1. POST /v1/payments/mint
-   { capability, offering, work_units }
+1. POST /v1/jobs
+   { capability, offering, transport, estimated_units, max_total_units }
    X-API-Key: pymth_live_...
    Idempotency-Key: <uuid>
                  │ returns        │
-                 │ payment_bytes  │
+                 │ broker_url + accounting credential
 ◄─────────────────                │
                  │                │
                  └────────────────┘
 
 ──────────────────────────────────────────►
-2. POST {orch_url}/your-endpoint
-   Livepeer-Payment: <payment_bytes>
+2. POST {broker_url}/v1/job
+   Livepeer-Authorization: <scoped authorization>
+   Livepeer-Caller-Proof: <signature over authorization>
    (your normal request body)
                                        returns inference result
 ◄──────────────────────────────────────────
 
 (optional — for request/response APIs where you over-committed budget)
 ─────────────────►
-3. POST /v1/usage/report
-   { payment_id, actual_work_units }
-   Idempotency-Key: <same uuid as step 1>
+3. POST /v1/jobs/{job_id}/settle
+   { actual_units, broker_job_id, work_unit, settlement }
 ```
 
-The two HTTP round-trips (mint, then orch) are the load-bearing path.
-The third is a reconciliation refund — skip it for streaming APIs where
-the orch consumes as it goes.
+The official SDK performs all three calls as a fast path. Accounting does not
+trust SDK reporting: LOC also reconciles durable broker-signed status using
+its request or session ID. Raw callers remain supported; see
+[`docs/HANDOFF_MODE.md`](../docs/HANDOFF_MODE.md#raw-http-parity-for-wholesale-accounts)
+for exact-body commitment and session preparation requirements.
 
 ## What you don't have to do
 

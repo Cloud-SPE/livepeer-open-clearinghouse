@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from livepeer_open_clearinghouse.domains.billing.repo import (
     SpendWindow,
     UserBillingConfig,
 )
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
 from livepeer_open_clearinghouse.errors import InsufficientCredit, SpendCapExceeded
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.settings import Settings
@@ -58,6 +59,7 @@ async def _apply_delta(
     delta_wei: Decimal,
     reason: str,
     related_payment_id: uuid.UUID | None = None,
+    related_engagement_id: uuid.UUID | None = None,
     related_topup_id: uuid.UUID | None = None,
     created_by_operator_id: uuid.UUID | None = None,
 ) -> CreditBalance:
@@ -82,6 +84,7 @@ async def _apply_delta(
             delta_wei=delta_wei,
             reason=reason,
             related_payment_id=related_payment_id,
+            related_engagement_id=related_engagement_id,
             related_topup_id=related_topup_id,
             created_by_operator_id=created_by_operator_id,
         )
@@ -362,6 +365,141 @@ async def release_session_encumbrance(
         reason="session_release",
         related_payment_id=payment_id,
     )
+
+
+async def encumber_customer_engagement(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    amount_wei: Decimal,
+    clock: Clock,
+    period_seconds: int,
+    cap_wei: int,
+) -> CreditBalance:
+    """Hold retail exposure without linking it to a wholesale funding mint."""
+
+    balance = await _ensure_balance_row(session, user_id=user_id)
+    existing = await session.scalar(
+        select(CreditLedger).where(
+            CreditLedger.related_engagement_id == engagement_id,
+            CreditLedger.reason == "engagement_encumbrance",
+        )
+    )
+    if existing is not None:
+        if existing.delta_wei != -amount_wei:
+            raise ValueError("engagement encumbrance replay changed amount")
+        return balance
+    await enforce_and_record_spend(
+        session,
+        user_id=user_id,
+        amount_wei=amount_wei,
+        clock=clock,
+        period_seconds=period_seconds,
+        cap_wei=cap_wei,
+    )
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=-amount_wei,
+        reason="engagement_encumbrance",
+        related_engagement_id=engagement_id,
+    )
+
+
+async def increase_customer_engagement_cap(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    revision: int,
+    amount_wei: Decimal,
+    clock: Clock,
+    period_seconds: int,
+    cap_wei: int,
+) -> CreditBalance:
+    """Idempotently hold the incremental retail exposure for one cap revision."""
+
+    if revision <= 0 or amount_wei <= 0:
+        raise ValueError("engagement cap revision and amount must be positive")
+    reason = f"engagement_cap_revision:{revision}"
+    balance = await _ensure_balance_row(session, user_id=user_id)
+    existing = await session.scalar(
+        select(CreditLedger).where(
+            CreditLedger.related_engagement_id == engagement_id,
+            CreditLedger.reason == reason,
+        )
+    )
+    if existing is not None:
+        if existing.delta_wei != -amount_wei:
+            raise ValueError("engagement cap revision replay changed amount")
+        return balance
+    await enforce_and_record_spend(
+        session,
+        user_id=user_id,
+        amount_wei=amount_wei,
+        clock=clock,
+        period_seconds=period_seconds,
+        cap_wei=cap_wei,
+    )
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=-amount_wei,
+        reason=reason,
+        related_engagement_id=engagement_id,
+    )
+
+
+async def release_customer_engagement(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    engagement_id: uuid.UUID,
+    amount_wei: Decimal,
+) -> CreditBalance:
+    """Release unused retail exposure independently of wholesale settlement."""
+
+    balance = await _ensure_balance_row(session, user_id=user_id)
+    existing = await session.scalar(
+        select(CreditLedger).where(
+            CreditLedger.related_engagement_id == engagement_id,
+            CreditLedger.reason == "engagement_release",
+        )
+    )
+    if existing is not None:
+        if existing.delta_wei != amount_wei:
+            raise ValueError("engagement release replay changed amount")
+        return balance
+    return await _apply_delta(
+        session,
+        user_id=user_id,
+        delta_wei=amount_wei,
+        reason="engagement_release",
+        related_engagement_id=engagement_id,
+    )
+
+
+def calculate_customer_charge(
+    policy: CustomerPricingSnapshot,
+    *,
+    actual_units: int,
+    wholesale_debit_wei: Decimal,
+) -> Decimal:
+    """Apply the snapshotted LOC policy to verified actual usage/cost."""
+
+    if actual_units < 0 or wholesale_debit_wei < 0:
+        raise ValueError("usage and wholesale debit must be non-negative")
+    if policy.kind == "wholesale_pass_through":
+        return wholesale_debit_wei
+    if policy.kind == "cost_plus":
+        assert policy.fee_basis_points is not None
+        numerator = wholesale_debit_wei * (10_000 + policy.fee_basis_points)
+        return (numerator / Decimal(10_000)).to_integral_value(rounding=ROUND_CEILING)
+    assert policy.price_per_unit_wei is not None
+    assert policy.units_per_price is not None
+    numerator = Decimal(actual_units) * policy.price_per_unit_wei
+    return (numerator / Decimal(policy.units_per_price)).to_integral_value(rounding=ROUND_CEILING)
 
 
 async def get_balance(session: AsyncSession, *, user_id: uuid.UUID) -> CreditBalance:

@@ -121,6 +121,12 @@ call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
 
+For wholesale-capable routes, pass `caller_public_key` and
+`sign_caller_proof` to `submit_job` or `open_session`. The callback receives
+the opaque decoded authorization bytes and returns the base64 caller proof;
+the SDK owns exact-body hashing, session preparation, and broker headers but
+never owns the caller's private key. Omit both arguments for legacy routes.
+
 Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,
 `RateLimited` (with `retry_after_seconds`), `DuplicateRequest`,

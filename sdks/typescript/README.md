@@ -105,20 +105,25 @@ await ph.closeSession({ sessionId: handle.sessionId, actualUnits: 4250 });
 
 Method surface (camelCase on the client; LOC wire is snake_case):
 
-|                                                                                                                       |                                  |
-| --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `listCapabilities()`                                                                                                  | discovery                        |
-| `listOrchestrators({ capability })`                                                                                   | discovery                        |
-| `submitJob({ capability, offering, estimatedUnits, body, maxTotalUnits? })`                                           | one-shot job (cases a/b/c)       |
-| `openSession({ capability, offering, estimatedRunwayUnits, maxTotalUnits })`                                          | open long-running session (case d) |
-| `refillSession(sessionId, { observedConsumedUnits })`                                                                 | top up an open session           |
-| `closeSession({ sessionId, actualUnits })`                                                                            | settle + close a session         |
-| `telemetry`                                                                                                           | direct access to the (mandatory) `TelemetryEmitter` |
+|                                                                              |                                                     |
+| ---------------------------------------------------------------------------- | --------------------------------------------------- |
+| `listCapabilities()`                                                         | discovery                                           |
+| `listOrchestrators({ capability })`                                          | discovery                                           |
+| `submitJob({ capability, offering, estimatedUnits, body, maxTotalUnits? })`  | one-shot job (cases a/b/c)                          |
+| `openSession({ capability, offering, estimatedRunwayUnits, maxTotalUnits })` | open long-running session (case d)                  |
+| `refillSession(sessionId, { observedConsumedUnits })`                        | top up an open session                              |
+| `closeSession({ sessionId, actualUnits })`                                   | settle + close a session                            |
+| `telemetry`                                                                  | direct access to the (mandatory) `TelemetryEmitter` |
 
 The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on every
 call, and telemetry events (`request.mintStarted`,
 `request.settleCompleted`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
+
+For wholesale-capable routes, pass `callerPublicKey` and `signCallerProof` to
+`submitJob` or `openSession`. The callback receives opaque decoded
+authorization bytes and returns the base64 caller proof. The SDK retains the
+exact committed body and never takes custody of the caller's private key.
 
 Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,

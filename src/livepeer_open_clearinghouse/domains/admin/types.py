@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 
 
 class PendingUserView(BaseModel):
@@ -39,7 +41,7 @@ class AdminUserView(BaseModel):
     email: str
     email_verified_at: datetime | None
     approved: bool
-    balance_wei: int
+    balance_wei: WeiDecimal
     created_at: datetime
 
 
@@ -53,9 +55,9 @@ class BillingConfigView(BaseModel):
 
     user_id: uuid.UUID
     spend_period_seconds: int | None
-    spend_period_cap_wei: int | None
-    auto_replenish_increment_wei: int | None
-    auto_replenish_threshold_wei: int | None
+    spend_period_cap_wei: WeiDecimal | None
+    auto_replenish_increment_wei: WeiDecimal | None
+    auto_replenish_threshold_wei: WeiDecimal | None
 
 
 class BillingConfigUpdate(BaseModel):
@@ -66,18 +68,18 @@ class BillingConfigUpdate(BaseModel):
     """
 
     spend_period_seconds: int | None = None
-    spend_period_cap_wei: int | None = None
-    auto_replenish_increment_wei: int | None = None
-    auto_replenish_threshold_wei: int | None = None
+    spend_period_cap_wei: WeiDecimal | None = None
+    auto_replenish_increment_wei: WeiDecimal | None = None
+    auto_replenish_threshold_wei: WeiDecimal | None = None
 
 
 class EffectiveBillingConfigView(BaseModel):
     """The values that would be applied right now (overrides + defaults)."""
 
     spend_period_seconds: int
-    spend_period_cap_wei: int
-    auto_replenish_increment_wei: int
-    auto_replenish_threshold_wei: int
+    spend_period_cap_wei: WeiDecimal
+    auto_replenish_increment_wei: WeiDecimal
+    auto_replenish_threshold_wei: WeiDecimal
 
 
 class BillingConfigResponse(BaseModel):
@@ -92,9 +94,12 @@ class DepositSnapshotView(BaseModel):
 
     id: uuid.UUID
     taken_at: datetime
-    deposit_wei: int
-    reserve_wei: int
+    deposit_wei: WeiDecimal
+    reserve_wei: WeiDecimal
     withdraw_round: int
+    current_round: int | None
+    ticket_validity_period: int | None
+    ticket_validity_period_observed_at: datetime | None
 
 
 class DepositSnapshotList(BaseModel):
@@ -250,7 +255,7 @@ class SessionWithSdkView(BaseModel):
     work_id: str
     capability: str
     offering: str
-    mode: str
+    protocol: str
     state: str
     sdk_identity: str | None
     sdk_status: str
@@ -270,3 +275,93 @@ class SdkDistributionEntry(BaseModel):
 
 class SdkDistributionResponse(BaseModel):
     items: list[SdkDistributionEntry]
+
+
+ResolveAction = Literal["refund_hold", "accept_reported", "charge_full"]
+
+
+class ResolveJobRequest(BaseModel):
+    """Inbound: ``POST /v1/admin/jobs/{id}/resolve``.
+
+    An operator's explicit decision for a job or session that cannot settle
+    on its own. ``refund_hold`` releases the encumbrance, ``accept_reported``
+    charges the broker-reported units at the snapshot price, ``charge_full``
+    charges the funded value.
+    """
+
+    action: ResolveAction
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ResolveJobResponse(BaseModel):
+    job_id: uuid.UUID
+    protocol: str
+    action: ResolveAction
+    state: str
+    outcome: str
+    actual_units: int | None
+    funded_value_wei: WeiDecimal
+    billed_value_wei: WeiDecimal
+    refund_wei: WeiDecimal
+    resolved_at: datetime
+
+
+class WholesaleLimitsView(BaseModel):
+    enabled: bool
+    target_available_wei: WeiDecimal
+    replenish_below_wei: WeiDecimal
+    max_available_per_payee_wei: WeiDecimal
+    max_aggregate_available_wei: WeiDecimal
+    max_single_funding_wei: WeiDecimal
+
+
+class WholesaleAccountView(BaseModel):
+    id: uuid.UUID
+    chain_id: int
+    payer_eth_address: str
+    payee_eth_address: str
+    denomination: str
+    protocol_version: str
+    broker_url: str
+    credited_value_wei: WeiDecimal
+    reserved_value_wei: WeiDecimal
+    debited_value_wei: WeiDecimal
+    available_value_wei: WeiDecimal
+    remote_version: int
+    observed_at: datetime
+    age_seconds: float
+    stale: bool
+    over_per_payee_limit: bool
+
+
+class WholesaleFundingView(BaseModel):
+    id: uuid.UUID
+    account_id: uuid.UUID
+    mint_request_id: str
+    correlation_id: str | None
+    target_available_wei: WeiDecimal
+    observed_available_wei: WeiDecimal
+    requested_shortfall_wei: WeiDecimal
+    minted_expected_value_wei: WeiDecimal
+    credited_value_wei: WeiDecimal | None
+    work_id: str | None
+    account_version: int | None
+    status: str
+    has_replayable_payment: bool
+    acknowledged_at: datetime | None
+    created_at: datetime
+    age_seconds: float
+    needs_attention: bool
+
+
+class WholesaleOverview(BaseModel):
+    generated_at: datetime
+    limits: WholesaleLimitsView
+    projected_available_wei: WeiDecimal
+    observed_available_wei: WeiDecimal
+    aggregate_headroom_wei: WeiDecimal
+    aggregate_limit_exceeded: bool
+    stale_accounts: int
+    pending_fundings: int
+    accounts: list[WholesaleAccountView]
+    fundings: list[WholesaleFundingView]

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,17 +18,173 @@ from livepeer_open_clearinghouse.domains.admin.repo import (
     OperatorAudit,
     SdkApproval,
 )
+from livepeer_open_clearinghouse.domains.admin.types import (
+    ResolveJobResponse,
+    WholesaleAccountView,
+    WholesaleFundingView,
+    WholesaleLimitsView,
+    WholesaleOverview,
+)
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
+from livepeer_open_clearinghouse.domains.payments.repo import Payment
+from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
+from livepeer_open_clearinghouse.domains.usage import service as usage_service
+from livepeer_open_clearinghouse.domains.wholesale.repo import (
+    WholesaleAccount,
+    WholesaleExposureBudget,
+    WholesaleFunding,
+)
+from livepeer_open_clearinghouse.errors import OpenClearinghouseError
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.email import EmailProvider, templates
 from livepeer_open_clearinghouse.providers.telemetry import get_logger
+from livepeer_open_clearinghouse.settings import Settings
 
 logger = get_logger(__name__)
 
 BOOTSTRAP_OPERATOR_EMAIL = "bootstrap@livepeer-open-clearinghouse.local"
 BOOTSTRAP_OPERATOR_NAME = "Bootstrap Operator"
+WHOLESALE_STALE_AFTER_SECONDS = 5 * 60
+WHOLESALE_FUNDING_ATTENTION_AFTER_SECONDS = 5 * 60
+
+
+def _age_seconds(now: datetime, value: datetime) -> float:
+    current = now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo is not None else now
+    observed = value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
+    return max(0.0, (current - observed).total_seconds())
+
+
+async def wholesale_overview(
+    session: AsyncSession,
+    *,
+    clock: Clock,
+    settings: Settings,
+    limit: int = 100,
+) -> WholesaleOverview:
+    """Return customer-neutral wholesale exposure and recovery state."""
+
+    now = clock.now()
+    accounts = list(
+        (
+            await session.scalars(
+                select(WholesaleAccount).order_by(WholesaleAccount.observed_at.desc()).limit(limit)
+            )
+        ).all()
+    )
+    fundings = list(
+        (
+            await session.scalars(
+                select(WholesaleFunding).order_by(WholesaleFunding.created_at.desc()).limit(limit)
+            )
+        ).all()
+    )
+    budget = await session.get(WholesaleExposureBudget, "global")
+    projected = Decimal(0) if budget is None else Decimal(budget.projected_available_wei)
+    observed = Decimal(
+        await session.scalar(
+            select(func.coalesce(func.sum(WholesaleAccount.available_value_wei), 0))
+        )
+        or 0
+    )
+    aggregate_limit = Decimal(settings.wholesale_max_aggregate_available_wei)
+    limit_exceeded = projected > aggregate_limit
+    headroom = max(Decimal(0), aggregate_limit - projected)
+    stale_cutoff = (
+        now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo is not None else now
+    ) - timedelta(seconds=WHOLESALE_STALE_AFTER_SECONDS)
+    stale_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(WholesaleAccount)
+            .where(WholesaleAccount.observed_at < stale_cutoff)
+        )
+        or 0
+    )
+    pending_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(WholesaleFunding)
+            .where(WholesaleFunding.status != "acknowledged")
+        )
+        or 0
+    )
+
+    account_views: list[WholesaleAccountView] = []
+    for account in accounts:
+        age = _age_seconds(now, account.observed_at)
+        account_views.append(
+            WholesaleAccountView(
+                id=account.id,
+                chain_id=account.chain_id,
+                payer_eth_address=account.payer_eth_address,
+                payee_eth_address=account.payee_eth_address,
+                denomination=account.denomination,
+                protocol_version=account.protocol_version,
+                broker_url=account.broker_url,
+                credited_value_wei=account.credited_value_wei,
+                reserved_value_wei=account.reserved_value_wei,
+                debited_value_wei=account.debited_value_wei,
+                available_value_wei=account.available_value_wei,
+                remote_version=account.remote_version,
+                observed_at=account.observed_at,
+                age_seconds=age,
+                stale=age > WHOLESALE_STALE_AFTER_SECONDS,
+                over_per_payee_limit=(
+                    Decimal(account.available_value_wei)
+                    > Decimal(settings.wholesale_max_available_per_payee_wei)
+                ),
+            )
+        )
+
+    funding_views: list[WholesaleFundingView] = []
+    for funding in fundings:
+        age = _age_seconds(now, funding.created_at)
+        funding_views.append(
+            WholesaleFundingView(
+                id=funding.id,
+                account_id=funding.account_id,
+                mint_request_id=funding.mint_request_id,
+                correlation_id=funding.correlation_id,
+                target_available_wei=funding.target_available_wei,
+                observed_available_wei=funding.observed_available_wei,
+                requested_shortfall_wei=funding.requested_shortfall_wei,
+                minted_expected_value_wei=funding.minted_expected_value_wei,
+                credited_value_wei=funding.credited_value_wei,
+                work_id=funding.work_id,
+                account_version=funding.account_version,
+                status=funding.status,
+                has_replayable_payment=funding.payment_bytes is not None,
+                acknowledged_at=funding.acknowledged_at,
+                created_at=funding.created_at,
+                age_seconds=age,
+                needs_attention=(
+                    funding.status != "acknowledged"
+                    and age > WHOLESALE_FUNDING_ATTENTION_AFTER_SECONDS
+                ),
+            )
+        )
+
+    return WholesaleOverview(
+        generated_at=now,
+        limits=WholesaleLimitsView(
+            enabled=True,
+            target_available_wei=settings.wholesale_target_available_wei,
+            replenish_below_wei=settings.wholesale_replenish_below_wei,
+            max_available_per_payee_wei=settings.wholesale_max_available_per_payee_wei,
+            max_aggregate_available_wei=settings.wholesale_max_aggregate_available_wei,
+            max_single_funding_wei=settings.wholesale_max_single_funding_wei,
+        ),
+        projected_available_wei=projected,
+        observed_available_wei=observed,
+        aggregate_headroom_wei=headroom,
+        aggregate_limit_exceeded=limit_exceeded,
+        stale_accounts=stale_count,
+        pending_fundings=pending_count,
+        accounts=account_views,
+        fundings=funding_views,
+    )
 
 
 class AdminServiceError(Exception):
@@ -703,3 +861,160 @@ async def sdk_distribution(session: AsyncSession, *, limit: int = 50) -> list[tu
         status = await evaluate_sdk_identity(session, sdk_identity=ident or None)
         out.append((ident or "", int(count), status))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Operator recourse — resolve a job or session that cannot settle
+# ---------------------------------------------------------------------------
+
+
+class JobNotResolvable(OpenClearinghouseError):
+    def __init__(self, *, reason: str, current_state: str | None = None) -> None:
+        super().__init__(
+            code="job_not_resolvable",
+            message=f"job cannot be resolved: {reason}",
+            status_code=409,
+            details={"reason": reason, "state": current_state},
+        )
+
+
+def _ceil_bill(units: int, amount_wei: Decimal, per_units: int) -> Decimal:
+    per_units = max(1, per_units)
+    return Decimal((units * int(amount_wei) + per_units - 1) // per_units)
+
+
+async def resolve_stuck_work(
+    session: AsyncSession,
+    *,
+    job_id: uuid.UUID,
+    operator: Operator,
+    action: str,
+    note: str | None,
+    clock: Clock,
+) -> ResolveJobResponse:
+    """Close an open job or session on the operator's explicit decision.
+
+    Money moves exactly as a verified settlement would, through the same
+    encumbrance release and settlement event, so the ledger, usage views
+    and audit log all agree on what happened and who decided it.
+    """
+    row = await session.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise JobNotResolvable(reason="not_found")
+    if row.state not in (
+        sessions_service.SESSION_STATE_OPEN,
+        sessions_service.SESSION_STATE_DRAINING,
+    ):
+        raise JobNotResolvable(reason="already_closed", current_state=row.state)
+    initial_payment = await session.scalar(
+        select(Payment)
+        .where(Payment.session_id == job_id)
+        .order_by(Payment.created_at.asc())
+        .limit(1)
+    )
+    if initial_payment is None:
+        raise JobNotResolvable(reason="no_payment", current_state=row.state)
+
+    funded = Decimal(row.funded_value_wei)
+    snapshot = row.route_snapshot or {}
+    actual_units: int | None
+    if action == "refund_hold":
+        billed = Decimal(0)
+        actual_units = None
+    elif action == "charge_full":
+        billed = funded
+        actual_units = None
+    elif action == "accept_reported":
+        reported = usage_service.reported_units_for(row)
+        if reported is None:
+            raise JobNotResolvable(reason="no_broker_report", current_state=row.state)
+        try:
+            per_units = int(snapshot.get("units_per_price", 1))
+        except (TypeError, ValueError):
+            per_units = 1
+        billed = min(
+            funded,
+            _ceil_bill(reported, Decimal(initial_payment.price_per_work_unit_wei), per_units),
+        )
+        actual_units = reported
+    else:
+        raise JobNotResolvable(reason="unknown_action", current_state=row.state)
+    refund = funded - billed
+
+    await sessions_service.transition_state(
+        session,
+        job_id,
+        from_state=row.state,
+        to_state=sessions_service.SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+    if refund > 0:
+        await billing_service.release_session_encumbrance(
+            session,
+            user_id=row.user_id,
+            payment_id=initial_payment.id,
+            amount_wei=refund,
+        )
+    outcome = f"operator_{action}"
+    resolved_at = clock.now()
+    row.actual_units = actual_units
+    row.billed_value_wei = billed
+    row.outcome = outcome
+    breakdown = dict(row.breakdown or {})
+    breakdown.pop("settlement_block", None)
+    breakdown["operator_resolution"] = {
+        "action": action,
+        "operator_id": str(operator.id),
+        "operator_email": operator.email,
+        "note": note,
+        "billed_value_wei": str(int(billed)),
+        "refund_wei": str(int(refund)),
+        "resolved_at": resolved_at.isoformat(),
+    }
+    row.breakdown = breakdown
+    await session.flush()
+    await sessions_service.record_settlement(
+        session,
+        job_id,
+        event_type="operator_resolve",
+        clock=clock,
+        actual_units=actual_units,
+        billed_value_wei=billed,
+        outcome=outcome,
+        raw_record=breakdown["operator_resolution"],
+    )
+    session.add(
+        OperatorAudit(
+            operator_id=operator.id,
+            action="resolve_job",
+            target_user_id=row.user_id,
+            params={
+                "job_id": str(job_id),
+                "protocol": row.protocol,
+                "capability": row.capability,
+                "offering": row.offering,
+                "action": action,
+                "billed_value_wei": str(int(billed)),
+                "refund_wei": str(int(refund)),
+                "note": note,
+            },
+        )
+    )
+    await session.flush()
+    return ResolveJobResponse(
+        job_id=job_id,
+        protocol=row.protocol,
+        action=action,  # type: ignore[arg-type]
+        state=row.state,
+        outcome=outcome,
+        actual_units=actual_units,
+        funded_value_wei=funded,
+        billed_value_wei=billed,
+        refund_wei=refund,
+        resolved_at=resolved_at,
+    )

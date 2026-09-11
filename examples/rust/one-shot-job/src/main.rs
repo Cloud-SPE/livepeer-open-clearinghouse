@@ -7,8 +7,8 @@
 //! ```
 //!
 //! The SDK handles the handoff dance: opens a job via POST /v1/jobs
-//! (mints a payment envelope), calls the broker directly with the
-//! envelope as Livepeer-Payment, reads Livepeer-Work-Units from the
+//! for a route-locked spend authorization, calls the broker directly with the
+//! authorization and caller proof, reads Livepeer-Work-Units from the
 //! broker response, and posts settle back to LOC.
 
 use std::env;
@@ -36,7 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_tokens": 500
             })),
             request_id: None,
-            spec_version: None,
+            transport: Some("unary"),
+            content_type: None,
         })
         .await
     {

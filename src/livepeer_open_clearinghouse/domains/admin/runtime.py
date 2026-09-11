@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response, status
@@ -37,6 +38,8 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     OperatorWithToken,
     PendingUserList,
     PendingUserView,
+    ResolveJobRequest,
+    ResolveJobResponse,
     SdkApprovalList,
     SdkApprovalView,
     SdkDistributionEntry,
@@ -48,6 +51,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
     SessionWithSdkView,
     UpdateOperatorRequest,
     UpdateSdkApprovalRequest,
+    WholesaleOverview,
 )
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.discovery import service as discovery_service
@@ -55,6 +59,18 @@ from livepeer_open_clearinghouse.domains.payments import service as payments_ser
 from livepeer_open_clearinghouse.settings import Settings
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+@router.get("/wholesale", response_model=WholesaleOverview)
+async def wholesale_overview_endpoint(
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> WholesaleOverview:
+    """Operator-only shared-account float and recovery visibility."""
+
+    return await service.wholesale_overview(db, clock=clock, settings=settings)
 
 
 @router.get("/users/pending", response_model=PendingUserList)
@@ -82,7 +98,7 @@ async def list_all_users_endpoint(
                 email=u.email,
                 email_verified_at=u.email_verified_at,
                 approved=approved,
-                balance_wei=balance_wei,
+                balance_wei=Decimal(balance_wei),
                 created_at=u.created_at,
             )
             for (u, approved, balance_wei) in rows
@@ -193,9 +209,15 @@ async def put_billing_config_endpoint(
         user_id=user_id,
         operator_id=operator.id,
         spend_period_seconds=body.spend_period_seconds,
-        spend_period_cap_wei=body.spend_period_cap_wei,
-        auto_replenish_increment_wei=body.auto_replenish_increment_wei,
-        auto_replenish_threshold_wei=body.auto_replenish_threshold_wei,
+        spend_period_cap_wei=int(body.spend_period_cap_wei)
+        if body.spend_period_cap_wei is not None
+        else None,
+        auto_replenish_increment_wei=int(body.auto_replenish_increment_wei)
+        if body.auto_replenish_increment_wei is not None
+        else None,
+        auto_replenish_threshold_wei=int(body.auto_replenish_threshold_wei)
+        if body.auto_replenish_threshold_wei is not None
+        else None,
     )
     db.add(
         OperatorAudit(
@@ -230,9 +252,12 @@ async def list_deposit_snapshots_endpoint(
             DepositSnapshotView(
                 id=r.id,
                 taken_at=r.taken_at,
-                deposit_wei=int(r.deposit_wei),
-                reserve_wei=int(r.reserve_wei),
+                deposit_wei=Decimal(r.deposit_wei),
+                reserve_wei=Decimal(r.reserve_wei),
                 withdraw_round=r.withdraw_round,
+                current_round=r.current_round,
+                ticket_validity_period=r.ticket_validity_period,
+                ticket_validity_period_observed_at=(r.ticket_validity_period_observed_at),
             )
             for r in rows
         ]
@@ -536,7 +561,7 @@ async def list_recent_sessions_endpoint(
                 work_id=ps.work_id,
                 capability=ps.capability,
                 offering=ps.offering,
-                mode=ps.mode,
+                protocol=ps.protocol,
                 state=ps.state,
                 sdk_identity=ps.sdk_identity,
                 sdk_status=status_label,
@@ -663,3 +688,27 @@ def _maybe_load_signing_keypair(settings: Settings):  # type: ignore[no-untyped-
     except Exception:
         # Bad config; serve unsigned. Operator should see this in logs.
         return None
+
+
+@router.post("/jobs/{job_id}/resolve", response_model=ResolveJobResponse)
+async def resolve_job_endpoint(
+    job_id: uuid.UUID,
+    body: ResolveJobRequest,
+    operator: CurrentOperatorDep,
+    db: SessionDep,
+    clock: ClockDep,
+) -> ResolveJobResponse:
+    """Operator recourse for a job or session that cannot settle on its own.
+
+    Idempotent per row: a second call answers 409 ``job_not_resolvable``
+    with ``reason: already_closed``. Every resolution writes a settlement
+    event and an operator audit entry.
+    """
+    return await service.resolve_stuck_work(
+        db,
+        job_id=job_id,
+        operator=operator,
+        action=body.action,
+        note=body.note,
+        clock=clock,
+    )

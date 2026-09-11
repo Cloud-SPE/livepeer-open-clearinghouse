@@ -89,18 +89,6 @@ the exec-plan that addressed it and remove it from this file.
   their tickets won. *Trigger:* user requests for visibility.
 - **`Select` is called once per `CreatePayment`.** No batching, no
   pre-fetching of routes for the next mint. *Trigger:* latency budget.
-- **SDK retry-on-INVALID_RECIPIENT_RAND doesn't notify payment-daemon.**
-  All four SDKs now mint-fresh-and-retry once when the orch returns
-  401 + INVALID_RECIPIENT_RAND, mirroring `livepeer-modules-openai`'s
-  `sendWithFreshPayment` loop. The reference impl also calls
-  `PayerDaemon.reportPaymentResult()` over gRPC with
-  `rejectionReason=PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND`
-  so the daemon can drop the stale session immediately; ours skips
-  that step (it would require a new gateway endpoint proxying the
-  daemon RPC). The retry still works because the daemon detects the
-  invalidation on the next mint via its own session management, just
-  more slowly. *Trigger:* observable churn where retries succeed but
-  the next mint without retry still picks up the invalidated session.
 - **Auto-replenish has no per-period maximum grant.** Both the
   proactive scheduler (`billing.service.run_auto_replenish`) and the
   reactive in-mint path (`payments.service._attempt_auto_replenish`)
@@ -190,8 +178,8 @@ the exec-plan that addressed it and remove it from this file.
   `expire_stale_idempotency_keys` scheduler job kept as a
   no-op-effective drain for any pre-existing in-flight rows
   (2026-05-24).
-- **SDK retry-on-INVALID_RECIPIENT_RAND** — no longer relevant
-  under handoff mode. The SDK doesn't see broker 401s before
-  settling; LOC's reconciliation janitor handles session-rotation
-  via daemon `GetSessionDebits`. Removed retry logic from all
-  four SDKs (2026-05-24).
+- **SDK retry-on-INVALID_RECIPIENT_RAND** — replaced by the Modules v2
+  recipient-rotation rebind handshake in all four SDKs. Silent-session
+  recovery queries the broker by LOC's `gateway_session_id` and verifies the
+  signed rotation/settlement chain; LOC no longer calls `GetSessionDebits`
+  (2026-08-21).
