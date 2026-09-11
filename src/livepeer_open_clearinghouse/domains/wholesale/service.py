@@ -35,6 +35,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
 
 _ETH_ADDRESS_BYTES = 20
+WHOLESALE_ACCOUNT_PROTOCOL_VERSION = "wholesale-account/1.1.0-draft"
 
 
 class WholesaleFundingPolicyError(ValueError):
@@ -402,8 +403,6 @@ def create_account_funding_request(
 ) -> CreatePaymentRequest:
     """Build a funding-only daemon request from a trusted selected route."""
 
-    if not route.features.wholesale_accounts:
-        raise WholesaleFundingPolicyError("selected route does not support wholesale accounts")
     if observation.payee != route.eth_address.lower():
         raise WholesaleFundingPolicyError("account observation does not match the locked payee")
     if not mint_request_id:

@@ -54,11 +54,15 @@ def signed_job_settlement(
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     debited = actual_units if debited_units is None else debited_units
-    cumulative = actual_units if payment_cumulative_units is None else payment_cumulative_units
-    prior_cumulative = max(cumulative - debited, 0)
-    billed_value = (cumulative * amount_wei + per_units - 1) // per_units - (
-        prior_cumulative * amount_wei + per_units - 1
-    ) // per_units
+    if authorization_id is not None:
+        cumulative = 0 if payment_cumulative_units is None else payment_cumulative_units
+        billed_value = (debited * amount_wei + per_units - 1) // per_units
+    else:
+        cumulative = actual_units if payment_cumulative_units is None else payment_cumulative_units
+        prior_cumulative = max(cumulative - debited, 0)
+        billed_value = (cumulative * amount_wei + per_units - 1) // per_units - (
+            prior_cumulative * amount_wei + per_units - 1
+        ) // per_units
     payload: dict[str, Any] = {
         "accepted_quote_ref": {
             "quote_id": quote_id,

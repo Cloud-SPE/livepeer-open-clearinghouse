@@ -130,7 +130,7 @@ offering's declared session axes at open. Refill behavior comes only from
 
 - **`bounded`** — LOC never mints a refill. Size `max_total_units` for the
   complete session and drain when the broker advertises exhaustion.
-- **`extensible`** — the SDK requests another envelope from LOC and submits it
+- **`extensible`** — the SDK requests a successor authorization from LOC and submits it
   to the broker's authoritative HTTP `topup_url`. A control WebSocket may
   mirror state, but is not a separate delivery contract.
 
@@ -157,32 +157,13 @@ When LOC refuses a refill (cap_reached or daemon failure):
 - Session exits with `outcome: "cap_reached"` once the broker
   closes
 
-### Recipient rotation
+### Authorization revision
 
-`recipient_rotated` is a single bounded recovery handshake, not a generic
-retry loop:
-
-1. The SDK preserves the rejected LOC `work_id` and request ID.
-2. LOC reports that exact rejection to the payer daemon and mints a successor
-   under a fresh LOC and payer request identity. The refused payment is marked
-   and cannot contribute a second charge.
-3. The SDK sends the successor to the same broker session with
-   `Livepeer-Rebind-From: <rejected-work-id>`.
-4. The broker's signed terminal settlement carries the predecessor,
-   generation, successor `work_id`, and cumulative session charge. LOC verifies
-   the whole chain before final accounting.
-
-A successful rotation is invisible to the customer; the settlement chain is
-the audit record. If the broker refuses the declared rebind, the SDK emits one
-`payment_unrecoverable` winddown warning and lets the funded session drain. It
-does not attempt another rotation.
-
-The payer can avoid the rejected-ticket round trip by rotating proactively at
-its nonce boundary. In that case `CreatePaymentResponse.predecessor_work_id`
-is non-empty only when the work ID actually changed. LOC requires it to equal
-the session's locked current work ID, advances the generation exactly once,
-and returns the ordinary rebind response to the SDK. The broker-facing steps
-3–4 above are unchanged; there is no refused payment to refund in this path.
+An extensible session refill issues a successor authorization whose
+`predecessor_authorization_id` names the current grant and whose maximum is the
+new cumulative cap. The broker atomically admits the successor before making
+it current. A refused revision remains pending for an exact retry; LOC does not
+mint a replacement ticket-session identity or perform ticket-session rebinds.
 
 ---
 
@@ -194,7 +175,7 @@ the current protocol**. It's responsible for:
 1. **Refill loop** (an offering with `session.refill=extensible`): consuming
    the normative `balance` object from broker status/top-up responses or the
    optional events WebSocket, calling LOC's refill endpoint, and delivering
-   the returned envelope through the authoritative HTTP top-up URL. The SDK
+   the returned authorization through the authoritative HTTP top-up URL. The SDK
    reuses the same request ID across both hops until delivery succeeds.
 2. **Settle reporting** (cases a/b/c): reading
    `Livepeer-Work-Units` from the broker response, posting to
@@ -340,10 +321,10 @@ preparation and authorization; it never reuses the old proof.
 
 The OpenAPI document is authoritative for LOC request and response fields.
 The Modules protocol specification is authoritative for caller-proof signing
-and broker headers. LOC has no legacy payment-envelope mode: an unknown mode,
-an incomplete authorization response, or a route without the signed wholesale
-feature marker fails closed. Settlement callbacks remain a latency optimization: LOC reconciles
-from durable broker status by its issued request or session ID.
+and broker headers. LOC has no legacy payment-envelope mode: an unknown paid
+protocol or incomplete authorization response fails closed. Settlement
+callbacks remain a latency optimization: LOC reconciles from durable broker
+status by its issued request or session ID.
 
 This text is suitable for inclusion in customer-facing onboarding
 emails, the portal first-login flow, and the API docs landing

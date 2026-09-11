@@ -110,7 +110,6 @@ def _wholesale_route() -> SelectedRoute:
                 "descriptor_schema": "test-runtime/v1",
                 "metering": "runner-reported",
             },
-            "features": {"wholesale_accounts": True},
         },
     )
 
@@ -351,7 +350,7 @@ async def test_authorization_revisions_preserve_original_grant(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_authorization_issuance_fails_closed_on_route_feature_and_caller_proof() -> None:
+async def test_authorization_issuance_requires_caller_proof_without_feature_negotiation() -> None:
     route = _wholesale_route()
     now = datetime.now(UTC)
     values = {
@@ -366,19 +365,6 @@ async def test_authorization_issuance_fails_closed_on_route_feature_and_caller_p
         "expires_at": now + timedelta(minutes=5),
         "chain_id": 42161,
     }
-    with pytest.raises(ValueError, match="does not support"):
-        await payments_service.issue_route_locked_authorization(
-            route=route.model_copy(
-                update={
-                    "extra": {
-                        "session": route.extra["session"],
-                        "features": {"wholesale_accounts": False},
-                    }
-                }
-            ),
-            caller_public_key=b"key",
-            **values,  # type: ignore[arg-type]
-        )
     with pytest.raises(ValueError, match="caller proof"):
         await payments_service.issue_route_locked_authorization(
             route=route,

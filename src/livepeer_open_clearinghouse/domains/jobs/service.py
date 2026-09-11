@@ -298,7 +298,7 @@ async def _open_wholesale_job(
         limits=limits,
         mint_request_id=mint_id,
         correlation_id=str(job.id),
-        protocol_version="wholesale-account/1.0.0-draft",
+        protocol_version=wholesale_service.WHOLESALE_ACCOUNT_PROTOCOL_VERSION,
     )
     await wholesale_service.complete_account_funding(
         db,
@@ -374,8 +374,6 @@ async def open_job(
         transport=transport,
         binding=route_binding,
     )
-    if not route.features.wholesale_accounts:
-        raise NoRouteAvailable(capability=capability, offering=offering)
     if broker_wholesale is None:
         raise DaemonUnavailable(
             daemon="wholesale-account", reason="broker account client is unavailable"

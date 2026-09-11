@@ -230,9 +230,7 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
 ) -> None:
     user_id, key_id = await _seed_user_key_and_balance(db_session, balance_wei=100_000)
     base_route = _route_for_protocol("paid-session/v1")
-    route = base_route.model_copy(
-        update={"extra": {**base_route.extra, "features": {"wholesale_accounts": True}}}
-    )
+    route = base_route
     db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
     await db_session.commit()
 
@@ -439,40 +437,6 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert grant.state == "settled"
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(98_000)
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_wholesale_session_rejects_unmarked_route_before_side_effects(
-    db_session: AsyncSession,
-) -> None:
-    user_id, key_id = await _seed_user_key_and_balance(db_session)
-    route = _route_for_protocol("paid-session/v1")
-    with pytest.raises(NoRouteAvailable):
-        await sessions_service.open_session(
-            db_session,
-            user_id=user_id,
-            api_key_id=key_id,
-            capability=route.capability,
-            offering=route.offering,
-            descriptor_schema="test-runtime/v1",
-            estimated_runway_units=1,
-            max_total_units=2,
-            gateway_session_id=uuid.uuid4(),
-            preparation_token="invalid-but-not-reached",
-            sdk_identity=None,
-            registry=MockRegistryClient(routes=[route]),
-            daemon=MockPaymentDaemonClient(),
-            clock=_clock(),
-            settings=_settings(),
-            workload_request_digest=b"\x55" * 32,
-            caller_public_key=bytes.fromhex(
-                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-            ),
-            broker_wholesale=_WholesaleBroker(),
-        )
-    assert (await db_session.scalars(select(PaymentSession))).all() == []
-    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit

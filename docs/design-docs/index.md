@@ -28,7 +28,7 @@ to reconstruct your reasoning.
 |---|---|---|---|---|
 | 000 | [Core beliefs](core-beliefs.md) | accepted | — | Agent-first operating principles for this repo |
 | 001 | [Production topology and security baseline](001-production-topology.md) | accepted | LOC operator | Single-process v2 launch unit, private dependencies, durable payer state |
-| 002 | [Fair wholesale credit accounts](002-fair-wholesale-credit-accounts.md) | accepted | LOC + Modules | Target contract pinned to Modules `913cf7d`; implementation tracked by `loc-1zq` |
+| 002 | [Fair wholesale credit accounts](002-fair-wholesale-credit-accounts.md) | accepted | LOC + Modules | Network Protocol 3.0 contract pinned to Modules `c453d14`; implementation tracked by `loc-0m4` |
 
 The operator procedure for design 002 is
 [`wholesale-rollout.md`](../references/wholesale-rollout.md).

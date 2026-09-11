@@ -17,7 +17,8 @@
             "metering": "runner-reported",
             "refill": "bounded"
           },
-          "payment_envelope": "BASE64ENV",
+          "spend_authorization": "YXV0aG9yaXphdGlvbg==",
+          "accounting_mode": "wholesale_account",
           "expected_value_wei": 100000,
           "funded_value_wei": 100000,
           "refill_endpoint": "/v1/sessions/bbbbbbbb-5555-6666-7777-888888888888/refill",

@@ -3,7 +3,7 @@
 A reference card for the `payment-daemon` we integrate with. Source:
 `/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-modules/payment-daemon`.
 The wholesale-account additions are pinned to Modules commit
-`913cf7de10e5c090fd60ccc36234943210670f0d`.
+`c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6`.
 
 This is a digest for fast lookup. When the daemon's behavior is the
 authority, go read the daemon's source — links at the bottom.
@@ -75,7 +75,7 @@ payment_bytes: bytes               # base64 this into the
                                    # LOC parses and persists Payment.sender
                                    # for signed non-admission scope
 tickets_created: uint32            # bounded batch size; zero for zero shortfall
-expected_value: BigUInt            # EV in wei — what to charge the user
+expected_value: BigUInt            # exact EV added to the wholesale account
 funded_value_wei: BigUInt          # echoes the funding intent
 accepted_quote_ref: QuoteRef
 work_id: string                    # an opaque session key from the daemon
@@ -129,8 +129,6 @@ account_shortfall_wei: BigUInt      # max(0, target - observed), when account-aw
 
 **Errors Livepeer Open Clearinghouse must handle:**
 
-- `codes.Aborted` on `ReportPaymentResult` → semantic "session rotated,
-  retry once." Metadata carries old `work_id`.
 - Plain `errors.New` strings from sender validation when deposit/reserve
   is zero or `WithdrawRound` is imminent → surface as
   `503 DAEMON_DEPOSIT_INSUFFICIENT`.
@@ -143,7 +141,7 @@ account_shortfall_wei: BigUInt      # max(0, target - observed), when account-aw
 
 | RPC | Use |
 |---|---|
-| `ReportPaymentResult` | Caller reports payee rejection (`INVALID_RECIPIENT_RAND`); daemon evicts cached session. Returns `Aborted` with retry-once metadata. |
+| `ReportPaymentResult` | Ticket-generation maintenance RPC retained by Modules. LOC does not expose it through job/session authorization or SDK flows. |
 | `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round plus fresh `current_round`, `ticket_validity_period`, and its observation timestamp for the hot wallet. Useful for admin/health and governance-drift telemetry. |
 | `GetSessionDebits` | Legacy long-running session debit ledger. LOC v2 does not call it; reconciliation uses broker-signed settlements. |
 | `Health` | Returns `"ok"`. |
@@ -219,10 +217,9 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
 
 ## Gotchas
 
-- **A payment may contain multiple tickets.** The payer sizes the batch so its
-  credited EV covers `funded_value_wei`, refuses a batch above 600 tickets, and
-  rotates the recipient before a cached session would cross its cumulative
-  600-nonce budget.
+- **A funding payment may contain multiple tickets.** The payer sizes the batch
+  so its credited EV exactly matches the bounded shared-account shortfall and
+  refuses a batch above 600 tickets.
 - **`ticket_params_base_url` is required per call.** Livepeer Open Clearinghouse must know
   the orchestrator's broker URL (it comes from
   `service-registry-daemon.Select().worker_url`).
@@ -230,12 +227,13 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
   Latency includes this round-trip.
 - **`AcceptedPrice.quote_ref` is strictly validated.** Triplet must be
   non-empty. Livepeer Open Clearinghouse synthesizes/forwards from `Select()`.
-- **`CreatePaymentResponse.predecessor_work_id` is a strict rollover signal.**
-  It is empty unless `work_id` actually changed. Jobs adopt the successor;
-  sessions accept it only when the predecessor is their locked current work
-  ID and then use their existing broker rebind flow.
+- **Ticket generations are funding transport state.** A non-empty
+  `CreatePaymentResponse.predecessor_work_id` reports an internal funding
+  ticket rollover. It does not revise a workload authorization, move an open
+  engagement, or transfer ownership of shared-account credit.
 - **Caller-supplied `face_value` is a request, not authoritative.** Trust
-  `response.expected_value` for charging.
+  `response.expected_value` as wholesale funding evidence; customer charging
+  comes from verified usage and LOC's retail pricing policy.
 - **No multi-wallet support.** One daemon process, one wallet. Per-tenant
   signing would require multiple daemon processes.
 - **UDS only.** No TCP, no TLS. Livepeer Open Clearinghouse and daemon must be co-located.

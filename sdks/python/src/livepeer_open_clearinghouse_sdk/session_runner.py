@@ -344,12 +344,6 @@ class SessionRunner:
 
         refill = self._pending_refill
         response = await self._post_topup(session, refill)
-        if _broker_error(response) == "recipient_rotated":
-            await self._end_unrecoverable_rotation()
-            return
-        if _broker_error(response) == "rebind_refused":
-            await self._end_unrecoverable_rotation()
-            return
         response.raise_for_status()
         broker_result = response.json()
         authorization = refill.get("spend_authorization")
@@ -396,13 +390,6 @@ class SessionRunner:
         self._pending_refill_proof = proof
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as broker:
             return await broker.post(session.control.topup_url, headers=headers, content=b"{}")
-
-    async def _end_unrecoverable_rotation(self) -> None:
-        self._pending_refill_key = None
-        self._pending_refill = None
-        self._pending_refill_proof = None
-        self._pending_refill_max_total_units = None
-        await self._fire_winddown(WinddownEvent("payment_unrecoverable", None))
 
     async def close(
         self,
@@ -480,12 +467,6 @@ def _required_string(value: dict[str, Any], key: str) -> str:
     if not isinstance(result, str) or not result:
         raise BrokerProtocolError(f"broker response missing {key}")
     return result
-
-
-def _broker_error(response: httpx.Response) -> str | None:
-    if response.status_code != 409:
-        return None
-    return response.headers.get("Livepeer-Error")
 
 
 def _optional_string(value: dict[str, Any], key: str) -> str | None:

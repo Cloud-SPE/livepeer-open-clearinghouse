@@ -141,7 +141,7 @@ async def test_offering_view_defaults_to_empty_extra() -> None:
 
 
 @pytest.mark.unit
-def test_wholesale_account_feature_is_parsed_at_registry_boundary() -> None:
+def test_freeform_features_are_preserved_but_not_protocol_authority() -> None:
     route = _ROUTE.model_copy(
         update={
             "extra": {
@@ -151,20 +151,7 @@ def test_wholesale_account_feature_is_parsed_at_registry_boundary() -> None:
         }
     )
     reparsed = SelectedRoute.model_validate(route.model_dump())
-    assert reparsed.features.wholesale_accounts is True
-    assert reparsed.snapshot_view().features.wholesale_accounts is True
+    assert not hasattr(reparsed, "features")
+    assert not hasattr(reparsed.snapshot_view(), "features")
+    assert reparsed.snapshot()["extra"]["features"]["wholesale_accounts"] is True
     assert reparsed.snapshot()["extra"]["features"]["future_feature"] == "kept"
-
-
-@pytest.mark.unit
-def test_wholesale_account_feature_does_not_coerce_untrusted_values() -> None:
-    with pytest.raises(ValidationError, match="wholesale_accounts"):
-        SelectedRoute.model_validate(
-            {
-                **_ROUTE.model_dump(),
-                "extra": {
-                    **_ROUTE.extra,
-                    "features": {"wholesale_accounts": "true"},
-                },
-            }
-        )

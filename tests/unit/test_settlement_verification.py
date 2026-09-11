@@ -159,6 +159,18 @@ def test_wholesale_job_settlement_is_bound_to_authorization_and_ceiling() -> Non
     )
     assert verified.billed_value_wei == 4
 
+    verified_without_job_funding = verify_job_settlement(
+        envelope,
+        settlement_keys=[delegated_key()],
+        expected=_expected(
+            work_id=authorization_id,
+            authorization_id=authorization_id,
+            authorized_value_wei=10,
+            funded_value_wei=0,
+        ),
+    )
+    assert verified_without_job_funding.billed_value_wei == 4
+
     with pytest.raises(SettlementVerificationError) as exc_info:
         verify_job_settlement(
             envelope,

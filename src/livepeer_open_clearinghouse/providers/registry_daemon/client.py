@@ -23,7 +23,6 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
-    StrictBool,
     WithJsonSchema,
     field_serializer,
     model_validator,
@@ -92,14 +91,6 @@ class SessionAxes(BaseModel):
     attachment: Literal["external"] = "external"
     metering: Literal["runner-reported"]
     refill: Literal["extensible", "bounded"] = "extensible"
-
-
-class RouteFeatures(BaseModel):
-    """Negotiated route features that change payment safety semantics."""
-
-    model_config = ConfigDict(extra="allow", frozen=True)
-
-    wholesale_accounts: StrictBool = False
 
 
 class SettlementKey(BaseModel):
@@ -188,10 +179,6 @@ class RouteSnapshot(BaseModel):
             route_fingerprint=self.route_fingerprint,
         )
 
-    @property
-    def features(self) -> RouteFeatures:
-        return RouteFeatures.model_validate(self.extra.get("features", {}))
-
 
 class SelectedRoute(BaseModel):
     """One concrete route — output of ``Select`` / ``SelectMany``.
@@ -231,7 +218,6 @@ class SelectedRoute(BaseModel):
             JobAxes.model_validate(self.extra[expected])
         else:
             SessionAxes.model_validate(self.extra[expected])
-        RouteFeatures.model_validate(self.extra.get("features", {}))
         return self
 
     @property
@@ -254,10 +240,6 @@ class SelectedRoute(BaseModel):
             constraint_fingerprint=self.constraint_fingerprint.hex(),
             route_fingerprint=self.route_fingerprint.hex(),
         )
-
-    @property
-    def features(self) -> RouteFeatures:
-        return RouteFeatures.model_validate(self.extra.get("features", {}))
 
     def snapshot_view(self) -> RouteSnapshot:
         """Return the complete immutable declaration used at issuance."""

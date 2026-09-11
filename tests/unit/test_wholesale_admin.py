@@ -59,7 +59,7 @@ async def test_wholesale_overview_flags_stale_account_and_stalled_funding(
         payer_eth_address="0x" + "11" * 20,
         payee_eth_address="0x" + "22" * 20,
         denomination="wei",
-        protocol_version="wholesale-account/1.0.0-draft",
+        protocol_version="wholesale-account/1.1.0-draft",
         broker_url="https://broker.example",
         credited_value_wei=Decimal(1000),
         reserved_value_wei=Decimal(200),

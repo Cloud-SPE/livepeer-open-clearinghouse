@@ -597,14 +597,6 @@ async fn refill(inner: &Arc<Mutex<Inner>>, observed_units: u64, max_total_units:
         return;
     };
     let accepted_refill = refill;
-    if broker_error(&response) == Some("recipient_rotated") {
-        end_unrecoverable_rotation(inner, callback_winddown.clone()).await;
-        return;
-    }
-    if broker_error(&response) == Some("rebind_refused") {
-        end_unrecoverable_rotation(inner, callback_winddown).await;
-        return;
-    }
     let Ok(response) = response.error_for_status() else {
         return;
     };
@@ -709,31 +701,6 @@ async fn fire_refill_error(inner: &Arc<Mutex<Inner>>, error: OpenClearinghouseEr
             funded_value_wei: None,
             cap_status: None,
             error: Some(Arc::new(error)),
-        })
-        .await;
-    }
-}
-
-fn broker_error(response: &reqwest::Response) -> Option<&str> {
-    if response.status() != reqwest::StatusCode::CONFLICT {
-        return None;
-    }
-    response
-        .headers()
-        .get("Livepeer-Error")
-        .and_then(|value| value.to_str().ok())
-}
-
-async fn end_unrecoverable_rotation(inner: &Arc<Mutex<Inner>>, callback: Option<WinddownCallback>) {
-    let mut state = inner.lock().await;
-    state.pending_refill_key = None;
-    state.pending_refill = None;
-    state.pending_max_total_units = None;
-    drop(state);
-    if let Some(callback) = callback {
-        callback(WinddownEvent {
-            reason: "payment_unrecoverable".to_string(),
-            projected_end_at: None,
         })
         .await;
     }

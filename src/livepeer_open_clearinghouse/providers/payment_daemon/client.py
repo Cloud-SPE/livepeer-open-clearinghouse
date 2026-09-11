@@ -1,11 +1,11 @@
-"""Typed payment-daemon sender boundary for legacy and wholesale modes.
+"""Typed payment-daemon sender boundary for wholesale-account funding.
 
 The Protocol mirrors the subset of `payment-daemon`'s sender RPCs that
 Livepeer Open Clearinghouse uses. See ``docs/references/payment-daemon.md``.
 
-The legacy payment RPC remains available during migration. Account-aware
-routes additionally use the published shortfall intent and spend-authorization
-RPCs from the pinned Modules protocol.
+``CreatePayment`` is used only to fund a bounded shared-account shortfall;
+``CreateSpendAuthorization`` signs the separate workload authority. Neither
+RPC authorizes a per-engagement ticket balance.
 """
 
 from __future__ import annotations
@@ -45,12 +45,6 @@ class DaemonDepositInsufficient(PaymentDaemonError):
     """Sender deposit/reserve is zero or withdraw round is imminent."""
 
     code = "daemon_deposit_insufficient"
-
-
-class InvalidRecipientRand(PaymentDaemonError):
-    """`ReportPaymentResult` said the cached session is dead. Retry once."""
-
-    code = "invalid_recipient_rand"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,10 +179,6 @@ class PaymentDaemonClient(Protocol):
         self, request: CreateSpendAuthorizationRequest
     ) -> CreateSpendAuthorizationResponse: ...
 
-    async def report_invalid_recipient_rand(
-        self, *, work_id: str, capability: str, offering: str
-    ) -> None: ...
-
     async def get_deposit_info(self) -> DepositInfo: ...
 
     async def health(self) -> bool: ...
@@ -256,7 +246,6 @@ class MockPaymentDaemonClient:
         self._authorization_replays: dict[
             str, tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]
         ] = {}
-        self.reported_invalid_recipient_rands: list[tuple[str, str, str]] = []
 
     async def health(self) -> bool:
         return True
@@ -271,15 +260,6 @@ class MockPaymentDaemonClient:
             ticket_validity_period=2,
             ticket_validity_period_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
-
-    async def report_invalid_recipient_rand(
-        self, *, work_id: str, capability: str, offering: str
-    ) -> None:
-        """Record the expected payer-cache eviction in the test double."""
-        self.reported_invalid_recipient_rands.append((work_id, capability, offering))
-        for key, cached_work_id in tuple(self._session_work_ids.items()):
-            if cached_work_id == work_id and key[1:3] == (capability, offering):
-                del self._session_work_ids[key]
 
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
         if not request.mint_request_id:
@@ -566,7 +546,14 @@ def validate_spend_authorization_response(
         raise PaymentDaemonError("daemon returned a malformed authorization signature")
     expected = _expected_authorization_payload(proto_request, payer=response.payer)
     if signed.payload != expected:
-        raise PaymentDaemonError("daemon changed the requested authorization scope")
+        changed = sorted(
+            field.name
+            for field in expected.DESCRIPTOR.fields
+            if getattr(signed.payload, field.name) != getattr(expected, field.name)
+        )
+        raise PaymentDaemonError(
+            "daemon changed the requested authorization scope: " + ", ".join(changed)
+        )
     return response
 
 
@@ -745,31 +732,6 @@ class GrpcPaymentDaemonClient:
             raise PaymentDaemonError("daemon returned invalid current validity telemetry")
         return info
 
-    async def report_invalid_recipient_rand(
-        self, *, work_id: str, capability: str, offering: str
-    ) -> None:
-        """Evict the stale payer session; ABORTED is the expected acknowledgement."""
-        import grpc  # noqa: PLC0415
-        from livepeer.payments.v1 import payer_daemon_pb2, types_pb2  # noqa: PLC0415
-
-        stub = await self._ensure_stub()
-        try:
-            await stub.ReportPaymentResult(
-                payer_daemon_pb2.ReportPaymentResultRequest(
-                    work_id=work_id,
-                    capability=capability,
-                    offering=offering,
-                    rejection_reason=(types_pb2.PAYMENT_REJECTION_REASON_INVALID_RECIPIENT_RAND),
-                )
-            )
-        except grpc.aio.AioRpcError as exc:
-            if exc.code() == grpc.StatusCode.ABORTED:
-                return
-            raise PaymentDaemonError(
-                f"ReportPaymentResult {exc.code().name}: {exc.details() or ''}"
-            ) from exc
-        raise PaymentDaemonError("ReportPaymentResult did not acknowledge recipient rotation")
-
     async def create_payment(self, request: CreatePaymentRequest) -> CreatePaymentResponse:
         import grpc  # noqa: PLC0415
 
@@ -779,9 +741,6 @@ class GrpcPaymentDaemonClient:
             proto_resp = await stub.CreatePayment(proto_req)
         except grpc.aio.AioRpcError as exc:
             details = (exc.details() or "").lower()
-            # The daemon uses Aborted for "session rotated, retry once."
-            if exc.code() == grpc.StatusCode.ABORTED:
-                raise InvalidRecipientRand(exc.details() or "session rotated") from exc
             if exc.code() == grpc.StatusCode.FAILED_PRECONDITION and (
                 "reserved but never completed" in details or "replay record has expired" in details
             ):

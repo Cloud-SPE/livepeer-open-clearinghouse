@@ -190,7 +190,6 @@ def _route() -> SelectedRoute:
             "settlement_keys": [],
             "extra": {
                 "job": {"schema": "openai-chat-completions/v1", "transports": ["unary"]},
-                "features": {"wholesale_accounts": True},
             },
         }
     )
@@ -292,7 +291,7 @@ async def test_observed_plan_replaces_prior_account_value_in_aggregate(
             payer_eth_address="0x" + "aa" * 20,
             payee_eth_address="0x" + "11" * 20,
             denomination="wei",
-            protocol_version="wholesale-account/1.0.0-draft",
+            protocol_version="wholesale-account/1.1.0-draft",
             broker_url="https://broker.example",
             credited_value_wei=Decimal(100),
             reserved_value_wei=Decimal(10),
@@ -332,7 +331,7 @@ async def test_funding_claim_mint_and_ack_are_durable(
         limits=_limits(),
         mint_request_id="loc:account:durable",
         correlation_id="opaque-engagement",
-        protocol_version="wholesale-account/1.0.0-draft",
+        protocol_version="wholesale-account/1.1.0-draft",
     )
     assert claimed is not None
     assert claimed.status == "claimed"
@@ -388,7 +387,7 @@ async def test_funding_claim_mint_and_ack_are_durable(
             limits=_limits(max_aggregate_available_wei=150, max_single_funding_wei=100),
             mint_request_id="loc:account:blocked-by-global-cap",
             correlation_id=None,
-            protocol_version="wholesale-account/1.0.0-draft",
+            protocol_version="wholesale-account/1.1.0-draft",
         )
 
 
@@ -411,7 +410,7 @@ async def test_minted_funding_replays_persisted_bytes_without_reminting(
         limits=_limits(),
         mint_request_id="loc:account:recover-minted",
         correlation_id="engagement-recovery",
-        protocol_version="wholesale-account/1.0.0-draft",
+        protocol_version="wholesale-account/1.1.0-draft",
     )
     assert funding is not None
     request = create_account_funding_request(

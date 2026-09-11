@@ -57,11 +57,10 @@ def _cases(repo: Path, modules: Path) -> list[Case]:
     return [
         _pytest_case(
             repo,
-            "negotiation_fail_closed",
-            "Wholesale is selected only by a strict route feature and complete caller proof.",
-            "tests/unit/test_discovery_extra.py::test_wholesale_account_feature_is_parsed_at_registry_boundary",
-            "tests/unit/test_discovery_extra.py::test_wholesale_account_feature_does_not_coerce_untrusted_values",
-            "tests/unit/test_payment_session_model.py::test_authorization_issuance_fails_closed_on_route_feature_and_caller_proof",
+            "intrinsic_authorization_fail_closed",
+            "Paid protocol selection intrinsically requires authorization and complete caller proof.",
+            "tests/unit/test_discovery_extra.py::test_freeform_features_are_preserved_but_not_protocol_authority",
+            "tests/unit/test_payment_session_model.py::test_authorization_issuance_requires_caller_proof_without_feature_negotiation",
         ),
         _pytest_case(
             repo,
@@ -96,15 +95,14 @@ def _cases(repo: Path, modules: Path) -> list[Case]:
             "Durable broker evidence settles by LOC request ID without a customer or SDK callback.",
             "tests/unit/test_jobs_service.py::test_reconcile_open_job_settles_only_embedded_signed_claim",
             "tests/unit/test_jobs_service.py::test_reconcile_open_job_rejects_cross_request_signed_settlement",
-            "tests/unit/test_jobs_service.py::test_settle_job_rejects_tampered_signature_before_mutation",
+            "tests/unit/test_broker_settlement.py::test_spend_authorization_query_is_strict_and_identity_bound",
         ),
         _pytest_case(
             repo,
             "loc_retry_crash_and_concurrency",
             "Request retries, lost responses, crashes, and concurrent creates produce one durable economic mutation.",
-            "tests/unit/test_create_crash_windows.py::test_crash_after_claim_before_daemon_recovers_same_request_id",
-            "tests/unit/test_create_crash_windows.py::test_committed_result_replays_after_lost_http_response_and_restart",
-            "tests/unit/test_create_crash_windows.py::test_concurrent_duplicate_creates_have_one_mint_and_one_mutation",
+            "tests/unit/test_wholesale_accounting.py::test_funding_claim_mint_and_ack_are_durable",
+            "tests/unit/test_wholesale_accounting.py::test_minted_funding_replays_persisted_bytes_without_reminting",
             "tests/unit/test_create_idempotency.py::test_concurrent_stale_recovery_has_one_winner_and_stable_id",
         ),
         Case(

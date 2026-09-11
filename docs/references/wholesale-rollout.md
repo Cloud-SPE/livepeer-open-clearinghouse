@@ -1,8 +1,8 @@
 # Fair wholesale account rollout and rollback
 
 This is the operator runbook for cutting LOC over from retired
-per-engagement tickets to the mandatory Modules `wholesale-account`
-`1.0.0-draft` contract pinned in
+per-engagement tickets to Modules Network Protocol `3.0.0` and the mandatory
+`wholesale-account` `1.1.0-draft` contract pinned in
 [the governing design](../design-docs/002-fair-wholesale-credit-accounts.md).
 There is no runtime feature toggle or legacy fallback.
 
@@ -11,10 +11,10 @@ There is no runtime feature toggle or legacy fallback.
 - Closed historical rows remain `accounting_mode = legacy_ticket`. Never
   relabel them, attach a new authorization, or move their value into a pooled
   account. Active legacy rows block cutover.
-- Every new engagement uses wholesale semantics. The selected route must
-  advertise complete wholesale support and the payer, broker, receiver, and
-  LOC release must implement the pinned contract. Partial or unknown support
-  fails closed.
+- Every new engagement uses wholesale semantics intrinsic to `paid-job/v1` or
+  `paid-session/v1`. The payer, broker, receiver, registry, and LOC release
+  must implement the pinned coordinated contract. Mixed or unknown versions
+  fail closed; offering metadata never enables or disables accounting safety.
 - LOC customer holds, pricing, caps, API-key attribution, and charges remain in
   the customer ledger. Broker account credit and debit remain in the wholesale
   ledger. The opaque engagement correlation is not an ownership edge.
@@ -86,7 +86,7 @@ Deploy in this order after the drain preflight passes:
    account debit, and customer-ledger reconciliation.
 5. Start remaining gateways. Do not mix old and wholesale-only LOC replicas.
 
-## Phase 3: negotiate and initialize
+## Phase 3: validate and initialize
 
 Before starting LOC, record approved values for:
 
@@ -96,12 +96,13 @@ Before starting LOC, record approved values for:
 - maximum aggregate available wei; and
 - maximum single funding wei.
 
-For each candidate payee, force a fresh registry resolution and require the
-wholesale feature marker and exact supported contract. Query the authenticated
-account using LOC's payer identity and confirm denomination, chain, payer,
-payee, broker route, version monotonicity, and non-negative account fields.
-Reject a missing feature marker, unsupported version, changed payer/payee,
-unauthenticated observation, stale observation, or backwards version.
+For each candidate payee, force a fresh registry resolution and require a
+supported paid protocol from a Network Protocol `3.0.0` deployment. Query the
+authenticated account using LOC's payer identity and confirm denomination,
+chain, payer, payee, broker route, version monotonicity, and non-negative
+account fields. Reject an unsupported protocol or mixed deployment, changed
+payer/payee, unauthenticated observation, stale observation, or backwards
+account version.
 
 Start with zero projected exposure. Do not seed the budget from customer holds
 or legacy ticket values. Enable one gateway and one allowlisted payee first.

@@ -298,14 +298,6 @@ func (r *SessionRunner) refill(ctx context.Context, observed, maxTotalUnits int6
 		return err
 	}
 	defer func() { _ = res.Body.Close() }()
-	if brokerError(res) == "recipient_rotated" {
-		r.endUnrecoverableRotation()
-		return nil
-	}
-	if brokerError(res) == "rebind_refused" {
-		r.endUnrecoverableRotation()
-		return nil
-	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("broker topup: %d", res.StatusCode)
 	}
@@ -352,22 +344,6 @@ func (r *SessionRunner) postTopup(ctx context.Context, refill map[string]any) (*
 	r.handle.CallerProof = proof
 	req.Header.Set("Livepeer-Request-Id", fmt.Sprint(refill["request_id"]))
 	return r.http.Do(req)
-}
-
-func brokerError(response *http.Response) string {
-	if response.StatusCode != http.StatusConflict {
-		return ""
-	}
-	return response.Header.Get("Livepeer-Error")
-}
-
-func (r *SessionRunner) endUnrecoverableRotation() {
-	r.mu.Lock()
-	r.pendingKey = ""
-	r.pendingRefill = nil
-	r.pendingMaxTotalUnits = 0
-	r.mu.Unlock()
-	r.fireWinddown(WinddownEvent{Reason: "payment_unrecoverable"})
 }
 
 func refillEvent(refill map[string]any) RefillEvent {

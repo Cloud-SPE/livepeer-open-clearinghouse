@@ -106,7 +106,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture(autouse=True)
 def _retire_legacy_job_cases(request: pytest.FixtureRequest) -> None:
-    if "wholesale" not in request.node.name:
+    if "wholesale" not in request.node.name and "reconcile_open_job" not in request.node.name:
         pytest.skip("legacy per-job ticket coverage; wholesale replacement belongs to loc-0m4.4")
 
 
@@ -197,6 +197,12 @@ def _settlement(
             per_units=per_units,
             work_unit=work_unit,
             outcome=outcome,
+            authorization_id=response.work_id,
+            authorized_value_wei=2_000,
+            reserved_value_wei=2_000,
+            released_value_wei=max(0, 2_000 - actual_units * amount_wei),
+            account_funding_value_wei=100,
+            account_version=1,
         )
     )
 
@@ -287,9 +293,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
     db_session: AsyncSession,
 ) -> None:
     user_id, key_id = await _seed(db_session)
-    route = _route().model_copy(
-        update={"extra": {**_route().extra, "features": {"wholesale_accounts": True}}}
-    )
+    route = _route()
     db_session.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
     await db_session.commit()
     response = await jobs_service.open_job(
@@ -367,36 +371,6 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
     assert grant.state == "settled"
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(10**12 - 100)
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_wholesale_job_rejects_unmarked_route_before_side_effects(
-    db_session: AsyncSession,
-) -> None:
-    user_id, key_id = await _seed(db_session)
-    with pytest.raises(NoRouteAvailable):
-        await jobs_service.open_job(
-            db_session,
-            user_id=user_id,
-            api_key_id=key_id,
-            capability="openai:chat-completions",
-            offering="gpt-oss-20b",
-            estimated_units=1,
-            max_total_units=2,
-            sdk_identity=None,
-            registry=MockRegistryClient(routes=[_route()]),
-            daemon=MockPaymentDaemonClient(),
-            clock=_clock(),
-            settings=_settings(),
-            workload_request_digest=b"\x44" * 32,
-            caller_public_key=bytes.fromhex(
-                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-            ),
-            broker_wholesale=_WholesaleBroker(),
-        )
-    assert (await db_session.scalars(select(PaymentSession))).all() == []
-    assert (await db_session.scalars(select(Payment))).all() == []
 
 
 @pytest.mark.unit
@@ -1183,6 +1157,8 @@ async def _open_recoverable_job(
     db: AsyncSession,
 ) -> tuple[uuid.UUID, CreateJobResponse]:
     user_id, key_id = await _seed(db)
+    db.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db.commit()
     response = await jobs_service.open_job(
         db,
         user_id=user_id,
@@ -1196,7 +1172,21 @@ async def _open_recoverable_job(
         registry=MockRegistryClient(routes=[_route()]),
         daemon=MockPaymentDaemonClient(ev_ratio=Decimal("1.0")),
         clock=_clock(),
-        settings=_settings(),
+        settings=_settings().model_copy(
+            update={
+                "wholesale_chain_id": 42161,
+                "wholesale_target_available_wei": 100,
+                "wholesale_replenish_below_wei": 50,
+                "wholesale_max_available_per_payee_wei": 200,
+                "wholesale_max_aggregate_available_wei": 500,
+                "wholesale_max_single_funding_wei": 100,
+            }
+        ),
+        workload_request_digest=b"\x44" * 32,
+        caller_public_key=bytes.fromhex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        broker_wholesale=_WholesaleBroker(),
     )
     return user_id, response
 

@@ -731,8 +731,6 @@ async def prepare_session(
         if route_binding is not None:
             raise RouteBindingMismatch(binding=route_binding)
         raise NoRouteAvailable(capability=capability, offering=offering)
-    if not route.features.wholesale_accounts:
-        raise NoRouteAvailable(capability=capability, offering=offering)
     if route.protocol != PAID_SESSION_PROTOCOL:
         raise ProtocolNotSupportedForSession(protocol=route.protocol)
     if route.session is None or route.session.descriptor_schema != descriptor_schema:
@@ -832,7 +830,7 @@ async def _replenish_wholesale_account(
         limits=limits,
         mint_request_id=mint_request_id,
         correlation_id=correlation_id,
-        protocol_version="wholesale-account/1.0.0-draft",
+        protocol_version=wholesale_service.WHOLESALE_ACCOUNT_PROTOCOL_VERSION,
     )
     await wholesale_service.complete_account_funding(
         db,
@@ -993,8 +991,6 @@ async def open_session(
         raise NoRouteAvailable(capability=capability, offering=offering)
 
     # ---- 3. Protocol declaration + validation
-    if not route.features.wholesale_accounts:
-        raise NoRouteAvailable(capability=capability, offering=offering)
     protocol = route.protocol
     if protocol != PAID_SESSION_PROTOCOL:
         raise ProtocolNotSupportedForSession(protocol=protocol)

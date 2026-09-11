@@ -29,7 +29,7 @@ def test_matrix_names_every_required_rollout_invariant(runner: ModuleType, tmp_p
     names = {case.name for case in runner._cases(tmp_path, tmp_path)}
 
     assert names == {
-        "negotiation_fail_closed",
+        "intrinsic_authorization_fail_closed",
         "customer_wholesale_isolation",
         "bounded_shortfall_and_replay",
         "authorization_scope_revision_and_cap",

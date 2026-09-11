@@ -6,15 +6,17 @@
 | Opened | 2026-09-08 |
 | Beads | `loc-1zq` |
 | Governing Modules work | `lnm-b41`; `docs/design-docs/wholesale-credit-accounts.md`; plan `0049-fair-wholesale-credit-accounts.md` |
-| Integration baseline | Modules commit `913cf7de10e5c090fd60ccc36234943210670f0d` (`wholesale-account` `1.0.0-draft`) |
+| Integration baseline | Modules commit `c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6` (Network Protocol `3.0.0`) |
 
 ## Decision
 
 LOC will adopt the fair wholesale funding contract implemented by Livepeer
-Network Modules. The user-designated integration baseline is Modules commit
-`913cf7de10e5c090fd60ccc36234943210670f0d`; its protocol document identifies
-the contract as `wholesale-account` `1.0.0-draft`. LOC must persist and
-negotiate the wire version rather than infer support from daemon image tags.
+Network Modules. The approved integration baseline is Modules commit
+`c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6`: Network Protocol `3.0.0`,
+`paid-job/v1` `1.2.0-draft`, `paid-session/v1` `1.3.0-draft`, and
+`wholesale-account` `1.1.0-draft`. LOC persists the account contract version
+and requires the versioned paid protocols rather than inferring support from
+daemon image tags or offering metadata.
 
 LOC remains the Livepeer payer and each selected orchestrator remains the
 wholesale payee. All LOC customers share LOC's wholesale credit account with a
@@ -23,10 +25,11 @@ pricing remain isolated inside LOC and never become authority over that shared
 account.
 
 Wholesale accounts are the only payment model for new work. LOC does not
-offer a legacy-ticket mode, rollout toggle, or fallback. A selected route must
-advertise the complete signed wholesale feature contract; otherwise LOC
-rejects it before creating a customer hold, signing an authorization, or
-funding an account.
+offer a legacy-ticket mode, rollout toggle, fallback, or offering feature
+switch. Authorization-only accounting is intrinsic to the selected
+`paid-job/v1` or `paid-session/v1` protocol. Unknown paid protocols are
+rejected before LOC creates a customer hold, signs an authorization, or funds
+an account.
 
 Tickets will add only a bounded shortfall to the shared wholesale account.
 They will not encode how much an individual customer job or session may spend.
@@ -55,7 +58,7 @@ contract is:
 | Authorization state and settlement extension fields | Durable reconciliation evidence keyed by LOC authorization plus request/session identity |
 | `Livepeer-Authorization` | Base64 signed authorization sent to the locked broker |
 | Optional `Livepeer-Payment` | Shortfall funding only on an account-authorized invocation |
-| `extra.features.wholesale_accounts: true` | Mandatory route contract; absence or partial support fails closed before issuance |
+| `paid-job/v1` or `paid-session/v1` | Authorization-only accounting is intrinsic; LOC never negotiates it through offering metadata |
 
 The receiver RPCs (`FundWholesaleAccount`, `AdmitAuthorization`,
 `AdvanceAuthorization`, `SettleAuthorization`, `GetWholesaleAccount`, and
@@ -234,13 +237,13 @@ legacy spend authority.
 
 Migration requires:
 
-- explicit protocol and feature negotiation;
+- explicit supported-protocol validation without offering feature negotiation;
 - an inventory and complete operator-approved drain of every active legacy
   job, session, payment, and idempotency claim before the new release starts;
 - preservation of closed historical labels solely for audit and reporting;
 - idempotent migration and recovery for in-flight jobs and sessions;
 - conformance evidence for authorization scope, atomic reservation, durable
-  status, rotation, expiry, and aggregate replenishment; and
+  status, revision, expiry, and aggregate replenishment; and
 - operator limits for target float, maximum float, single-ticket EV,
   reservation/cumulative caps, reconciliation deadlines, and drain behavior.
 

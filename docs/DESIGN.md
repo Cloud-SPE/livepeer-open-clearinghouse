@@ -5,8 +5,8 @@ agent runs can reason about them without re-deriving them from code.
 
 > **Payment protocol:** LOC is wholesale-account only. Customer maxima are
 > single-purpose authorization caps, while tickets fund only bounded shortfall
-> in a shared LOC payer-payee account. Routes without the complete signed
-> wholesale contract fail closed. See
+> in a shared LOC payer-payee account. Authorization-only accounting is
+> intrinsic to Network Protocol 3.0 paid routes; unknown protocols fail closed. See
 > [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).
 
 ## What Livepeer Open Clearinghouse is
@@ -17,8 +17,9 @@ the Livepeer payment infrastructure. It does four things:
 1. Authenticates app developers (API keys) and operators (web sessions).
 2. Tracks wei-denominated credit per user.
 3. Discovers orchestrators and capabilities via `service-registry-daemon`.
-4. Mints signed Livepeer payment tickets via `payment-daemon`, charging the
-   user's credit by ticket expected value (EV) at issuance.
+4. Issues scoped spend authorizations and funds bounded shared-account
+   shortfalls through `payment-daemon`; customer charges follow verified
+   actual usage in LOC's separate retail ledger.
 
 ## What Livepeer Open Clearinghouse is not (MVP)
 

@@ -161,21 +161,12 @@ def verify_job_settlement(
         raise SettlementVerificationError("quote_mismatch", "signed quote reference does not match")
 
     billed_value = int.from_bytes(record.billed_value_wei.value, "big")
-    cumulative_units = record.payment_cumulative_units
-    if cumulative_units < record.debited_units:
-        raise SettlementVerificationError(
-            "payment_curve_invalid", "payment cumulative units precede this job's debit"
-        )
-    normative_bill = _bill(cumulative_units, expected.amount_wei, expected.per_units) - _bill(
-        cumulative_units - record.debited_units,
-        expected.amount_wei,
-        expected.per_units,
-    )
+    normative_bill = _job_normative_bill(record, expected)
     if billed_value != normative_bill:
         raise SettlementVerificationError(
             "billed_value_mismatch", "signed billed value does not match normative bill(U)"
         )
-    if billed_value > expected.funded_value_wei:
+    if expected.authorization_id is None and billed_value > expected.funded_value_wei:
         raise SettlementVerificationError(
             "funding_ceiling_exceeded", "signed billed value exceeds the funded job ceiling"
         )
@@ -192,6 +183,26 @@ def verify_job_settlement(
         outcome=record.SettlementOutcome.Name(record.outcome),
         issued_at=issued_at,
         signing_public_key=public_key,
+    )
+
+
+def _job_normative_bill(record: Any, expected: JobSettlementExpectation) -> int:
+    cumulative_units = record.payment_cumulative_units
+    if expected.authorization_id is not None:
+        if cumulative_units != 0:
+            raise SettlementVerificationError(
+                "payment_curve_invalid",
+                "authorization-backed settlement carries a ticket-session curve position",
+            )
+        return _bill(record.debited_units, expected.amount_wei, expected.per_units)
+    if cumulative_units < record.debited_units:
+        raise SettlementVerificationError(
+            "payment_curve_invalid", "payment cumulative units precede this job's debit"
+        )
+    return _bill(cumulative_units, expected.amount_wei, expected.per_units) - _bill(
+        cumulative_units - record.debited_units,
+        expected.amount_wei,
+        expected.per_units,
     )
 
 

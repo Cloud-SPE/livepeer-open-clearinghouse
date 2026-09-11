@@ -85,8 +85,6 @@ async def issue_route_locked_authorization(
 ) -> tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]:
     """Sign only facts from one trusted, already-selected registry route."""
 
-    if not route.features.wholesale_accounts:
-        raise ValueError("selected route does not support wholesale accounts")
     if not caller_public_key:
         raise ValueError("wholesale authorization requires caller proof key")
     request = CreateSpendAuthorizationRequest(

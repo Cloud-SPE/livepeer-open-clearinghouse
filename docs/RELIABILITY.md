@@ -286,21 +286,12 @@ a payment row.
 
 ### Broker rejects a session top-up
 
-If a broker returns `recipient_rotated` for a session top-up, the SDK asks LOC
-for one fresh refill intent bound to the rejected `work_id` and request ID.
-LOC reports the rejection to the payer daemon, which rotates the recipient;
-the SDK then sends the successor payment with `Livepeer-Rebind-From`. A
-successful rotation is settlement-only infrastructure and produces no
-customer-visible event. A refused rebind drains with `payment_unrecoverable`.
-LOC never retries unbound and never charges the refused payment twice.
-
-The payer may also rotate proactively while minting a normal refill. Its
-`CreatePaymentResponse` then carries the exact predecessor and successor work
-IDs. LOC accepts this only when the predecessor equals the locked session's
-current work ID, atomically advances the rotation generation, and returns the
-same `rebind_from` contract to the SDK. A self-reference, stale predecessor, or
-silent work-ID change fails closed. This path does not mark an earlier payment
-refused because no payment was rejected.
+An extensible refill is a predecessor-bound authorization revision, not a new
+ticket-session generation. The SDK preserves the LOC request ID and successor
+authorization after any non-success response so the same operation can be
+retried exactly. It never requests a recipient rotation or sends a
+ticket-session rebind header. Bounded offerings refuse revisions and drain
+their existing authorized runway.
 
 ### `payment-daemon.CreatePayment` returns an error
 

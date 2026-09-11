@@ -245,14 +245,6 @@ export class SessionRunner {
     }
     const refill = this.pendingRefill;
     const response = await this.postTopup(session, refill);
-    if (brokerError(response) === "recipient_rotated") {
-      await this.endUnrecoverableRotation();
-      return;
-    }
-    if (brokerError(response) === "rebind_refused") {
-      await this.endUnrecoverableRotation();
-      return;
-    }
     if (!response.ok) throw protocolError(`broker topup failed: ${String(response.status)}`);
     const acceptedRefill = refill;
     const brokerResult = (await response.json()) as { balance?: SessionBalance };
@@ -309,17 +301,6 @@ export class SessionRunner {
       method: "POST",
       headers,
       body: "{}",
-    });
-  }
-
-  private async endUnrecoverableRotation(): Promise<void> {
-    this.pendingRefill = null;
-    this.pendingRefillKey = null;
-    this.pendingRefillProof = null;
-    this.pendingRefillMaxTotalUnits = null;
-    await this.onWinddownWarning?.({
-      reason: "payment_unrecoverable",
-      projectedEndAt: null,
     });
   }
 
@@ -430,10 +411,6 @@ function parseBalance(value: unknown): SessionBalance {
     throw protocolError("malformed broker balance");
   }
   return balance as unknown as SessionBalance;
-}
-
-function brokerError(response: Response): string | null {
-  return response.status === 409 ? response.headers.get("Livepeer-Error") : null;
 }
 
 function requiredString(value: Record<string, unknown>, key: string): string {

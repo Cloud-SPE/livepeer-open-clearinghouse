@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -33,6 +34,8 @@ from typing import IO, Any
 import asyncpg
 import grpc
 import httpx
+from eth_keys.datatypes import PrivateKey
+from eth_utils import keccak
 from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
 from livepeer_open_clearinghouse_sdk.session_runner import SessionRunner
 from registry_seed_probe import (  # type: ignore[import-not-found]
@@ -42,11 +45,6 @@ from registry_seed_probe import (  # type: ignore[import-not-found]
 )
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from livepeer_open_clearinghouse._gen.livepeer.payments.v1 import (
-    payee_admin_pb2,
-    payee_admin_pb2_grpc,
-    types_pb2,
-)
 from livepeer_open_clearinghouse.domains.accounts.repo import User
 from livepeer_open_clearinghouse.domains.admin import repo as _admin_repo  # noqa: F401
 from livepeer_open_clearinghouse.domains.api_keys import service as api_keys_service
@@ -62,6 +60,8 @@ _JOB_OFFERING = "all"
 _SESSION_CAPABILITY = "conformance:session"
 _SESSION_OFFERING = "default"
 _SESSION_DESCRIPTOR_SCHEMA = "sfu-room/v1"
+_CALLER_KEY = PrivateKey(b"\x04" * 32)
+_CALLER_PUBLIC_KEY = _CALLER_KEY.public_key.to_compressed_bytes().hex()
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -351,10 +351,21 @@ def _broker_headers(job: dict[str, Any], *, offering: str = _JOB_OFFERING) -> di
         "Content-Type": "application/json",
         "Livepeer-Capability": _JOB_CAPABILITY,
         "Livepeer-Offering": offering,
-        "Livepeer-Payment": str(job["payment_envelope"]),
+        "Livepeer-Authorization": str(job["spend_authorization"]),
+        "Livepeer-Caller-Proof": _sign_caller_proof(
+            base64.b64decode(str(job["spend_authorization"]), validate=True)
+        ),
         "Livepeer-Protocol": str(job["protocol"]),
         "Livepeer-Request-Id": str(job["request_id"]),
     }
+
+
+def _sign_caller_proof(authorization: bytes) -> str:
+    digest = keccak(b"livepeer-invocation-proof/v1\x00" + authorization)
+    prefix = f"\x19Ethereum Signed Message:\n{len(digest)}".encode()
+    signature = bytearray(_CALLER_KEY.sign_msg_hash(keccak(prefix + digest)).to_bytes())
+    signature[64] += 27
+    return base64.b64encode(signature).decode()
 
 
 async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matrix
@@ -364,14 +375,23 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
 
     cases: list[dict[str, Any]] = []
     async with OpenClearinghouseClient(base_url=loc_url, api_key=api_key) as sdk:
-        result = await sdk.submit_job(
-            capability=_JOB_CAPABILITY,
-            offering=_JOB_OFFERING,
-            estimated_units=10_250,
-            max_total_units=10_250,
-            body={"prompt": "live SDK matrix"},
-            request_id=f"sdk-{uuid.uuid4()}",
-        )
+        try:
+            result = await sdk.submit_job(
+                capability=_JOB_CAPABILITY,
+                offering=_JOB_OFFERING,
+                estimated_units=10_250,
+                max_total_units=10_250,
+                body={"prompt": "live SDK matrix"},
+                request_id=f"sdk-{uuid.uuid4()}",
+                caller_public_key=_CALLER_PUBLIC_KEY,
+                sign_caller_proof=_sign_caller_proof,
+            )
+        except Exception as exc:
+            raise AssertionError(
+                "official SDK paid-job failed: "
+                f"code={getattr(exc, 'code', None)!r} "
+                f"details={getattr(exc, 'details', None)!r}"
+            ) from exc
         if result.status != 200 or result.actual_units != 42 or result.work_unit != "tokens":
             raise AssertionError(f"official SDK paid-job result is invalid: {result!r}")
         cases.append(
@@ -399,6 +419,10 @@ async def _exercise_job_matrix(  # noqa: PLR0912 — one readable protocol matri
             "estimated_units": 10_250,
             "max_total_units": 10_250,
             "route_binding": selected_route["route_binding"],
+            "workload_request_digest": hashlib.sha256(
+                b'{"prompt":"withhold settlement"}'
+            ).hexdigest(),
+            "caller_public_key": _CALLER_PUBLIC_KEY,
         }
         first = await loc.post("/v1/jobs", headers={"Idempotency-Key": idem_key}, json=open_body)
         first.raise_for_status()
@@ -637,6 +661,8 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
             estimated_runway_units=6_000,
             max_total_units=12_000,
             request_id=f"sdk-session-{uuid.uuid4()}",
+            caller_public_key=_CALLER_PUBLIC_KEY,
+            sign_caller_proof=_sign_caller_proof,
         )
         runner = SessionRunner(client=sdk, handle=handle)
         broker_session = await runner.start()
@@ -671,20 +697,37 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
     async with httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc:
         idem_key = f"loc-session-{uuid.uuid4()}"
-        selected = await loc.get(
-            "/v1/routes",
-            params={"capability": _SESSION_CAPABILITY, "offering": _SESSION_OFFERING},
+        prepared_response = await loc.post(
+            "/v1/sessions/prepare",
+            headers={"Idempotency-Key": f"{idem_key}:prepare"},
+            json={
+                "capability": _SESSION_CAPABILITY,
+                "offering": _SESSION_OFFERING,
+                "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
+            },
         )
-        selected.raise_for_status()
-        selected_route = selected.json()
+        prepared_response.raise_for_status()
+        prepared = prepared_response.json()
+        session_params = {"name": "idempotency-matrix"}
+        broker_body = json.dumps(
+            {
+                "gateway_session_id": prepared["gateway_session_id"],
+                "session_params": session_params,
+            },
+            separators=(",", ":"),
+        ).encode()
         open_body = {
             "capability": _SESSION_CAPABILITY,
             "offering": _SESSION_OFFERING,
             "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
-            "session_params": {"name": "idempotency-matrix"},
+            "session_params": session_params,
             "estimated_runway_units": 6_000,
             "max_total_units": 12_000,
-            "route_binding": selected_route["route_binding"],
+            "gateway_session_id": prepared["gateway_session_id"],
+            "preparation_token": prepared["preparation_token"],
+            "route_binding": prepared["route_binding"],
+            "workload_request_digest": hashlib.sha256(broker_body).hexdigest(),
+            "caller_public_key": _CALLER_PUBLIC_KEY,
         }
         first = await loc.post(
             "/v1/sessions", headers={"Idempotency-Key": idem_key}, json=open_body
@@ -696,8 +739,6 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         replay.raise_for_status()
         if replay.json() != first.json():
             raise AssertionError("LOC session-open replay did not return the durable result")
-        if first.json()["route_snapshot"] != selected_route["route_snapshot"]:
-            raise AssertionError("LOC session open did not preserve the selected route snapshot")
         reuse = await loc.post(
             "/v1/sessions",
             headers={"Idempotency-Key": idem_key},
@@ -706,7 +747,7 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
         if reuse.status_code != 409:
             raise AssertionError(f"LOC session request-id reuse returned {reuse.status_code}")
         stale_binding = {
-            **selected_route["route_binding"],
+            **prepared["route_binding"],
             "route_fingerprint": "0" * 64,
         }
         stale = await loc.post(
@@ -726,17 +767,13 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
             "Content-Type": "application/json",
             "Livepeer-Capability": _SESSION_CAPABILITY,
             "Livepeer-Offering": _SESSION_OFFERING,
-            "Livepeer-Payment": str(opened["payment_envelope"]),
+            "Livepeer-Authorization": str(opened["spend_authorization"]),
+            "Livepeer-Caller-Proof": _sign_caller_proof(
+                base64.b64decode(str(opened["spend_authorization"]), validate=True)
+            ),
             "Livepeer-Protocol": str(opened["protocol"]),
             "Livepeer-Request-Id": str(opened["request_id"]),
         }
-        broker_body = json.dumps(
-            {
-                "gateway_session_id": opened["session_id"],
-                "session_params": open_body["session_params"],
-            },
-            separators=(",", ":"),
-        ).encode()
         async with httpx.AsyncClient(timeout=10) as broker:
             broker_first = await broker.post(
                 f"{broker_url}/v1/session", headers=broker_headers, content=broker_body
@@ -758,7 +795,11 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
                 raise AssertionError(f"broker emitted an invalid runtime: {runtime!r}")
 
             refill_key = f"refill-{uuid.uuid4()}"
-            refill_body = {"observed_consumed_units": 0}
+            refill_body = {
+                "observed_consumed_units": 0,
+                "max_total_units": 18_000,
+                "workload_request_digest": hashlib.sha256(b"{}").hexdigest(),
+            }
             refill_first = await loc.post(
                 opened["refill_endpoint"],
                 headers={"Idempotency-Key": refill_key},
@@ -779,12 +820,19 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
             refill = refill_first.json()
             topup_headers = {
                 "Authorization": f"Bearer {session['credential']}",
-                "Livepeer-Payment": str(refill["payment_envelope"]),
+                "Livepeer-Authorization": str(refill["spend_authorization"]),
+                "Livepeer-Caller-Proof": _sign_caller_proof(
+                    base64.b64decode(str(refill["spend_authorization"]), validate=True)
+                ),
                 "Livepeer-Request-Id": str(refill["request_id"]),
             }
-            topup_first = await broker.post(session["control"]["topup_url"], headers=topup_headers)
+            topup_first = await broker.post(
+                session["control"]["topup_url"], headers=topup_headers, content=b"{}"
+            )
             topup_first.raise_for_status()
-            topup_replay = await broker.post(session["control"]["topup_url"], headers=topup_headers)
+            topup_replay = await broker.post(
+                session["control"]["topup_url"], headers=topup_headers, content=b"{}"
+            )
             topup_replay.raise_for_status()
             if topup_replay.json() != topup_first.json():
                 raise AssertionError("broker top-up replay changed the recorded outcome")
@@ -833,309 +881,6 @@ async def _exercise_session_matrix(  # noqa: PLR0912 — one readable protocol m
     return cases
 
 
-def _rotate_payee_recipient(payee_socket: Path, payment_envelope: str) -> str:
-    """Rotate the exact payer/payee tuple carried by a live payment."""
-
-    payment = types_pb2.Payment()
-    payment.ParseFromString(base64.b64decode(payment_envelope, validate=True))
-    channel = grpc.insecure_channel(f"unix://{payee_socket}")
-    try:
-        response = payee_admin_pb2_grpc.PayeeAdminStub(channel).ResetSession(  # type: ignore[no-untyped-call]
-            payee_admin_pb2.ResetSessionRequest(
-                sender=payment.sender,
-                recipient=payment.ticket_params.recipient,
-                capability=_SESSION_CAPABILITY,
-                offering=_SESSION_OFFERING,
-            ),
-            metadata=(("authorization", f"Bearer {_PAYEE_ADMIN_TOKEN}"),),
-            timeout=5,
-        )
-    finally:
-        channel.close()
-    if not response.reset or not response.old_work_id:
-        raise AssertionError(f"payee did not rotate its recipient: {response!r}")
-    return str(response.old_work_id)
-
-
-async def _exercise_session_rotation(
-    loc_url: str, api_key: str, payee_socket: Path
-) -> dict[str, Any]:
-    """Prove stale-refill rejection and an exactly-once replacement rebind."""
-
-    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
-    async with (
-        httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc,
-        httpx.AsyncClient(timeout=10) as broker,
-    ):
-        opened_response = await loc.post(
-            "/v1/sessions",
-            headers={"Idempotency-Key": f"rotation-open-{uuid.uuid4()}"},
-            json={
-                "capability": _SESSION_CAPABILITY,
-                "offering": _SESSION_OFFERING,
-                "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
-                "session_params": {"name": "rotation-matrix"},
-                "estimated_runway_units": 6_000,
-                "max_total_units": 18_000,
-            },
-        )
-        opened_response.raise_for_status()
-        opened = opened_response.json()
-        broker_url = str(opened["broker_url"]).rstrip("/")
-        broker_open = await broker.post(
-            f"{broker_url}/v1/session",
-            headers={
-                "Content-Type": "application/json",
-                "Livepeer-Capability": _SESSION_CAPABILITY,
-                "Livepeer-Offering": _SESSION_OFFERING,
-                "Livepeer-Payment": str(opened["payment_envelope"]),
-                "Livepeer-Protocol": str(opened["protocol"]),
-                "Livepeer-Request-Id": str(opened["request_id"]),
-            },
-            content=json.dumps(
-                {
-                    "gateway_session_id": opened["session_id"],
-                    "session_params": {"name": "rotation-matrix"},
-                },
-                separators=(",", ":"),
-            ).encode(),
-        )
-        broker_open.raise_for_status()
-        session = broker_open.json()
-
-        stale_response = await loc.post(
-            opened["refill_endpoint"],
-            headers={"Idempotency-Key": f"rotation-stale-{uuid.uuid4()}"},
-            json={"observed_consumed_units": 0},
-        )
-        stale_response.raise_for_status()
-        stale = stale_response.json()
-        predecessor = _rotate_payee_recipient(payee_socket, str(stale["payment_envelope"]))
-        if predecessor != stale["work_id"] or predecessor != opened["work_id"]:
-            raise AssertionError("payee rotated a different payment identity than the LOC session")
-
-        stale_topup = await broker.post(
-            session["control"]["topup_url"],
-            headers={
-                "Authorization": f"Bearer {session['credential']}",
-                "Livepeer-Payment": str(stale["payment_envelope"]),
-                "Livepeer-Request-Id": str(stale["request_id"]),
-            },
-        )
-        if (
-            stale_topup.status_code != 409
-            or stale_topup.headers.get("Livepeer-Error") != "recipient_rotated"
-        ):
-            raise AssertionError(
-                "stale refill did not return the recipient_rotated contract: "
-                f"{stale_topup.status_code} {stale_topup.text}"
-            )
-
-        replacement_response = await loc.post(
-            opened["refill_endpoint"],
-            headers={"Idempotency-Key": f"rotation-successor-{uuid.uuid4()}"},
-            json={
-                "observed_consumed_units": 0,
-                "rebind_from": predecessor,
-                "replaces_request_id": stale["request_id"],
-            },
-        )
-        replacement_response.raise_for_status()
-        replacement = replacement_response.json()
-        if replacement["work_id"] == predecessor or replacement["rebind_from"] != predecessor:
-            raise AssertionError("LOC did not mint a successor bound to the predecessor")
-
-        rebind_headers = {
-            "Authorization": f"Bearer {session['credential']}",
-            "Livepeer-Payment": str(replacement["payment_envelope"]),
-            "Livepeer-Request-Id": str(replacement["request_id"]),
-            "Livepeer-Rebind-From": predecessor,
-        }
-        rebound = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
-        rebound.raise_for_status()
-        rebound_replay = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
-        rebound_replay.raise_for_status()
-        if rebound_replay.json() != rebound.json():
-            raise AssertionError("broker rotation replay changed the recorded outcome")
-
-        ended = await broker.post(
-            session["control"]["end_url"],
-            headers={"Authorization": f"Bearer {session['credential']}"},
-            json={"reason": "rotation_conformance_complete"},
-        )
-        ended.raise_for_status()
-        encoded = ended.headers.get("Livepeer-Settlement")
-        if not encoded:
-            raise AssertionError("rotated session end omitted its signed settlement")
-        settlement = json.loads(base64.b64decode(encoded, validate=True))
-        payload = settlement.get("payload", {})
-        if (
-            payload.get("rotation_generation") != 1
-            or payload.get("predecessor_work_id") != predecessor
-            or payload.get("work_id") != replacement["work_id"]
-        ):
-            raise AssertionError(f"rotated settlement lost its identity chain: {payload!r}")
-        closed = await loc.post(
-            opened["close_endpoint"],
-            json={"actual_units": 0, "settlement": settlement},
-        )
-        closed.raise_for_status()
-        if closed.json().get("outcome") != "OVERFUNDED":
-            raise AssertionError(f"rotated LOC close is invalid: {closed.json()!r}")
-
-        return {
-            "case": "session_recipient_rotation_rebind",
-            "status": "passed",
-            "session_id": opened["session_id"],
-            "predecessor_work_id": predecessor,
-            "work_id": replacement["work_id"],
-            "rotation_generation": payload["rotation_generation"],
-        }
-
-
-async def _exercise_proactive_nonce_boundary_rotation(loc_url: str, api_key: str) -> dict[str, Any]:
-    """Cross the real 600-ticket boundary through LOC and broker APIs."""
-
-    headers = {"X-API-Key": api_key, "Livepeer-Open-Clearinghouse-SDK": "live-matrix"}
-    estimated_units = 6_000
-    total_payments = 601
-    async with (
-        httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=20) as loc,
-        httpx.AsyncClient(timeout=20) as broker,
-    ):
-        opened_response = await loc.post(
-            "/v1/sessions",
-            headers={"Idempotency-Key": f"proactive-open-{uuid.uuid4()}"},
-            json={
-                "capability": _SESSION_CAPABILITY,
-                "offering": _SESSION_OFFERING,
-                "descriptor_schema": _SESSION_DESCRIPTOR_SCHEMA,
-                "session_params": {"name": "proactive-nonce-boundary"},
-                "estimated_runway_units": estimated_units,
-                "max_total_units": estimated_units * total_payments,
-            },
-        )
-        opened_response.raise_for_status()
-        opened = opened_response.json()
-        predecessor = str(opened["work_id"])
-        broker_url = str(opened["broker_url"]).rstrip("/")
-        broker_open = await broker.post(
-            f"{broker_url}/v1/session",
-            headers={
-                "Content-Type": "application/json",
-                "Livepeer-Capability": _SESSION_CAPABILITY,
-                "Livepeer-Offering": _SESSION_OFFERING,
-                "Livepeer-Payment": str(opened["payment_envelope"]),
-                "Livepeer-Protocol": str(opened["protocol"]),
-                "Livepeer-Request-Id": str(opened["request_id"]),
-            },
-            content=json.dumps(
-                {
-                    "gateway_session_id": opened["session_id"],
-                    "session_params": {"name": "proactive-nonce-boundary"},
-                },
-                separators=(",", ":"),
-            ).encode(),
-        )
-        broker_open.raise_for_status()
-        session = broker_open.json()
-
-        # Payments may contain more than one ticket, so the authoritative
-        # boundary is the payer's declared predecessor rather than a guessed
-        # payment ordinal. This funded range must cross 600 accepted tickets.
-        boundary: dict[str, Any] | None = None
-        boundary_payment = 0
-        for payment_number in range(2, total_payments + 1):
-            refill_key = f"proactive-{payment_number}-{uuid.uuid4()}"
-            refill_response = await loc.post(
-                opened["refill_endpoint"],
-                headers={"Idempotency-Key": refill_key},
-                json={"observed_consumed_units": 0},
-            )
-            refill_response.raise_for_status()
-            refill = refill_response.json()
-            if refill.get("rebind_from") is not None:
-                if refill["work_id"] == predecessor or refill.get("rebind_from") != predecessor:
-                    raise AssertionError(f"LOC lost the proactive rollover pair: {refill!r}")
-                replay = await loc.post(
-                    opened["refill_endpoint"],
-                    headers={"Idempotency-Key": refill_key},
-                    json={"observed_consumed_units": 0},
-                )
-                replay.raise_for_status()
-                if replay.json() != refill:
-                    raise AssertionError(
-                        "proactive LOC rollover replay changed its durable response"
-                    )
-                boundary = refill
-                boundary_payment = payment_number
-                break
-            if refill["work_id"] != predecessor:
-                raise AssertionError(f"payer silently changed work ID at payment {payment_number}")
-            topup = await broker.post(
-                session["control"]["topup_url"],
-                headers={
-                    "Authorization": f"Bearer {session['credential']}",
-                    "Livepeer-Payment": str(refill["payment_envelope"]),
-                    "Livepeer-Request-Id": str(refill["request_id"]),
-                },
-            )
-            if topup.is_error:
-                raise AssertionError(
-                    f"broker top-up {payment_number} returned {topup.status_code}: "
-                    f"{topup.text}; Livepeer-Error={topup.headers.get('Livepeer-Error')!r}"
-                )
-
-        if boundary is None:
-            raise AssertionError(f"payer did not rotate within {total_payments} funded payments")
-
-        rebind_headers = {
-            "Authorization": f"Bearer {session['credential']}",
-            "Livepeer-Payment": str(boundary["payment_envelope"]),
-            "Livepeer-Request-Id": str(boundary["request_id"]),
-            "Livepeer-Rebind-From": predecessor,
-        }
-        rebound = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
-        rebound.raise_for_status()
-        rebound_replay = await broker.post(session["control"]["topup_url"], headers=rebind_headers)
-        rebound_replay.raise_for_status()
-        if rebound_replay.json() != rebound.json():
-            raise AssertionError("proactive broker rebind replay changed its durable response")
-
-        ended = await broker.post(
-            session["control"]["end_url"],
-            headers={"Authorization": f"Bearer {session['credential']}"},
-            json={"reason": "proactive_nonce_boundary_complete"},
-        )
-        ended.raise_for_status()
-        encoded = ended.headers.get("Livepeer-Settlement")
-        if not encoded:
-            raise AssertionError("proactively rotated session omitted terminal settlement")
-        settlement = json.loads(base64.b64decode(encoded, validate=True))
-        payload = settlement.get("payload", {})
-        if (
-            payload.get("rotation_generation") != 1
-            or payload.get("predecessor_work_id") != predecessor
-            or payload.get("work_id") != boundary["work_id"]
-        ):
-            raise AssertionError(f"proactive settlement lost its identity chain: {payload!r}")
-        closed = await loc.post(
-            opened["close_endpoint"],
-            json={"actual_units": 0, "settlement": settlement},
-        )
-        closed.raise_for_status()
-
-        return {
-            "case": "session_proactive_nonce_boundary_rotation",
-            "status": "passed",
-            "session_id": opened["session_id"],
-            "rollover_payment": boundary_payment,
-            "predecessor_work_id": predecessor,
-            "work_id": boundary["work_id"],
-            "rotation_generation": payload["rotation_generation"],
-        }
-
-
 async def _exercise_transient_debit_failure(
     loc_url: str,
     api_key: str,
@@ -1150,6 +895,7 @@ async def _exercise_transient_debit_failure(
         httpx.AsyncClient(base_url=loc_url, headers=headers, timeout=10) as loc,
         httpx.AsyncClient(timeout=15) as broker,
     ):
+        broker_body = b'{"prompt":"interrupt debit after delivery"}'
         opened_response = await loc.post(
             "/v1/jobs",
             headers={"Idempotency-Key": f"debit-fault-open-{uuid.uuid4()}"},
@@ -1159,6 +905,8 @@ async def _exercise_transient_debit_failure(
                 "transport": "unary",
                 "estimated_units": 10_250,
                 "max_total_units": 10_250,
+                "workload_request_digest": hashlib.sha256(broker_body).hexdigest(),
+                "caller_public_key": _CALLER_PUBLIC_KEY,
             },
         )
         opened_response.raise_for_status()
@@ -1168,7 +916,7 @@ async def _exercise_transient_debit_failure(
             broker.post(
                 f"{broker_url}/v1/job",
                 headers=_broker_headers(opened, offering="slow"),
-                content=b'{"prompt":"interrupt debit after delivery"}',
+                content=broker_body,
             )
         )
         # The Modules conformance runner's slow offering spends three seconds
@@ -1595,8 +1343,6 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             }
         )
         cases.extend(asyncio.run(_exercise_session_matrix(loc_url, api_key)))
-        cases.append(asyncio.run(_exercise_session_rotation(loc_url, api_key, payee_socket)))
-        cases.append(asyncio.run(_exercise_proactive_nonce_boundary_rotation(loc_url, api_key)))
 
         def stop_payee_for_fault() -> None:
             payee_process.stop()

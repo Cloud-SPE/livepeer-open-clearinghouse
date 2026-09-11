@@ -69,7 +69,7 @@ def _signed_manifest(
 ) -> dict[str, Any]:
     now = datetime.now(UTC).replace(microsecond=0)
     manifest: dict[str, Any] = {
-        "spec_version": "1.0.0",
+        "spec_version": "3.0.0",
         "publication_seq": 7,
         "issued_at": _rfc3339(now),
         "expires_at": _rfc3339(now + timedelta(hours=24)),
