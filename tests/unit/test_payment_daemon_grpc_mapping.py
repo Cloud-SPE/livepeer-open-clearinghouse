@@ -76,6 +76,21 @@ def test_spend_authorization_request_maps_exact_contract() -> None:
 
 
 @pytest.mark.unit
+def test_spend_authorization_timestamps_use_go_rfc3339nano_canonical_form() -> None:
+    request = _sample_authorization_request()
+    proto = spend_authorization_request_to_proto(
+        replace(
+            request,
+            not_before=datetime(2026, 9, 9, 12, 0, 0, 120000, tzinfo=UTC),
+            expires_at=datetime(2026, 9, 9, 12, 5, 0, 123400, tzinfo=UTC),
+        )
+    )
+
+    assert proto.not_before == "2026-09-09T12:00:00.12Z"
+    assert proto.expires_at == "2026-09-09T12:05:00.1234Z"
+
+
+@pytest.mark.unit
 def test_spend_authorization_request_rejects_invalid_scope() -> None:
     from dataclasses import replace
 

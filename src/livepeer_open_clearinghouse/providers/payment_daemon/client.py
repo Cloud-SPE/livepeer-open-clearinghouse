@@ -413,7 +413,14 @@ def _parse_observed_at(value: str) -> datetime:
 def _format_rfc3339(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("authorization timestamps must include timezone data")
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    utc_value = value.astimezone(UTC)
+    result = utc_value.strftime("%Y-%m-%dT%H:%M:%S")
+    if utc_value.microsecond:
+        # Go's RFC3339Nano formatter removes insignificant trailing zeroes.
+        # Canonicalize before signing so the daemon's parse/format cycle cannot
+        # appear to have changed an otherwise identical authorization scope.
+        result += f".{utc_value.microsecond:06d}".rstrip("0")
+    return result + "Z"
 
 
 def spend_authorization_request_to_proto(
