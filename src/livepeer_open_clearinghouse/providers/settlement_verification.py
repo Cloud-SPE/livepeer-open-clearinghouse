@@ -31,6 +31,7 @@ class SettlementVerificationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class JobSettlementExpectation:
+    settlement_domain_id: str
     request_id: str
     job_id: str
     work_id: str
@@ -59,6 +60,7 @@ class VerifiedJobSettlement:
 
 @dataclass(frozen=True, slots=True)
 class NonAdmissionExpectation:
+    settlement_domain_id: str
     protocol: str
     request_id: str
     work_id: str
@@ -81,6 +83,7 @@ class VerifiedNonAdmission:
 
 @dataclass(frozen=True, slots=True)
 class SessionSettlementExpectation:
+    settlement_domain_id: str
     gateway_session_id: str
     broker_session_id: str | None
     work_id: str
@@ -130,6 +133,7 @@ def verify_job_settlement(
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
     _reject_failed_debit(record)
+    _verify_settlement_domain(record, expected.settlement_domain_id)
     if record.request_id != expected.request_id:
         raise SettlementVerificationError(
             "request_id_mismatch", "signed gateway request id does not match"
@@ -230,6 +234,7 @@ def verify_non_admission(  # noqa: PLR0912 — every signed scope field fails cl
     observed_at = _parse_timestamp(record.observed_at, field="observed_at")
     coverage_started_at = _parse_timestamp(record.coverage_started_at, field="coverage_started_at")
     _authorize_key(public_key, observed_at, settlement_keys)
+    _verify_settlement_domain(record, expected.settlement_domain_id)
 
     if record.outcome != record.NOT_ADMITTED:
         raise SettlementVerificationError(
@@ -292,6 +297,7 @@ def verify_session_settlement(
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
     _reject_failed_debit(record)
+    _verify_settlement_domain(record, expected.settlement_domain_id)
     _verify_session_identity(record, expected)
     billed_value = _verify_session_accounting(record, expected)
     termination_reason, output_state, output_state_since, last_failure_code = (
@@ -357,6 +363,15 @@ def _reject_failed_debit(record: Any) -> None:
     if record.outcome == record.DEBIT_FAILED:
         raise SettlementVerificationError(
             "debit_failed", "broker settlement reports that the ledger debit failed"
+        )
+
+
+def _verify_settlement_domain(record: Any, expected: str) -> None:
+    """Reject missing or cross-ledger evidence before inspecting its accounting."""
+
+    if not expected or record.settlement_domain_id != expected:
+        raise SettlementVerificationError(
+            "settlement_domain_mismatch", "signed settlement domain does not match"
         )
 
 

@@ -86,6 +86,8 @@ def test_production_settings_reject_development_defaults() -> None:
 def test_production_requires_complete_wholesale_limits() -> None:
     with pytest.raises(ValidationError, match="positive chain and exposure limits"):
         _settings(**_production_settings(wholesale_chain_id=0))
+    with pytest.raises(ValidationError, match="positive chain and exposure limits"):
+        _settings(**_production_settings(wholesale_replenish_check_interval_seconds=0))
     with pytest.raises(ValidationError, match="target exceeds"):
         _settings(
             **_production_settings(
@@ -106,3 +108,9 @@ def test_production_requires_complete_wholesale_limits() -> None:
                 wholesale_max_single_funding_wei=100,
             )
         )
+
+
+@pytest.mark.unit
+def test_session_authorization_ttl_cannot_be_shorter_than_five_minutes() -> None:
+    with pytest.raises(ValidationError, match="greater than or equal to 300"):
+        _settings(session_authorization_ttl_seconds=299)

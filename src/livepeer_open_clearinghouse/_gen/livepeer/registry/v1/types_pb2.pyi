@@ -54,18 +54,20 @@ SOURCE_STATIC_OVERLAY: Source
 SOURCE_CSV_FALLBACK: Source
 
 class Capability(_message.Message):
-    __slots__ = ("name", "work_unit", "offerings", "extra_json", "work_unit_estimator")
+    __slots__ = ("name", "work_unit", "offerings", "extra_json", "work_unit_estimator", "settlement_domain_id")
     NAME_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_FIELD_NUMBER: _ClassVar[int]
     OFFERINGS_FIELD_NUMBER: _ClassVar[int]
     EXTRA_JSON_FIELD_NUMBER: _ClassVar[int]
     WORK_UNIT_ESTIMATOR_FIELD_NUMBER: _ClassVar[int]
+    SETTLEMENT_DOMAIN_ID_FIELD_NUMBER: _ClassVar[int]
     name: str
     work_unit: str
     offerings: _containers.RepeatedCompositeFieldContainer[Offering]
     extra_json: bytes
     work_unit_estimator: Estimator
-    def __init__(self, name: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ..., extra_json: _Optional[bytes] = ..., work_unit_estimator: _Optional[_Union[Estimator, _Mapping]] = ...) -> None: ...
+    settlement_domain_id: str
+    def __init__(self, name: _Optional[str] = ..., work_unit: _Optional[str] = ..., offerings: _Optional[_Iterable[_Union[Offering, _Mapping]]] = ..., extra_json: _Optional[bytes] = ..., work_unit_estimator: _Optional[_Union[Estimator, _Mapping]] = ..., settlement_domain_id: _Optional[str] = ...) -> None: ...
 
 class Estimator(_message.Message):
     __slots__ = ("id", "rounding", "exactness", "package", "fixtures")

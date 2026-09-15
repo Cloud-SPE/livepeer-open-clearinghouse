@@ -58,6 +58,7 @@ async def test_wholesale_overview_flags_stale_account_and_stalled_funding(
         chain_id=42161,
         payer_eth_address="0x" + "11" * 20,
         payee_eth_address="0x" + "22" * 20,
+        settlement_domain_id="test-settlement-domain",
         denomination="wei",
         protocol_version="wholesale-account/1.1.0-draft",
         broker_url="https://broker.example",

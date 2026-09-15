@@ -236,3 +236,15 @@ class CreateSessionResponse(BaseModel):
     refill_endpoint: str
     close_endpoint: str
     opened_at: datetime
+
+
+class ActiveWholesaleAccountRoute(BaseModel):
+    """One validated route able to maintain an active shared account."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    route_snapshot: RouteSnapshot
+    payer_eth_address: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    chain_id: int = Field(gt=0)
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
+    denomination: Literal["wei"] = "wei"

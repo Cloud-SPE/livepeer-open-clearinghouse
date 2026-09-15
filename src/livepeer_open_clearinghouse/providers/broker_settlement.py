@@ -29,6 +29,7 @@ class WholesaleAccountObservation(BaseModel):
 
     payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     chain_id: int = Field(gt=0)
     denomination: str
     credited_value_wei: Decimal = Field(ge=0)
@@ -46,6 +47,7 @@ class WholesaleFundingResult(BaseModel):
 
     payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     credited_value_wei: Decimal = Field(ge=0)
     available_value_wei: Decimal = Field(ge=0)
     account_version: int = Field(ge=0)
@@ -196,6 +198,7 @@ class BrokerWholesaleAccountClient(Protocol):
         payer_eth_address: str,
         payee_eth_address: str,
         chain_id: int,
+        settlement_domain_id: str,
     ) -> WholesaleAccountObservation: ...
 
     async def fund_wholesale_account(
@@ -207,7 +210,7 @@ class BrokerWholesaleAccountClient(Protocol):
         payment_bytes: bytes,
         payer_eth_address: str,
         payee_eth_address: str,
-        expected_credited_value_wei: Decimal,
+        settlement_domain_id: str,
     ) -> WholesaleFundingResult: ...
 
     async def get_spend_authorization(
@@ -232,6 +235,7 @@ class HttpBrokerSettlementClient:
         payer_eth_address: str,
         payee_eth_address: str,
         chain_id: int,
+        settlement_domain_id: str,
     ) -> WholesaleAccountObservation:
         """Read one TLS-bound account snapshot for shortfall calculation."""
 
@@ -258,6 +262,8 @@ class HttpBrokerSettlementClient:
             raise BrokerWholesaleAccountError("broker returned a different chain_id")
         if account.denomination != "wei":
             raise BrokerWholesaleAccountError("broker returned a non-wei account")
+        if account.settlement_domain_id != settlement_domain_id:
+            raise BrokerWholesaleAccountError("broker returned a different settlement domain")
         return account
 
     async def get_spend_authorization(
@@ -303,7 +309,7 @@ class HttpBrokerSettlementClient:
         payment_bytes: bytes,
         payer_eth_address: str,
         payee_eth_address: str,
-        expected_credited_value_wei: Decimal,
+        settlement_domain_id: str,
     ) -> WholesaleFundingResult:
         """Deposit an envelope without delegating it to an end caller."""
 
@@ -333,8 +339,8 @@ class HttpBrokerSettlementClient:
             raise BrokerWholesaleAccountError("broker funded a different payer")
         if result.payee != payee_eth_address.lower():
             raise BrokerWholesaleAccountError("broker funded a different payee")
-        if result.credited_value_wei != expected_credited_value_wei:
-            raise BrokerWholesaleAccountError("broker credited an unexpected value")
+        if result.settlement_domain_id != settlement_domain_id:
+            raise BrokerWholesaleAccountError("broker funded a different settlement domain")
         return result
 
     async def get_settlement(

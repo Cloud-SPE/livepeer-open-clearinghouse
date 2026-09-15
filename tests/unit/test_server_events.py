@@ -115,6 +115,7 @@ async def test_mint_refused_fires_on_insufficient_credit(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
+                settlement_domain_id="0x" + "aa" * 32,
                 protocol="paid-session/v1",
                 settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
@@ -177,6 +178,7 @@ async def test_mint_served_fires_on_open_session_success(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
+                settlement_domain_id="0x" + "aa" * 32,
                 protocol="paid-session/v1",
                 settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
@@ -243,6 +245,7 @@ async def test_sdk_sha_mismatch_fires_when_identity_unknown(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
+                settlement_domain_id="0x" + "aa" * 32,
                 protocol="paid-session/v1",
                 settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={
@@ -325,6 +328,7 @@ async def test_sdk_sha_mismatch_silent_when_identity_approved(
                 quote_version=1,
                 constraint_fingerprint=b"\x00" * 32,
                 route_fingerprint=b"\x00" * 32,
+                settlement_domain_id="0x" + "aa" * 32,
                 protocol="paid-session/v1",
                 settlement_keys=(SettlementKey.model_validate(delegated_key()),),
                 extra={

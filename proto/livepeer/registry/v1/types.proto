@@ -48,6 +48,7 @@ message Capability {
   // How a client computes a funding ceiling for this capability. Absent
   // for capabilities whose requests already carry their own ceiling.
   Estimator work_unit_estimator = 5;
+  string settlement_domain_id = 6;
 }
 
 // Signed, registry-projected declaration of the client-side ceiling

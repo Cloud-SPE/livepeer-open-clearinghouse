@@ -37,7 +37,7 @@ async def test_schema_guard_rejects_old_or_new_revision() -> None:
     session = AsyncMock()
     session.execute.return_value = result
 
-    with pytest.raises(RuntimeError, match="expected 0027, found 0013"):
+    with pytest.raises(RuntimeError, match="expected 0028, found 0013"):
         await require_compatible_schema(session)
 
 
@@ -52,4 +52,17 @@ def test_wholesale_cutover_migration_blocks_active_legacy_engagements() -> None:
     assert "p.status IN ('reserved', 'issued')" in migration
     assert "p.session_id IS NULL OR s.state IN ('open', 'draining')" in migration
     assert 'server_default="wholesale_account"' in migration
+    assert "cannot be downgraded" in migration
+
+
+@pytest.mark.unit
+def test_settlement_domain_migration_is_lossless_and_irreversible() -> None:
+    migration = (
+        Path(__file__).parents[2] / "migrations/versions/0028_settlement_domain_identity.py"
+    ).read_text()
+
+    assert 'down_revision: str | None = "0027"' in migration
+    assert '"settlement_domain_id"' in migration
+    assert "server_default=_COMPAT_SETTLEMENT_DOMAIN_ID" in migration
+    assert '"payee_eth_address",\n            "settlement_domain_id",' in migration
     assert "cannot be downgraded" in migration

@@ -122,6 +122,7 @@ def _route() -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
         protocol="paid-session/v1",
         settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra={

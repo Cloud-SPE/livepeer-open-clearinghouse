@@ -2,27 +2,28 @@
 
 | | |
 |---|---|
-| Status | accepted — wholesale-only cutover in progress |
+| Status | accepted — implemented against the published settlement-domain contract |
 | Opened | 2026-09-08 |
 | Beads | `loc-1zq` |
 | Governing Modules work | `lnm-b41`; `docs/design-docs/wholesale-credit-accounts.md`; plan `0049-fair-wholesale-credit-accounts.md` |
-| Integration baseline | Modules commit `c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6` (Network Protocol `3.0.0`) |
+| Integration baseline | Modules commit `80800f8be422b5ed08c6fe65a65611f67131cbfd` (Network Protocol `4.0.0`) |
 
 ## Decision
 
-LOC will adopt the fair wholesale funding contract implemented by Livepeer
-Network Modules. The approved integration baseline is Modules commit
-`c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6`: Network Protocol `3.0.0`,
-`paid-job/v1` `1.2.0-draft`, `paid-session/v1` `1.3.0-draft`, and
-`wholesale-account` `1.1.0-draft`. LOC persists the account contract version
+LOC adopts the fair wholesale funding contract implemented by Livepeer
+Network Modules. The integration baseline is Modules commit
+`80800f8be422b5ed08c6fe65a65611f67131cbfd`: Network Protocol `4.0.0`,
+`wholesale-account` `2.0.0-draft`, and spend-authorization signing domain
+`livepeer-spend-authorization/v2`. LOC persists the account contract version
 and requires the versioned paid protocols rather than inferring support from
 daemon image tags or offering metadata.
 
 LOC remains the Livepeer payer and each selected orchestrator remains the
-wholesale payee. All LOC customers share LOC's wholesale credit account with a
-given payee. Customer balances, holds, API-key attribution, spend caps, and
-pricing remain isolated inside LOC and never become authority over that shared
-account.
+wholesale payee. All LOC customers routed to one independent settlement domain
+share LOC's wholesale credit account there. One payee may operate multiple
+independent settlement domains, each with its own balance and version. Customer
+balances, holds, API-key attribution, spend caps, and pricing remain isolated
+inside LOC and never become authority over those accounts.
 
 Wholesale accounts are the only payment model for new work. LOC does not
 offer a legacy-ticket mode, rollout toggle, fallback, or offering feature
@@ -31,16 +32,46 @@ switch. Authorization-only accounting is intrinsic to the selected
 rejected before LOC creates a customer hold, signs an authorization, or funds
 an account.
 
-Tickets will add only a bounded shortfall to the shared wholesale account.
+Tickets will add only a bounded shortfall to the selected settlement-domain
+wholesale account.
 They will not encode how much an individual customer job or session may spend.
 A separate, signed, single-purpose authorization will bound one engagement.
-The broker will reserve against the shared account, debit actual wholesale
+The broker will reserve against that account, debit actual wholesale
 usage, and release unused reservation.
 
 This document fixes LOC's responsibilities and migration constraints. It does
 not redefine the authorization wire schema, canonical encoding, signatures,
 endpoint names, status vocabulary, or negotiation mechanism. Those are owned
 by the pinned Modules protocol and vendored protobufs.
+
+### Settlement-domain identity amendment
+
+The Modules team approved this stable account identity:
+
+```text
+(chain, payer, payee, settlement_domain_id, denomination)
+```
+
+`settlement_domain_id` identifies one independent financial ledger. The
+payment-daemon generates it once and persists it with that ledger; the broker
+discovers and advertises it. Restoring the complete ledger or changing the
+broker hostname preserves the ID. Starting an independent ledger generates a
+different ID. A configured ID that conflicts with an existing database must
+fail startup and require an explicit migration.
+
+The ID is public metadata, not authority. The cold-signed manifest must bind it
+to the orchestrator and broker, and authorizations, account observations, and
+settlements must identify it. Sharing an ID never makes independent stores
+share balances. A route/domain change requires a new authorization and funding
+assessment; existing credit cannot move silently between domains.
+
+Network Protocol `4.0.0` publishes the ID as a non-zero uint256 encoded as
+exactly `0x` plus 64 lowercase hexadecimal digits. LOC migration `0028` adds
+the internal coordinate and puts pre-v4 `wholesale-account/1.1.0-draft`
+records in one explicit compatibility domain for historical audit only. New
+traffic must use the authoritative ID advertised in the cold-signed route and
+must fail closed on a missing, malformed, zero, or mismatched ID. LOC never
+derives an ID from a broker URL, coordinator-local name, or settlement key.
 
 ## Pinned protocol boundary
 
@@ -54,7 +85,7 @@ contract is:
 | `CreateSpendAuthorization` | Trusted LOC-to-payer-daemon signing call; customers never supply payer, payee, price, route, or signature fields directly |
 | `AccountFundingIntent` on `CreatePayment` | Trusted target/observed available values used only after a locked broker account observation |
 | `account_shortfall_wei` on `CreatePaymentResponse` | Fail-closed verification and wholesale funding evidence, distinct from customer authorization and charge |
-| `WholesaleAccountView` | Parsed broker observation persisted with route, version, chain, denomination, and observation time |
+| `WholesaleAccountView` | Parsed broker observation persisted with route, settlement domain, version, chain, denomination, and observation time |
 | Authorization state and settlement extension fields | Durable reconciliation evidence keyed by LOC authorization plus request/session identity |
 | `Livepeer-Authorization` | Base64 signed authorization sent to the locked broker |
 | Optional `Livepeer-Payment` | Shortfall funding only on an account-authorized invocation |
@@ -100,10 +131,10 @@ are historical facts, not supported runtime alternatives:
 | Current v1 assumption | Future contract |
 |---|---|
 | LOC derives `funded_value_wei` from a job or session ceiling and requests that value from `CreatePayment`. | The ceiling bounds a single-purpose authorization. Funding covers only the bounded aggregate payer-payee shortfall. |
-| Residual credited value is discovered and operated through a payment-derived `work_id`. | The stable economic account belongs to `(chain, payer, payee, denomination)`; `work_id` may identify ticket-validation generations but never owns residual credit. |
+| Residual credited value is discovered and operated through a payment-derived `work_id`. | The stable economic account belongs to `(chain, payer, payee, settlement_domain_id, denomination)`; `work_id` may identify ticket-validation generations but never owns residual credit. |
 | A payment/session row's funded amount is both the customer hold and the wholesale funding reference. | LOC customer holds and charges live in a customer ledger; wholesale account funding, reservations, and debits live in a separate ledger and correlate by opaque engagement ID. |
 | Job correctness relies on the caller or SDK forwarding settlement, with reconciliation as a fallback. | SDK forwarding is only a latency optimization. LOC independently reconciles durable broker-signed admission and settlement state by the LOC-issued request or session ID. Raw HTTP callers have the same accounting semantics. |
-| An extensible session obtains per-session refill tickets, and a bounded session can fund its full maximum at open. | A session maximum is a cumulative authorization cap. The broker consumes bounded runway, while LOC replenishes the shared payer-payee account at an aggregate threshold. |
+| An extensible session obtains per-session refill tickets, and a bounded session can fund its full maximum at open. | A session maximum is a cumulative authorization cap. The broker consumes bounded runway, while LOC replenishes the selected settlement-domain account at an aggregate threshold. |
 | Recipient rotation and `work_id` rebind chains protect payment-owned value. | Rotation replaces ticket-validation state without losing or reallocating stable account credit; the engagement authorization and reservation remain explicitly accounted for. |
 | A conservative full customer charge can resolve missing settlement because funded wholesale value and customer exposure coincide. | Customer resolution follows LOC pricing policy and verified actual usage. Unknown broker state remains financially closed until the versioned protocol's terminal evidence rules permit release or charge. |
 
@@ -114,7 +145,7 @@ selects or validates the route, and locks the final route before issuing any
 authority. The single-purpose authorization must, at the semantic level, bind:
 
 - exactly one LOC-issued request or session identity;
-- the payer, selected payee, and selected broker;
+- the payer, selected payee, selected broker, and settlement domain;
 - capability, offering, protocol, immutable quote identity, and work unit;
 - a maximum cumulative debit, nonce, and validity window;
 - caller proof or narrowly scoped proof of possession;
@@ -136,9 +167,10 @@ resolve those inputs against trusted registry data and persist the final route
 before signing. Customer-supplied URLs, prices, payees, quote data, or
 settlement keys never become authoritative.
 
-Changing orchestrators requires a new authorization because it changes both
-the wholesale account and the price. LOC must keep the original customer and
-wholesale reservations until the first authorization is either:
+Changing orchestrators or settlement domains requires a new authorization and
+funding assessment because it changes the wholesale account and may change the
+price. LOC must keep the original customer and wholesale reservations until
+the first authorization is either:
 
 - irrevocably retired by authoritative broker/payee evidence; or
 - allowed to continue under its original locked route.
@@ -167,16 +199,25 @@ or an unverified `NO_RECORD` equivalent is insufficient.
 
 The session maximum is a cumulative authorization cap, not a prepaid ticket
 value. LOC may hold the customer maximum according to its plan, but the payee
-reserves and debits only bounded runway from the shared wholesale account as
+reserves and debits only bounded runway from the selected settlement-domain
+wholesale account as
 verified usage advances.
 
-Replenishment is account-level policy across all active LOC engagements with
-the payee. Conceptually:
+Replenishment is account-level policy across all active LOC engagements in the
+settlement domain. Operator aggregate exposure remains global, and the
+per-payee exposure limit is summed across every domain for that payee so adding
+brokers cannot multiply the configured limit. Conceptually:
 
 ```text
-target float = active reserved runway + configured safety buffer
-shortfall    = max(0, target float - available wholesale credit)
+target available float = expected near-term unreserved demand + safety buffer
+shortfall = max(0, target available float - available wholesale credit)
 ```
+
+Active reservations are already excluded from the broker's available value
+and are not added again. LOC polls each distinct active settlement-domain
+account on the operator-configured wholesale replenishment cadence. That
+authoritative poll is the accounting-correctness path; SDK balance events are
+only latency hints and cannot be required for funding.
 
 LOC evaluates that shortfall only after available credit falls below the
 operator-configured `WHOLESALE_REPLENISH_BELOW_WEI` low-water mark; values
@@ -193,8 +234,8 @@ LOC will maintain two linked but independent accounting views:
 
 1. **Customer ledger:** tenant balance or plan allowance, holds, retail price
    snapshot, charges, refunds, spend windows, and API-key attribution.
-2. **Wholesale ledger:** LOC payer/payee account funding, reservations,
-   settled wei debits, adjustments, and reconciliation state.
+2. **Wholesale ledger:** LOC payer/payee/settlement-domain account funding,
+   reservations, settled wei debits, adjustments, and reconciliation state.
 
 The views share opaque correlation identities, not balances or spend
 authority. A customer cannot observe, claim, or directly spend residual pooled
@@ -208,7 +249,9 @@ work. New engagements persist an immutable `customer-pricing/v1` snapshot and
 customer maximum, while `credit_ledger.related_engagement_id` correlates the
 customer ledger without making it own wholesale value. Separate
 `wholesale_account` and `wholesale_funding` tables contain no customer or
-API-key ownership columns.
+API-key ownership columns. Migration `0028` adds settlement-domain identity to
+wholesale accounts and authorization grants. Historical pre-v4 rows receive
+the compatibility identity described above; no new engagement may select it.
 
 Authorization history is append-only in `spend_authorization_grant`. Each
 revision persists its exact locked route, commitment, caller key, payer,

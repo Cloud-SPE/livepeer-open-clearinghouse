@@ -79,6 +79,7 @@ def test_route_binding_is_part_of_open_idempotency_fingerprint() -> None:
         quote_version=1,
         constraint_fingerprint="00" * 32,
         route_fingerprint="11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
     )
     changed = first.model_copy(update={"route_fingerprint": "22" * 32})
 

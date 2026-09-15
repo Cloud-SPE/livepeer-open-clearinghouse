@@ -7,7 +7,7 @@ but gated on the authoritative ``paid-job/v1`` protocol.
 
 A job is a short-lived ``payment_session`` row with a job-class protocol.
 Opening issues a scoped authorization and replenishes only bounded shortfall
-in the shared payer-payee account. Settlement mirrors session close.
+in the selected settlement-domain account. Settlement mirrors session close.
 
   - Protocol gate: ``paid-job/v1`` instead of ``paid-session/v1``.
   - ``max_total_units`` bounds the job authorization and customer hold; it is
@@ -50,7 +50,10 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
 )
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
-from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
+from livepeer_open_clearinghouse.domains.wholesale.types import (
+    WholesaleFundingLimits,
+    settlement_domain_id,
+)
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     InsufficientCredit,
@@ -266,6 +269,7 @@ async def _open_wholesale_job(
         engagement_id=job.id,
         user_id=user_id,
         route=route,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         request=auth_request,
         response=auth_response,
     )
@@ -276,6 +280,7 @@ async def _open_wholesale_job(
         payer_eth_address=payer,
         payee_eth_address=route.eth_address,
         chain_id=settings.wholesale_chain_id,
+        settlement_domain_id=route.settlement_domain_id,
     )
     limits = WholesaleFundingLimits(
         target_available_wei=Decimal(settings.wholesale_target_available_wei),
@@ -287,6 +292,7 @@ async def _open_wholesale_job(
     plan = await wholesale_service.plan_observed_account_shortfall(
         db,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         limits=limits,
     )
     mint_id = f"loc-account:{request_id}"
@@ -294,6 +300,7 @@ async def _open_wholesale_job(
         db,
         route=route,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         plan=plan,
         limits=limits,
         mint_request_id=mint_id,
@@ -305,6 +312,7 @@ async def _open_wholesale_job(
         funding=funding,
         route=route,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         plan=plan,
         payer_eth_address=payer,
         chain_id=settings.wholesale_chain_id,
@@ -355,7 +363,7 @@ async def open_job(
 
     ``max_total_units`` defaults to ``estimated_units``. It bounds both the
     customer hold and broker debit authority, but does not size a job-specific
-    payment ticket; funding replenishes the shared payer-payee account.
+    payment ticket; funding replenishes the selected settlement-domain account.
     """
     broker_request_id = request_id or str(uuid.uuid4())
     effective_max = max_total_units if max_total_units is not None else estimated_units
@@ -498,6 +506,7 @@ async def settle_job(  # noqa: PLR0912, PLR0915 — explicit settlement state ma
             settlement.model_dump(mode="python"),
             settlement_keys=settlement_keys,
             expected=JobSettlementExpectation(
+                settlement_domain_id=grant.settlement_domain_id,
                 request_id=request_id,
                 job_id=broker_job_id,
                 work_id=job_row.work_id,
@@ -899,6 +908,7 @@ async def _retain_verified_non_admission(
             envelope,
             settlement_keys=settlement_keys,
             expected=NonAdmissionExpectation(
+                settlement_domain_id=str(snapshot["settlement_domain_id"]),
                 protocol=PAID_JOB_PROTOCOL,
                 request_id=request_id,
                 work_id=job_row.work_id,

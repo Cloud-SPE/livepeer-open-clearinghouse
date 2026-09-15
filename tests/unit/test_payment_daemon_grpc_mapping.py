@@ -53,6 +53,7 @@ def _sample_authorization_request() -> CreateSpendAuthorizationRequest:
         predecessor_authorization_id="",
         broker_uri="https://broker.example",
         chain_id=42161,
+        settlement_domain_id="0x" + "aa" * 32,
     )
 
 
@@ -73,6 +74,7 @@ def test_spend_authorization_request_maps_exact_contract() -> None:
     assert proto.broker_uri == "https://broker.example"
     assert proto.chain_id == 42161
     assert proto.denomination == "wei"
+    assert proto.settlement_domain_id == "0x" + "aa" * 32
 
 
 @pytest.mark.unit
@@ -228,6 +230,11 @@ def _sample_request(funded_wei: int = 200_000) -> CreatePaymentRequest:
             estimated_units=funded_wei // 1000,
             max_total_units=funded_wei // 1000,
         ),
+        account_funding=AccountFundingIntent(
+            target_available_wei=Decimal(funded_wei),
+            observed_available_wei=Decimal(0),
+            settlement_domain_id="0x" + "aa" * 32,
+        ),
     )
 
 
@@ -266,6 +273,7 @@ def test_request_to_proto_carries_shared_account_snapshot() -> None:
         account_funding=AccountFundingIntent(
             target_available_wei=Decimal(75_000),
             observed_available_wei=Decimal(25_000),
+            settlement_domain_id="0x" + "aa" * 32,
         ),
     )
     proto = dataclass_request_to_proto(req)
@@ -275,6 +283,7 @@ def test_request_to_proto_carries_shared_account_snapshot() -> None:
     assert biguint_bytes_to_decimal(
         bytes(proto.account_funding.observed_available_wei.value)
     ) == Decimal(25_000)
+    assert proto.account_funding.settlement_domain_id == "0x" + "aa" * 32
 
 
 @pytest.mark.unit
@@ -286,6 +295,7 @@ def test_zero_shortfall_response_is_valid_without_payment_envelope() -> None:
         account_funding=AccountFundingIntent(
             target_available_wei=Decimal(50_000),
             observed_available_wei=Decimal(50_000),
+            settlement_domain_id="0x" + "aa" * 32,
         ),
     )
     proto = payer_daemon_pb2.CreatePaymentResponse(
@@ -309,6 +319,7 @@ def test_account_funding_rejects_daemon_shortfall_drift() -> None:
         account_funding=AccountFundingIntent(
             target_available_wei=Decimal(75_000),
             observed_available_wei=Decimal(25_000),
+            settlement_domain_id="0x" + "aa" * 32,
         ),
     )
     proto = payer_daemon_pb2.CreatePaymentResponse(
@@ -338,6 +349,7 @@ def test_proto_response_to_dataclass() -> None:
         tickets_created=1,
         expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(12_345)),
         funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
+        account_shortfall_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
         accepted_quote_ref=types_pb2.QuoteRef(
             quote_id="q-2",
             quote_version=3,
@@ -402,6 +414,7 @@ def test_funding_response_rejects_self_referential_predecessor() -> None:
         payment_bytes=types_pb2.Payment(sender=b"\xbb" * 20).SerializeToString(),
         expected_value=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
         funded_value_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
+        account_shortfall_wei=types_pb2.BigUInt(value=int_to_biguint_bytes(50_000)),
         accepted_quote_ref=types_pb2.QuoteRef(),
         work_id="ab" * 32,
         predecessor_work_id="ab" * 32,

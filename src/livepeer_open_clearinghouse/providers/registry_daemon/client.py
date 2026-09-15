@@ -136,6 +136,13 @@ class RouteBinding(BaseModel):
     quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def nonzero_settlement_domain(self) -> RouteBinding:
+        if int(self.settlement_domain_id[2:], 16) == 0:
+            raise ValueError("settlement_domain_id must be nonzero")
+        return self
 
 
 class RouteSnapshot(BaseModel):
@@ -156,6 +163,7 @@ class RouteSnapshot(BaseModel):
     quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     settlement_keys: tuple[SettlementKey, ...]
     work_unit_estimator: WorkUnitEstimator | None = None
     job: JobAxes | None = None
@@ -164,6 +172,8 @@ class RouteSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def exactly_one_protocol_axis(self) -> RouteSnapshot:
+        if int(self.settlement_domain_id[2:], 16) == 0:
+            raise ValueError("settlement_domain_id must be nonzero")
         if self.protocol == "paid-job/v1" and (self.job is None or self.session is not None):
             raise ValueError("paid-job/v1 snapshot requires job axes only")
         if self.protocol == "paid-session/v1" and (self.session is None or self.job is not None):
@@ -177,6 +187,7 @@ class RouteSnapshot(BaseModel):
             quote_version=self.quote_version,
             constraint_fingerprint=self.constraint_fingerprint,
             route_fingerprint=self.route_fingerprint,
+            settlement_domain_id=self.settlement_domain_id,
         )
 
 
@@ -201,6 +212,7 @@ class SelectedRoute(BaseModel):
     quote_version: UInt64Decimal = Field(ge=1)
     constraint_fingerprint: bytes
     route_fingerprint: bytes
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     protocol: Literal["paid-job/v1", "paid-session/v1"]
     settlement_keys: tuple[SettlementKey, ...] = ()
     work_unit_estimator: WorkUnitEstimator | None = None
@@ -208,6 +220,8 @@ class SelectedRoute(BaseModel):
 
     @model_validator(mode="after")
     def validate_protocol_axes(self) -> SelectedRoute:
+        if int(self.settlement_domain_id[2:], 16) == 0:
+            raise ValueError("settlement_domain_id must be nonzero")
         expected = "job" if self.protocol == "paid-job/v1" else "session"
         forbidden = "session" if expected == "job" else "job"
         if expected not in self.extra:
@@ -239,6 +253,7 @@ class SelectedRoute(BaseModel):
             quote_version=self.quote_version,
             constraint_fingerprint=self.constraint_fingerprint.hex(),
             route_fingerprint=self.route_fingerprint.hex(),
+            settlement_domain_id=self.settlement_domain_id,
         )
 
     def snapshot_view(self) -> RouteSnapshot:
@@ -257,6 +272,7 @@ class SelectedRoute(BaseModel):
             quote_version=self.quote_version,
             constraint_fingerprint=self.constraint_fingerprint.hex(),
             route_fingerprint=self.route_fingerprint.hex(),
+            settlement_domain_id=self.settlement_domain_id,
             settlement_keys=self.settlement_keys,
             work_unit_estimator=self.work_unit_estimator,
             job=self.job,
@@ -374,6 +390,7 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "11" * 32,
         protocol="paid-job/v1",
         extra={"job": {"transports": ["unary", "stream", "multipart"]}},
     ),
@@ -389,6 +406,7 @@ _SAMPLE_ROUTES: list[SelectedRoute] = [
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x22" * 32,
+        settlement_domain_id="0x" + "22" * 32,
         protocol="paid-job/v1",
         extra={"job": {"transports": ["unary"]}},
     ),
@@ -444,6 +462,7 @@ def _selected_route_proto_to_dataclass(proto) -> SelectedRoute:  # type: ignore[
         quote_version=int(proto.quote_version),
         constraint_fingerprint=bytes(proto.constraint_fingerprint),
         route_fingerprint=bytes(proto.route_fingerprint),
+        settlement_domain_id=proto.settlement_domain_id,
         protocol=proto.protocol,
         settlement_keys=tuple(
             SettlementKey(

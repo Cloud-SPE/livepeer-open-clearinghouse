@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -44,6 +43,7 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     PaymentSettlement,
     SpendAuthorizationGrant,
 )
+from livepeer_open_clearinghouse.domains.wholesale.types import settlement_domain_id
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
@@ -104,6 +104,7 @@ def _wholesale_route() -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
         protocol="paid-session/v1",
         extra={
             "session": {
@@ -262,6 +263,7 @@ async def test_authorization_revisions_preserve_original_grant(
     daemon = MockPaymentDaemonClient()
     now = datetime.now(UTC)
     caller_key = bytes.fromhex("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+    domain_id = settlement_domain_id("0x" + "aa" * 32)
 
     first_request, first_response = await payments_service.issue_route_locked_authorization(
         daemon=daemon,
@@ -282,6 +284,7 @@ async def test_authorization_revisions_preserve_original_grant(
         engagement_id=engagement.id,
         user_id=user_id,
         route=route,
+        settlement_domain_id=domain_id,
         request=first_request,
         response=first_response,
     )
@@ -290,20 +293,22 @@ async def test_authorization_revisions_preserve_original_grant(
         engagement_id=engagement.id,
         user_id=user_id,
         route=route,
+        settlement_domain_id=domain_id,
         request=first_request,
         response=first_response,
     )
     assert replayed.id == first.id
     with pytest.raises(
         sessions_service.InvalidSessionRequest,
-        match="authorization revision replay changed scope",
+        match="authorization settlement domain changed",
     ):
         await sessions_service.record_spend_authorization_grant(
             session,
             engagement_id=engagement.id,
             user_id=user_id,
             route=route,
-            request=replace(first_request, max_debit_wei=Decimal(101)),
+            settlement_domain_id=settlement_domain_id("0x" + "bb" * 32),
+            request=first_request,
             response=first_response,
         )
     second_request, second_response = await payments_service.issue_route_locked_authorization(
@@ -327,6 +332,7 @@ async def test_authorization_revisions_preserve_original_grant(
         engagement_id=engagement.id,
         user_id=user_id,
         route=route,
+        settlement_domain_id=domain_id,
         request=second_request,
         response=second_response,
     )
@@ -343,6 +349,7 @@ async def test_authorization_revisions_preserve_original_grant(
     assert first.state == "issued"
     assert first.authorization_bytes == first_response.authorization_bytes
     assert first.chain_id == 42161
+    assert first.settlement_domain_id == domain_id
     assert first.denomination == "wei"
     assert second.predecessor_authorization_id == "auth-0"
     assert engagement.authorization_id == "auth-1"

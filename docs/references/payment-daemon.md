@@ -2,8 +2,8 @@
 
 A reference card for the `payment-daemon` we integrate with. Source:
 `/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-modules/payment-daemon`.
-The wholesale-account additions are pinned to Modules commit
-`c453d14be2e14cbaa99a35f37e9d16e3bb4c12d6`.
+The settlement-domain wholesale-account contract is pinned to Modules commit
+`80800f8be422b5ed08c6fe65a65611f67131cbfd` (Network Protocol `4.0.0`).
 
 This is a digest for fast lookup. When the daemon's behavior is the
 authority, go read the daemon's source — links at the bottom.
@@ -63,6 +63,7 @@ funding: FundingIntent {
 account_funding: AccountFundingIntent { # account-aware calls only
     target_available_wei: BigUInt
     observed_available_wei: BigUInt
+    settlement_domain_id: string        # non-zero uint256, 0x + 64 lowercase hex
 }
 mint_request_id: string             # required; unique in the daemon sender's namespace
 ```
@@ -144,8 +145,8 @@ account_shortfall_wei: BigUInt      # max(0, target - observed), when account-aw
 | `ReportPaymentResult` | Ticket-generation maintenance RPC retained by Modules. LOC does not expose it through job/session authorization or SDK flows. |
 | `GetDepositInfo` | Read TicketBroker deposit/reserve/withdraw_round plus fresh `current_round`, `ticket_validity_period`, and its observation timestamp for the hot wallet. Useful for admin/health and governance-drift telemetry. |
 | `GetSessionDebits` | Legacy long-running session debit ledger. LOC v2 does not call it; reconciliation uses broker-signed settlements. |
-| `Health` | Returns `"ok"`. |
-| `CreateSpendAuthorization` | Idempotently signs the published request/session-scoped `SpendAuthorization`; it never mints or funds wholesale credit. |
+| `Health` | Returns `"ok"` plus the payment daemon's persisted `settlement_domain_id`. |
+| `CreateSpendAuthorization` | Idempotently signs the published request/session-scoped `SpendAuthorization` in signing domain `livepeer-spend-authorization/v2`; it never mints or funds wholesale credit. |
 
 Receiver-side RPCs (`PayeeDaemon`) exist but are not on the sender socket;
 Livepeer Open Clearinghouse never calls them.
@@ -218,8 +219,12 @@ Livepeer Open Clearinghouse deploys as a peer container sharing the socket-dir v
 ## Gotchas
 
 - **A funding payment may contain multiple tickets.** The payer sizes the batch
-  so its credited EV exactly matches the bounded shared-account shortfall and
-  refuses a batch above 600 tickets.
+  so its expected value is at least the bounded shared-account shortfall and
+  refuses a batch above 600 tickets. The receiver's realized credited value is
+  authoritative and may exceed the request. LOC records that value after
+  confirming the durable account total advanced by at least the shortfall; a
+  lost acknowledgement is recovered by replaying the same envelope, which
+  transfers zero and proves the original credit through the account delta.
 - **`ticket_params_base_url` is required per call.** Livepeer Open Clearinghouse must know
   the orchestrator's broker URL (it comes from
   `service-registry-daemon.Select().worker_url`).

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from livepeer_open_clearinghouse.domains.wholesale.repo import (
@@ -14,6 +14,8 @@ from livepeer_open_clearinghouse.domains.wholesale.repo import (
     WholesaleFunding,
 )
 from livepeer_open_clearinghouse.domains.wholesale.types import (
+    COMPAT_SETTLEMENT_DOMAIN_ID,
+    SettlementDomainId,
     WholesaleFundingLimits,
     WholesaleFundingPlan,
 )
@@ -35,7 +37,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
 
 _ETH_ADDRESS_BYTES = 20
-WHOLESALE_ACCOUNT_PROTOCOL_VERSION = "wholesale-account/1.1.0-draft"
+WHOLESALE_ACCOUNT_PROTOCOL_VERSION = "wholesale-account/2.0.0-draft"
 
 
 class WholesaleFundingPolicyError(ValueError):
@@ -47,6 +49,7 @@ async def claim_account_funding(
     *,
     route: SelectedRoute,
     observation: WholesaleAccountObservation,
+    settlement_domain_id: SettlementDomainId,
     plan: WholesaleFundingPlan,
     limits: WholesaleFundingLimits,
     mint_request_id: str,
@@ -59,12 +62,21 @@ async def claim_account_funding(
     an external mint can never precede its replay record.
     """
 
+    _require_settlement_domain_id(settlement_domain_id)
+    _require_observation_domain(observation, settlement_domain_id)
     if db.new or db.dirty or db.deleted:
         raise WholesaleFundingPolicyError("funding claim requires a clean database session")
     existing = await db.scalar(
         select(WholesaleFunding).where(WholesaleFunding.mint_request_id == mint_request_id)
     )
     if existing is not None:
+        existing_account = await db.get(WholesaleAccount, existing.account_id)
+        if existing_account is None or not _account_matches(
+            existing_account,
+            observation=observation,
+            settlement_domain_id=settlement_domain_id,
+        ):
+            raise WholesaleFundingPolicyError("mint_request_id replay changed account identity")
         recorded_identity = (
             existing.target_available_wei,
             existing.route_snapshot,
@@ -91,23 +103,27 @@ async def claim_account_funding(
     )
     if budget is None:
         raise WholesaleFundingPolicyError("wholesale exposure budget is not initialized")
-    account = await db.scalar(
-        select(WholesaleAccount)
-        .where(
-            WholesaleAccount.chain_id == observation.chain_id,
-            WholesaleAccount.payer_eth_address == observation.payer,
-            WholesaleAccount.payee_eth_address == observation.payee,
-            WholesaleAccount.denomination == observation.denomination,
-        )
-        .with_for_update()
+    active_accounts = await _load_active_accounts(db, lock=True)
+    payee_accounts = _matching_payee_accounts(active_accounts, observation)
+    account = next(
+        (
+            candidate
+            for candidate in payee_accounts
+            if candidate.settlement_domain_id == settlement_domain_id
+        ),
+        None,
     )
-    prior_available = Decimal(0) if account is None else account.available_value_wei
-    synchronized_aggregate = (
-        budget.projected_available_wei - prior_available + observation.available_value_wei
+    synchronized_aggregate, synchronized_payee = await _synchronized_exposure(
+        db,
+        active_accounts=active_accounts,
+        payee_accounts=payee_accounts,
+        account=account,
+        observation=observation,
     )
     locked_plan = plan_account_shortfall(
         observation=observation,
         aggregate_available_wei=synchronized_aggregate,
+        payee_available_wei=synchronized_payee,
         limits=limits,
     )
     if locked_plan != plan:
@@ -117,6 +133,7 @@ async def claim_account_funding(
             chain_id=observation.chain_id,
             payer_eth_address=observation.payer,
             payee_eth_address=observation.payee,
+            settlement_domain_id=settlement_domain_id,
             denomination=observation.denomination,
             protocol_version=protocol_version,
             broker_url=route.worker_url,
@@ -171,6 +188,7 @@ async def complete_account_funding(
     funding: WholesaleFunding | None,
     route: SelectedRoute,
     observation: WholesaleAccountObservation,
+    settlement_domain_id: SettlementDomainId,
     plan: WholesaleFundingPlan,
     payer_eth_address: str,
     chain_id: int,
@@ -182,6 +200,13 @@ async def complete_account_funding(
 
     if funding is None or funding.status == "acknowledged":
         return
+    account = await db.get(WholesaleAccount, funding.account_id)
+    if account is None or not _account_matches(
+        account,
+        observation=observation,
+        settlement_domain_id=settlement_domain_id,
+    ):
+        raise WholesaleFundingPolicyError("funding completion changed account identity")
     payment_bytes = funding.payment_bytes
     if funding.status == "claimed":
         mint_request = create_account_funding_request(
@@ -208,19 +233,21 @@ async def complete_account_funding(
         payment_bytes=payment_bytes,
         payer_eth_address=payer_eth_address,
         payee_eth_address=route.eth_address,
-        expected_credited_value_wei=funding.requested_shortfall_wei,
+        settlement_domain_id=str(settlement_domain_id),
     )
     after = await broker.get_wholesale_account(
         broker_url=route.worker_url,
         payer_eth_address=payer_eth_address,
         payee_eth_address=route.eth_address,
         chain_id=chain_id,
+        settlement_domain_id=str(settlement_domain_id),
     )
     await acknowledge_account_funding(
         db,
         mint_request_id=funding.mint_request_id,
         result=result,
         observation=after,
+        settlement_domain_id=settlement_domain_id,
         acknowledged_at=acknowledged_at,
     )
 
@@ -229,6 +256,7 @@ async def plan_observed_account_shortfall(
     db: AsyncSession,
     *,
     observation: WholesaleAccountObservation,
+    settlement_domain_id: SettlementDomainId,
     limits: WholesaleFundingLimits,
 ) -> WholesaleFundingPlan:
     """Plan against LOC's current aggregate view before taking the claim lock.
@@ -238,24 +266,36 @@ async def plan_observed_account_shortfall(
     for the uncontended case without weakening concurrent cap enforcement.
     """
 
+    _require_settlement_domain_id(settlement_domain_id)
+    _require_observation_domain(observation, settlement_domain_id)
     budget = await db.get(WholesaleExposureBudget, "global")
     if budget is None:
         raise WholesaleFundingPolicyError("wholesale exposure budget is not initialized")
-    account = await db.scalar(
-        select(WholesaleAccount).where(
-            WholesaleAccount.chain_id == observation.chain_id,
-            WholesaleAccount.payer_eth_address == observation.payer,
-            WholesaleAccount.payee_eth_address == observation.payee,
-            WholesaleAccount.denomination == observation.denomination,
-        )
+    active_accounts = await _load_active_accounts(db, lock=False)
+    payee_accounts = _matching_payee_accounts(active_accounts, observation)
+    account = next(
+        (
+            candidate
+            for candidate in payee_accounts
+            if candidate.settlement_domain_id == settlement_domain_id
+        ),
+        None,
     )
     prior_available = Decimal(0) if account is None else account.available_value_wei
+    prior_payee_available = sum(
+        (candidate.available_value_wei for candidate in payee_accounts), Decimal(0)
+    ) + await _pending_account_funding(db, payee_accounts)
+    prior_aggregate_available = sum(
+        (candidate.available_value_wei for candidate in active_accounts), Decimal(0)
+    ) + await _pending_account_funding(db, active_accounts)
     synchronized_aggregate = (
-        budget.projected_available_wei - prior_available + observation.available_value_wei
+        prior_aggregate_available - prior_available + observation.available_value_wei
     )
+    synchronized_payee = prior_payee_available - prior_available + observation.available_value_wei
     return plan_account_shortfall(
         observation=observation,
         aggregate_available_wei=synchronized_aggregate,
+        payee_available_wei=synchronized_payee,
         limits=limits,
     )
 
@@ -289,6 +329,7 @@ async def acknowledge_account_funding(
     mint_request_id: str,
     result: WholesaleFundingResult,
     observation: WholesaleAccountObservation,
+    settlement_domain_id: SettlementDomainId,
     acknowledged_at: datetime,
 ) -> WholesaleFunding:
     """Converge a replayable broker credit onto LOC's account snapshot."""
@@ -312,19 +353,31 @@ async def acknowledge_account_funding(
     )
     if budget is None:
         raise WholesaleFundingPolicyError("wholesale exposure budget is not initialized")
+    _require_settlement_domain_id(settlement_domain_id)
+    _require_observation_domain(observation, settlement_domain_id)
     if (
         result.payer != account.payer_eth_address
         or result.payee != account.payee_eth_address
-        or observation.payer != account.payer_eth_address
-        or observation.payee != account.payee_eth_address
+        or result.settlement_domain_id != settlement_domain_id
+        or not _account_matches(
+            account,
+            observation=observation,
+            settlement_domain_id=settlement_domain_id,
+        )
     ):
         raise WholesaleFundingPolicyError("broker acknowledgement changed account identity")
-    if result.credited_value_wei != funding.requested_shortfall_wei:
-        raise WholesaleFundingPolicyError("broker acknowledgement changed credited value")
     if result.account_version != observation.version:
+        raise WholesaleFundingPolicyError("broker acknowledgement and observation disagree")
+    if result.available_value_wei != observation.available_value_wei:
         raise WholesaleFundingPolicyError("broker acknowledgement and observation disagree")
     if observation.version < account.remote_version:
         raise WholesaleFundingPolicyError("broker account observation moved backwards")
+    acknowledged_credit = _acknowledged_credit(
+        result=result,
+        observation=observation,
+        account=account,
+        funding=funding,
+    )
     already_acknowledged = funding.status == "acknowledged"
     projected_for_account = account.available_value_wei
     if not already_acknowledged:
@@ -338,7 +391,7 @@ async def acknowledge_account_funding(
     account.available_value_wei = observation.available_value_wei
     account.remote_version = observation.version
     account.observed_at = observation.observed_at
-    funding.credited_value_wei = result.credited_value_wei
+    funding.credited_value_wei = acknowledged_credit
     funding.account_version = result.account_version
     funding.status = "acknowledged"
     funding.acknowledged_at = acknowledged_at
@@ -346,10 +399,130 @@ async def acknowledge_account_funding(
     return funding
 
 
+def _acknowledged_credit(
+    *,
+    result: WholesaleFundingResult,
+    observation: WholesaleAccountObservation,
+    account: WholesaleAccount,
+    funding: WholesaleFunding,
+) -> Decimal:
+    """Prove a first transfer or recover it from the monotonic account total."""
+
+    credited_delta = observation.credited_value_wei - account.credited_value_wei
+    if result.replayed:
+        if result.credited_value_wei != 0:
+            raise WholesaleFundingPolicyError("broker funding replay transferred new credit")
+        if (
+            observation.version <= account.remote_version
+            or credited_delta < funding.requested_shortfall_wei
+        ):
+            raise WholesaleFundingPolicyError(
+                "broker funding replay is not proven by durable account credit"
+            )
+        return credited_delta
+    if result.credited_value_wei < funding.requested_shortfall_wei:
+        raise WholesaleFundingPolicyError("broker under-credited account funding")
+    if credited_delta < result.credited_value_wei:
+        raise WholesaleFundingPolicyError(
+            "broker funding credit is not reflected in the durable account"
+        )
+    return result.credited_value_wei
+
+
+def _require_settlement_domain_id(value: SettlementDomainId) -> None:
+    if not value:
+        raise WholesaleFundingPolicyError("settlement_domain_id is required")
+
+
+def _require_observation_domain(
+    observation: WholesaleAccountObservation, value: SettlementDomainId
+) -> None:
+    if observation.settlement_domain_id != value:
+        raise WholesaleFundingPolicyError("broker observation changed settlement domain")
+
+
+async def _pending_account_funding(db: AsyncSession, accounts: list[WholesaleAccount]) -> Decimal:
+    """Conservatively include deposits claimed but not yet observed as credit."""
+
+    if not accounts:
+        return Decimal(0)
+    value = await db.scalar(
+        select(func.sum(WholesaleFunding.requested_shortfall_wei)).where(
+            WholesaleFunding.account_id.in_(account.id for account in accounts),
+            WholesaleFunding.status != "acknowledged",
+        )
+    )
+    return Decimal(0) if value is None else value
+
+
+async def _load_active_accounts(db: AsyncSession, *, lock: bool) -> list[WholesaleAccount]:
+    """Load Protocol 4 accounts while retaining compatibility rows for audit."""
+
+    statement = select(WholesaleAccount).where(
+        WholesaleAccount.settlement_domain_id != COMPAT_SETTLEMENT_DOMAIN_ID
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return list(await db.scalars(statement))
+
+
+def _matching_payee_accounts(
+    accounts: list[WholesaleAccount], observation: WholesaleAccountObservation
+) -> list[WholesaleAccount]:
+    return [
+        candidate
+        for candidate in accounts
+        if candidate.chain_id == observation.chain_id
+        and candidate.payer_eth_address == observation.payer
+        and candidate.payee_eth_address == observation.payee
+        and candidate.denomination == observation.denomination
+    ]
+
+
+async def _synchronized_exposure(
+    db: AsyncSession,
+    *,
+    active_accounts: list[WholesaleAccount],
+    payee_accounts: list[WholesaleAccount],
+    account: WholesaleAccount | None,
+    observation: WholesaleAccountObservation,
+) -> tuple[Decimal, Decimal]:
+    """Replace one stale local observation in current Protocol 4 exposure."""
+
+    prior_available = Decimal(0) if account is None else account.available_value_wei
+    prior_payee = sum(
+        (candidate.available_value_wei for candidate in payee_accounts), Decimal(0)
+    ) + await _pending_account_funding(db, payee_accounts)
+    prior_aggregate = sum(
+        (candidate.available_value_wei for candidate in active_accounts), Decimal(0)
+    ) + await _pending_account_funding(db, active_accounts)
+    replacement = observation.available_value_wei - prior_available
+    return prior_aggregate + replacement, prior_payee + replacement
+
+
+def _account_matches(
+    account: WholesaleAccount,
+    *,
+    observation: WholesaleAccountObservation,
+    settlement_domain_id: SettlementDomainId,
+) -> bool:
+    """Compare all stable coordinates without interpreting the opaque domain ID."""
+
+    return (
+        account.chain_id == observation.chain_id
+        and account.payer_eth_address == observation.payer
+        and account.payee_eth_address == observation.payee
+        and observation.settlement_domain_id == settlement_domain_id
+        and account.settlement_domain_id == settlement_domain_id
+        and account.denomination == observation.denomination
+    )
+
+
 def plan_account_shortfall(
     *,
     observation: WholesaleAccountObservation,
     aggregate_available_wei: Decimal,
+    payee_available_wei: Decimal | None = None,
     limits: WholesaleFundingLimits,
 ) -> WholesaleFundingPlan:
     """Calculate bounded funding from a locked aggregate-account snapshot.
@@ -363,13 +536,19 @@ def plan_account_shortfall(
         raise WholesaleFundingPolicyError(
             "aggregate available value cannot be below the observed account"
         )
+    if payee_available_wei is None:
+        payee_available_wei = observation.available_value_wei
+    if payee_available_wei < observation.available_value_wei:
+        raise WholesaleFundingPolicyError(
+            "payee available value cannot be below the observed account"
+        )
     should_replenish = observation.available_value_wei < limits.replenish_below_wei
     shortfall = (
         max(Decimal(0), limits.target_available_wei - observation.available_value_wei)
         if should_replenish
         else Decimal(0)
     )
-    projected_payee = observation.available_value_wei + shortfall
+    projected_payee = payee_available_wei + shortfall
     projected_aggregate = aggregate_available_wei + shortfall
     if shortfall == 0:
         return WholesaleFundingPlan(
@@ -405,6 +584,10 @@ def create_account_funding_request(
 
     if observation.payee != route.eth_address.lower():
         raise WholesaleFundingPolicyError("account observation does not match the locked payee")
+    if observation.settlement_domain_id != route.settlement_domain_id:
+        raise WholesaleFundingPolicyError(
+            "account observation does not match the locked settlement domain"
+        )
     if not mint_request_id:
         raise WholesaleFundingPolicyError("mint_request_id is required")
     try:
@@ -441,5 +624,6 @@ def create_account_funding_request(
         account_funding=AccountFundingIntent(
             target_available_wei=plan.target_available_wei,
             observed_available_wei=plan.observed_available_wei,
+            settlement_domain_id=route.settlement_domain_id,
         ),
     )

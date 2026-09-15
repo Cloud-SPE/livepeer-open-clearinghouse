@@ -14,6 +14,7 @@ the state machine or repo queries.
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import uuid
@@ -35,6 +36,7 @@ from livepeer_open_clearinghouse.domains.sessions.repo import (
     SpendAuthorizationGrant,
 )
 from livepeer_open_clearinghouse.domains.sessions.types import (
+    ActiveWholesaleAccountRoute,
     CapStatus,
     CloseSessionResponse,
     CreateSessionResponse,
@@ -46,8 +48,10 @@ from livepeer_open_clearinghouse.domains.sessions.types import (
 from livepeer_open_clearinghouse.domains.telemetry import server_events as telemetry_events
 from livepeer_open_clearinghouse.domains.wholesale import service as wholesale_service
 from livepeer_open_clearinghouse.domains.wholesale.types import (
+    SettlementDomainId,
     WholesaleFundingLimits,
     WholesaleFundingPlan,
+    settlement_domain_id,
 )
 from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
@@ -247,6 +251,7 @@ async def record_spend_authorization_grant(
     engagement_id: uuid.UUID,
     user_id: uuid.UUID,
     route: SelectedRoute,
+    settlement_domain_id: SettlementDomainId,
     request: CreateSpendAuthorizationRequest,
     response: CreateSpendAuthorizationResponse,
 ) -> SpendAuthorizationGrant:
@@ -262,6 +267,13 @@ async def record_spend_authorization_grant(
         raise SessionNotFound
     if engagement.accounting_mode != "wholesale_account":
         raise InvalidSessionRequest(message="legacy engagement cannot record an authorization")
+    if not settlement_domain_id:
+        raise InvalidSessionRequest(message="authorization settlement domain is required")
+    if (
+        settlement_domain_id != route.settlement_domain_id
+        or settlement_domain_id != request.settlement_domain_id
+    ):
+        raise InvalidSessionRequest(message="authorization settlement domain changed")
     if engagement.route_snapshot != route.snapshot():
         raise InvalidSessionRequest(message="authorization route differs from locked engagement")
     if response.authorization_id != request.authorization_id:
@@ -289,6 +301,7 @@ async def record_spend_authorization_grant(
             request.protocol,
             response.payer.hex(),
             request.chain_id,
+            settlement_domain_id,
             request.denomination,
             request.max_debit_wei,
             request.max_total_units,
@@ -305,6 +318,7 @@ async def record_spend_authorization_grant(
             existing.protocol,
             existing.payer_eth_address.removeprefix("0x"),
             existing.chain_id,
+            existing.settlement_domain_id,
             existing.denomination,
             existing.max_debit_wei,
             existing.max_total_units,
@@ -338,6 +352,7 @@ async def record_spend_authorization_grant(
         route_snapshot=route.snapshot(),
         payer_eth_address="0x" + response.payer.hex(),
         chain_id=request.chain_id,
+        settlement_domain_id=settlement_domain_id,
         denomination=request.denomination,
         max_debit_wei=request.max_debit_wei,
         max_total_units=request.max_total_units,
@@ -795,8 +810,8 @@ async def _replenish_wholesale_account(
     *,
     route: SelectedRoute,
     payer_eth_address: str,
-    mint_request_id: str,
-    correlation_id: str,
+    mint_request_id: str | None,
+    correlation_id: str | None,
     broker: BrokerWholesaleAccountClient,
     daemon: PaymentDaemonClient,
     clock: Clock,
@@ -809,7 +824,21 @@ async def _replenish_wholesale_account(
         payer_eth_address=payer_eth_address,
         payee_eth_address=route.eth_address,
         chain_id=settings.wholesale_chain_id,
+        settlement_domain_id=route.settlement_domain_id,
     )
+    if mint_request_id is None:
+        identity = "\0".join(
+            (
+                str(observation.chain_id),
+                observation.payer,
+                observation.payee,
+                str(observation.settlement_domain_id),
+                observation.denomination,
+            )
+        )
+        identity_hash = hashlib.sha256(identity.encode()).hexdigest()[:32]
+        mint_request_id = f"loc-account:auto:{identity_hash}:{observation.version}"
+        correlation_id = f"wholesale-account:{identity_hash}"
     limits = WholesaleFundingLimits(
         target_available_wei=Decimal(settings.wholesale_target_available_wei),
         replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
@@ -820,12 +849,14 @@ async def _replenish_wholesale_account(
     plan = await wholesale_service.plan_observed_account_shortfall(
         db,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         limits=limits,
     )
     funding = await wholesale_service.claim_account_funding(
         db,
         route=route,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         plan=plan,
         limits=limits,
         mint_request_id=mint_request_id,
@@ -837,6 +868,7 @@ async def _replenish_wholesale_account(
         funding=funding,
         route=route,
         observation=observation,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         plan=plan,
         payer_eth_address=payer_eth_address,
         chain_id=settings.wholesale_chain_id,
@@ -845,6 +877,95 @@ async def _replenish_wholesale_account(
         acknowledged_at=clock.now(),
     )
     return plan
+
+
+async def list_active_wholesale_account_routes(
+    db: AsyncSession,
+) -> list[ActiveWholesaleAccountRoute]:
+    """Return one deterministic route for every active wholesale account.
+
+    The current authorization grant owns the payer and settlement-domain
+    coordinates. Grouping deliberately excludes customer identity: one poll
+    maintains the shared account for every active LOC customer on that route.
+    """
+
+    rows = list(
+        (
+            await db.execute(
+                select(PaymentSession, SpendAuthorizationGrant)
+                .join(
+                    SpendAuthorizationGrant,
+                    (SpendAuthorizationGrant.session_id == PaymentSession.id)
+                    & (SpendAuthorizationGrant.authorization_id == PaymentSession.authorization_id),
+                )
+                .where(
+                    PaymentSession.protocol == PAID_SESSION_PROTOCOL,
+                    PaymentSession.accounting_mode == "wholesale_account",
+                    PaymentSession.state.in_((SESSION_STATE_OPEN, SESSION_STATE_DRAINING)),
+                )
+                .order_by(PaymentSession.id.asc())
+            )
+        ).all()
+    )
+    candidates: dict[tuple[int, str, str, str, str], ActiveWholesaleAccountRoute] = {}
+    for session_row, grant in rows:
+        snapshot = RouteSnapshot.model_validate(grant.route_snapshot)
+        if session_row.route_snapshot is None:
+            raise InvalidSessionRequest(message="active wholesale route snapshot is unavailable")
+        session_snapshot = RouteSnapshot.model_validate(session_row.route_snapshot)
+        if (
+            snapshot.protocol != PAID_SESSION_PROTOCOL
+            or snapshot.settlement_domain_id != grant.settlement_domain_id
+            or snapshot != session_snapshot
+        ):
+            raise InvalidSessionRequest(message="active wholesale route identity is inconsistent")
+        identity = (
+            grant.chain_id,
+            grant.payer_eth_address,
+            snapshot.eth_address.lower(),
+            grant.settlement_domain_id,
+            grant.denomination,
+        )
+        candidates.setdefault(
+            identity,
+            ActiveWholesaleAccountRoute(
+                route_snapshot=snapshot,
+                payer_eth_address=grant.payer_eth_address,
+                chain_id=grant.chain_id,
+                settlement_domain_id=grant.settlement_domain_id,
+                denomination=grant.denomination,
+            ),
+        )
+    return list(candidates.values())
+
+
+async def replenish_active_wholesale_account(
+    db: AsyncSession,
+    *,
+    candidate: ActiveWholesaleAccountRoute,
+    broker: BrokerWholesaleAccountClient,
+    daemon: PaymentDaemonClient,
+    clock: Clock,
+    settings: Settings,
+) -> WholesaleFundingPlan:
+    """Restore one active account from authoritative receiver state."""
+
+    if candidate.chain_id != settings.wholesale_chain_id:
+        raise InvalidSessionRequest(message="active wholesale route changed chain")
+    route = _selected_route_from_snapshot(candidate.route_snapshot)
+    if route.settlement_domain_id != candidate.settlement_domain_id:
+        raise InvalidSessionRequest(message="active wholesale route changed settlement domain")
+    return await _replenish_wholesale_account(
+        db,
+        route=route,
+        payer_eth_address=candidate.payer_eth_address,
+        mint_request_id=None,
+        correlation_id=None,
+        broker=broker,
+        daemon=daemon,
+        clock=clock,
+        settings=settings,
+    )
 
 
 async def _open_wholesale_session(
@@ -900,7 +1021,7 @@ async def _open_wholesale_session(
         max_debit_wei=max_debit_wei,
         max_total_units=max_total_units,
         not_before=now,
-        expires_at=now + timedelta(minutes=5),
+        expires_at=now + timedelta(seconds=settings.session_authorization_ttl_seconds),
         chain_id=settings.wholesale_chain_id,
     )
     await record_spend_authorization_grant(
@@ -908,6 +1029,7 @@ async def _open_wholesale_session(
         engagement_id=session_row.id,
         user_id=user_id,
         route=route,
+        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
         request=auth_request,
         response=auth_response,
     )
@@ -1112,6 +1234,12 @@ def _route_from_persisted_snapshot(session_row: PaymentSession) -> SelectedRoute
     """Rehydrate the typed route without consulting mutable discovery state."""
 
     snapshot = RouteSnapshot.model_validate(session_row.route_snapshot)
+    return _selected_route_from_snapshot(snapshot)
+
+
+def _selected_route_from_snapshot(snapshot: RouteSnapshot) -> SelectedRoute:
+    """Rehydrate one already-validated immutable route snapshot."""
+
     return SelectedRoute(
         worker_url=snapshot.broker_url,
         eth_address=snapshot.eth_address,
@@ -1124,6 +1252,7 @@ def _route_from_persisted_snapshot(session_row: PaymentSession) -> SelectedRoute
         quote_version=snapshot.quote_version,
         constraint_fingerprint=bytes.fromhex(snapshot.constraint_fingerprint),
         route_fingerprint=bytes.fromhex(snapshot.route_fingerprint),
+        settlement_domain_id=snapshot.settlement_domain_id,
         protocol=snapshot.protocol,
         settlement_keys=snapshot.settlement_keys,
         work_unit_estimator=snapshot.work_unit_estimator,
@@ -1217,7 +1346,7 @@ async def _refill_wholesale_session(
             max_debit_wei=new_wholesale_cap,
             max_total_units=requested_max_total_units,
             not_before=now,
-            expires_at=now + timedelta(minutes=5),
+            expires_at=now + timedelta(seconds=settings.session_authorization_ttl_seconds),
             chain_id=settings.wholesale_chain_id,
             revision=next_revision,
             predecessor_authorization_id=predecessor.authorization_id,
@@ -1227,6 +1356,7 @@ async def _refill_wholesale_session(
             engagement_id=session_row.id,
             user_id=user_id,
             route=route,
+            settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
             request=auth_request,
             response=auth_response,
         )
@@ -1291,7 +1421,7 @@ async def refill_session(
     """Increase an open session's cumulative scoped authorization cap.
 
     The revision increases the customer hold as needed and may replenish a
-    bounded shortfall in the shared payer-payee account. It never mints a
+    bounded shortfall in the selected settlement-domain account. It never mints a
     session-sized ticket. ``observed_consumed_units`` remains advisory only.
     """
     cfg = await billing_service.resolve_billing_config(db, user_id=user_id, settings=settings)
@@ -1481,6 +1611,7 @@ async def _verify_close_settlement(
             settlement,
             settlement_keys=settlement_keys,
             expected=SessionSettlementExpectation(
+                settlement_domain_id=grant.settlement_domain_id,
                 gateway_session_id=str(session_row.id),
                 broker_session_id=session_row.broker_session_id,
                 work_id=expected_work_id,

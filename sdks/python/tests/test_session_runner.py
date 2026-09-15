@@ -212,6 +212,44 @@ async def test_wholesale_low_balance_without_cap_approval_winds_down() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wholesale_low_runway_with_cap_headroom_waits_for_account_replenishment() -> None:
+    warnings: list[WinddownEvent] = []
+    runner = SessionRunner(
+        client=OpenClearinghouseClient(base_url=BASE, api_key=KEY),
+        handle=_handle(),
+        on_winddown_warning=warnings.append,
+        approve_cap_extension=lambda _: 200,
+    )
+
+    await runner.on_balance(
+        SessionBalance.from_dict(_balance(status="low", claimed_units=10, runway_units=20))
+    )
+
+    assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_balance_uses_modules_body_envelope() -> None:
+    warnings: list[WinddownEvent] = []
+    runner = SessionRunner(
+        client=OpenClearinghouseClient(base_url=BASE, api_key=KEY),
+        handle=_handle(),
+        on_winddown_warning=warnings.append,
+    )
+
+    await runner._handle_ws_message(
+        json.dumps(
+            {
+                "type": "session.balance",
+                "body": _balance(status="low", claimed_units=90, runway_units=10),
+            }
+        )
+    )
+
+    assert warnings == [WinddownEvent("wholesale_cap_extension_required", None)]
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_wholesale_cap_extension_commits_and_sends_exact_revision() -> None:
     legacy = _handle()

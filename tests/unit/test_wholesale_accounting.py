@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
@@ -30,13 +31,20 @@ from livepeer_open_clearinghouse.domains.wholesale.service import (
     plan_observed_account_shortfall,
     record_minted_funding,
 )
-from livepeer_open_clearinghouse.domains.wholesale.types import WholesaleFundingLimits
+from livepeer_open_clearinghouse.domains.wholesale.types import (
+    COMPAT_SETTLEMENT_DOMAIN_ID,
+    WholesaleFundingLimits,
+    settlement_domain_id,
+)
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     WholesaleAccountObservation,
     WholesaleFundingResult,
 )
 from livepeer_open_clearinghouse.providers.payment_daemon import MockPaymentDaemonClient
 from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
+
+_DOMAIN_A = settlement_domain_id("0x" + "aa" * 32)
+_DOMAIN_B = settlement_domain_id("0x" + "bb" * 32)
 
 
 @pytest_asyncio.fixture()
@@ -69,6 +77,7 @@ def test_wholesale_tables_have_no_customer_ownership_columns() -> None:
         "chain_id",
         "payer_eth_address",
         "payee_eth_address",
+        "settlement_domain_id",
         "denomination",
     }.issubset(WholesaleAccount.__table__.columns.keys())
 
@@ -149,6 +158,7 @@ def _account(*, available: int = 40) -> WholesaleAccountObservation:
     return WholesaleAccountObservation(
         payer="0x" + "aa" * 20,
         payee="0x" + "11" * 20,
+        settlement_domain_id=str(_DOMAIN_A),
         chain_id=42161,
         denomination="wei",
         credited_value_wei=100,
@@ -187,6 +197,7 @@ def _route() -> SelectedRoute:
             "quote_version": 1,
             "constraint_fingerprint": bytes.fromhex("22" * 32),
             "route_fingerprint": bytes.fromhex("33" * 32),
+            "settlement_domain_id": str(_DOMAIN_A),
             "settlement_keys": [],
             "extra": {
                 "job": {"schema": "openai-chat-completions/v1", "transports": ["unary"]},
@@ -205,7 +216,8 @@ class _ReplayBroker:
         return WholesaleFundingResult(
             payer=self.observation.payer,
             payee=self.observation.payee,
-            credited_value_wei=60,
+            settlement_domain_id=self.observation.settlement_domain_id,
+            credited_value_wei=0,
             available_value_wei=self.observation.available_value_wei,
             account_version=self.observation.version,
             replayed=True,
@@ -279,7 +291,7 @@ def test_shortfall_plan_fails_closed_at_operator_limits(
 
 
 @pytest.mark.asyncio
-async def test_observed_plan_replaces_prior_account_value_in_aggregate(
+async def test_observed_plan_repairs_stale_projected_aggregate_from_accounts(
     wholesale_db: AsyncSession,
 ) -> None:
     budget = await wholesale_db.get(WholesaleExposureBudget, "global")
@@ -290,6 +302,7 @@ async def test_observed_plan_replaces_prior_account_value_in_aggregate(
             chain_id=42161,
             payer_eth_address="0x" + "aa" * 20,
             payee_eth_address="0x" + "11" * 20,
+            settlement_domain_id=_DOMAIN_A,
             denomination="wei",
             protocol_version="wholesale-account/1.1.0-draft",
             broker_url="https://broker.example",
@@ -306,10 +319,174 @@ async def test_observed_plan_replaces_prior_account_value_in_aggregate(
     plan = await plan_observed_account_shortfall(
         wholesale_db,
         observation=_account(available=60).model_copy(update={"version": 4}),
+        settlement_domain_id=_DOMAIN_A,
         limits=_limits(),
     )
     assert plan.shortfall_wei == 40
-    assert plan.projected_aggregate_available_wei == 260
+    assert plan.projected_aggregate_available_wei == 100
+
+
+@pytest.mark.asyncio
+async def test_compatibility_account_is_audit_only_for_protocol_4_exposure(
+    wholesale_db: AsyncSession,
+) -> None:
+    budget = await wholesale_db.get(WholesaleExposureBudget, "global")
+    assert budget is not None
+    budget.projected_available_wei = Decimal(870)
+    wholesale_db.add(
+        WholesaleAccount(
+            chain_id=42161,
+            payer_eth_address="0x" + "aa" * 20,
+            payee_eth_address="0x" + "11" * 20,
+            settlement_domain_id=COMPAT_SETTLEMENT_DOMAIN_ID,
+            denomination="wei",
+            protocol_version="wholesale-account/1.1.0-draft",
+            broker_url="https://retired-broker.example",
+            credited_value_wei=Decimal(877),
+            reserved_value_wei=Decimal(0),
+            debited_value_wei=Decimal(7),
+            available_value_wei=Decimal(870),
+            remote_version=32,
+            observed_at=datetime.now(UTC),
+        )
+    )
+    await wholesale_db.commit()
+
+    observation = _account(available=0).model_copy(
+        update={"settlement_domain_id": str(_DOMAIN_B), "version": 0}
+    )
+    limits = _limits(
+        max_available_per_payee_wei=150,
+        max_aggregate_available_wei=150,
+        max_single_funding_wei=100,
+    )
+    plan = await plan_observed_account_shortfall(
+        wholesale_db,
+        observation=observation,
+        settlement_domain_id=_DOMAIN_B,
+        limits=limits,
+    )
+    assert plan.shortfall_wei == 100
+    assert plan.projected_payee_available_wei == 100
+    assert plan.projected_aggregate_available_wei == 100
+
+    funding = await claim_account_funding(
+        wholesale_db,
+        route=_route().model_copy(update={"settlement_domain_id": str(_DOMAIN_B)}),
+        observation=observation,
+        settlement_domain_id=_DOMAIN_B,
+        plan=plan,
+        limits=limits,
+        mint_request_id="loc:account:after-compat-cutover",
+        correlation_id=None,
+        protocol_version="wholesale-account/2.0.0-draft",
+    )
+    assert funding is not None
+    assert budget.projected_available_wei == Decimal(100)
+
+
+@pytest.mark.asyncio
+async def test_same_payee_has_independent_domain_balances_and_versions(
+    wholesale_db: AsyncSession,
+) -> None:
+    budget = await wholesale_db.get(WholesaleExposureBudget, "global")
+    assert budget is not None
+    budget.projected_available_wei = Decimal(870)
+    wholesale_db.add(
+        WholesaleAccount(
+            chain_id=42161,
+            payer_eth_address="0x" + "aa" * 20,
+            payee_eth_address="0x" + "11" * 20,
+            settlement_domain_id=_DOMAIN_A,
+            denomination="wei",
+            protocol_version="wholesale-account/1.1.0-draft",
+            broker_url="https://broker-a.example",
+            credited_value_wei=Decimal(877),
+            reserved_value_wei=Decimal(0),
+            debited_value_wei=Decimal(7),
+            available_value_wei=Decimal(870),
+            remote_version=34,
+            observed_at=datetime.now(UTC),
+        )
+    )
+    await wholesale_db.commit()
+
+    domain_b_observation = _account(available=0).model_copy(
+        update={
+            "settlement_domain_id": str(_DOMAIN_B),
+            "credited_value_wei": Decimal(0),
+            "reserved_value_wei": Decimal(0),
+            "debited_value_wei": Decimal(0),
+            "version": 0,
+        }
+    )
+    limits = _limits(
+        max_available_per_payee_wei=1000,
+        max_aggregate_available_wei=1000,
+        max_single_funding_wei=100,
+    )
+    plan = await plan_observed_account_shortfall(
+        wholesale_db,
+        observation=domain_b_observation,
+        settlement_domain_id=_DOMAIN_B,
+        limits=limits,
+    )
+    assert plan.shortfall_wei == 100
+    assert plan.projected_payee_available_wei == 970
+    assert plan.projected_aggregate_available_wei == 970
+    with pytest.raises(WholesaleFundingPolicyError, match="per-payee"):
+        await plan_observed_account_shortfall(
+            wholesale_db,
+            observation=domain_b_observation,
+            settlement_domain_id=_DOMAIN_B,
+            limits=limits.model_copy(update={"max_available_per_payee_wei": Decimal(900)}),
+        )
+
+    funding = await claim_account_funding(
+        wholesale_db,
+        route=_route().model_copy(
+            update={
+                "worker_url": "https://broker-b.example",
+                "settlement_domain_id": str(_DOMAIN_B),
+            }
+        ),
+        observation=domain_b_observation,
+        settlement_domain_id=_DOMAIN_B,
+        plan=plan,
+        limits=limits,
+        mint_request_id="loc:account:domain-b",
+        correlation_id=None,
+        protocol_version="wholesale-account/1.1.0-draft",
+    )
+    assert funding is not None
+    accounts = list((await wholesale_db.scalars(select(WholesaleAccount))).all())
+    assert {(account.settlement_domain_id, account.remote_version) for account in accounts} == {
+        (_DOMAIN_A, 34),
+        (_DOMAIN_B, 0),
+    }
+
+    with pytest.raises(WholesaleFundingPolicyError, match="per-payee"):
+        await plan_observed_account_shortfall(
+            wholesale_db,
+            observation=domain_b_observation.model_copy(
+                update={"settlement_domain_id": "0x" + "cc" * 32}
+            ),
+            settlement_domain_id=settlement_domain_id("0x" + "cc" * 32),
+            limits=limits,
+        )
+
+    with pytest.raises(WholesaleFundingPolicyError, match="settlement domain"):
+        await claim_account_funding(
+            wholesale_db,
+            route=_route().model_copy(update={"worker_url": "https://broker-b.example"}),
+            observation=domain_b_observation,
+            settlement_domain_id=_DOMAIN_A,
+            plan=plan,
+            limits=limits,
+            mint_request_id="loc:account:domain-b",
+            correlation_id=None,
+            protocol_version="wholesale-account/1.1.0-draft",
+        )
 
 
 @pytest.mark.asyncio
@@ -327,6 +504,7 @@ async def test_funding_claim_mint_and_ack_are_durable(
         wholesale_db,
         route=route,
         observation=observation,
+        settlement_domain_id=_DOMAIN_A,
         plan=plan,
         limits=_limits(),
         mint_request_id="loc:account:durable",
@@ -349,8 +527,8 @@ async def test_funding_claim_mint_and_ack_are_durable(
     assert minted.payment_bytes == response.payment_bytes
     after = observation.model_copy(
         update={
-            "credited_value_wei": Decimal(160),
-            "available_value_wei": Decimal(100),
+            "credited_value_wei": Decimal(175),
+            "available_value_wei": Decimal(115),
             "version": 4,
         }
     )
@@ -360,16 +538,19 @@ async def test_funding_claim_mint_and_ack_are_durable(
         result=WholesaleFundingResult(
             payer=observation.payer,
             payee=observation.payee,
-            credited_value_wei=60,
-            available_value_wei=100,
+            settlement_domain_id=observation.settlement_domain_id,
+            credited_value_wei=75,
+            available_value_wei=115,
             account_version=4,
             replayed=False,
         ),
         observation=after,
+        settlement_domain_id=_DOMAIN_A,
         acknowledged_at=datetime.now(UTC),
     )
     assert acknowledged.status == "acknowledged"
     assert acknowledged.account_version == 4
+    assert acknowledged.credited_value_wei == 75
 
     second_route = route.model_copy(update={"eth_address": "0x" + "22" * 20})
     second_observation = _account(available=0).model_copy(update={"payee": "0x" + "22" * 20})
@@ -383,6 +564,7 @@ async def test_funding_claim_mint_and_ack_are_durable(
             wholesale_db,
             route=second_route,
             observation=second_observation,
+            settlement_domain_id=_DOMAIN_A,
             plan=stale_plan,
             limits=_limits(max_aggregate_available_wei=150, max_single_funding_wei=100),
             mint_request_id="loc:account:blocked-by-global-cap",
@@ -406,6 +588,7 @@ async def test_minted_funding_replays_persisted_bytes_without_reminting(
         wholesale_db,
         route=route,
         observation=observation,
+        settlement_domain_id=_DOMAIN_A,
         plan=plan,
         limits=_limits(),
         mint_request_id="loc:account:recover-minted",
@@ -439,6 +622,7 @@ async def test_minted_funding_replays_persisted_bytes_without_reminting(
         funding=funding,
         route=route,
         observation=after,
+        settlement_domain_id=_DOMAIN_A,
         plan=plan_account_shortfall(
             observation=after,
             aggregate_available_wei=100,
@@ -454,3 +638,4 @@ async def test_minted_funding_replays_persisted_bytes_without_reminting(
     recovered = await wholesale_db.get(WholesaleFunding, funding.id)
     assert recovered is not None
     assert recovered.status == "acknowledged"
+    assert recovered.credited_value_wei == 60

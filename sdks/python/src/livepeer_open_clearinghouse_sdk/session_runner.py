@@ -286,7 +286,9 @@ class SessionRunner:
         if not isinstance(payload, dict):
             return
         if payload.get("type") == "session.balance":
-            balance = payload.get("balance")
+            # Modules frames are {"type": ..., "body": ...}. HTTP status
+            # responses use a top-level "balance", but the WebSocket does not.
+            balance = payload.get("body")
             if isinstance(balance, dict):
                 await self.on_balance(SessionBalance.from_dict(balance))
 
@@ -302,6 +304,15 @@ class SessionRunner:
             return
         if self._handle.session.refill == "bounded":
             await self._fire_winddown(WinddownEvent("bounded_runway_exhausting", None))
+            return
+        # A low runway is normally an aggregate wholesale-account signal.
+        # LOC restores that account independently; it must not cause the SDK
+        # to grow this customer's already-sufficient authorization ceiling.
+        authorization_remaining = max(
+            self._handle.max_total_units - parsed.claimed_units,
+            0,
+        )
+        if authorization_remaining > parsed.runway_units:
             return
         if self._pending_refill is not None:
             if self._pending_refill_max_total_units is None:

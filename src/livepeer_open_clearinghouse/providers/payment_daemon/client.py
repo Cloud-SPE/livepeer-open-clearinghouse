@@ -27,6 +27,24 @@ from livepeer_open_clearinghouse import _gen  # noqa: F401
 
 _ETH_ADDRESS_BYTES = 20
 _ETH_SIGNATURE_BYTES = 65
+_SETTLEMENT_DOMAIN_HEX_LENGTH = 64
+
+
+def _validate_settlement_domain_id(value: str) -> None:
+    if (
+        len(value) != _SETTLEMENT_DOMAIN_HEX_LENGTH + 2
+        or not value.startswith("0x")
+        or value[2:] != value[2:].lower()
+    ):
+        raise ValueError("settlement_domain_id must be a nonzero lowercase 0x-prefixed uint256")
+    try:
+        parsed = int(value[2:], 16)
+    except ValueError as exc:
+        raise ValueError(
+            "settlement_domain_id must be a nonzero lowercase 0x-prefixed uint256"
+        ) from exc
+    if parsed == 0:
+        raise ValueError("settlement_domain_id must be a nonzero lowercase 0x-prefixed uint256")
 
 
 class PaymentDaemonError(Exception):
@@ -80,10 +98,11 @@ class FundingIntent:
 
 @dataclass(frozen=True, slots=True)
 class AccountFundingIntent:
-    """Shared payer-payee account snapshot used to compute a bounded shortfall."""
+    """Account snapshot used to compute one settlement-domain shortfall."""
 
     target_available_wei: Decimal
     observed_available_wei: Decimal
+    settlement_domain_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +114,7 @@ class CreatePaymentRequest:
     ticket_params_base_url: str
     accepted_price: AcceptedPrice
     funding: FundingIntent
-    account_funding: AccountFundingIntent | None = None
+    account_funding: AccountFundingIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +173,7 @@ class CreateSpendAuthorizationRequest:
     predecessor_authorization_id: str
     broker_uri: str
     chain_id: int
+    settlement_domain_id: str
     denomination: str = "wei"
 
 
@@ -189,30 +209,24 @@ def validate_funding_response(
 ) -> CreatePaymentResponse:
     """Fail closed unless the minted envelope funds the caller's intent."""
 
-    requested = request.funding.funded_value_wei
-    if request.account_funding is not None:
-        requested = max(
-            Decimal(0),
-            request.account_funding.target_available_wei
-            - request.account_funding.observed_available_wei,
+    requested = max(
+        Decimal(0),
+        request.account_funding.target_available_wei
+        - request.account_funding.observed_available_wei,
+    )
+    if response.account_shortfall_wei != requested:
+        raise PaymentDaemonError(
+            "daemon account_shortfall_wei does not match the bounded shortfall"
         )
-        if response.account_shortfall_wei != requested:
-            raise PaymentDaemonError(
-                "daemon account_shortfall_wei does not match the bounded shortfall"
-            )
-        if response.expected_value != requested:
-            raise PaymentDaemonError(
-                "daemon expected_value does not equal the bounded account shortfall"
-            )
+    if response.expected_value != requested:
+        raise PaymentDaemonError(
+            "daemon expected_value does not equal the bounded account shortfall"
+        )
     if response.funded_value_wei != requested:
         raise PaymentDaemonError(
             "daemon funded_value_wei does not echo the requested funding intent"
         )
-    if request.account_funding is None and response.expected_value < requested:
-        raise PaymentDaemonError(
-            "daemon expected_value does not cover the requested funding intent"
-        )
-    if request.account_funding is not None and requested == 0:
+    if requested == 0:
         if response.payment_bytes or response.tickets_created or response.expected_value:
             raise PaymentDaemonError("daemon minted a payment for a zero account shortfall")
         return response
@@ -272,15 +286,14 @@ class MockPaymentDaemonClient:
             return original_response
 
         funded = request.funding.funded_value_wei
-        if request.account_funding is not None:
-            funded = max(
-                Decimal(0),
-                request.account_funding.target_available_wei
-                - request.account_funding.observed_available_wei,
-            )
+        funded = max(
+            Decimal(0),
+            request.account_funding.target_available_wei
+            - request.account_funding.observed_available_wei,
+        )
         expected_value = (funded * self._ev_ratio).quantize(Decimal(1))
 
-        if funded == 0 and request.account_funding is not None:
+        if funded == 0:
             response = CreatePaymentResponse(
                 payment_bytes=b"",
                 sender=b"",
@@ -336,7 +349,7 @@ class MockPaymentDaemonClient:
             expires_after_round=101,
             ticket_validity_period=2,
             ticket_validity_period_observed_at=datetime(2026, 1, 1, tzinfo=UTC),
-            account_shortfall_wei=(funded if request.account_funding is not None else None),
+            account_shortfall_wei=funded,
         )
         self._mint_replays[request.mint_request_id] = (request, response)
         return response
@@ -456,6 +469,7 @@ def spend_authorization_request_to_proto(
         raise ValueError("authorization broker_uri is required")
     if request.chain_id <= 0 or request.denomination != "wei":
         raise ValueError("authorization requires a positive chain_id and wei denomination")
+    _validate_settlement_domain_id(request.settlement_domain_id)
     return payer_daemon_pb2.CreateSpendAuthorizationRequest(
         payee=request.payee,
         authorization_id=request.authorization_id,
@@ -488,6 +502,7 @@ def spend_authorization_request_to_proto(
         broker_uri=request.broker_uri.strip().rstrip("/"),
         chain_id=request.chain_id,
         denomination=request.denomination,
+        settlement_domain_id=request.settlement_domain_id,
     )
 
 
@@ -512,7 +527,7 @@ def _expected_authorization_payload(proto: Any, *, payer: bytes) -> Any:
     from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
 
     return types_pb2.SpendAuthorizationPayload(
-        domain="livepeer-spend-authorization/v1",
+        domain="livepeer-spend-authorization/v2",
         payer=payer,
         payee=proto.payee,
         authorization_id=proto.authorization_id,
@@ -533,6 +548,7 @@ def _expected_authorization_payload(proto: Any, *, payer: bytes) -> Any:
         broker_uri=proto.broker_uri,
         chain_id=proto.chain_id,
         denomination=proto.denomination,
+        settlement_domain_id=proto.settlement_domain_id,
     )
 
 
@@ -598,17 +614,18 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
             top_up_allowed=False,
         ),
     )
-    if request.account_funding is not None:
-        proto.account_funding.CopyFrom(
-            types_pb2.AccountFundingIntent(
-                target_available_wei=types_pb2.BigUInt(
-                    value=int_to_biguint_bytes(request.account_funding.target_available_wei)
-                ),
-                observed_available_wei=types_pb2.BigUInt(
-                    value=int_to_biguint_bytes(request.account_funding.observed_available_wei)
-                ),
-            )
+    _validate_settlement_domain_id(request.account_funding.settlement_domain_id)
+    proto.account_funding.CopyFrom(
+        types_pb2.AccountFundingIntent(
+            target_available_wei=types_pb2.BigUInt(
+                value=int_to_biguint_bytes(request.account_funding.target_available_wei)
+            ),
+            observed_available_wei=types_pb2.BigUInt(
+                value=int_to_biguint_bytes(request.account_funding.observed_available_wei)
+            ),
+            settlement_domain_id=request.account_funding.settlement_domain_id,
         )
+    )
     return proto
 
 

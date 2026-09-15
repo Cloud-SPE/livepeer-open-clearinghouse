@@ -36,6 +36,7 @@ async def test_wholesale_account_query_is_strict_and_route_scoped() -> None:
             json={
                 "payer": payer,
                 "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "aa" * 32,
                 "chain_id": 42161,
                 "denomination": "wei",
                 "credited_value_wei": "1000",
@@ -53,6 +54,7 @@ async def test_wholesale_account_query_is_strict_and_route_scoped() -> None:
             payer_eth_address=payer,
             payee_eth_address="0x" + "11" * 20,
             chain_id=42161,
+            settlement_domain_id="0x" + "aa" * 32,
         )
     assert str(result.available_value_wei) == "500"
     assert result.payee == "0x" + "11" * 20
@@ -68,6 +70,7 @@ async def test_wholesale_account_query_rejects_changed_payer() -> None:
             json={
                 "payer": "0x" + "bb" * 20,
                 "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "aa" * 32,
                 "chain_id": 42161,
                 "denomination": "wei",
                 "credited_value_wei": "0",
@@ -86,6 +89,39 @@ async def test_wholesale_account_query_rejects_changed_payer() -> None:
                 payer_eth_address="0x" + "aa" * 20,
                 payee_eth_address="0x" + "11" * 20,
                 chain_id=42161,
+                settlement_domain_id="0x" + "aa" * 32,
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wholesale_account_query_rejects_cross_domain_response() -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "payer": "0x" + "aa" * 20,
+                "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "bb" * 32,
+                "chain_id": 42161,
+                "denomination": "wei",
+                "credited_value_wei": "0",
+                "reserved_value_wei": "0",
+                "debited_value_wei": "0",
+                "available_value_wei": "0",
+                "version": 0,
+                "observed_at": "2026-09-09T12:00:00Z",
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        with pytest.raises(BrokerWholesaleAccountError, match="settlement domain"):
+            await HttpBrokerSettlementClient(http_client).get_wholesale_account(
+                broker_url="https://broker.example",
+                payer_eth_address="0x" + "aa" * 20,
+                payee_eth_address="0x" + "11" * 20,
+                chain_id=42161,
+                settlement_domain_id="0x" + "aa" * 32,
             )
 
 
@@ -141,6 +177,7 @@ async def test_wholesale_account_funding_keeps_ticket_inside_loc() -> None:
             json={
                 "payer": "0x" + "aa" * 20,
                 "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "aa" * 32,
                 "credited_value_wei": "25",
                 "available_value_wei": "125",
                 "account_version": 4,
@@ -156,10 +193,40 @@ async def test_wholesale_account_funding_keeps_ticket_inside_loc() -> None:
             payment_bytes=payment,
             payer_eth_address="0x" + "aa" * 20,
             payee_eth_address="0x" + "11" * 20,
-            expected_credited_value_wei=25,
+            settlement_domain_id="0x" + "aa" * 32,
         )
     assert str(result.credited_value_wei) == "25"
     assert result.account_version == 4
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wholesale_account_funding_rejects_cross_domain_acknowledgement() -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "payer": "0x" + "aa" * 20,
+                "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "bb" * 32,
+                "credited_value_wei": "25",
+                "available_value_wei": "125",
+                "account_version": 4,
+                "replayed": False,
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        with pytest.raises(BrokerWholesaleAccountError, match="settlement domain"):
+            await HttpBrokerSettlementClient(http_client).fund_wholesale_account(
+                broker_url="https://broker.example",
+                capability="cap",
+                offering="offer",
+                payment_bytes=b"signed-ticket",
+                payer_eth_address="0x" + "aa" * 20,
+                payee_eth_address="0x" + "11" * 20,
+                settlement_domain_id="0x" + "aa" * 32,
+            )
 
 
 @pytest.mark.unit

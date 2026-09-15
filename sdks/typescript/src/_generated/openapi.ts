@@ -2723,6 +2723,8 @@ export interface components {
             constraint_fingerprint: string;
             /** Route Fingerprint */
             route_fingerprint: string;
+            /** Settlement Domain Id */
+            settlement_domain_id: string;
         };
         /**
          * RouteSnapshot
@@ -2768,6 +2770,8 @@ export interface components {
             constraint_fingerprint: string;
             /** Route Fingerprint */
             route_fingerprint: string;
+            /** Settlement Domain Id */
+            settlement_domain_id: string;
             /** Settlement Keys */
             settlement_keys: components["schemas"]["SettlementKey"][];
             work_unit_estimator?: components["schemas"]["WorkUnitEstimator"] | null;
@@ -3704,6 +3708,8 @@ export interface components {
             payer_eth_address: string;
             /** Payee Eth Address */
             payee_eth_address: string;
+            /** Settlement Domain Id */
+            settlement_domain_id: string;
             /** Denomination */
             denomination: string;
             /** Protocol Version */

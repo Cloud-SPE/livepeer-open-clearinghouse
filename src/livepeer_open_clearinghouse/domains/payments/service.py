@@ -116,6 +116,7 @@ async def issue_route_locked_authorization(
         predecessor_authorization_id=predecessor_authorization_id,
         broker_uri=route.worker_url,
         chain_id=chain_id,
+        settlement_domain_id=route.settlement_domain_id,
     )
     return request, await daemon.create_spend_authorization(request)
 

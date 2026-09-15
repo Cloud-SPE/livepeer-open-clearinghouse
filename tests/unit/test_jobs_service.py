@@ -169,6 +169,7 @@ def _route(protocol: str = "paid-job/v1") -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
         protocol=protocol,
         settlement_keys=(delegated_key(),),
         extra=extra,
@@ -265,6 +266,7 @@ class _WholesaleBroker:
         return WholesaleAccountObservation(
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
+            settlement_domain_id="0x" + "aa" * 32,
             chain_id=42161,
             denomination="wei",
             credited_value_wei=100 if self.funded else 0,
@@ -280,6 +282,7 @@ class _WholesaleBroker:
         return WholesaleFundingResult(
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
+            settlement_domain_id="0x" + "aa" * 32,
             credited_value_wei=100,
             available_value_wei=100,
             account_version=1,

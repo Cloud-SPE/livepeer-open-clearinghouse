@@ -1212,8 +1212,9 @@ type RouteBinding struct {
 	QuoteId               string `json:"quote_id"`
 
 	// QuoteVersion Canonical decimal encoding of an unsigned 64-bit integer.
-	QuoteVersion     string `json:"quote_version"`
-	RouteFingerprint string `json:"route_fingerprint"`
+	QuoteVersion       string `json:"quote_version"`
+	RouteFingerprint   string `json:"route_fingerprint"`
+	SettlementDomainId string `json:"settlement_domain_id"`
 }
 
 // RouteSnapshot Immutable public route declaration used to authorize one open.
@@ -1230,11 +1231,12 @@ type RouteSnapshot struct {
 	QuoteId               string                  `json:"quote_id"`
 
 	// QuoteVersion Canonical decimal encoding of an unsigned 64-bit integer.
-	QuoteVersion     string                      `json:"quote_version"`
-	RouteFingerprint string                      `json:"route_fingerprint"`
-	SchemaVersion    *RouteSnapshotSchemaVersion `json:"schema_version,omitempty"`
-	Session          *SessionAxes                `json:"session,omitempty"`
-	SettlementKeys   []SettlementKey             `json:"settlement_keys"`
+	QuoteVersion       string                      `json:"quote_version"`
+	RouteFingerprint   string                      `json:"route_fingerprint"`
+	SchemaVersion      *RouteSnapshotSchemaVersion `json:"schema_version,omitempty"`
+	Session            *SessionAxes                `json:"session,omitempty"`
+	SettlementDomainId string                      `json:"settlement_domain_id"`
+	SettlementKeys     []SettlementKey             `json:"settlement_keys"`
 
 	// UnitsPerPrice Canonical decimal encoding of an unsigned 64-bit integer.
 	UnitsPerPrice     string             `json:"units_per_price"`
@@ -1813,22 +1815,23 @@ type WebhookTestResult struct {
 
 // WholesaleAccountView defines model for WholesaleAccountView.
 type WholesaleAccountView struct {
-	AgeSeconds        float32            `json:"age_seconds"`
-	AvailableValueWei string             `json:"available_value_wei"`
-	BrokerUrl         string             `json:"broker_url"`
-	ChainId           int                `json:"chain_id"`
-	CreditedValueWei  string             `json:"credited_value_wei"`
-	DebitedValueWei   string             `json:"debited_value_wei"`
-	Denomination      string             `json:"denomination"`
-	Id                openapi_types.UUID `json:"id"`
-	ObservedAt        time.Time          `json:"observed_at"`
-	OverPerPayeeLimit bool               `json:"over_per_payee_limit"`
-	PayeeEthAddress   string             `json:"payee_eth_address"`
-	PayerEthAddress   string             `json:"payer_eth_address"`
-	ProtocolVersion   string             `json:"protocol_version"`
-	RemoteVersion     int                `json:"remote_version"`
-	ReservedValueWei  string             `json:"reserved_value_wei"`
-	Stale             bool               `json:"stale"`
+	AgeSeconds         float32            `json:"age_seconds"`
+	AvailableValueWei  string             `json:"available_value_wei"`
+	BrokerUrl          string             `json:"broker_url"`
+	ChainId            int                `json:"chain_id"`
+	CreditedValueWei   string             `json:"credited_value_wei"`
+	DebitedValueWei    string             `json:"debited_value_wei"`
+	Denomination       string             `json:"denomination"`
+	Id                 openapi_types.UUID `json:"id"`
+	ObservedAt         time.Time          `json:"observed_at"`
+	OverPerPayeeLimit  bool               `json:"over_per_payee_limit"`
+	PayeeEthAddress    string             `json:"payee_eth_address"`
+	PayerEthAddress    string             `json:"payer_eth_address"`
+	ProtocolVersion    string             `json:"protocol_version"`
+	RemoteVersion      int                `json:"remote_version"`
+	ReservedValueWei   string             `json:"reserved_value_wei"`
+	SettlementDomainId string             `json:"settlement_domain_id"`
+	Stale              bool               `json:"stale"`
 }
 
 // WholesaleFundingView defines model for WholesaleFundingView.

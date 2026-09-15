@@ -11,7 +11,7 @@ exec-plan-002 rewrite. Companion to:
 
 > **Current protocol reference:** The only supported job/session contract uses
 > LOC-issued scoped authorizations. Tickets fund bounded shortfall in LOC's shared
-> payer-payee account, the caller carries a separate single-purpose
+> payer-payee settlement-domain account, the caller carries a separate single-purpose
 > authorization, session maxima are cumulative caps, and SDK reporting is a
 > fast path rather than a correctness dependency. See
 > [`002-fair-wholesale-credit-accounts.md`](design-docs/002-fair-wholesale-credit-accounts.md).

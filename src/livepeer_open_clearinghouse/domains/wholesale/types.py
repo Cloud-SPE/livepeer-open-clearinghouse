@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from typing import NewType
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+SettlementDomainId = NewType("SettlementDomainId", str)
+"""Opaque identity of one independently persisted settlement ledger."""
+
+# Historical rows created before protocol major 4 remain in this namespace for
+# audit/migration only. It is never valid on a new paid-work route.
+COMPAT_SETTLEMENT_DOMAIN_ID = SettlementDomainId("loc.compat.wholesale-account/1.1.0-draft")
+_SETTLEMENT_DOMAIN_ID = re.compile(r"^0x[0-9a-f]{64}$")
+
+
+def settlement_domain_id(value: str) -> SettlementDomainId:
+    """Parse the protocol-v4 nonzero, lowercase 256-bit ledger identity."""
+
+    if _SETTLEMENT_DOMAIN_ID.fullmatch(value) is None or int(value[2:], 16) == 0:
+        raise ValueError("settlement_domain_id must be a nonzero lowercase 0x-prefixed uint256")
+    return SettlementDomainId(value)
 
 
 class WholesaleFundingLimits(BaseModel):

@@ -144,6 +144,7 @@ class SpendAuthorizationGrant(Base, UuidPkMixin, TimestampMixin, TableNameFromCl
     route_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     payer_eth_address: Mapped[str] = mapped_column(String(42), nullable=False)
     chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    settlement_domain_id: Mapped[str] = mapped_column(nullable=False)
     denomination: Mapped[str] = mapped_column(String(16), nullable=False)
     max_debit_wei: Mapped[Decimal] = mapped_column(nullable=False)
     max_total_units: Mapped[int] = mapped_column(BigInteger, nullable=False)

@@ -40,6 +40,7 @@ from livepeer_open_clearinghouse_sdk import OpenClearinghouseClient
 from livepeer_open_clearinghouse_sdk.session_runner import SessionRunner
 from registry_seed_probe import (  # type: ignore[import-not-found]
     COLD_KEY,
+    SETTLEMENT_DOMAIN_ID,
     SETTLEMENT_KEY,
     _signed_manifest,
 )
@@ -226,6 +227,8 @@ async def _select_route(socket_path: Path) -> dict[str, Any]:
         expected_key = "0x04" + SETTLEMENT_KEY.public_key.to_bytes().hex()
         if not route.settlement_keys or route.settlement_keys[0].public_key != expected_key:
             raise AssertionError("settlement delegation missing from selected route")
+        if route.settlement_domain_id != SETTLEMENT_DOMAIN_ID:
+            raise AssertionError("settlement domain missing from selected route")
         session_route = await client.select(_SESSION_CAPABILITY, _SESSION_OFFERING)
         if session_route is None or session_route.protocol != "paid-session/v1":
             raise AssertionError("LOC registry client received no paid-session/v1 route")
@@ -240,6 +243,7 @@ async def _select_route(socket_path: Path) -> dict[str, Any]:
             "work_unit": route.work_unit,
             "units_per_price": route.units_per_price,
             "settlement_public_key": expected_key,
+            "settlement_domain_id": route.settlement_domain_id,
         }
     finally:
         await client.close()
@@ -1040,6 +1044,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             "--mode=receiver",
             f"--socket={payee_socket}",
             f"--db={runtime / 'payee.db'}",
+            f"--settlement-domain-id={SETTLEMENT_DOMAIN_ID}",
             f"--orch-address={COLD_KEY.public_key.to_address()}",
             f"--payee-admin-token={_PAYEE_ADMIN_TOKEN}",
         ]

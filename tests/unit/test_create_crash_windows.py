@@ -95,6 +95,7 @@ def _route(protocol: Literal["paid-job/v1", "paid-session/v1"]) -> SelectedRoute
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "11" * 32,
         protocol=protocol,
         settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra=extra,

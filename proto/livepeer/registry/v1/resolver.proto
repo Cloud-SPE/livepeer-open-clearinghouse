@@ -79,6 +79,8 @@ message SelectedRoute {
   // Signed client-side funding-ceiling estimator declaration. Absent when
   // the request already exposes a canonical ceiling.
   Estimator work_unit_estimator = 16;
+  // Immutable payment-ledger namespace, bound by the cold-signed tuple.
+  string settlement_domain_id = 17;
 }
 
 message SettlementKey {

@@ -49,6 +49,7 @@ def _route_proto(**overrides):  # type: ignore[no-untyped-def]
         "quote_version": 1,
         "constraint_fingerprint": b"\x00" * 32,
         "route_fingerprint": b"\x11" * 32,
+        "settlement_domain_id": "0x" + "aa" * 32,
         "protocol": "paid-job/v1",
         "extra_json": json.dumps({"job": {"transports": ["unary"]}}).encode(),
     }
@@ -83,6 +84,19 @@ def test_selected_route_proto_to_dataclass_carries_every_field() -> None:
     assert dc.quote_version == 7
     assert dc.constraint_fingerprint == b"\x00" * 32
     assert dc.route_fingerprint == b"\x11" * 32
+    assert dc.settlement_domain_id == "0x" + "aa" * 32
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "settlement_domain_id",
+    ["", "0x" + "00" * 32, "0x" + "AA" * 32, "aa" * 32, "0x1234"],
+)
+def test_selected_route_rejects_noncanonical_settlement_domain(
+    settlement_domain_id: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        _selected_route_proto_to_dataclass(_route_proto(settlement_domain_id=settlement_domain_id))
 
 
 @pytest.mark.unit
@@ -280,6 +294,7 @@ def test_unknown_or_v0_protocol_fails_at_boundary() -> None:
             quote_version=0,
             constraint_fingerprint=b"",
             route_fingerprint=b"",
+            settlement_domain_id="",
             protocol="not-a-protocol",  # type: ignore[arg-type]
             extra={"job": {"transports": ["stream"]}},
         )

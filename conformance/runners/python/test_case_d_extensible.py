@@ -39,8 +39,11 @@ async def test_case_d_extensible_open_refill_close(sdk_client, call_logs, caller
     await runner.on_balance(
         SessionBalance(
             status="low",
-            claimed_units=40,
-            debited_units=40,
+            # The shared account being low is not itself a reason to widen the
+            # customer's cumulative cap. Put the authorization near its cap so
+            # this case continues to exercise an actual cap extension.
+            claimed_units=495,
+            debited_units=495,
             unit="participant_minutes",
             runway_units=10,
             runway_seconds_estimate=600,

@@ -37,6 +37,7 @@ _ROUTE = SelectedRoute(
     quote_version=1,
     constraint_fingerprint=b"\x00" * 32,
     route_fingerprint=b"\x11" * 32,
+    settlement_domain_id="0x" + "11" * 32,
     protocol="paid-job/v1",
     work_unit_estimator=WorkUnitEstimator(
         id="multipart-audio-duration/v1",
@@ -132,6 +133,7 @@ async def test_offering_view_defaults_to_empty_extra() -> None:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "11" * 32,
         protocol="paid-job/v1",
         extra={"job": {"transports": ["unary"]}},
     )

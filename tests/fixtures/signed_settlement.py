@@ -12,6 +12,7 @@ from eth_keys.datatypes import PrivateKey
 TEST_PRIVATE_KEY = PrivateKey(b"\x01" * 32)
 TEST_PUBLIC_KEY = "0x04" + TEST_PRIVATE_KEY.public_key.to_bytes().hex()
 TEST_ISSUED_AT = "2026-08-20T12:00:00Z"
+TEST_SETTLEMENT_DOMAIN_ID = "0x" + "aa" * 32
 
 
 def delegated_key(
@@ -51,6 +52,7 @@ def signed_job_settlement(
     released_value_wei: int = 0,
     account_funding_value_wei: int = 0,
     account_version: int = 0,
+    settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     debited = actual_units if debited_units is None else debited_units
@@ -83,6 +85,7 @@ def signed_job_settlement(
         "issued_at": issued_at,
         "job_id": job_id,
         "request_id": request_id,
+        "settlement_domain_id": settlement_domain_id,
     }
     if authorization_id is not None:
         payload.update(
@@ -131,6 +134,7 @@ def signed_non_admission(
     broker_eth_address: str = "0x" + "11" * 20,
     observed_at: str = TEST_ISSUED_AT,
     coverage_started_at: str = "2026-05-01T00:00:00Z",
+    settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one broker-signed, audit-only NOT_ADMITTED record."""
@@ -151,6 +155,7 @@ def signed_non_admission(
         "observed_at": observed_at,
         "coverage_started_at": coverage_started_at,
         "outcome": "NOT_ADMITTED",
+        "settlement_domain_id": settlement_domain_id,
     }
     canonical = rfc8785.dumps(payload)
     prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
@@ -197,6 +202,7 @@ def signed_session_settlement(
     reserved_value_wei: int = 0,
     released_value_wei: int = 0,
     breakdown: dict[str, str] | None = None,
+    settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one signed paid-session/v1 settlement envelope."""
@@ -241,6 +247,7 @@ def signed_session_settlement(
         "settlement_seq": str(settlement_seq),
         "issued_at": issued_at,
         "state": state,
+        "settlement_domain_id": settlement_domain_id,
     }
     if breakdown is not None:
         payload["breakdown"] = breakdown

@@ -125,6 +125,7 @@ def _route(broker_url: str) -> SelectedRoute:
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
         protocol="paid-job/v1",
         settlement_keys=(delegated_key(),),
         extra={"job": {"transports": ["unary", "stream", "multipart"]}},

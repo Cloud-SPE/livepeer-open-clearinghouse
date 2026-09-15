@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -159,6 +159,7 @@ def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> Selecte
         quote_version=1,
         constraint_fingerprint=b"\x00" * 32,
         route_fingerprint=b"\x11" * 32,
+        settlement_domain_id="0x" + "aa" * 32,
         protocol=protocol,
         settlement_keys=(SettlementKey.model_validate(delegated_key()),),
         extra=extra,
@@ -171,7 +172,11 @@ def _route_for_protocol(protocol: str, *, refill: str = "extensible") -> Selecte
 class _WholesaleBroker:
     def __init__(self) -> None:
         self.funded = False
+        self.credited_value_wei = Decimal(0)
+        self.reserved_value_wei = Decimal(0)
+        self.debited_value_wei = Decimal(0)
         self.available_value_wei = Decimal(0)
+        self.version = 0
         self.fail_funding = False
         self.authorization_states: dict[str, SpendAuthorizationState] = {}
         self.settlement: dict[str, object] | None = None
@@ -180,27 +185,32 @@ class _WholesaleBroker:
         return WholesaleAccountObservation(
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
+            settlement_domain_id="0x" + "aa" * 32,
             chain_id=42161,
             denomination="wei",
-            credited_value_wei=100 if self.funded else 0,
-            reserved_value_wei=0,
-            debited_value_wei=0,
+            credited_value_wei=self.credited_value_wei,
+            reserved_value_wei=self.reserved_value_wei,
+            debited_value_wei=self.debited_value_wei,
             available_value_wei=self.available_value_wei,
-            version=1 if self.funded else 0,
+            version=self.version,
             observed_at=_clock().now(),
         )
 
     async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
         if self.fail_funding:
             raise BrokerWholesaleAccountError("funding unavailable")
+        credited = Decimal(100) - self.available_value_wei
         self.funded = True
+        self.credited_value_wei += credited
         self.available_value_wei = Decimal(100)
+        self.version += 1
         return WholesaleFundingResult(
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
-            credited_value_wei=100,
+            settlement_domain_id="0x" + "aa" * 32,
+            credited_value_wei=credited,
             available_value_wei=100,
-            account_version=1,
+            account_version=self.version,
             replayed=False,
         )
 
@@ -298,6 +308,9 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert grant.max_total_units == 10
     assert grant.max_debit_wei == Decimal(10_000)
     assert grant.request_id == response.request_id
+    assert grant.expires_at - grant.not_before == timedelta(
+        seconds=settings.session_authorization_ttl_seconds
+    )
     initial_grant = grant
     assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
     replay = await open_wholesale_session()
@@ -307,6 +320,52 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
     balance = await billing_service.get_balance(db_session, user_id=user_id)
     assert balance.amount_wei == Decimal(90_000)
+
+    # A receiver-side debit can make the shared account low while this
+    # session's original cumulative authorization still has ample headroom.
+    # LOC restores the account on its own and does not create a cap revision.
+    broker.reserved_value_wei = Decimal(70)
+    broker.debited_value_wei = Decimal(20)
+    broker.available_value_wei = Decimal(10)
+    broker.version = 2
+    candidates = await sessions_service.list_active_wholesale_account_routes(db_session)
+    assert len(candidates) == 1
+    background_daemon = MockPaymentDaemonClient()
+    broker.fail_funding = True
+    with pytest.raises(BrokerWholesaleAccountError, match="funding unavailable"):
+        await sessions_service.replenish_active_wholesale_account(
+            db_session,
+            candidate=candidates[0],
+            broker=broker,
+            daemon=background_daemon,
+            clock=_clock(),
+            settings=settings,
+        )
+    pending = list(
+        (
+            await db_session.scalars(select(WholesaleFunding).order_by(WholesaleFunding.created_at))
+        ).all()
+    )[-1]
+    assert pending.status == "minted"
+    assert pending.mint_request_id.startswith("loc-account:auto:")
+    assert pending.mint_request_id.endswith(":2")
+    assert pending.requested_shortfall_wei == Decimal(90)
+
+    broker.fail_funding = False
+    restored = await sessions_service.replenish_active_wholesale_account(
+        db_session,
+        candidate=candidates[0],
+        broker=broker,
+        daemon=background_daemon,
+        clock=_clock(),
+        settings=settings,
+    )
+    assert restored.shortfall_wei == Decimal(90)
+    assert broker.available_value_wei == Decimal(100)
+    assert pending.status == "acknowledged"
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert session.max_total_units == 10
+
     revision = await sessions_service.refill_session(
         db_session,
         session_id=response.session_id,
@@ -336,6 +395,9 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert grants[1].revision == 1
     assert grants[1].predecessor_authorization_id == grant.authorization_id
     assert grants[1].max_total_units == 20
+    assert grants[1].expires_at - grants[1].not_before == timedelta(
+        seconds=settings.session_authorization_ttl_seconds
+    )
     grant = grants[1]
     assert session.max_total_units == 20
     assert session.customer_max_debit_wei == Decimal(20_000)
@@ -373,7 +435,9 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
     assert initial_grant.state == "expired_unused"
     assert initial_grant.retired_at is not None
     assert grant.state == "admitted"
+    broker.debited_value_wei = Decimal(120)
     broker.available_value_wei = Decimal(0)
+    broker.version = 4
     broker.fail_funding = True
     with pytest.raises(BrokerWholesaleAccountError, match="funding unavailable"):
         await sessions_service.refill_session(
@@ -403,7 +467,7 @@ async def test_open_session_wholesale_uses_cumulative_authorization_and_shared_r
             await db_session.scalars(select(WholesaleFunding).order_by(WholesaleFunding.created_at))
         ).all()
     )
-    assert len(funding_rows) == 2
+    assert len(funding_rows) == 3
     assert funding_rows[-1].status == "minted"
     assert funding_rows[-1].requested_shortfall_wei == Decimal(100)
 

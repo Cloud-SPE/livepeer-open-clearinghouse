@@ -8389,6 +8389,11 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
             "title": "Route Fingerprint"
+          },
+          "settlement_domain_id": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{64}$",
+            "title": "Settlement Domain Id"
           }
         },
         "additionalProperties": false,
@@ -8397,7 +8402,8 @@
           "quote_id",
           "quote_version",
           "constraint_fingerprint",
-          "route_fingerprint"
+          "route_fingerprint",
+          "settlement_domain_id"
         ],
         "title": "RouteBinding",
         "description": "Compact caller-stable identity for one signed selected route."
@@ -8475,6 +8481,11 @@
             "pattern": "^[0-9a-f]{64}$",
             "title": "Route Fingerprint"
           },
+          "settlement_domain_id": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{64}$",
+            "title": "Settlement Domain Id"
+          },
           "settlement_keys": {
             "items": {
               "$ref": "#/components/schemas/SettlementKey"
@@ -8533,6 +8544,7 @@
           "quote_version",
           "constraint_fingerprint",
           "route_fingerprint",
+          "settlement_domain_id",
           "settlement_keys"
         ],
         "title": "RouteSnapshot",
@@ -10606,6 +10618,10 @@
             "type": "string",
             "title": "Payee Eth Address"
           },
+          "settlement_domain_id": {
+            "type": "string",
+            "title": "Settlement Domain Id"
+          },
           "denomination": {
             "type": "string",
             "title": "Denomination"
@@ -10662,6 +10678,7 @@
           "chain_id",
           "payer_eth_address",
           "payee_eth_address",
+          "settlement_domain_id",
           "denomination",
           "protocol_version",
           "broker_url",

@@ -33,6 +33,7 @@ resolver_pb2_grpc = importlib.import_module("livepeer.registry.v1.resolver_pb2_g
 
 COLD_KEY = PrivateKey(b"\x02" * 32)
 SETTLEMENT_KEY = PrivateKey(b"\x01" * 32)
+SETTLEMENT_DOMAIN_ID = "0x" + "aa" * 32
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -65,11 +66,12 @@ def _signed_manifest(
     session_price_wei: str = "200",
     session_per_units: int = 1000,
     session_work_unit: str = "seconds",
+    settlement_domain_id: str = SETTLEMENT_DOMAIN_ID,
     additional_capabilities: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     now = datetime.now(UTC).replace(microsecond=0)
     manifest: dict[str, Any] = {
-        "spec_version": "3.0.0",
+        "spec_version": "4.0.0",
         "publication_seq": 7,
         "issued_at": _rfc3339(now),
         "expires_at": _rfc3339(now + timedelta(hours=24)),
@@ -91,6 +93,7 @@ def _signed_manifest(
                 "price_per_unit_wei": job_price_wei,
                 "per_units": job_per_units,
                 "worker_url": worker_url,
+                "settlement_domain_id": settlement_domain_id,
             },
             {
                 "capability_id": session_capability,
@@ -106,8 +109,12 @@ def _signed_manifest(
                 "price_per_unit_wei": session_price_wei,
                 "per_units": session_per_units,
                 "worker_url": worker_url,
+                "settlement_domain_id": settlement_domain_id,
             },
-            *additional_capabilities,
+            *(
+                {**capability, "settlement_domain_id": settlement_domain_id}
+                for capability in additional_capabilities
+            ),
         ],
     }
     return {
@@ -255,6 +262,8 @@ def run(modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 assert len(session.settlement_keys) == 1
                 assert job.settlement_keys[0].public_key == expected_key
                 assert session.settlement_keys[0].public_key == expected_key
+                assert job.settlement_domain_id == SETTLEMENT_DOMAIN_ID
+                assert session.settlement_domain_id == SETTLEMENT_DOMAIN_ID
 
                 result = {
                     "status": "ok",
@@ -264,6 +273,7 @@ def run(modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                     "job_protocol": job.protocol,
                     "session_protocol": session.protocol,
                     "settlement_public_key": expected_key,
+                    "settlement_domain_id": SETTLEMENT_DOMAIN_ID,
                 }
                 (artifacts / "result.json").write_text(json.dumps(result, indent=2) + "\n")
                 return result

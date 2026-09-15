@@ -125,6 +125,52 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
         except Exception as exc:
             log.warning("scheduler.auto_replenish.failed", error=str(exc))
 
+    async def _replenish_wholesale_accounts() -> None:
+        """Maintain active wholesale runway without trusting SDK callbacks."""
+
+        from livepeer_open_clearinghouse.dependencies import (  # noqa: PLC0415
+            _default_payment_daemon,
+        )
+
+        try:
+            async with session_scope() as db:
+                candidates = await sessions_service.list_active_wholesale_account_routes(db)
+        except Exception as exc:
+            log.warning("scheduler.wholesale_replenish.scan_failed", error=str(exc))
+            return
+        if not candidates:
+            return
+        daemon = _default_payment_daemon()
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            broker = HttpBrokerSettlementClient(http_client)
+            for candidate in candidates:
+                try:
+                    async with session_scope() as db:
+                        plan = await sessions_service.replenish_active_wholesale_account(
+                            db,
+                            candidate=candidate,
+                            broker=broker,
+                            daemon=daemon,
+                            clock=clock,
+                            settings=cfg,
+                        )
+                    if plan.shortfall_wei:
+                        log.info(
+                            "scheduler.wholesale_replenish.applied",
+                            payee=candidate.route_snapshot.eth_address,
+                            settlement_domain_id=candidate.settlement_domain_id,
+                            funded_value_wei=str(plan.shortfall_wei),
+                        )
+                except Exception as exc:
+                    # One unavailable ledger must not prevent independent
+                    # settlement domains from retaining their own runway.
+                    log.warning(
+                        "scheduler.wholesale_replenish.account_failed",
+                        payee=candidate.route_snapshot.eth_address,
+                        settlement_domain_id=candidate.settlement_domain_id,
+                        error=str(exc),
+                    )
+
     async def _reconcile_open_sessions() -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as http_client:
@@ -198,6 +244,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
             _auto_replenish,
             name="auto_replenish",
             seconds=cfg.auto_replenish_check_interval_seconds,
+        )
+    if cfg.wholesale_replenish_check_interval_seconds > 0:
+        register_interval_job(
+            _replenish_wholesale_accounts,
+            name="wholesale_replenish",
+            seconds=cfg.wholesale_replenish_check_interval_seconds,
         )
     if cfg.session_reconciliation_interval_seconds > 0:
         register_interval_job(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-EXPECTED_ALEMBIC_REVISION = "0027"
+EXPECTED_ALEMBIC_REVISION = "0028"
 
 
 async def current_alembic_revision(session: AsyncSession) -> str | None:

@@ -46,6 +46,11 @@ def _request(
             estimated_units=funded_wei // 1000,
             max_total_units=funded_wei // 1000,
         ),
+        account_funding=AccountFundingIntent(
+            target_available_wei=Decimal(funded_wei),
+            observed_available_wei=Decimal(0),
+            settlement_domain_id="0x" + "aa" * 32,
+        ),
     )
 
 
@@ -66,6 +71,7 @@ async def test_create_payment_mints_only_shared_account_shortfall() -> None:
         account_funding=AccountFundingIntent(
             target_available_wei=Decimal(100_000),
             observed_available_wei=Decimal(75_000),
+            settlement_domain_id="0x" + "aa" * 32,
         ),
     )
     response = await client.create_payment(request)
@@ -88,6 +94,7 @@ async def test_create_payment_returns_no_envelope_for_zero_shortfall() -> None:
         account_funding=AccountFundingIntent(
             target_available_wei=Decimal(100_000),
             observed_available_wei=Decimal(100_000),
+            settlement_domain_id="0x" + "aa" * 32,
         ),
     )
     response = await client.create_payment(request)
@@ -117,6 +124,7 @@ async def test_spend_authorization_is_structural_and_idempotent() -> None:
         predecessor_authorization_id="",
         broker_uri="https://broker.example",
         chain_id=42161,
+        settlement_domain_id="0x" + "aa" * 32,
     )
 
     first = await client.create_spend_authorization(request)
@@ -128,7 +136,8 @@ async def test_spend_authorization_is_structural_and_idempotent() -> None:
     from livepeer.payments.v1 import types_pb2
 
     wire = types_pb2.SpendAuthorization.FromString(first.authorization_bytes)
-    assert wire.payload.domain == "livepeer-spend-authorization/v1"
+    assert wire.payload.domain == "livepeer-spend-authorization/v2"
+    assert wire.payload.settlement_domain_id == "0x" + "aa" * 32
     assert wire.payload.request_digest == b"\x33" * 32
     with pytest.raises(PaymentDaemonError, match="different request content"):
         await client.create_spend_authorization(replace(request, request_digest=b"\x44" * 32))
@@ -197,7 +206,7 @@ async def test_funding_response_requires_exact_echo_and_sufficient_ev() -> None:
 
     with pytest.raises(PaymentDaemonError, match="does not echo"):
         validate_funding_response(request, replace(response, funded_value_wei=Decimal(2_999)))
-    with pytest.raises(PaymentDaemonError, match="does not cover"):
+    with pytest.raises(PaymentDaemonError, match="does not equal"):
         validate_funding_response(request, replace(response, expected_value=Decimal(2)))
 
 

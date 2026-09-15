@@ -51,7 +51,7 @@ class CreatePaymentResponse(_message.Message):
     def __init__(self, payment_bytes: _Optional[bytes] = ..., tickets_created: _Optional[int] = ..., expected_value: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., funded_value_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., accepted_quote_ref: _Optional[_Union[_types_pb2.QuoteRef, _Mapping]] = ..., work_id: _Optional[str] = ..., predecessor_work_id: _Optional[str] = ..., creation_round: _Optional[int] = ..., expires_after_round: _Optional[int] = ..., ticket_validity_period: _Optional[int] = ..., ticket_validity_period_observed_at: _Optional[str] = ..., account_shortfall_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ...) -> None: ...
 
 class CreateSpendAuthorizationRequest(_message.Message):
-    __slots__ = ("payee", "authorization_id", "request_id", "session_id", "protocol", "accepted_price", "max_debit_wei", "max_total_units", "not_before", "expires_at", "request_digest", "caller_public_key", "revision", "predecessor_authorization_id", "broker_uri", "chain_id", "denomination")
+    __slots__ = ("payee", "authorization_id", "request_id", "session_id", "protocol", "accepted_price", "max_debit_wei", "max_total_units", "not_before", "expires_at", "request_digest", "caller_public_key", "revision", "predecessor_authorization_id", "broker_uri", "chain_id", "denomination", "settlement_domain_id")
     PAYEE_FIELD_NUMBER: _ClassVar[int]
     AUTHORIZATION_ID_FIELD_NUMBER: _ClassVar[int]
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
@@ -69,6 +69,7 @@ class CreateSpendAuthorizationRequest(_message.Message):
     BROKER_URI_FIELD_NUMBER: _ClassVar[int]
     CHAIN_ID_FIELD_NUMBER: _ClassVar[int]
     DENOMINATION_FIELD_NUMBER: _ClassVar[int]
+    SETTLEMENT_DOMAIN_ID_FIELD_NUMBER: _ClassVar[int]
     payee: bytes
     authorization_id: str
     request_id: str
@@ -86,7 +87,8 @@ class CreateSpendAuthorizationRequest(_message.Message):
     broker_uri: str
     chain_id: int
     denomination: str
-    def __init__(self, payee: _Optional[bytes] = ..., authorization_id: _Optional[str] = ..., request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., protocol: _Optional[str] = ..., accepted_price: _Optional[_Union[_types_pb2.AcceptedPrice, _Mapping]] = ..., max_debit_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., not_before: _Optional[str] = ..., expires_at: _Optional[str] = ..., request_digest: _Optional[bytes] = ..., caller_public_key: _Optional[bytes] = ..., revision: _Optional[int] = ..., predecessor_authorization_id: _Optional[str] = ..., broker_uri: _Optional[str] = ..., chain_id: _Optional[int] = ..., denomination: _Optional[str] = ...) -> None: ...
+    settlement_domain_id: str
+    def __init__(self, payee: _Optional[bytes] = ..., authorization_id: _Optional[str] = ..., request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., protocol: _Optional[str] = ..., accepted_price: _Optional[_Union[_types_pb2.AcceptedPrice, _Mapping]] = ..., max_debit_wei: _Optional[_Union[_types_pb2.BigUInt, _Mapping]] = ..., max_total_units: _Optional[int] = ..., not_before: _Optional[str] = ..., expires_at: _Optional[str] = ..., request_digest: _Optional[bytes] = ..., caller_public_key: _Optional[bytes] = ..., revision: _Optional[int] = ..., predecessor_authorization_id: _Optional[str] = ..., broker_uri: _Optional[str] = ..., chain_id: _Optional[int] = ..., denomination: _Optional[str] = ..., settlement_domain_id: _Optional[str] = ...) -> None: ...
 
 class CreateSpendAuthorizationResponse(_message.Message):
     __slots__ = ("authorization_bytes", "authorization_id", "payer")

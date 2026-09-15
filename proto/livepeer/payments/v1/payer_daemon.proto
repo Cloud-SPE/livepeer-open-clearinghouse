@@ -248,6 +248,7 @@ message CreateSpendAuthorizationRequest {
   string broker_uri = 15;
   uint64 chain_id = 16;
   string denomination = 17;
+  string settlement_domain_id = 18;
 }
 
 message CreateSpendAuthorizationResponse {

@@ -8,7 +8,7 @@ authorized by the broker-signed settlement chain.
 
 A `PaymentSettlement` row records each event that affects a session's
 accounting: authorization revisions, reconciliation observations, and the
-final close. Funding tickets belong to the shared payer-payee wholesale
+final close. Funding tickets belong to the selected settlement-domain wholesale
 account, never to an individual session.
 """
 

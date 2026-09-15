@@ -178,6 +178,8 @@ message HealthRequest {}
 message HealthResponse {
   // Liveness signal. v0.2 returns the literal string "ok" when ready.
   string status = 1;
+  // Public identity of the receiver ledger; absent on payer Health.
+  string settlement_domain_id = 2;
 }
 
 // BigUInt is the canonical daemon-app representation for non-negative integers
@@ -223,7 +225,7 @@ message FundingIntent {
 // hashed with keccak256 and signed with Ethereum personal_sign (EIP-191).
 message SpendAuthorizationPayload {
   // Domain/version tag. Producers MUST set
-  // "livepeer-spend-authorization/v1".
+  // "livepeer-spend-authorization/v2".
   string domain = 1;
   bytes payer = 2;
   bytes payee = 3;
@@ -245,6 +247,7 @@ message SpendAuthorizationPayload {
   string broker_uri = 19;
   uint64 chain_id = 20;
   string denomination = 21;
+  string settlement_domain_id = 22;
 }
 
 message SpendAuthorization {
@@ -269,6 +272,8 @@ enum SpendAuthorizationState {
 message AccountFundingIntent {
   BigUInt target_available_wei = 1;
   BigUInt observed_available_wei = 2;
+  // Must match the cold-signed route and the observed account.
+  string settlement_domain_id = 3;
 }
 
 message WholesaleAccountView {
@@ -282,6 +287,7 @@ message WholesaleAccountView {
   string observed_at = 8;
   uint64 chain_id = 9;
   string denomination = 10;
+  string settlement_domain_id = 11;
 }
 
 // SettlementRecord is the broker-authoritative accounting result for a request/session.
@@ -447,6 +453,7 @@ message SettlementRecord {
   BigUInt released_value_wei = 31;
   BigUInt account_funding_value_wei = 32;
   uint64 account_version = 33;
+  string settlement_domain_id = 34;
 }
 
 // NonAdmissionRecord is a broker's signed statement that it never
@@ -525,6 +532,8 @@ message NonAdmissionRecord {
     NOT_ADMITTED = 1;
   }
   Outcome outcome = 10;
+  // Observed financial domain of the broker making this statement.
+  string settlement_domain_id = 11;
 }
 
 // PaymentRejectionReason is the machine-readable reason a payee daemon

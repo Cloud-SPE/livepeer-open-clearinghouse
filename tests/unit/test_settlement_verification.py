@@ -16,6 +16,7 @@ from livepeer_open_clearinghouse.providers.settlement_verification import (
 )
 from tests.fixtures.signed_settlement import (
     TEST_PUBLIC_KEY,
+    TEST_SETTLEMENT_DOMAIN_ID,
     delegated_key,
     signed_job_settlement,
     signed_non_admission,
@@ -25,6 +26,7 @@ from tests.fixtures.signed_settlement import (
 
 def _non_admission_expected(**overrides: object) -> NonAdmissionExpectation:
     values = {
+        "settlement_domain_id": TEST_SETTLEMENT_DOMAIN_ID,
         "protocol": "paid-job/v1",
         "request_id": "request-1",
         "work_id": "work-1",
@@ -96,6 +98,7 @@ def test_non_admission_rejects_tampering_and_coverage_gap() -> None:
 
 def _expected(**overrides: object) -> JobSettlementExpectation:
     values = {
+        "settlement_domain_id": TEST_SETTLEMENT_DOMAIN_ID,
         "request_id": "request-1",
         "job_id": "job-1",
         "work_id": "work-1",
@@ -116,6 +119,7 @@ def _expected(**overrides: object) -> JobSettlementExpectation:
 
 def _envelope(**overrides: object) -> dict[str, object]:
     values = {
+        "settlement_domain_id": TEST_SETTLEMENT_DOMAIN_ID,
         "request_id": "request-1",
         "job_id": "job-1",
         "work_id": "work-1",
@@ -136,6 +140,17 @@ def test_valid_job_settlement_verifies_ceiling_and_overlap_key() -> None:
     assert verified.actual_units == 31
     assert verified.billed_value_wei == 4
     assert verified.signing_public_key == TEST_PUBLIC_KEY
+
+
+@pytest.mark.unit
+def test_job_settlement_cannot_cross_settlement_domains() -> None:
+    with pytest.raises(SettlementVerificationError) as exc_info:
+        verify_job_settlement(
+            _envelope(),
+            settlement_keys=[delegated_key()],
+            expected=_expected(settlement_domain_id="0x" + "bb" * 32),
+        )
+    assert exc_info.value.code == "settlement_domain_mismatch"
 
 
 @pytest.mark.unit
@@ -354,6 +369,7 @@ def test_cross_job_replay_fails_on_gateway_request_identity() -> None:
 
 def _session_expected(**overrides: object) -> SessionSettlementExpectation:
     values = {
+        "settlement_domain_id": TEST_SETTLEMENT_DOMAIN_ID,
         "gateway_session_id": "11111111-1111-1111-1111-111111111111",
         "broker_session_id": None,
         "work_id": "work-1",

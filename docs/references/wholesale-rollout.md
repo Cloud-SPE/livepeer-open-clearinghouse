@@ -1,8 +1,8 @@
 # Fair wholesale account rollout and rollback
 
 This is the operator runbook for cutting LOC over from retired
-per-engagement tickets to Modules Network Protocol `3.0.0` and the mandatory
-`wholesale-account` `1.1.0-draft` contract pinned in
+per-engagement tickets to Modules Network Protocol `4.0.0` and the mandatory
+`wholesale-account` `2.0.0-draft` settlement-domain contract pinned in
 [the governing design](../design-docs/002-fair-wholesale-credit-accounts.md).
 There is no runtime feature toggle or legacy fallback.
 
@@ -94,10 +94,16 @@ Before starting LOC, record approved values for:
 - target and replenish-below float;
 - maximum available wei per payee;
 - maximum aggregate available wei; and
-- maximum single funding wei.
+- maximum single funding wei; and
+- a positive `WHOLESALE_REPLENISH_CHECK_INTERVAL_SECONDS` short enough to
+  restore float before the smallest supported session runway is consumed; and
+- `SESSION_AUTHORIZATION_TTL_SECONDS` longer than the longest session LOC will
+  admit, because Modules checks the deadline on every debit advance.
 
 For each candidate payee, force a fresh registry resolution and require a
-supported paid protocol from a Network Protocol `3.0.0` deployment. Query the
+supported paid protocol from a Network Protocol `4.0.0` deployment. Require a
+non-zero `settlement_domain_id` encoded as exactly `0x` plus 64 lowercase hex
+digits in the cold-signed route. Query the
 authenticated account using LOC's payer identity and confirm denomination,
 chain, payer, payee, broker route, version monotonicity, and non-negative
 account fields. Reject an unsupported protocol or mixed deployment, changed

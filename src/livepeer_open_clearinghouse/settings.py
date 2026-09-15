@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # jobs encumbered indefinitely until an operator selects a deadline.
     job_conservative_charge_after_seconds: int = Field(default=0, ge=0)
     session_reconciliation_interval_seconds: int = Field(default=60, ge=0)
+    # Modules enforces authorization expiry on every session debit advance,
+    # not only at admission. The authorization remains single-purpose and
+    # cumulative-cap bounded throughout this operator-selected lifetime.
+    session_authorization_ttl_seconds: int = Field(default=86_400, ge=300)
 
     # ---- mandatory wholesale-account policy ----
     wholesale_chain_id: int = Field(default=0, ge=0)
@@ -100,6 +104,12 @@ class Settings(BaseSettings):
     wholesale_max_available_per_payee_wei: int = Field(default=0, ge=0)
     wholesale_max_aggregate_available_wei: int = Field(default=0, ge=0)
     wholesale_max_single_funding_wei: int = Field(default=0, ge=0)
+    # Active sessions consume reserved runway independently of gateway/SDK
+    # callbacks. Poll the authoritative broker account often enough to restore
+    # the configured float before that runway is exhausted. Zero is useful for
+    # isolated development tests; production may not disable this correctness
+    # path.
+    wholesale_replenish_check_interval_seconds: int = Field(default=5, ge=0)
 
     # ---- per-IP rate limits (in-process token bucket) ----
     rl_login_capacity: int = Field(default=10, ge=0)
@@ -153,6 +163,7 @@ class Settings(BaseSettings):
                 self.wholesale_max_available_per_payee_wei,
                 self.wholesale_max_aggregate_available_wei,
                 self.wholesale_max_single_funding_wei,
+                self.wholesale_replenish_check_interval_seconds,
             )
             if any(value <= 0 for value in wholesale_values):
                 raise ValueError(
