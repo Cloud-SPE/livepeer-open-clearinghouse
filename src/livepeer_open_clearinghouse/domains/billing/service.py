@@ -37,17 +37,22 @@ async def _ensure_balance_row(session: AsyncSession, *, user_id: uuid.UUID) -> C
     Callers should already be inside a transaction. The returned row is
     held with `FOR UPDATE` so subsequent reads/writes see consistent state.
     """
-    row = await session.scalar(
-        select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
+    statement = (
+        select(CreditBalance)
+        .where(CreditBalance.user_id == user_id)
+        .with_for_update()
+        # Admission may already have loaded this row for a cheap preflight.
+        # Refresh after acquiring the lock or a stale identity-map value can
+        # overwrite a balance committed by another request.
+        .execution_options(populate_existing=True)
     )
+    row = await session.scalar(statement)
     if row is None:
         row = CreditBalance(user_id=user_id, amount_wei=Decimal(0), version=0)
         session.add(row)
         await session.flush()
         # Re-fetch with the lock now that the row exists.
-        row = await session.scalar(
-            select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
-        )
+        row = await session.scalar(statement)
         assert row is not None
     return row
 

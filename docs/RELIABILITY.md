@@ -266,8 +266,10 @@ in the wallet.
 ## Concurrency
 
 - Balance writes use Postgres row-level locking (`SELECT ... FOR UPDATE`)
-  on the user's `credit_balances` row inside the same transaction as the
-  `credit_ledger` insert and the `payments` upsert.
+  on the user's `credit_balance` row inside the same transaction as the
+  `credit_ledger` insert and engagement update. The locked query must refresh
+  SQLAlchemy's identity-map value: admission may have loaded an unlocked
+  preflight snapshot before waiting for a competing balance writer.
 - Idempotency-key writes use `INSERT ... ON CONFLICT` to atomically claim
   a key.
 - The single-instance assumption (one `livepeer-open-clearinghouse-gateway` process) means
