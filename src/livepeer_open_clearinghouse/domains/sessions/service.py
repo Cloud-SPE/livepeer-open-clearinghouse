@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -395,6 +395,48 @@ async def mark_spend_authorization_settled(
     return grant
 
 
+async def mark_spend_authorization_operator_resolved(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    authorization_id: str,
+    clock: Clock,
+) -> SpendAuthorizationGrant:
+    """Retire every retained grant closed by explicit operator recourse.
+
+    Operator recourse is not a broker-signed settlement, so it must not label
+    an active grant ``settled``.  The distinct terminal state keeps the audit
+    trail honest and removes every revision from receiver-state reconciliation.
+    Already-terminal receiver evidence is preserved.
+    """
+
+    grants = list(
+        (
+            await db.scalars(
+                select(SpendAuthorizationGrant)
+                .where(SpendAuthorizationGrant.session_id == engagement_id)
+                .order_by(SpendAuthorizationGrant.revision)
+                .with_for_update()
+            )
+        ).all()
+    )
+    current = next((grant for grant in grants if grant.authorization_id == authorization_id), None)
+    if current is None:
+        raise SessionSettlementVerificationFailed(reason="missing_authorization")
+    terminal_states = {"settled", "expired_unused", "superseded", "operator_resolved"}
+    active_states = {"issued", "admitted", "outcome_unknown"}
+    for grant in grants:
+        if grant.state in terminal_states:
+            grant.retired_at = grant.retired_at or clock.now()
+            continue
+        if grant.retired_at is not None or grant.state not in active_states:
+            raise SessionSettlementVerificationFailed(reason="authorization_state_conflict")
+        grant.state = "operator_resolved"
+        grant.retired_at = clock.now()
+    await db.flush()
+    return current
+
+
 def _normalized_utc(value: datetime) -> datetime:
     """Normalize SQLite's timezone-naive UTC persistence for replay checks."""
 
@@ -623,13 +665,18 @@ async def transition_state(
     row = await session.get(PaymentSession, session_id)
     if row is None:
         raise SessionNotFound
-    if row.state != from_state:
-        raise InvalidSessionTransition
-
-    row.state = to_state
+    values: dict[str, Any] = {"state": to_state}
     if to_state == SESSION_STATE_CLOSED:
-        row.closed_at = clock.now()
-    await session.flush()
+        values["closed_at"] = clock.now()
+    transitioned = await session.scalar(
+        update(PaymentSession)
+        .where(PaymentSession.id == session_id, PaymentSession.state == from_state)
+        .values(**values)
+        .returning(PaymentSession.id)
+    )
+    if transitioned is None:
+        raise InvalidSessionTransition
+    await session.refresh(row)
     return row
 
 

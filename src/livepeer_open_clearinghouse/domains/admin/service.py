@@ -27,7 +27,7 @@ from livepeer_open_clearinghouse.domains.admin.types import (
 )
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
 from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
-from livepeer_open_clearinghouse.domains.payments.repo import Payment
+from livepeer_open_clearinghouse.domains.billing.types import CustomerPricingSnapshot
 from livepeer_open_clearinghouse.domains.sessions import service as sessions_service
 from livepeer_open_clearinghouse.domains.sessions.repo import PaymentSession
 from livepeer_open_clearinghouse.domains.usage import service as usage_service
@@ -884,6 +884,48 @@ def _ceil_bill(units: int, amount_wei: Decimal, per_units: int) -> Decimal:
     return Decimal((units * int(amount_wei) + per_units - 1) // per_units)
 
 
+def _wholesale_resolution_amounts(
+    row: PaymentSession, *, action: str
+) -> tuple[Decimal, int | None]:
+    if row.customer_max_debit_wei is None or row.customer_pricing is None:
+        raise JobNotResolvable(reason="missing_customer_pricing", current_state=row.state)
+    maximum = Decimal(row.customer_max_debit_wei)
+    if action == "refund_hold":
+        return Decimal(0), None
+    if action == "charge_full":
+        return maximum, None
+    if action != "accept_reported":
+        raise JobNotResolvable(reason="unknown_action", current_state=row.state)
+
+    reported = usage_service.reported_units_for(row)
+    if reported is None:
+        raise JobNotResolvable(reason="no_broker_report", current_state=row.state)
+    if reported > row.max_total_units:
+        raise JobNotResolvable(
+            reason="reported_units_exceed_authorization", current_state=row.state
+        )
+    snapshot = row.route_snapshot or {}
+    try:
+        pricing = CustomerPricingSnapshot.model_validate(row.customer_pricing)
+        if pricing.work_unit != snapshot["work_unit"]:
+            raise ValueError("retail and route work units differ")
+        wholesale_price = Decimal(str(snapshot["price_per_work_unit_wei"]))
+        per_units = int(snapshot.get("units_per_price", 1))
+        if wholesale_price < 0 or per_units <= 0:
+            raise ValueError("invalid wholesale price")
+        quoted_wholesale = _ceil_bill(reported, wholesale_price, per_units)
+        billed = billing_service.calculate_customer_charge(
+            pricing,
+            actual_units=reported,
+            wholesale_debit_wei=quoted_wholesale,
+        )
+    except (KeyError, TypeError, ValueError):
+        raise JobNotResolvable(reason="invalid_pricing_snapshot", current_state=row.state) from None
+    if billed > maximum:
+        raise JobNotResolvable(reason="customer_cap_exceeded", current_state=row.state)
+    return billed, reported
+
+
 async def resolve_stuck_work(
     session: AsyncSession,
     *,
@@ -912,53 +954,31 @@ async def resolve_stuck_work(
         sessions_service.SESSION_STATE_DRAINING,
     ):
         raise JobNotResolvable(reason="already_closed", current_state=row.state)
-    initial_payment = await session.scalar(
-        select(Payment)
-        .where(Payment.session_id == job_id)
-        .order_by(Payment.created_at.asc())
-        .limit(1)
-    )
-    if initial_payment is None:
-        raise JobNotResolvable(reason="no_payment", current_state=row.state)
+    if row.accounting_mode != "wholesale_account":
+        raise JobNotResolvable(reason="legacy_accounting_disabled", current_state=row.state)
+    if not row.authorization_id:
+        raise JobNotResolvable(reason="missing_authorization", current_state=row.state)
 
-    funded = Decimal(row.funded_value_wei)
-    snapshot = row.route_snapshot or {}
-    actual_units: int | None
-    if action == "refund_hold":
-        billed = Decimal(0)
-        actual_units = None
-    elif action == "charge_full":
-        billed = funded
-        actual_units = None
-    elif action == "accept_reported":
-        reported = usage_service.reported_units_for(row)
-        if reported is None:
-            raise JobNotResolvable(reason="no_broker_report", current_state=row.state)
-        try:
-            per_units = int(snapshot.get("units_per_price", 1))
-        except (TypeError, ValueError):
-            per_units = 1
-        billed = min(
-            funded,
-            _ceil_bill(reported, Decimal(initial_payment.price_per_work_unit_wei), per_units),
-        )
-        actual_units = reported
-    else:
-        raise JobNotResolvable(reason="unknown_action", current_state=row.state)
+    billed, actual_units = _wholesale_resolution_amounts(row, action=action)
+    assert row.customer_max_debit_wei is not None
+    funded = Decimal(row.customer_max_debit_wei)
     refund = funded - billed
 
-    await sessions_service.transition_state(
-        session,
-        job_id,
-        from_state=row.state,
-        to_state=sessions_service.SESSION_STATE_CLOSED,
-        clock=clock,
-    )
+    try:
+        await sessions_service.transition_state(
+            session,
+            job_id,
+            from_state=row.state,
+            to_state=sessions_service.SESSION_STATE_CLOSED,
+            clock=clock,
+        )
+    except sessions_service.InvalidSessionTransition as exc:
+        raise JobNotResolvable(reason="already_closed", current_state=row.state) from exc
     if refund > 0:
-        await billing_service.release_session_encumbrance(
+        await billing_service.release_customer_engagement(
             session,
             user_id=row.user_id,
-            payment_id=initial_payment.id,
+            engagement_id=row.id,
             amount_wei=refund,
         )
     outcome = f"operator_{action}"
@@ -966,6 +986,16 @@ async def resolve_stuck_work(
     row.actual_units = actual_units
     row.billed_value_wei = billed
     row.outcome = outcome
+    try:
+        await sessions_service.mark_spend_authorization_operator_resolved(
+            session,
+            engagement_id=row.id,
+            authorization_id=row.authorization_id,
+            clock=clock,
+        )
+    except sessions_service.SessionSettlementVerificationFailed as exc:
+        reason = str(exc.details.get("reason", "authorization_state_conflict"))
+        raise JobNotResolvable(reason=reason, current_state=row.state) from exc
     breakdown = dict(row.breakdown or {})
     breakdown.pop("settlement_block", None)
     breakdown["operator_resolution"] = {
