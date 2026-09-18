@@ -38,6 +38,7 @@ from livepeer_open_clearinghouse.errors import (
     DaemonUnavailable,
     IdempotencyOutcomeUnknown,
     OpenClearinghouseError,
+    WholesaleFundingUnverified,
 )
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
@@ -111,7 +112,7 @@ async def open_job_endpoint(
         )
     except OpenClearinghouseError as exc:
         await db.rollback()
-        if not isinstance(exc, DaemonUnavailable):
+        if not isinstance(exc, (DaemonUnavailable, WholesaleFundingUnverified)):
             await payments_service.fail_create_request(
                 db,
                 user_id=user_id,

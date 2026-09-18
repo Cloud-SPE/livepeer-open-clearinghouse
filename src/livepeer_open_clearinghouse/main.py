@@ -191,6 +191,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — co
                     )
                     if n:
                         log.info("scheduler.reconcile_open_sessions.finalized", count=n)
+                    # A create request that died between claiming its hold and
+                    # obtaining an authorization leaves an open engagement no
+                    # other reconciler sees. Wait well past the in-flight window
+                    # so a live request always wins its own replay.
+                    released = await sessions_service.release_stale_unauthorized_engagements(
+                        db,
+                        clock=clock,
+                        older_than_seconds=max(2 * cfg.idempotency_inflight_timeout_seconds, 600),
+                    )
+                    if released:
+                        log.warning("scheduler.unauthorized_engagements.released", count=released)
                     if authorization_updates:
                         log.info(
                             "scheduler.reconcile_authorizations.updated",

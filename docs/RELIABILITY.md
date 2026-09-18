@@ -49,8 +49,33 @@ Required` with a structured error body:
 
 Other error codes: `SPEND_CAP_EXCEEDED`, `ACCOUNT_NOT_APPROVED`,
 `API_KEY_REVOKED`, `DAEMON_UNAVAILABLE`, `RESERVATION_NOT_FOUND`,
-`IDEMPOTENCY_KEY_REUSE`, `IDEMPOTENCY_IN_PROGRESS`, and
-`IDEMPOTENCY_OUTCOME_UNKNOWN`.
+`IDEMPOTENCY_KEY_REUSE`, `IDEMPOTENCY_IN_PROGRESS`,
+`IDEMPOTENCY_OUTCOME_UNKNOWN`, `AUTHORIZATION_REFUSED`,
+`WHOLESALE_FUNDING_UNVERIFIED`, and `ENGAGEMENT_CLOSED`.
+
+## Refused and abandoned authorizations
+
+Creating a job or session commits the customer hold before the payer signs
+the spend authorization, so a crashed request can be replayed with the same
+`Idempotency-Key`. Recovery depends on what the payer proved:
+
+| Payer result | LOC behavior |
+|---|---|
+| Definitive refusal (`FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `OUT_OF_RANGE`) — nothing was signed | Close the engagement as `NOT_ADMITTED`, release the whole hold, return `422 AUTHORIZATION_REFUSED` |
+| Transport failure or unknown outcome | Keep the claim and hold; a same-key retry resumes it |
+| Request died before any authorization | The session reconciler releases the claim as `NOT_ADMITTED` once it is older than twice `IDEMPOTENCY_INFLIGHT_TIMEOUT_SECONDS` (minimum 10 minutes) |
+
+A released claim is never authorized later: recording the first grant takes
+the engagement row lock and rejects anything no longer `open` with
+`409 ENGAGEMENT_CLOSED`, so a slow request and the reconciler cannot both
+win. A cap revision refused on a running session returns
+`AUTHORIZATION_REFUSED` without closing the session; its incremental hold
+rolls back with the request.
+
+Unproven broker account funding (`WholesaleFundingPolicyError`) returns a
+retryable `503 WHOLESALE_FUNDING_UNVERIFIED`. The authorization and minted
+funding stay durable, so a same-key retry replays the exact payment bytes
+instead of recording a terminal failure.
 
 ## Idempotency
 

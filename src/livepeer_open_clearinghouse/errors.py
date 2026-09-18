@@ -117,6 +117,41 @@ class DaemonUnavailable(OpenClearinghouseError):
         )
 
 
+class AuthorizationRefused(OpenClearinghouseError):
+    """The payer definitively refused to sign; the engagement hold was released."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            status_code=422,
+            code="AUTHORIZATION_REFUSED",
+            message=f"payer refused the spend authorization: {reason}",
+            details={"reason": reason},
+        )
+
+
+class WholesaleFundingUnverified(OpenClearinghouseError):
+    """Broker account funding could not be proven; the request may be retried."""
+
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(
+            status_code=503,
+            code="WHOLESALE_FUNDING_UNVERIFIED",
+            message=f"wholesale account funding could not be verified: {reason}",
+            details={"reason": reason},
+        )
+
+
+class EngagementClosed(OpenClearinghouseError):
+    """A replayed create request resolved to an engagement that already closed."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="ENGAGEMENT_CLOSED",
+            message="this request's engagement is already closed; retry with a new request",
+        )
+
+
 class DuplicateRequest(OpenClearinghouseError):
     def __init__(self) -> None:
         super().__init__(

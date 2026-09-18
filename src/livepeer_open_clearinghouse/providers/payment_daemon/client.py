@@ -59,6 +59,23 @@ class MintOutcomeUnknown(PaymentDaemonError):
     code = "mint_outcome_unknown"
 
 
+class SpendAuthorizationRefused(PaymentDaemonError):
+    """The payer rejected the request outright, so no authorization was signed.
+
+    Only statuses that prove the daemon never signed map here. Transport
+    failures and unknown outcomes stay plain :class:`PaymentDaemonError`
+    because a same-ID retry may still resume an authorization that exists.
+    """
+
+    code = "spend_authorization_refused"
+
+
+# gRPC statuses the payer returns before signing anything.
+_DEFINITIVE_AUTHORIZATION_REFUSALS = frozenset(
+    {"FAILED_PRECONDITION", "INVALID_ARGUMENT", "PERMISSION_DENIED", "OUT_OF_RANGE"}
+)
+
+
 class DaemonDepositInsufficient(PaymentDaemonError):
     """Sender deposit/reserve is zero or withdraw round is imminent."""
 
@@ -790,9 +807,10 @@ class GrpcPaymentDaemonClient:
                 spend_authorization_request_to_proto(request)
             )
         except grpc.aio.AioRpcError as exc:
-            raise PaymentDaemonError(
-                f"CreateSpendAuthorization {exc.code().name}: {exc.details() or ''}"
-            ) from exc
+            message = f"CreateSpendAuthorization {exc.code().name}: {exc.details() or ''}"
+            if exc.code().name in _DEFINITIVE_AUTHORIZATION_REFUSALS:
+                raise SpendAuthorizationRefused(message) from exc
+            raise PaymentDaemonError(message) from exc
         mapped = spend_authorization_response_to_dataclass(response)
         if mapped.authorization_id != request.authorization_id:
             raise PaymentDaemonError("daemon returned a different authorization_id")

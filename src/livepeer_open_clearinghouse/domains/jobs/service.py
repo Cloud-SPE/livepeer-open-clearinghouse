@@ -37,7 +37,6 @@ from livepeer_open_clearinghouse.domains.jobs.types import (
     SettleJobResponse,
     SettlementEnvelope,
 )
-from livepeer_open_clearinghouse.domains.payments import service as payments_service
 from livepeer_open_clearinghouse.domains.payments.repo import (
     Payment,
     PaymentDaemonDepositSnapshot,
@@ -60,6 +59,7 @@ from livepeer_open_clearinghouse.errors import (
     NoRouteAvailable,
     NoSettlementDelegation,
     OpenClearinghouseError,
+    WholesaleFundingUnverified,
 )
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
@@ -250,7 +250,10 @@ async def _open_wholesale_job(
     )
     now = clock.now()
     authorization_id = f"loc-auth:{request_id}"
-    auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+    auth_request, auth_response = await sessions_service.issue_initial_authorization_or_release(
+        db,
+        engagement=job,
+        clock=clock,
         daemon=daemon,
         route=route,
         authorization_id=authorization_id,
@@ -275,51 +278,54 @@ async def _open_wholesale_job(
     )
     await db.commit()
     payer = "0x" + auth_response.payer.hex()
-    observation = await broker.get_wholesale_account(
-        broker_url=route.worker_url,
-        payer_eth_address=payer,
-        payee_eth_address=route.eth_address,
-        chain_id=settings.wholesale_chain_id,
-        settlement_domain_id=route.settlement_domain_id,
-    )
-    limits = WholesaleFundingLimits(
-        target_available_wei=Decimal(settings.wholesale_target_available_wei),
-        replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
-        max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
-        max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
-        max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
-    )
-    plan = await wholesale_service.plan_observed_account_shortfall(
-        db,
-        observation=observation,
-        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
-        limits=limits,
-    )
-    mint_id = f"loc-account:{request_id}"
-    funding = await wholesale_service.claim_account_funding(
-        db,
-        route=route,
-        observation=observation,
-        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
-        plan=plan,
-        limits=limits,
-        mint_request_id=mint_id,
-        correlation_id=str(job.id),
-        protocol_version=wholesale_service.WHOLESALE_ACCOUNT_PROTOCOL_VERSION,
-    )
-    await wholesale_service.complete_account_funding(
-        db,
-        funding=funding,
-        route=route,
-        observation=observation,
-        settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
-        plan=plan,
-        payer_eth_address=payer,
-        chain_id=settings.wholesale_chain_id,
-        broker=broker,
-        daemon=daemon,
-        acknowledged_at=clock.now(),
-    )
+    try:
+        observation = await broker.get_wholesale_account(
+            broker_url=route.worker_url,
+            payer_eth_address=payer,
+            payee_eth_address=route.eth_address,
+            chain_id=settings.wholesale_chain_id,
+            settlement_domain_id=route.settlement_domain_id,
+        )
+        limits = WholesaleFundingLimits(
+            target_available_wei=Decimal(settings.wholesale_target_available_wei),
+            replenish_below_wei=Decimal(settings.wholesale_replenish_below_wei),
+            max_available_per_payee_wei=Decimal(settings.wholesale_max_available_per_payee_wei),
+            max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
+            max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
+        )
+        plan = await wholesale_service.plan_observed_account_shortfall(
+            db,
+            observation=observation,
+            settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
+            limits=limits,
+        )
+        mint_id = f"loc-account:{request_id}"
+        funding = await wholesale_service.claim_account_funding(
+            db,
+            route=route,
+            observation=observation,
+            settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
+            plan=plan,
+            limits=limits,
+            mint_request_id=mint_id,
+            correlation_id=str(job.id),
+            protocol_version=wholesale_service.WHOLESALE_ACCOUNT_PROTOCOL_VERSION,
+        )
+        await wholesale_service.complete_account_funding(
+            db,
+            funding=funding,
+            route=route,
+            observation=observation,
+            settlement_domain_id=settlement_domain_id(route.settlement_domain_id),
+            plan=plan,
+            payer_eth_address=payer,
+            chain_id=settings.wholesale_chain_id,
+            broker=broker,
+            daemon=daemon,
+            acknowledged_at=clock.now(),
+        )
+    except wholesale_service.WholesaleFundingPolicyError as exc:
+        raise WholesaleFundingUnverified(reason=str(exc)) from exc
     return CreateJobResponse(
         job_id=job.id,
         request_id=request_id,

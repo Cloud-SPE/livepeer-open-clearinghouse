@@ -54,11 +54,14 @@ from livepeer_open_clearinghouse.domains.wholesale.types import (
     settlement_domain_id,
 )
 from livepeer_open_clearinghouse.errors import (
+    AuthorizationRefused,
     DaemonUnavailable,
+    EngagementClosed,
     InsufficientCredit,
     NoRouteAvailable,
     NoSettlementDelegation,
     OpenClearinghouseError,
+    WholesaleFundingUnverified,
 )
 from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerSettlementClient,
@@ -72,6 +75,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
     CreateSpendAuthorizationRequest,
     CreateSpendAuthorizationResponse,
     PaymentDaemonClient,
+    SpendAuthorizationRefused,
 )
 from livepeer_open_clearinghouse.providers.registry_daemon import (
     RegistryClient,
@@ -245,6 +249,17 @@ def _eth_address_to_bytes(addr: str) -> bytes:
     return bytes.fromhex(stripped)
 
 
+def _require_authorizable(engagement: PaymentSession, *, revision: int) -> None:
+    """Reject grants for legacy engagements or a released initial claim."""
+
+    if engagement.accounting_mode != "wholesale_account":
+        raise InvalidSessionRequest(message="legacy engagement cannot record an authorization")
+    if revision == 0 and engagement.state != SESSION_STATE_OPEN:
+        # Serialized with release_unauthorized_engagement by the row lock: a
+        # released engagement has no hold left to authorize against.
+        raise EngagementClosed
+
+
 async def record_spend_authorization_grant(
     db: AsyncSession,
     *,
@@ -265,8 +280,7 @@ async def record_spend_authorization_grant(
     )
     if engagement is None or engagement.user_id != user_id:
         raise SessionNotFound
-    if engagement.accounting_mode != "wholesale_account":
-        raise InvalidSessionRequest(message="legacy engagement cannot record an authorization")
+    _require_authorizable(engagement, revision=request.revision)
     if not settlement_domain_id:
         raise InvalidSessionRequest(message="authorization settlement domain is required")
     if (
@@ -986,6 +1000,118 @@ async def list_active_wholesale_account_routes(
     return list(candidates.values())
 
 
+async def release_unauthorized_engagement(
+    db: AsyncSession,
+    *,
+    engagement_id: uuid.UUID,
+    clock: Clock,
+) -> bool:
+    """Close a claimed engagement that never obtained an authorization.
+
+    Releases the whole customer hold and commits. Returns False without
+    changes when the engagement already has an authorization or is no
+    longer open, so a concurrent grant always wins over a release.
+    """
+
+    engagement = await db.scalar(
+        select(PaymentSession)
+        .where(PaymentSession.id == engagement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        engagement is None
+        or engagement.accounting_mode != "wholesale_account"
+        or engagement.state != SESSION_STATE_OPEN
+        or engagement.authorization_id is not None
+        or engagement.customer_max_debit_wei is None
+    ):
+        await db.rollback()
+        return False
+    await billing_service.release_customer_engagement(
+        db,
+        user_id=engagement.user_id,
+        engagement_id=engagement.id,
+        amount_wei=engagement.customer_max_debit_wei,
+    )
+    engagement.state = SESSION_STATE_CLOSED
+    engagement.closed_at = clock.now()
+    engagement.actual_units = 0
+    engagement.billed_value_wei = Decimal(0)
+    engagement.outcome = "NOT_ADMITTED"
+    await db.commit()
+    return True
+
+
+async def release_stale_unauthorized_engagements(
+    db: AsyncSession,
+    *,
+    clock: Clock,
+    older_than_seconds: int,
+    limit: int = 100,
+) -> int:
+    """Release engagements whose create request died before authorization."""
+
+    cutoff = clock.now() - timedelta(seconds=older_than_seconds)
+    candidates = (
+        await db.scalars(
+            select(PaymentSession.id)
+            .where(
+                PaymentSession.accounting_mode == "wholesale_account",
+                PaymentSession.state == SESSION_STATE_OPEN,
+                PaymentSession.authorization_id.is_(None),
+                PaymentSession.opened_at < cutoff,
+            )
+            .order_by(PaymentSession.opened_at.asc())
+            .limit(limit)
+        )
+    ).all()
+    await db.rollback()
+    released = 0
+    for engagement_id in candidates:
+        if await release_unauthorized_engagement(db, engagement_id=engagement_id, clock=clock):
+            released += 1
+    return released
+
+
+async def issue_initial_authorization_or_release(
+    db: AsyncSession,
+    *,
+    engagement: PaymentSession,
+    clock: Clock,
+    **authorization: Any,
+) -> tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]:
+    """Issue revision 0, releasing the claimed hold if the payer refuses it."""
+
+    if engagement.state != SESSION_STATE_OPEN:
+        raise EngagementClosed
+    try:
+        return await payments_service.issue_route_locked_authorization(**authorization)
+    except SpendAuthorizationRefused as exc:
+        await release_unauthorized_engagement(db, engagement_id=engagement.id, clock=clock)
+        raise AuthorizationRefused(reason=str(exc)) from exc
+
+
+async def _issue_revision_authorization(
+    **authorization: Any,
+) -> tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]:
+    """Issue a cap revision; its incremental hold rolls back with the request."""
+
+    try:
+        return await payments_service.issue_route_locked_authorization(**authorization)
+    except SpendAuthorizationRefused as exc:
+        raise AuthorizationRefused(reason=str(exc)) from exc
+
+
+async def _replenish_for_request(db: AsyncSession, **kwargs: Any) -> WholesaleFundingPlan:
+    """Replenish on a customer request path, surfacing unproven funding as 503."""
+
+    try:
+        return await _replenish_wholesale_account(db, **kwargs)
+    except wholesale_service.WholesaleFundingPolicyError as exc:
+        raise WholesaleFundingUnverified(reason=str(exc)) from exc
+
+
 async def replenish_active_wholesale_account(
     db: AsyncSession,
     *,
@@ -1057,7 +1183,10 @@ async def _open_wholesale_session(
 
     now = clock.now()
     authorization_id = f"loc-auth:{request_id}"
-    auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+    auth_request, auth_response = await issue_initial_authorization_or_release(
+        db,
+        engagement=session_row,
+        clock=clock,
         daemon=daemon,
         route=route,
         authorization_id=authorization_id,
@@ -1083,7 +1212,7 @@ async def _open_wholesale_session(
     await db.commit()
 
     payer = "0x" + auth_response.payer.hex()
-    plan = await _replenish_wholesale_account(
+    plan = await _replenish_for_request(
         db,
         route=route,
         payer_eth_address=payer,
@@ -1382,7 +1511,7 @@ async def _refill_wholesale_session(
             cap_wei=cfg.spend_period_cap_wei,
         )
         now = clock.now()
-        auth_request, auth_response = await payments_service.issue_route_locked_authorization(
+        auth_request, auth_response = await _issue_revision_authorization(
             daemon=daemon,
             route=route,
             authorization_id=authorization_id,
@@ -1419,7 +1548,7 @@ async def _refill_wholesale_session(
     ):
         raise InvalidSessionRequest(message="authorization revision replay changed scope")
 
-    plan = await _replenish_wholesale_account(
+    plan = await _replenish_for_request(
         db,
         route=route,
         payer_eth_address=revision_grant.payer_eth_address,
