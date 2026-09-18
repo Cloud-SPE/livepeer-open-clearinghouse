@@ -56,15 +56,12 @@ export class CcTelemetry extends LitElement {
     try {
       const from = encodeURIComponent(isoDaysAgo(this._windowHours));
       const to = encodeURIComponent(new Date().toISOString());
-      const res = await api.api(
+      // api.api returns the parsed body and throws (with .status) on non-2xx.
+      const body = await api.api(
         `/accounts/me/telemetry/events?from=${from}&to=${to}&page_size=100`,
       );
-      if (res.ok) {
-        this._items = res.body.items || [];
-        this._cursor = res.body.next_cursor || null;
-      } else {
-        this._error = res.body?.error?.message || res.body?.detail || `HTTP ${res.status}`;
-      }
+      this._items = body?.items || [];
+      this._cursor = body?.next_cursor || null;
     } catch (e) {
       this._error = e?.message || String(e);
     } finally {
@@ -78,13 +75,13 @@ export class CcTelemetry extends LitElement {
     try {
       const from = encodeURIComponent(isoDaysAgo(this._windowHours));
       const to = encodeURIComponent(new Date().toISOString());
-      const res = await api.api(
+      const body = await api.api(
         `/accounts/me/telemetry/events?from=${from}&to=${to}&page_size=100&cursor=${encodeURIComponent(this._cursor)}`,
       );
-      if (res.ok) {
-        this._items = [...this._items, ...(res.body.items || [])];
-        this._cursor = res.body.next_cursor || null;
-      }
+      this._items = [...this._items, ...(body?.items || [])];
+      this._cursor = body?.next_cursor || null;
+    } catch (e) {
+      this._error = e?.message || String(e);
     } finally {
       this._loading = false;
     }
