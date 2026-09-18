@@ -32,7 +32,6 @@ from livepeer_open_clearinghouse.domains.telemetry.enrichment import (
 )
 from livepeer_open_clearinghouse.domains.telemetry.repo import TelemetryEvent
 from livepeer_open_clearinghouse.domains.telemetry.types import IngestEventIn
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 

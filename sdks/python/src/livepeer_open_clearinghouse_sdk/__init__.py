@@ -10,7 +10,7 @@ Two flows:
   and settles via ``POST /v1/jobs/{id}/settle``.
 
 * ``open_session`` — long-running interactive work (case d). Returns a
-  ``SessionHandle`` carrying the broker URL + minted envelope; SDK
+  ``SessionHandle`` carrying the broker URL + scoped spend authorization; SDK
   consumer drives the broker WS / RTMP wire today. Companion
   ``refill_session`` and ``close_session`` helpers cover the LOC-side
   refill / close calls.
@@ -32,12 +32,14 @@ from livepeer_open_clearinghouse_sdk.client import (
     OpenClearinghouseClient,
     Orchestrator,
     RouteView,
+    SessionAxes,
     SessionHandle,
     is_open_clearinghouse_error,
     wei_to_eth,
 )
 from livepeer_open_clearinghouse_sdk.errors import (
     AccountNotApproved,
+    BrokerProtocolError,
     DaemonUnavailable,
     DuplicateRequest,
     InsufficientCredit,
@@ -46,20 +48,18 @@ from livepeer_open_clearinghouse_sdk.errors import (
     RateLimited,
 )
 from livepeer_open_clearinghouse_sdk.session_runner import (
-    BOUNDED_MODES,
-    HTTP_TOPUP_MODES,
-    WS_TOPUP_MODES,
+    BrokerSession,
     RefillEvent,
+    SessionBalance,
     SessionRunner,
     WinddownEvent,
 )
 
 __all__ = [
-    "BOUNDED_MODES",
-    "HTTP_TOPUP_MODES",
     "SDK_IDENTITY",
-    "WS_TOPUP_MODES",
     "AccountNotApproved",
+    "BrokerProtocolError",
+    "BrokerSession",
     "CapStatus",
     "Capability",
     "DaemonUnavailable",
@@ -74,6 +74,8 @@ __all__ = [
     "RateLimited",
     "RefillEvent",
     "RouteView",
+    "SessionAxes",
+    "SessionBalance",
     "SessionHandle",
     "SessionRunner",
     "WinddownEvent",

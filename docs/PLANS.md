@@ -1,108 +1,132 @@
-# PLANS.md
+# Planning and work tracking
 
-How planning works in Livepeer Open Clearinghouse. Plans are first-class repository artifacts:
-they're versioned, reviewable, and discoverable by future agent runs.
+Livepeer Open Clearinghouse uses [Beads](https://github.com/gastownhall/beads)
+(`bd`) as the only source of truth for open, blocked, deferred, and in-progress
+work. The project-local operating manual is
+[`../.agents/skills/beads/SKILL.md`](../.agents/skills/beads/SKILL.md).
 
-## When to write a plan vs. when not
+## Starting and resuming work
 
-**Don't write a plan when:**
-- The change fits in one or two files and is mechanical (rename, typo,
-  one-line fix, dependency bump).
-- The change is purely documentation.
-- The change is reverting a recent change.
-
-**Write a *lightweight plan* when:**
-- Touching 3+ files in one domain.
-- Adding a new endpoint or migration.
-- Refactoring an existing pattern in place.
-
-A lightweight plan is a short scratch file (50–150 lines) that lives in the
-working directory of the change (or in `docs/exec-plans/active/` if
-non-trivial). It captures: intent, files to touch, the steps in order, and
-what "done" looks like. It can be deleted after merge.
-
-**Write an *exec-plan* when:**
-- Adding a new domain.
-- Changing the layered architecture or the provider interface.
-- Touching the billing math, the ticket-mint flow, or anything that affects
-  user-visible accounting.
-- Coordinating work across more than one domain.
-- Any change where reviewers (human or agent) need a written record of *why*.
-
-Exec-plans live in `docs/exec-plans/active/` while in flight, then move to
-`docs/exec-plans/completed/` when shipped.
-
-## Exec-plan template
-
-A new exec-plan starts as a single markdown file:
-`docs/exec-plans/active/NNN-short-slug.md` (sequentially numbered).
-
-```markdown
-# NNN. <short title>
-
-**Status:** draft | in-progress | blocked | complete
-**Owner:** <agent or human handle>
-**Opened:** YYYY-MM-DD
-**Closed:** YYYY-MM-DD (when complete)
-
-## Intent
-
-One paragraph: what changes after this lands, and why now.
-
-## Scope
-
-- In: bullet list of what this plan covers
-- Out: bullet list of what this plan explicitly does not cover
-
-## Approach
-
-The plan, broken into phases or steps. Each step is concrete enough that
-a fresh reader could execute it. Cross-link to specific files where helpful.
-
-## Decisions
-
-A running log of design decisions made while executing this plan, with
-*why*, not just *what*. Append-only.
-
-## Open questions
-
-Things that need an answer before the plan can complete. Resolved questions
-move into "Decisions."
-
-## Validation
-
-How "done" is verified. Tests added, integration tests run, manual flows
-checked, observability signals confirmed.
-
-## Follow-ups
-
-Items deliberately punted, with where they go (tech-debt-tracker.md, a new
-exec-plan, etc.).
+```bash
+bd prime
+bd ready
+bd list --status in_progress
+bd blocked
 ```
 
-## Plan hygiene
+Claim one ready bead before editing code:
 
-- **One plan per artifact.** Do not bundle unrelated changes.
-- **Update the plan in place.** When new information arrives or an approach
-  changes, edit the plan file. Add to "Decisions"; don't rewrite history.
-- **Close plans when they're done.** Move the file to
-  `docs/exec-plans/completed/` and update its `Status` and `Closed` fields.
-  A completed plan is documentation: it lets the next agent run understand
-  what shipped and why.
-- **If a plan is abandoned, mark it abandoned.** Move to `completed/` with
-  `Status: abandoned` and a note on the "Decisions" log explaining why.
+```bash
+bd show <id> --json
+bd update <id> --claim
+```
 
-## Tech-debt tracker
+Every bead needs a specific title, a description that supplies the missing
+context, a real type and numeric priority, and acceptance or success criteria.
+Search before creating one. Record newly discovered work immediately with a
+`discovered-from` edge instead of silently widening scope.
 
-`docs/exec-plans/tech-debt-tracker.md` is the registry of known deferrals
-and identified debt. Items in there are not in-flight; they're
-acknowledgements that something is suboptimal and a marker for future work.
+## Planning multi-step work
 
-Add to it when a plan deliberately defers something. Remove from it when
-the debt is paid down (and reference the plan that paid it down).
+Use an epic for a substantial feature, migration, or cross-domain project.
+Create concrete children, then encode actual prerequisites with blocking
+edges. Hierarchical numbering does not imply order.
 
-## Don't write a plan after the fact
+```bash
+EPIC=$(bd q "Payments v2" --type epic --priority 1)
+bd create "Agree wire contract" --type decision --priority 0 --parent "$EPIC" \
+  --description "..." --acceptance "..."
+bd create "Implement provider changes" --type feature --priority 1 \
+  --parent "$EPIC" --description "..." --acceptance "..."
+bd dep add "$EPIC.2" "$EPIC.1"  # implementation NEEDS the decision
+bd blocked
+bd ready --parent "$EPIC"
+```
 
-If you find yourself writing an exec-plan to document a change that has
-already shipped, you're writing the wrong artifact. Write a design doc
-(`docs/design-docs/`) or update the relevant pillar doc instead.
+Dependency direction always means requirement: `bd dep add A B` means “A
+needs B.” Run `bd blocked`, `bd ready`, and `bd graph check` after wiring a
+large graph.
+
+## What belongs in Markdown
+
+Repository documents remain the system of record for durable knowledge:
+
+- Product specs define user-visible behavior.
+- Design docs explain load-bearing decisions and rejected alternatives.
+- Pillar docs define architecture, reliability, security, and product rules.
+- `docs/exec-plans/completed/` retains historical implementation narratives.
+
+Markdown is not a work tracker. Do not create active exec-plan checklists,
+scratch plan files, `TODO.md`, or a second tech-debt list. When a bead produces
+a durable decision, update the appropriate design or pillar doc and link that
+artifact from the bead.
+
+The active exec-plan directory is retained only for repository history; do not
+add new trackers there. `docs/exec-plans/tech-debt-tracker.md` is a legacy
+input being migrated under Beads epic `loc-5vm`; no new work should be added
+to it.
+
+## Bootstrapping Beads on a fresh clone
+
+Git does not fetch the Beads database when it clones the repository. Issue
+history lives in the separate `refs/dolt/data` ref on `origin`; the tracked
+`.beads/config.yaml` tells `bd bootstrap` where to find it.
+
+This bootstrap was validated with `bd` 1.2.2. Use that version unless the
+designated maintainer has published an upgrade, then run:
+
+```bash
+chmod 700 .beads
+bd bootstrap --yes
+bd hooks install
+bd where
+bd dolt remote list
+bd hooks list
+bd prime
+bd stats
+```
+
+`bd bootstrap` is the safe entry point: it clones or validates the database
+without deleting issues. A healthy clone resolves the `loc` workspace, lists
+an `origin` Dolt remote, reports all five Git hook shims as installed, and sees
+the shared issue counts. Confirm the remote ref itself when diagnosing setup:
+
+```bash
+git ls-remote origin refs/dolt/data
+```
+
+The project-local Codex skill and lifecycle configuration are versioned under
+`.agents/` and `.codex/`; do not replace them by running `bd setup codex`
+blindly. `bd prime` is the functional check that the committed integration can
+load the workspace.
+
+## Dolt synchronization and upgrades
+
+The Dolt database, not JSONL, is the tracker source of truth. Use `bd dolt
+pull` before working on another machine and `bd dolt push` before handing work
+off, subject to the authority printed by `bd prime`. Commit any Dolt working
+set before pulling. Never use raw `dolt` commands against the workspace, use
+JSONL as synchronization, or enable automatic push for a shared repository.
+
+`bd dolt push --force` rewrites shared tracker history and requires explicit
+human approval. Schema migrations and `bd` upgrades have one designated
+maintainer: they publish all current work, take a full `bd backup`, perform and
+verify the upgrade from one clone, reinstall hooks with `bd hooks install`,
+then push. Other clones upgrade to the same version and run `bd bootstrap`;
+they must not migrate independently.
+
+## Finishing and handing off
+
+Record progress with `bd note <id> "..."`. Close only work that is actually
+complete, always with a reason, then inspect what became ready:
+
+```bash
+bd close <id> --reason "Implemented and verified ..."
+bd ready
+bd lint
+bd graph check
+```
+
+`bd prime` prints the repository's current Git and Dolt authority. Do not run
+`bd dolt push`, commit, or push merely because the tracker exists; follow that
+authority and the user's instructions.

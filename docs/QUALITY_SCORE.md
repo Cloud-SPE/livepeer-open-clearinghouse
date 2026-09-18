@@ -9,7 +9,7 @@ know honestly where the rough edges are — not to give every domain an A.
 |---|---|
 | **A** | Fully implemented; well-tested (unit + integration); fail-closed paths exercised; docs current; no known correctness issues |
 | **B** | Implemented; tests cover happy path and main failure modes; minor gaps acknowledged |
-| **C** | Implemented but incomplete or fragile in places; gaps explicitly tracked in tech-debt-tracker |
+| **C** | Implemented but incomplete or fragile in places; gaps explicitly tracked in Beads |
 | **D** | Stub or partial implementation; known broken or untested edges |
 | **F** | Not implemented; placeholder only |
 
@@ -44,5 +44,5 @@ know honestly where the rough edges are — not to give every domain an A.
 - Don't grade aspirationally. A domain that "should be A" but has no tests
   is a C.
 - If you down-grade, write what changed in the "Notes" column.
-- This file is a snapshot of *current state*, not a roadmap. Aspirational
-  work lives in exec-plans.
+- This file is a snapshot of *current state*, not a roadmap. Aspirational work
+  lives in Beads.

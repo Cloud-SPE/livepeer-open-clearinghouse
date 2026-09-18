@@ -27,5 +27,10 @@ to reconstruct your reasoning.
 | ID | Title | Status | Owner | Notes |
 |---|---|---|---|---|
 | 000 | [Core beliefs](core-beliefs.md) | accepted | — | Agent-first operating principles for this repo |
+| 001 | [Production topology and security baseline](001-production-topology.md) | accepted | LOC operator | Single-process v2 launch unit, private dependencies, durable payer state |
+| 002 | [Fair wholesale credit accounts](002-fair-wholesale-credit-accounts.md) | accepted | LOC + Modules | Protocol 4 settlement domains at Modules `80800f8`; LOC integration tracked by `loc-aqt` |
+
+The operator procedure for design 002 is
+[`wholesale-rollout.md`](../references/wholesale-rollout.md).
 
 (more entries appear here as we accumulate decisions)

@@ -48,6 +48,7 @@ node_modules/
 Thumbs.db
 
 # Generated / build artifacts
+.artifacts/
 docs/generated/openapi.json
 docs/generated/db-schema.md
 !docs/generated/.gitkeep
@@ -58,3 +59,9 @@ docs/generated/db-schema.md
 # Rust (Cargo workspace target dir at repo root)
 /target/
 
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

@@ -1,5 +1,8 @@
 import { LitElement, html } from "lit";
 import * as api from "/portal/lib/api.js";
+import { formatEth, formatWeiExact } from "/portal/lib/format.js";
+
+const SPEND_WINDOW_DAYS = 30;
 
 export class CcApiKeys extends LitElement {
   static properties = {
@@ -8,6 +11,8 @@ export class CcApiKeys extends LitElement {
     _error: { state: true },
     _newRaw: { state: true },
     _busy: { state: true },
+    _spend: { state: true },
+    _spendError: { state: true },
   };
 
   constructor() {
@@ -17,6 +22,9 @@ export class CcApiKeys extends LitElement {
     this._error = null;
     this._newRaw = null;
     this._busy = false;
+    // api_key_id → billed_wei over the last 30 days; null until loaded.
+    this._spend = null;
+    this._spendError = null;
   }
 
   createRenderRoot() {
@@ -26,6 +34,32 @@ export class CcApiKeys extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this._refresh();
+    this._loadSpend();
+  }
+
+  // Per-key spend is decoration on this page: if the usage endpoint is
+  // unavailable the column shows "—" rather than failing the whole page.
+  async _loadSpend() {
+    this._spendError = null;
+    try {
+      const since = new Date(Date.now() - SPEND_WINDOW_DAYS * 86400e3).toISOString();
+      const summary = await api.getUsageSummary({ since });
+      const map = new Map();
+      for (const row of summary.by_api_key || []) map.set(row.api_key_id, row.billed_wei);
+      this._spend = map;
+    } catch (err) {
+      this._spend = new Map();
+      this._spendError = err.message;
+    }
+  }
+
+  _renderSpend(key) {
+    if (this._spend == null) return html`<span class="muted">…</span>`;
+    const wei = this._spend.get(key.id);
+    if (wei == null) {
+      return html`<span class="muted" title=${this._spendError ? `Unavailable: ${this._spendError}` : "No billed jobs in the last 30 days"}>—</span>`;
+    }
+    return html`<span class="num" title=${formatWeiExact(wei)}>${formatEth(wei)}</span>`;
   }
 
   async _refresh() {
@@ -132,6 +166,7 @@ export class CcApiKeys extends LitElement {
                       <th>Prefix</th>
                       <th>Created</th>
                       <th>Last used</th>
+                      <th class="right">Spent (30d)</th>
                       <th>Status</th>
                       <th></th>
                     </tr>
@@ -148,6 +183,7 @@ export class CcApiKeys extends LitElement {
                               ? new Date(k.last_used_at).toLocaleString()
                               : html`<span class="muted">never</span>`}
                           </td>
+                          <td class="right">${this._renderSpend(k)}</td>
                           <td>
                             ${k.revoked_at
                               ? html`<span class="pill bad">revoked</span>`

@@ -96,7 +96,9 @@ func callLLM(ctx context.Context, prompt string) error {
         }
         return err
     }
-    log.Printf("billed %d wei for %d units, outcome=%s",
+    // Wei amounts are exact decimal strings (big.Int-backed) and may
+    // exceed int64; use .String() / .Cmp() / .Int64().
+    log.Printf("billed %s wei for %d units, outcome=%s",
         result.BilledValueWei, result.ActualUnits, result.Outcome)
     return nil
 }
@@ -134,6 +136,24 @@ The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on every
 call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
+
+`CallerPublicKey` and `SignCallerProof` are required on every
+`SubmitJobInput` and `OpenSessionInput` (wholesale is the only payment path);
+without them the call fails with a `*BrokerProtocolError` coded
+`caller_proof_scope_invalid`. The SDK never takes custody of the caller's
+private key: `SignCallerProof` receives the opaque decoded authorization bytes
+and returns the base64 caller proof, and the SDK retains the exact committed
+body. The scheme (`Livepeer-Caller-Proof`) is:
+
+- `CallerPublicKey`: compressed secp256k1 public key, lowercase hex, no `0x`.
+- digest = `keccak256("livepeer-invocation-proof/v1\x00" || authorization)`
+  (legacy Keccak-256, not SHA3-256).
+- sign the digest with Ethereum personal-sign (EIP-191, i.e. over
+  `keccak256("\x19Ethereum Signed Message:\n32" || digest)`) and return
+  standard base64 of the 65-byte `R || S || V` signature, `V` = 27 + recovery id.
+
+See [`examples/go/one-shot-job`](../../examples/go/one-shot-job/main.go) for a
+working signer.
 
 Errors come back as `*openclearinghouse.Error` with predicate methods:
 `IsInsufficientCredit`, `IsSpendCapExceeded`, `IsAccountNotApproved`,

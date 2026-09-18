@@ -62,6 +62,28 @@ export const getBalance = () => api("/accounts/me/balance");
 export const getLedger = (limit = 20) =>
   api(`/accounts/me/ledger?limit=${limit}`);
 
+// Usage — what ran, what it cost, what is held. All wei values are integer
+// strings; parse with BigInt (see lib/format.js).
+function query(params) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v == null || v === "") continue;
+    qs.set(k, String(v));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+export const getUsageOverview = () => api("/accounts/me/usage/overview");
+
+// params: { limit, offset, capability, offering, api_key_id, state, since, until }
+export const listUsageJobs = (params = {}) =>
+  api(`/accounts/me/usage/jobs${query(params)}`);
+
+// params: { since, until }
+export const getUsageSummary = (params = {}) =>
+  api(`/accounts/me/usage/summary${query(params)}`);
+
 export const listOAuthProviders = () => api("/auth/oauth/providers");
 
 export const oauthLoginUrl = (provider) => `/v1/auth/oauth/${provider}/login`;

@@ -4,12 +4,20 @@ Vendored protobuf definitions for the daemons Livepeer Open Clearinghouse integr
 
 Source: `/livepeer-cloud-spe/livepeer-network-modules/livepeer-network-protocol`.
 
+Vendored verbatim from Modules commit
+`d8d369de4aba36c397c4f758f668239b6c09a206` (Network Protocol `4.0.0`, `wholesale-account` `2.0.0-draft`).
+The wire schema is unchanged from the settlement-domain integration baseline
+`80800f8be422b5ed08c6fe65a65611f67131cbfd`; later upstream edits were
+comment-only on the payer and registry surfaces. Registry protos come from
+`proto-contracts/livepeer/registry/v1/`. Re-vendoring requires recording a
+new exact Modules revision; daemon image tags alone are not a schema identity.
+
 ## Layout
 
 ```
 proto/livepeer/payments/v1/
 ├── payer_daemon.proto   # the PayerDaemon gRPC service
-└── types.proto          # shared messages (Payment, TicketParams, QuoteRef, ...)
+└── types.proto          # shared payment, account, authorization, settlement messages
 ```
 
 ## Regenerating Python stubs
@@ -19,7 +27,7 @@ make protoc
 ```
 
 This compiles every `proto/**/*.proto` into Python modules under
-`src/livepeer_open_clearinghouse/providers/payment_daemon/_gen/`. The generated files are
+`src/livepeer_open_clearinghouse/_gen/`. The generated files are
 committed so the runtime image doesn't need `grpcio-tools` at build time.
 
 ## When to re-vendor

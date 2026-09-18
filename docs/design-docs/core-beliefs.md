@@ -71,13 +71,14 @@ clever new framework that solves a problem we don't have.
 agent struggling with stale APIs is higher than the cost of a periodic
 dependency bump.
 
-## 5. Plans are first-class
+## 5. The work graph is first-class
 
-Anything more than a small change gets a plan. Anything more than a
-single-domain change gets an exec-plan. See `docs/PLANS.md`.
+Anything more than a small change gets a Beads issue before code. Anything
+cross-domain or dependency-heavy gets an epic whose edges state what each
+child needs. See `docs/PLANS.md`.
 
-Plans are not bureaucracy. They are how an agent (or a human) understands
-*why* the diff looks the way it does six months later.
+The graph preserves execution state; product, design, and pillar docs preserve
+the durable reason the diff looks the way it does six months later.
 
 ## 6. Fail closed
 
@@ -110,8 +111,8 @@ support multi-tenancy / OIDC / per-key billing / horizontal scale." We
 are building the system that does the thing today, with the doors not
 locked against doing those things later.
 
-When a hypothetical-future argument starts to drive a design choice,
-write it down in `docs/exec-plans/tech-debt-tracker.md` and move on.
+When a hypothetical-future argument starts to drive a design choice, create a
+low-priority Beads issue with its trigger and move on.
 
 ## 10. Garbage-collect entropy continuously
 

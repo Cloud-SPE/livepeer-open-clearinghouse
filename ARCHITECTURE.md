@@ -4,6 +4,12 @@ A bird's-eye view of where things live and how they depend on each other.
 Optimized for navigability, not exhaustive description. When details matter,
 go read the code.
 
+> The payment flow below documents the current legacy protocol. The approved
+> future architecture is recorded in
+> [`docs/design-docs/002-fair-wholesale-credit-accounts.md`](docs/design-docs/002-fair-wholesale-credit-accounts.md)
+> and is gated on a published versioned Modules contract. Do not infer wire
+> types or endpoints from that target design.
+
 ## Bird's-eye view
 
 Livepeer Open Clearinghouse is a single Python (FastAPI) service that:
@@ -41,6 +47,7 @@ src/livepeer_open_clearinghouse/
     ├── billing/
     ├── discovery/
     ├── payments/
+    ├── wholesale/
     ├── usage/
     └── admin/
 
@@ -96,10 +103,12 @@ The migration files at `migrations/versions/*` are authoritative.
 |---|---|
 | `accounts` | `user`, `user_email_verification`, `user_oauth_identity`, `operator_approval`, `password_reset_token`, `user_session` |
 | `api_keys` | `api_key` (hashed at rest, `prefix` for display) |
-| `billing` | `credit_balance`, `credit_topup`, `credit_ledger`, `spend_window`, `user_billing_config` |
+| `billing` | Customer-only `credit_balance`, `credit_topup`, `credit_ledger`, `spend_window`, `user_billing_config`; new account-aware entries correlate to an engagement, never a funding mint |
 | `discovery` | (no tables — pure proxy via service-registry-daemon; in-process TTL cache around the gRPC client) |
 | `payments` | `payment` (a row per `CreatePayment` call), `payment_idempotency_key`, `payment_daemon_deposit_snapshot` (periodic poller) |
-| `usage` | `usage_record` (idempotent on `(api_key_id, request_id)`), reconciliation deltas |
+| `sessions` | Customer engagement lifecycle plus append-only `spend_authorization_grant` revisions; replacing a current grant never deletes or retires its predecessor |
+| `wholesale` | Customer-neutral `wholesale_account` observations and idempotent `wholesale_funding` attempts, keyed by the stable payer-payee account identity |
+| `usage` | none — reads `payment_session` (+ `api_key`, `user`, `spend_window`, `telemetry_event`) |
 | `admin` | `operator`, `operator_audit`; aggregates over the above; operator config (default credit grant, period caps) |
 
 ## External integration shape
@@ -130,7 +139,7 @@ The migration files at `migrations/versions/*` are authoritative.
   `(quote_id, constraint_fingerprint, route_fingerprint)` triplet. Livepeer Open Clearinghouse
   passes these through without quoting logic of its own.
 
-## The ticket-mint flow (the headline path)
+## The legacy ticket-mint flow (current implementation)
 
 ```
 POST /v1/payments/mint

@@ -290,6 +290,8 @@
   input[type="email"],
   input[type="password"],
   input[type="number"],
+  input[type="date"],
+  input[type="datetime-local"],
   select,
   textarea {
     background: var(--surface-hover);
@@ -348,6 +350,15 @@
     background: var(--surface-hover);
     border-color: var(--border-strong);
     color: var(--accent);
+  }
+  button.ghost.active {
+    color: var(--accent);
+    background: var(--accent-tint);
+    border-color: var(--accent-strong);
+  }
+  button.small {
+    padding: 4px 10px;
+    font-size: 13px;
   }
   button.danger {
     background: var(--danger);
@@ -533,6 +544,180 @@
   .metric.bad .value {
     color: var(--danger);
   }
+
+  /* ----- usage: meters, sparkline, filters, tables ----- */
+  .metric .value.eth {
+    font-size: 20px;
+  }
+  .metric.eth-hero .value {
+    font-size: 24px;
+  }
+
+  /* slim progress meter: fill carries severity, track is a lighter step of
+     the same ramp so the whole bar reads as one state */
+  .progress {
+    position: relative;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--accent-tint);
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  .progress > span {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    transition: width 160ms ease;
+  }
+  .progress.warn {
+    background: var(--warn-tint);
+  }
+  .progress.warn > span {
+    background: var(--warn);
+  }
+  .progress.bad {
+    background: var(--danger-tint);
+  }
+  .progress.bad > span {
+    background: var(--danger);
+  }
+
+  .sparkline {
+    display: block;
+    width: 100%;
+    height: 64px;
+    overflow: visible;
+  }
+  .sparkline .area {
+    fill: var(--accent-tint);
+    stroke: none;
+  }
+  .sparkline .line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .sparkline .baseline {
+    stroke: var(--border);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  .sparkline .endpoint {
+    fill: var(--accent);
+    stroke: var(--bg);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+  .sparkline .hit {
+    fill: transparent;
+  }
+  .sparkline .hit:hover {
+    fill: var(--surface-hover);
+  }
+  .sparkline-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .sparkline-labels strong {
+    color: var(--fg);
+    font-weight: 500;
+  }
+
+  /* "top offerings" list: name + share bar + amount */
+  .rank-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .rank-list li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    align-items: center;
+  }
+  .rank-list .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rank-list .progress {
+    grid-column: 1 / -1;
+    margin-top: 0;
+    height: 4px;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: flex-end;
+  }
+  .filters .field {
+    min-width: 140px;
+  }
+  .filters select,
+  .filters input {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .segmented {
+    display: inline-flex;
+    gap: 4px;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+  }
+  td.nowrap,
+  th.nowrap {
+    white-space: nowrap;
+  }
+  td .sub {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  td .ellipsis {
+    display: block;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* dense variant for the wide usage jobs table */
+  table.dense th,
+  table.dense td {
+    padding: 8px 5px;
+    font-size: 13px;
+  }
+  table.dense td.amount {
+    font-size: 12.5px;
+  }
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
 }
 
 @layer utilities {
@@ -557,6 +742,9 @@
   }
   .mono {
     font-family: var(--font-mono);
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
   }
   .small {
     font-size: 12px;

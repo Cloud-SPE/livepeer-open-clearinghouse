@@ -60,6 +60,40 @@ describe("fromResponse", () => {
     expect(err.message).toBe("invalid api key");
   });
 
+  it("never throws on FastAPI validation bodies (list detail)", () => {
+    const detail = [
+      { type: "missing", loc: ["body", "settlement", "signature"], msg: "Field required" },
+    ];
+    const err = fromResponse({ status: 422, body: { detail }, retryAfter: null });
+    expect(err).toBeInstanceOf(OpenClearinghouseError);
+    expect(err.constructor).toBe(OpenClearinghouseError);
+    expect(err.status).toBe(422);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe(JSON.stringify(detail));
+    expect(err.details).toEqual({ detail });
+  });
+
+  it("handles an object-valued detail the same way", () => {
+    const detail = { type: "uuid_parsing", loc: ["body", "events", 0, "correlation_id"] };
+    const err = fromResponse({ status: 422, body: { detail }, retryAfter: null });
+    expect(err.code).toBeNull();
+    expect(err.message).toBe(JSON.stringify(detail));
+    expect(err.details).toEqual({ detail });
+  });
+
+  it("truncates a long structured detail message to 500 chars", () => {
+    const detail = Array.from({ length: 40 }, (_, i) => ({
+      type: "missing",
+      loc: ["body", `field_${String(i)}`],
+      msg: "Field required",
+    }));
+    const err = fromResponse({ status: 422, body: { detail }, retryAfter: null });
+    expect(JSON.stringify(detail).length).toBeGreaterThan(500);
+    expect(err.message).toBe(JSON.stringify(detail).slice(0, 500));
+    expect(err.message.length).toBe(500);
+    expect(err.details).toEqual({ detail });
+  });
+
   it("synthesizes a message when the body has no structured info", () => {
     const err = fromResponse({ status: 599, body: {}, retryAfter: null });
     expect(err.message).toBe("HTTP 599");

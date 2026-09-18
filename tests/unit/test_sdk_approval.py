@@ -30,7 +30,6 @@ from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
 from livepeer_open_clearinghouse.domains.sessions import repo as sessions_repo
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.db.base import Base
 
 
@@ -248,7 +247,7 @@ def _make_session_row(*, user, api_key, sdk_identity: str | None) -> sessions_re
         work_id="wid-fake",
         capability="cap.x",
         offering="off.y",
-        mode="session-control-plus-media@v0",
+        protocol="paid-session/v1",
         state="open",
         estimated_units=10,
         max_total_units=100,

@@ -121,6 +121,20 @@ call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
 
+Every paid call requires `caller_public_key` and `sign_caller_proof` on
+`submit_job` and `open_session`; the SDK raises `ValueError` without them.
+The callback receives the opaque decoded authorization bytes and returns the
+base64 caller proof; the SDK owns exact-body hashing, session preparation,
+and broker headers but never owns the caller's private key.
+
+The public key is the compressed secp256k1 key as lowercase hex (no `0x`).
+The proof is the 65-byte `R || S || V` signature (`V` is 27 or 28), base64
+encoded, of an Ethereum personal-sign (EIP-191) over
+`keccak256(b"livepeer-invocation-proof/v1\x00" + authorization)`. See
+[`examples/python/one-shot-job`](../../examples/python/one-shot-job/main.py)
+for a working signer; the Modules `Livepeer-Caller-Proof` header spec is
+authoritative.
+
 Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,
 `RateLimited` (with `retry_after_seconds`), `DuplicateRequest`,

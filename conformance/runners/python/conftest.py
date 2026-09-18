@@ -86,6 +86,11 @@ def sdk_client(mock_servers: tuple[str, str, str]):
 
 
 @pytest.fixture
+def caller_proof() -> tuple[str, Any]:
+    return "02" + "11" * 32, lambda _: "CONFORMANCE-CALLER-PROOF"
+
+
+@pytest.fixture
 def call_logs(mock_servers: tuple[str, str, str]):
     """Returns a sync helper that fetches the LOC + broker call logs."""
     loc_url, broker_url, _ = mock_servers

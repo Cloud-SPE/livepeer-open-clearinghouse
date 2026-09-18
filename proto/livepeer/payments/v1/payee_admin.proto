@@ -1,0 +1,30 @@
+// Livepeer Payments v1 — PayeeAdmin service.
+//
+// Operator-only maintenance RPCs for the receiver-side payment daemon.
+// Mounted only in receiver mode.
+
+syntax = "proto3";
+
+package livepeer.payments.v1;
+
+option go_package = "github.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1";
+
+service PayeeAdmin {
+  // Reset the active GetTicketParams session keyed by the stable
+  // sender/recipient/capability/offering identity. The current open
+  // session is marked closed, its recipientRand nonce ledger is
+  // dropped, and the next GetTicketParams call mints a fresh work_id.
+  rpc ResetSession(ResetSessionRequest) returns (ResetSessionResponse);
+}
+
+message ResetSessionRequest {
+  bytes sender = 1;
+  bytes recipient = 2;
+  string capability = 3;
+  string offering = 4;
+}
+
+message ResetSessionResponse {
+  bool reset = 1;
+  string old_work_id = 2;
+}

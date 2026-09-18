@@ -14,6 +14,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -25,10 +27,10 @@ import (
 
 // Defaults mirror exec-plan 002 §"Mechanism".
 const (
-	telemetryDefaultBatchSize         = 100
-	telemetryDefaultFlushInterval     = 5 * time.Second
-	telemetryDefaultBufferCap         = 10_000
-	telemetryDefaultRetries           = 3
+	telemetryDefaultBatchSize          = 100
+	telemetryDefaultFlushInterval      = 5 * time.Second
+	telemetryDefaultBufferCap          = 10_000
+	telemetryDefaultRetries            = 3
 	telemetryDefaultGzipThresholdBytes = 1024
 )
 
@@ -63,10 +65,10 @@ type TelemetryEmitter struct {
 	apiKey      string
 	sdkIdentity string
 
-	batchSize        int
-	flushInterval    time.Duration
-	bufferCap        int
-	maxRetries       int
+	batchSize          int
+	flushInterval      time.Duration
+	bufferCap          int
+	maxRetries         int
 	gzipThresholdBytes int
 
 	mu        sync.Mutex
@@ -130,6 +132,60 @@ func newTelemetryEmitter(opts TelemetryEmitterOptions) *TelemetryEmitter {
 	return em
 }
 
+// uuidNamespaceURL is RFC 4122's NAMESPACE_URL
+// (6ba7b811-9dad-11d1-80b4-00c04fd430c8).
+var uuidNamespaceURL = [16]byte{
+	0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1,
+	0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+}
+
+// TelemetryCorrelationID maps an SDK correlation value (request id,
+// session id, ...) to the UUID the gateway's /v1/telemetry schema
+// requires. A value that already is a UUID (8-4-4-4-12 hex, any
+// version) is returned lowercased; anything else becomes the RFC 4122
+// v5 UUID of the string under NAMESPACE_URL, so every SDK derives the
+// same id for the same request id.
+func TelemetryCorrelationID(value string) string {
+	if isUUIDString(value) {
+		return strings.ToLower(value)
+	}
+	return uuidV5(uuidNamespaceURL, value)
+}
+
+func isUUIDString(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func uuidV5(namespace [16]byte, name string) string {
+	h := sha1.New()
+	_, _ = h.Write(namespace[:])
+	_, _ = h.Write([]byte(name))
+	sum := h.Sum(nil)
+	var b [16]byte
+	copy(b[:], sum[:16])
+	b[6] = (b[6] & 0x0f) | 0x50 // version 5
+	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
+	hexed := hex.EncodeToString(b[:])
+	return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
+}
+
 // EmitTelemetryOptions is the public per-event input.
 type EmitTelemetryOptions struct {
 	EventType          string
@@ -150,7 +206,8 @@ func (e *TelemetryEmitter) Emit(opts EmitTelemetryOptions) {
 	}
 	var correlationID *string
 	if opts.CorrelationID != "" {
-		correlationID = &opts.CorrelationID
+		cid := TelemetryCorrelationID(opts.CorrelationID)
+		correlationID = &cid
 	}
 	clientTS := opts.ClientTS
 	if clientTS == "" {
@@ -158,6 +215,11 @@ func (e *TelemetryEmitter) Emit(opts EmitTelemetryOptions) {
 	}
 	if opts.EventSchemaVersion == 0 {
 		opts.EventSchemaVersion = 1
+	}
+	if opts.Payload == nil {
+		// The gateway schema requires an object; a nil map would encode
+		// as JSON null and the whole batch would be rejected (422).
+		opts.Payload = map[string]interface{}{}
 	}
 	if len(e.buffer) == e.bufferCap {
 		e.buffer = e.buffer[1:]
@@ -250,9 +312,9 @@ func (e *TelemetryEmitter) flushOnce() {
 		return
 	}
 	headers := map[string]string{
-		"Content-Type":                       "application/json",
-		"X-API-Key":                          e.apiKey,
-		"Livepeer-Open-Clearinghouse-SDK":    e.sdkIdentity,
+		"Content-Type":                    "application/json",
+		"X-API-Key":                       e.apiKey,
+		"Livepeer-Open-Clearinghouse-SDK": e.sdkIdentity,
 	}
 	if len(body) > e.gzipThresholdBytes {
 		gzipped, gerr := gzipBytes(body)

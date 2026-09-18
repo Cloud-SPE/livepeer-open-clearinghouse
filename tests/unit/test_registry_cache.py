@@ -8,6 +8,7 @@ behavior.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -104,3 +105,14 @@ async def test_ttl_expiry_refetches() -> None:
     await asyncio.sleep(1.1)
     await cache.list_capabilities()
     assert inner.calls["list_capabilities"] == 2
+
+
+@pytest.mark.unit
+async def test_health_bypasses_cache() -> None:
+    inner = _Counted()
+    inner.health = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    cache = CachingRegistryClient(inner, ttl_seconds=60)
+
+    assert await cache.health() is True
+    assert await cache.health() is True
+    assert inner.health.await_count == 2

@@ -62,6 +62,23 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def telemetry_correlation_id(value: uuid.UUID | str) -> str:
+    """Coerce a caller-chosen request id into the UUID the gateway requires.
+
+    ``POST /v1/telemetry`` validates ``correlation_id`` as a UUID. SDK
+    callers may pass any string as ``request_id``, so a non-UUID value
+    is mapped deterministically with UUIDv5 under ``NAMESPACE_URL``. The
+    same rule is implemented in every official SDK so a request id
+    correlates identically regardless of language.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, str(value)))
+
+
 class TelemetryEmitter:
     """In-process telemetry buffer + flusher.
 
@@ -122,7 +139,9 @@ class TelemetryEmitter:
         event = {
             "event_type": event_type,
             "event_schema_version": event_schema_version,
-            "correlation_id": str(correlation_id) if correlation_id is not None else None,
+            "correlation_id": (
+                telemetry_correlation_id(correlation_id) if correlation_id is not None else None
+            ),
             "client_ts": client_ts or _now_iso(),
             "payload": payload or {},
         }

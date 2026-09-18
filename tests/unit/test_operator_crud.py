@@ -31,7 +31,6 @@ from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys  # no
 from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa: F401
 from livepeer_open_clearinghouse.domains.notifications import repo as _notif  # noqa: F401
 from livepeer_open_clearinghouse.domains.payments import repo as _payments  # noqa: F401
-from livepeer_open_clearinghouse.domains.usage import repo as _usage  # noqa: F401
 from livepeer_open_clearinghouse.providers.clock import FrozenClock
 from livepeer_open_clearinghouse.providers.db.base import Base
 

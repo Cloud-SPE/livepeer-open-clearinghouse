@@ -178,6 +178,8 @@ message HealthRequest {}
 message HealthResponse {
   // Liveness signal. v0.2 returns the literal string "ok" when ready.
   string status = 1;
+  // Public identity of the receiver ledger; absent on payer Health.
+  string settlement_domain_id = 2;
 }
 
 // BigUInt is the canonical daemon-app representation for non-negative integers
@@ -214,6 +216,80 @@ message FundingIntent {
   bool top_up_allowed = 4;
 }
 
+// SpendAuthorizationPayload is the payer-signed authority for exactly one
+// job or logical session. It is deliberately separate from Payment: tickets
+// add value to a stable payer-payee account, while this payload says which
+// engagement may reserve and debit that value.
+//
+// Signature input is the deterministic protobuf encoding of this message,
+// hashed with keccak256 and signed with Ethereum personal_sign (EIP-191).
+message SpendAuthorizationPayload {
+  // Domain/version tag. Producers MUST set
+  // "livepeer-spend-authorization/v2".
+  string domain = 1;
+  bytes payer = 2;
+  bytes payee = 3;
+  string authorization_id = 4;
+  string request_id = 5;
+  string session_id = 6;
+  string protocol = 7;
+  string capability = 8;
+  string offering = 9;
+  AcceptedPrice accepted_price = 10;
+  BigUInt max_debit_wei = 11;
+  uint64 max_total_units = 12;
+  string not_before = 13;
+  string expires_at = 14;
+  bytes request_digest = 15;
+  bytes caller_public_key = 16;
+  uint64 revision = 17;
+  string predecessor_authorization_id = 18;
+  string broker_uri = 19;
+  uint64 chain_id = 20;
+  string denomination = 21;
+  string settlement_domain_id = 22;
+}
+
+message SpendAuthorization {
+  SpendAuthorizationPayload payload = 1;
+  bytes signature = 2;
+}
+
+enum SpendAuthorizationState {
+  SPEND_AUTHORIZATION_STATE_UNSPECIFIED = 0;
+  SPEND_AUTHORIZATION_ISSUED = 1;
+  SPEND_AUTHORIZATION_ADMITTED = 2;
+  SPEND_AUTHORIZATION_SETTLED = 3;
+  SPEND_AUTHORIZATION_EXPIRED_UNUSED = 4;
+  SPEND_AUTHORIZATION_OUTCOME_UNKNOWN = 5;
+  SPEND_AUTHORIZATION_SUPERSEDED = 6;
+}
+
+// AccountFundingIntent asks the sender to fund only the difference between a
+// payer-selected target float and a trusted receiver balance observation.
+// The caller is the payer application on the sender daemon's trusted socket;
+// untrusted end callers never supply these values directly.
+message AccountFundingIntent {
+  BigUInt target_available_wei = 1;
+  BigUInt observed_available_wei = 2;
+  // Must match the cold-signed route and the observed account.
+  string settlement_domain_id = 3;
+}
+
+message WholesaleAccountView {
+  bytes payer = 1;
+  bytes payee = 2;
+  BigUInt credited_value_wei = 3;
+  BigUInt reserved_value_wei = 4;
+  BigUInt debited_value_wei = 5;
+  BigUInt available_value_wei = 6;
+  uint64 version = 7;
+  string observed_at = 8;
+  uint64 chain_id = 9;
+  string denomination = 10;
+  string settlement_domain_id = 11;
+}
+
 // SettlementRecord is the broker-authoritative accounting result for a request/session.
 message SettlementRecord {
   QuoteRef accepted_quote_ref = 1;
@@ -231,11 +307,182 @@ message SettlementRecord {
     OVERFUNDED = 3;
     STOPPED_AT_BUDGET = 4;
     TOPPED_UP = 5;
+
+    // Reserved for decoding pre-authorization records. Authorization-only
+    // brokers MUST NOT emit a terminal DEBIT_FAILED record: uncertain account
+    // settlement remains accounting_pending and retries the same authorization.
+    DEBIT_FAILED = 6;
   }
   SettlementOutcome outcome = 8;
 
   // Optional workload-specific metadata. Not part of canonical arithmetic.
   map<string, string> breakdown = 9;
+
+  // ---- paid-session/v1 fields ----
+
+  // Stable broker-local session id.
+  string session_id = 10;
+
+  // In authorization-only records work_id mirrors authorization_id. The
+  // predecessor/rotation fields are retained only to decode historical
+  // ticket-session records and MUST be empty/zero on new records.
+  string work_id = 11;
+  string predecessor_work_id = 12;
+  uint32 rotation_generation = 13;
+
+  // Cumulative over the whole logical session. debited_units is the
+  // authoritative billing quantity:
+  // claimed_units is what a runner asserted, debited_units is what the
+  // ledger moved. billed_value_wei above is
+  // ceil(debited_units * amount_wei / per_units) over these cumulative
+  // units — one ceiling over the total, never a sum of per-event
+  // ceilings (offering-axes.md §6.1).
+  uint64 claimed_units = 14;
+  uint64 debited_units = 15;
+
+  // Historical ticket-session generation fields. Authorization-only brokers
+  // MUST leave them zero/empty; aggregate ticket funding is reported through
+  // account_funding_value_wei and account observations instead.
+  uint64 generation_debited_units = 16;
+  BigUInt generation_billed_value_wei = 17;
+  BigUInt generation_funded_value_wei = 18;
+
+  // The price this session was pinned to at open. Carried so a reader
+  // can recompute billed_value_wei without trusting it.
+  BigUInt amount_wei = 19;
+  uint64 per_units = 20;
+
+  // Monotonic per session_id and unchanged by authorization revision.
+  // (session_id, settlement_seq) is the replay binding: a record is
+  // meaningful for exactly one session at exactly one point in its life.
+  uint64 settlement_seq = 21;
+
+  // When this record was produced. A record is a statement about the
+  // session as of this instant, not a cached blob.
+  string issued_at = 22;
+
+  // Session state when the record was produced: "open", "winding_down"
+  // or "closed". Distinguishes an interim snapshot from a final
+  // settlement.
+  string state = 23;
+
+  // ---- paid-job/v1 identity ----
+
+  // Broker-assigned id for a single job exchange, matching
+  // `Livepeer-Job-Id`. REQUIRED on a paid-job settlement.
+  //
+  // job_id is broker-assigned; request_id and authorization_id provide the
+  // caller-owned and payer-owned bindings.
+  string job_id = 24;
+
+  // Historical ticket-session curve position. Authorization-only brokers
+  // MUST leave this zero; billed_value_wei is computed on the authorization's
+  // cumulative units.
+  uint64 payment_cumulative_units = 25;
+
+  // The GATEWAY's own id for this session, echoed from session open.
+  // REQUIRED on a paid-session settlement.
+  //
+  // This is the identifier the session consumer issued itself.
+  string gateway_session_id = 26;
+
+  // The gateway's own id for this EXCHANGE, echoed from
+  // `Livepeer-Request-Id`. REQUIRED on a paid-job settlement.
+  //
+  // This is the counterpart to gateway_session_id on the job path and MUST
+  // match the required Livepeer-Request-Id.
+  string request_id = 27;
+
+  // ---- authorization-backed account settlement ----
+  // Required for paid-workload settlements. These fields keep account
+  // funding, temporary reservation, and actual debit visibly distinct.
+  string authorization_id = 28;
+  BigUInt authorized_value_wei = 29;
+  BigUInt reserved_value_wei = 30;
+  BigUInt released_value_wei = 31;
+  BigUInt account_funding_value_wei = 32;
+  uint64 account_version = 33;
+  string settlement_domain_id = 34;
+}
+
+// NonAdmissionRecord is a broker's signed statement that it never
+// admitted an exchange for a request id.
+//
+// It exists because expiry proves an envelope can never be spent AGAIN
+// and proves nothing about whether it was already used. A customer can
+// submit an envelope, take the work, withhold the job id and settlement
+// from its clearinghouse, wait out expiry and ask for the money back —
+// and chain state cannot tell that apart from genuine non-use, because a
+// losing ticket is never redeemed and most tickets lose.
+//
+// So this is the evidence a refund needs, and it is deliberately shaped
+// so it cannot be laundered through the party that benefits from it:
+// a consumer fetches it directly from the broker, keyed on an id the
+// CONSUMER issued.
+//
+// It is a claim, not a proof — but an attributable one. A broker that
+// signs a non-admission and has also signed a settlement for the same
+// request has produced two contradictory statements under one delegated
+// key, which is why both MUST be retained.
+message NonAdmissionRecord {
+  // Always "paid-job/v1" or "paid-session/v1". Present so a record
+  // cannot be replayed across protocols.
+  string protocol = 1;
+
+  // The request id the consumer issued and queried by. This is the ONE
+  // field below that the broker independently knows: it looked this id
+  // up in its own store and found nothing.
+  string request_id = 2;
+
+  // ---- caller-supplied scope ----
+  //
+  // EVERYTHING IN THIS BLOCK IS ECHOED FROM THE QUERY, NOT OBSERVED BY
+  // THE BROKER. It describes an exchange that never happened, so the
+  // broker has nothing of its own to check it against.
+  //
+  // It is signed anyway, as scope: a record naming only a request id
+  // could be replayed against a different envelope that happened to
+  // carry the same id from another payer. A consumer MUST compare every
+  // field to its own record before acting — the broker's signature here
+  // attests "I have no record of request_id X, asked in this context",
+  // and not "these values are true".
+  string work_id = 3;
+  bytes sender = 4;
+  bytes recipient = 5;
+
+  // Full quote identity, mirroring a settlement's accepted_quote_ref
+  // including both fingerprints, so the record is bound to the same
+  // commercial terms the exchange would have carried. Caller-supplied,
+  // like the rest of this block.
+  QuoteRef accepted_quote_ref = 6;
+
+  // The broker asserting it, so a consumer knows whose key must have
+  // signed and whose statement to hold against them later.
+  string broker_eth_address = 7;
+
+  // When the broker looked. RFC3339 with nanoseconds.
+  string observed_at = 8;
+
+  // The earliest moment this broker's records are continuous through.
+  //
+  // A consumer MUST reject the record unless coverage began no later
+  // than its own job's issuance: a store that was reset, restored from
+  // backup, or reinitialized after issuance cannot distinguish "never
+  // admitted" from "forgot". A broker whose store lost continuity MUST
+  // move this forward and thereby disqualify itself for jobs older than
+  // the gap, rather than attest across it.
+  string coverage_started_at = 9;
+
+  // The outcome. A distinct value on purpose: a zero-unit settlement
+  // says an exchange happened and cost nothing, which is a different
+  // claim and one a consumer must not confuse with this.
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    NOT_ADMITTED = 1;
+  }
+  Outcome outcome = 10;
+  // Observed financial domain of the broker making this statement.
+  string settlement_domain_id = 11;
 }
 
 // PaymentRejectionReason is the machine-readable reason a payee daemon

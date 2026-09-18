@@ -8,7 +8,6 @@ import json
 import uuid
 
 import httpx
-import pytest
 import respx
 
 from livepeer_open_clearinghouse_sdk.telemetry import (
@@ -17,8 +16,6 @@ from livepeer_open_clearinghouse_sdk.telemetry import (
     TelemetryEmitter,
     _is_critical,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_is_critical_matches_documented_set() -> None:
@@ -196,3 +193,31 @@ async def test_event_carries_universal_fields() -> None:
     assert ev["correlation_id"] == str(cid)
     assert ev["client_ts"]  # ISO timestamp set
     assert ev["payload"] == {"capability": "x"}
+
+
+# ----- correlation ids ----------------------------------------------
+
+
+def test_correlation_id_uuid_passes_through() -> None:
+    from livepeer_open_clearinghouse_sdk.telemetry import telemetry_correlation_id
+
+    cid = uuid.uuid4()
+    assert telemetry_correlation_id(cid) == str(cid)
+    assert telemetry_correlation_id(str(cid).upper()) == str(cid)
+
+
+def test_correlation_id_non_uuid_maps_to_stable_uuid5() -> None:
+    """Pinned so every official SDK derives the same id for a request id."""
+    from livepeer_open_clearinghouse_sdk.telemetry import telemetry_correlation_id
+
+    derived = telemetry_correlation_id("loc-test-chat-abc")
+    assert derived == "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6"
+    assert derived == str(uuid.uuid5(uuid.NAMESPACE_URL, "loc-test-chat-abc"))
+
+
+async def test_emit_rewrites_non_uuid_correlation_id() -> None:
+    async with httpx.AsyncClient(base_url="http://loc.test") as http:
+        em = TelemetryEmitter(http=http, flush_interval_seconds=999)
+        em.emit(event_type="request.mint_started", correlation_id="loc-test-chat-abc")
+        assert em._buffer[0]["correlation_id"] == "ab6ae49d-69c6-579d-8f36-8b7eaeed58a6"
+        await em.aclose()

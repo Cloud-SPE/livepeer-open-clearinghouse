@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
+
+from livepeer_open_clearinghouse.providers.wire import WeiDecimal
 
 
 class PaymentView(BaseModel):
@@ -29,10 +30,10 @@ class PaymentView(BaseModel):
     capability: str
     offering: str
     work_units_requested: int
-    funded_value_wei: Decimal
-    expected_value_wei: Decimal
-    reserved_wei: Decimal
-    refunded_wei: Decimal
+    funded_value_wei: WeiDecimal
+    expected_value_wei: WeiDecimal
+    reserved_wei: WeiDecimal
+    refunded_wei: WeiDecimal
     status: str
     created_at: datetime
     updated_at: datetime

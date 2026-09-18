@@ -44,6 +44,8 @@ export const icon = {
     base(svg`<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>`),
   logout: () =>
     base(svg`<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>`),
+  chart: () =>
+    base(svg`<path d="M4 20h16"/><path d="M6 17v-6"/><path d="M11 17V7"/><path d="M16 17v-4"/><path d="M21 17V4"/>`),
   download: () =>
     base(svg`<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/>`),
 };

@@ -3,11 +3,11 @@
 Small reference programs that consume the SDKs in [`../sdks/<lang>/`](../sdks/).
 Each scenario is implemented in all four languages.
 
-| Scenario | What it shows |
-|---|---|
-| `one-shot-job/` | Submit a single job via the handoff-mode SDK and read the final settlement. |
-| `streaming-ws/` | Open a long-lived session with WS-topup (`session-control-plus-media@v0`), observe a refill callback, and close. |
-| `streaming-http/` | Open a long-lived session with HTTP-topup (`live-session-remote-runner@v0`), manually trigger `onBalanceLow`, and close. |
+| Scenario          | What it shows                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| `one-shot-job/`   | Submit a single job via the handoff-mode SDK and read the final settlement.                     |
+| `streaming-ws/`   | Open `paid-session/v1` with an optional events WebSocket, observe a refill callback, and close. |
+| `streaming-http/` | Open an extensible `paid-session/v1`, pass a normative low balance to the runner, and close.    |
 
 Each `<scenario>/` directory has its own per-language manifest
 (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) wired to
@@ -18,6 +18,17 @@ a SDK and re-running an example here works without a publish step.
 ## Run an example
 
 All examples expect `OPEN_CLEARINGHOUSE_URL` and `OPEN_CLEARINGHOUSE_API_KEY`.
+`one-shot-job` also reads an optional `OPEN_CLEARINGHOUSE_OFFERING` (default
+`gpt-oss-20b`); list live offerings with `GET /v1/capabilities`. The
+streaming scenarios target illustrative session capabilities, so they need a
+broker that advertises them.
+
+Every paid call needs a caller key. Each example generates an ephemeral
+secp256k1 key and passes the SDK its compressed public key plus a callback
+that signs the `Livepeer-Caller-Proof` (EIP-191 over
+`keccak256("livepeer-invocation-proof/v1\x00" || authorization)`, returned
+as base64 `R || S || V`). The SDK never holds the private key; production
+callers keep their own.
 
 ```bash
 # TypeScript (from repo root)

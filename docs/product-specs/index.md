@@ -4,8 +4,8 @@ Per-domain product specs. A product spec describes the user-visible
 behavior of a domain: the flows, the inputs/outputs, the failure modes,
 and the success criteria.
 
-A product spec is not an exec-plan. The spec says "this is what the system
-will do." The exec-plan says "this is how we will build it."
+A product spec is not a work item. The spec says "this is what the system will
+do." The Beads graph says what must happen to build or change it.
 
 ## How to add one
 
@@ -32,7 +32,7 @@ will do." The exec-plan says "this is how we will build it."
 | 003 | Credit and billing | `billing` | draft |
 | 004 | Discovery API | `discovery` | draft |
 | 005 | Ticket mint | `payments` | draft |
-| 006 | Usage reconciliation | `usage` | draft |
+| 006 | [Usage visibility](006-usage-visibility.md) | `usage` | shipped |
 | 007 | Operator admin console | `admin` | draft |
 
 Spec files for each of these will be filled in as part of Phase 2 or as

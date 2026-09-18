@@ -498,6 +498,495 @@
   .metric.bad .value {
     color: var(--danger);
   }
+  /* --- Usage visibility ---------------------------------------------- */
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .card-head h2,
+  .card-head h3 {
+    margin: 0;
+  }
+  .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 20px 0 8px;
+  }
+
+  /* Attention counters: read as plain metrics at zero, as alerts otherwise. */
+  .attention-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  button.metric {
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 80ms ease, background 80ms ease;
+  }
+  button.metric:hover,
+  button.metric:focus-visible {
+    border-color: var(--border-strong);
+    outline: none;
+  }
+  button.metric:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-tint-strong);
+  }
+  .metric.alert {
+    background: var(--danger-tint);
+    border-color: var(--danger);
+  }
+  .metric.alert .label {
+    color: var(--danger);
+  }
+  .metric.alert .value {
+    color: var(--danger);
+  }
+  .metric.alert .sub {
+    color: var(--fg);
+    opacity: 0.8;
+  }
+  .metric.alert-warn {
+    background: var(--warn-tint);
+    border-color: var(--warn);
+  }
+  .metric.alert-warn .label,
+  .metric.alert-warn .value {
+    color: var(--warn);
+  }
+  .metric .chevron {
+    float: right;
+    color: var(--muted);
+    transition: transform 120ms ease;
+  }
+  .metric[aria-expanded="true"] .chevron {
+    transform: rotate(180deg);
+  }
+  .metric.quiet .value {
+    color: var(--muted);
+  }
+
+  /* Summary strip: dense figures with a label above. */
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-soft);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .summary-strip .stat {
+    padding: 12px 16px;
+    border-right: 1px solid var(--border);
+  }
+  .summary-strip .stat:last-child {
+    border-right: none;
+  }
+  .summary-strip .stat .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .summary-strip .stat .value {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .summary-strip .stat.accent .value {
+    color: var(--accent);
+  }
+  .summary-strip .stat.warn .value {
+    color: var(--warn);
+  }
+  .summary-strip .stat.bad .value {
+    color: var(--danger);
+  }
+
+  /* Inline SVG bar chart (billed per day). Theme tokens only. */
+  .bar-chart {
+    width: 100%;
+    margin: 8px 0 4px;
+  }
+  .bar-chart svg {
+    display: block;
+    width: 100%;
+    height: 180px;
+    overflow: visible;
+  }
+  .bar-chart .bar {
+    fill: var(--accent);
+    opacity: 0.85;
+    transition: opacity 80ms ease;
+  }
+  .bar-chart .bar:hover {
+    opacity: 1;
+  }
+  .bar-chart .bar.empty {
+    fill: var(--surface-2);
+    opacity: 1;
+  }
+  .bar-chart .axis {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+  .bar-chart .grid {
+    stroke: var(--border);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+  }
+  .bar-chart .tick {
+    fill: var(--muted);
+    font-family: var(--font-sans);
+    font-size: 11px;
+  }
+  .bar-chart .tick.num {
+    font-family: var(--font-mono);
+  }
+  .bar-chart .value-label {
+    fill: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-anchor: middle;
+  }
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .chart-legend .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--accent);
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  /* Period presets + filter bar. */
+  .preset-group {
+    display: inline-flex;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .preset-group button {
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    border-right: 1px solid var(--border-strong);
+    transition: background 80ms ease, color 80ms ease;
+  }
+  .preset-group button:last-child {
+    border-right: none;
+  }
+  .preset-group button:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--surface-hover);
+  }
+  .preset-group button.active {
+    color: var(--accent);
+    background: var(--accent-tint);
+  }
+  .preset-group button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    align-items: flex-end;
+    margin-bottom: 12px;
+  }
+  .filters .field {
+    gap: 4px;
+    min-width: 140px;
+  }
+  .filters .field.grow {
+    flex: 1 1 200px;
+  }
+  .filters input,
+  .filters select {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  input[type="datetime-local"] {
+    background: var(--surface-hover);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    font-size: 13px;
+    color: var(--fg);
+    color-scheme: dark;
+  }
+  input[type="datetime-local"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* Pagination. */
+  .pager {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .pager button {
+    padding: 5px 10px;
+    font-size: 13px;
+  }
+
+  /* Side drawer: in-page detail panel (per-user usage). */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 30;
+  }
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(920px, 94vw);
+    background: var(--bg);
+    border-left: 1px solid var(--border-strong);
+    box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
+    z-index: 31;
+    display: flex;
+    flex-direction: column;
+    animation: drawer-in 160ms ease;
+  }
+  @keyframes drawer-in {
+    from {
+      transform: translateX(24px);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+  .drawer-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-soft);
+  }
+  .drawer-head h2 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .drawer-body {
+    padding: 16px 20px 24px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .drawer .close {
+    padding: 4px;
+    border-radius: var(--radius);
+    color: var(--muted);
+  }
+  .drawer .close:hover {
+    color: var(--fg);
+    background: var(--surface-hover);
+  }
+
+  /* Tables that get wide: scroll inside, never the page. */
+  .table-scroll {
+    overflow-x: auto;
+  }
+  .table-scroll table {
+    min-width: 720px;
+  }
+  td.num,
+  th.num {
+    text-align: right;
+  }
+  td.actions .row {
+    gap: 6px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  td.actions button {
+    padding: 4px 10px;
+    font-size: 13px;
+  }
+  .cap-path {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  cc-usage-jobs-table table {
+    min-width: 1180px;
+  }
+  .cap-path .off {
+    color: var(--muted);
+  }
+  .truncate {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .empty {
+    color: var(--muted);
+    padding: 12px 0;
+  }
+
+  /* --- Settlement recourse -------------------------------------------- */
+  /* Muted tag: why the reconciler stopped (missing_delegation, ...). */
+  .tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  /* The dialog must sit above the users drawer (z 31) and its backdrop. */
+  .resolve-dialog {
+    z-index: 40;
+  }
+  .resolve-card {
+    width: min(560px, 92vw);
+    min-width: 0;
+  }
+  .resolve-card .close {
+    padding: 4px;
+    border-radius: var(--radius);
+    color: var(--muted);
+  }
+  .resolve-card .close:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--surface-hover);
+  }
+  .resolve-card textarea {
+    resize: vertical;
+    font-family: var(--font-sans);
+  }
+  .resolve-actions {
+    justify-content: flex-end;
+  }
+  /* Key/value facts about the job. */
+  .kv {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 16px;
+    margin: 0 0 16px;
+    font-size: 13px;
+  }
+  .kv dt {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    align-self: baseline;
+    padding-top: 2px;
+  }
+  .kv dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  /* Radio group: one card per outcome, the whole card is the hit target. */
+  .choice-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: none;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+  .choice-group legend {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    margin-bottom: 8px;
+    padding: 0;
+  }
+  .choice {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: 14px;
+    color: var(--fg);
+    transition: border-color 80ms ease, background 80ms ease;
+  }
+  .choice:hover {
+    border-color: var(--border-strong);
+  }
+  .choice.selected {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+  }
+  .choice:has(input:focus-visible) {
+    box-shadow: 0 0 0 2px var(--accent-tint-strong);
+  }
+  .choice input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--accent);
+  }
+  .choice-group:disabled .choice {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .choice-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .choice-title {
+    font-weight: 500;
+  }
+  .choice-explain {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .choice.selected .choice-explain {
+    color: var(--fg);
+    opacity: 0.85;
+  }
+
 }
 
 @layer utilities {
@@ -540,5 +1029,28 @@
   }
   .right {
     text-align: right;
+  }
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .nowrap {
+    white-space: nowrap;
+  }
+  .danger-text {
+    color: var(--danger);
+  }
+  .warn-text {
+    color: var(--warn);
+  }
+  .ok-text {
+    color: var(--ok);
+  }
+  .mb-1 {
+    margin-bottom: 8px;
   }
 }

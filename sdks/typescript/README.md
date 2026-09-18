@@ -78,6 +78,9 @@ const result = await ph.submitJob({
   offering: "vllm-qwen3.6-27b-default",
   estimatedUnits: 200,
   maxTotalUnits: 2000,
+  // Required on every paid call; see "Caller proof" below.
+  callerPublicKey,
+  signCallerProof,
   body: {
     messages: [{ role: "user", content: "hello" }],
     max_tokens: 50,
@@ -98,6 +101,8 @@ const handle = await ph.openSession({
   offering: "off.live",
   estimatedRunwayUnits: 1000,
   maxTotalUnits: 10_000,
+  callerPublicKey,
+  signCallerProof,
 });
 // ... stream work against handle.brokerUrl, refill via SessionRunner ...
 await ph.closeSession({ sessionId: handle.sessionId, actualUnits: 4250 });
@@ -105,20 +110,38 @@ await ph.closeSession({ sessionId: handle.sessionId, actualUnits: 4250 });
 
 Method surface (camelCase on the client; LOC wire is snake_case):
 
-|                                                                                                                       |                                  |
-| --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `listCapabilities()`                                                                                                  | discovery                        |
-| `listOrchestrators({ capability })`                                                                                   | discovery                        |
-| `submitJob({ capability, offering, estimatedUnits, body, maxTotalUnits? })`                                           | one-shot job (cases a/b/c)       |
-| `openSession({ capability, offering, estimatedRunwayUnits, maxTotalUnits })`                                          | open long-running session (case d) |
-| `refillSession(sessionId, { observedConsumedUnits })`                                                                 | top up an open session           |
-| `closeSession({ sessionId, actualUnits })`                                                                            | settle + close a session         |
-| `telemetry`                                                                                                           | direct access to the (mandatory) `TelemetryEmitter` |
+|                                                                                                                |                                                     |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `listCapabilities()`                                                                                           | discovery                                           |
+| `listOrchestrators({ capability })`                                                                            | discovery                                           |
+| `submitJob({ capability, offering, estimatedUnits, body, maxTotalUnits?, callerPublicKey, signCallerProof })`  | one-shot job (cases a/b/c)                          |
+| `openSession({ capability, offering, estimatedRunwayUnits, maxTotalUnits, callerPublicKey, signCallerProof })` | open long-running session (case d)                  |
+| `refillSession(sessionId, { observedConsumedUnits })`                                                          | top up an open session                              |
+| `closeSession({ sessionId, actualUnits })`                                                                     | settle + close a session                            |
+| `telemetry`                                                                                                    | direct access to the (mandatory) `TelemetryEmitter` |
 
 The `Livepeer-Open-Clearinghouse-SDK` identity header is sent on every
 call, and telemetry events (`request.mintStarted`,
 `request.settleCompleted`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
+
+Caller proof: every paid call requires `callerPublicKey` and `signCallerProof` on
+`submitJob` and `openSession` (wholesale is the only payment path; the SDK
+throws a `TypeError` if either is missing). `callerPublicKey` is the caller's
+compressed secp256k1 public key as lowercase hex with no `0x` prefix. The
+callback receives the opaque decoded authorization bytes and returns the
+`Livepeer-Caller-Proof`:
+
+- `digest = keccak256("livepeer-invocation-proof/v1\x00" || authorization)`
+  (legacy Keccak-256, not SHA3-256)
+- sign `digest` with Ethereum personal-sign (EIP-191):
+  `keccak256("\x19Ethereum Signed Message:\n32" || digest)`
+- return base64 (standard, padded) of the 65-byte `R || S || V`, `V = 27 + recovery id`
+
+The SDK retains the exact committed body and never takes custody of the
+caller's private key, so signing lives in your code. See
+[`examples/typescript/one-shot-job`](../../examples/typescript/one-shot-job/src/main.ts)
+for a working signer built on `@noble/curves` and `@noble/hashes`.
 
 Errors are typed: `InsufficientCredit`, `SpendCapExceeded`,
 `AccountNotApproved`, `EmailNotVerified`, `NoRouteAvailable`,

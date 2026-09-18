@@ -1,21 +1,19 @@
 """Jobs domain.
 
-Handoff-mode equivalent of the sessions domain for cases (a)/(b)/(c)
-of exec-plan 002 — atomic, post-settled, and streaming workloads
-that route over the upstream ``http-*@v0`` interaction modes.
+Handoff-mode equivalent of the sessions domain for one-shot unary,
+multipart, and streaming workloads routed through ``paid-job/v1``.
 
 Structurally identical to sessions: each job creates a
-``payment_session`` row under the hood with a job-class mode
-(``http-reqresp@v0`` / ``http-stream@v0`` / ``http-multipart@v0``).
+``payment_session`` row under the hood with the ``paid-job/v1`` protocol.
 The split exists at the endpoint surface because customers (and
 their SDKs) treat jobs and sessions as distinct concepts:
 
-  - Jobs are one-shot. They mint, the SDK calls the broker once,
-    settles with actual units, and closes. No refills.
-  - Sessions are long-running. They mint, refill on broker-emitted
-    balance-low, and close on customer/operator signal.
+  - Jobs are one-shot. LOC authorizes one request, the SDK calls the broker,
+    and durable signed usage closes the customer hold.
+  - Sessions are long-running. LOC revises a cumulative authorization cap and
+    closes from durable broker-signed status.
 
-Both share the underlying ``payment_session`` table, the
-reconciliation janitor, and the trust model (daemon ledger
-authoritative).
+Both share the underlying ``payment_session`` table. Job accounting is
+authorized by the broker's signed settlement and checked against the
+pinned route and quote before the encumbrance is released.
 """

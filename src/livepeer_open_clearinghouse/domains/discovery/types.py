@@ -7,21 +7,37 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from livepeer_open_clearinghouse.providers.registry_daemon import (
+    JobAxes,
+    RouteBinding,
+    RouteSnapshot,
+    SessionAxes,
+    SettlementKey,
+    UInt64Decimal,
+    WorkUnitEstimator,
+)
+
 
 class OfferingView(BaseModel):
     id: str
     price_per_work_unit_wei: Decimal | None
     work_unit: str | None
+    units_per_price: UInt64Decimal
+    protocol: str
+    work_unit_estimator: WorkUnitEstimator | None
+    job: JobAxes | None
+    session: SessionAxes | None
     # Merged node+capability extra_json metadata from the upstream
     # registry (opaque JSON object). Gateways read e.g.
     # extra["openai"]["model"] (the runner-facing serving name) and
-    # extra["interaction_mode"] to route and rewrite request bodies.
+    # workload metadata to route and rewrite request bodies.
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilityView(BaseModel):
     name: str
     work_unit: str | None
+    work_unit_estimator: WorkUnitEstimator | None
     offerings: list[OfferingView]
 
 
@@ -50,7 +66,17 @@ class RouteView(BaseModel):
     offering: str
     price_per_work_unit_wei: Decimal
     work_unit: str
-    units_per_price: int
+    units_per_price: UInt64Decimal
     quote_id: str
+    quote_version: UInt64Decimal
+    constraint_fingerprint: str
+    route_fingerprint: str
+    protocol: str
+    settlement_keys: tuple[SettlementKey, ...]
+    work_unit_estimator: WorkUnitEstimator | None
+    job: JobAxes | None
+    session: SessionAxes | None
+    route_binding: RouteBinding
+    route_snapshot: RouteSnapshot
     # Opaque registry metadata for this route (see OfferingView.extra).
     extra: dict[str, Any] = Field(default_factory=dict)

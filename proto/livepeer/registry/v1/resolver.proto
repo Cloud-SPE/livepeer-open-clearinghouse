@@ -65,6 +65,55 @@ message SelectedRoute {
   bytes  constraint_fingerprint   = 11;
   bytes  route_fingerprint        = 12;
   uint64 units_per_price          = 13;
+
+  // Protocol tag from the signed manifest tuple ("paid-job/v1",
+  // "paid-session/v1"). Typed because every consumer gates on it: it
+  // decides which open path a clearinghouse or gateway takes, so it
+  // must not travel as opaque metadata a publisher could shadow.
+  //
+  // The declared axes (job.transports, session.descriptor_schema, ...)
+  // deliberately stay in extra_json: this layer gates on nothing inside
+  // them, and a typed mirror would silently drop any axis a later spec
+  // minor adds — with the drop baked into the operator's signature.
+  // Pass-through cannot go stale.
+  string protocol                 = 14;
+
+  // Settlement-signing keys the orch's cold key delegates to, carried
+  // with the route so a consumer can verify a broker's settlement
+  // signature without fetching or verifying manifests itself. ALL
+  // currently-valid keys, newest first: a record signed just before a
+  // rotation must still verify, so an outgoing key stays until its
+  // expires_at. Rotation is a manifest republish with a higher
+  // publication_seq, so the rollback rule a resolver already enforces
+  // protects this set too.
+  repeated SettlementKey settlement_keys = 15;
+
+  // How a CLIENT computes a funding ceiling for this route before the
+  // work runs. Typed rather than left in extra_json because a consumer
+  // acts on it: it decides the reservation, and an operator-declared
+  // extra_json key of the same name could otherwise shadow it.
+  //
+  // Absent for most routes, and correctly so — a JSON workload exposes
+  // its ceiling in its own request parameters. Present only where the
+  // caller cannot derive the number it must reserve, which today means
+  // multipart uploads: the request carries no duration, so a consumer
+  // that guesses reserves one number while the seller bills another.
+  Estimator work_unit_estimator = 16;
+  // Immutable payment-ledger namespace, bound by the cold-signed tuple.
+  string settlement_domain_id = 17;
+}
+
+
+message SettlementKey {
+  // Uncompressed secp256k1 public key, 0x-prefixed hex (65 bytes).
+  string public_key = 1;
+  // Validity window. Accept a settlement record signed by this key when
+  // the record's issued_at falls inside it.
+  string not_before = 2;
+  string expires_at = 3;
+  // publication_seq of the manifest that introduced this key, for
+  // diagnosing which publication a consumer is verifying against.
+  uint64 introduced_in_publication_seq = 4;
 }
 
 message ListKnownRequest {}

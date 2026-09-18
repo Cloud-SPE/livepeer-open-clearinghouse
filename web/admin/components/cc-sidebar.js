@@ -4,11 +4,13 @@ import { icon } from "/admin/lib/icons.js";
 const ITEMS = [
   { key: "overview", label: "Overview", icon: "home" },
   { key: "users", label: "Users", icon: "users" },
+  { key: "usage", label: "Usage", icon: "chart" },
   { key: "pending", label: "Pending", icon: "hourglass" },
   { key: "operators", label: "Operators", icon: "shield" },
   { key: "catalog", label: "Catalog", icon: "search" },
   { key: "audit", label: "Audit log", icon: "log" },
   { key: "deposits", label: "Deposits", icon: "deposit" },
+  { key: "wholesale", label: "Wholesale", icon: "deposit" },
   { key: "telemetry", label: "Telemetry", icon: "activity" },
   { key: "sdk-fleet", label: "SDK fleet", icon: "shield" },
   { key: "email", label: "Email", icon: "log" },

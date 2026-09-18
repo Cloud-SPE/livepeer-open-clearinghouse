@@ -1,4 +1,4 @@
-"""Streaming session with HTTP topup (live-session-remote-runner@v0).
+"""Extensible paid-session/v1 session with authoritative HTTP top-up.
 
 Run with:
 
@@ -12,23 +12,39 @@ WebSocket — the customer's media plane observes balance-low out-of-band
 and routes the signal into the runner. The runner then asks LOC for a
 refill and POSTs it to the broker's control.topup_url.
 
-Note: the Python SDK's SessionRunner doesn't currently expose a public
-``on_balance_low`` method (unlike TS/Rust/Go); this example reaches into
-the private ``_on_balance_low`` to demonstrate the flow. Customers who
-prefer a public seam can call ``client.refill_session(...)`` directly
-and POST the envelope to the broker themselves.
+The media plane passes the broker's normative balance object into the public
+``on_balance`` method.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 
+from eth_hash.auto import keccak
+from eth_keys.datatypes import PrivateKey
 from livepeer_open_clearinghouse_sdk import (
     OpenClearinghouseClient,
     OpenClearinghouseError,
     SessionRunner,
 )
+
+# The caller key proves to the broker that this process is the one LOC
+# authorized. It never leaves this process: the SDK only receives the public
+# key and a signing callback. A fresh key per run is fine for an example;
+# production callers keep their own.
+CALLER_KEY = PrivateKey(os.urandom(32))
+CALLER_PUBLIC_KEY = CALLER_KEY.public_key.to_compressed_bytes().hex()
+
+
+def sign_caller_proof(authorization: bytes) -> str:
+    """Livepeer-Caller-Proof: EIP-191 signature over the invocation digest."""
+    digest = keccak(b"livepeer-invocation-proof/v1\x00" + authorization)
+    signed = keccak(b"\x19Ethereum Signed Message:\n32" + digest)
+    signature = bytearray(CALLER_KEY.sign_msg_hash(signed).to_bytes())
+    signature[64] += 27  # R || S || V with V in {27, 28}
+    return base64.b64encode(signature).decode()
 
 
 async def main() -> None:
@@ -39,10 +55,13 @@ async def main() -> None:
         handle = await client.open_session(
             capability="livepeer:remote-runner",
             offering="live-session-remote-runner",
+            descriptor_schema="livepeer.session.remote-runner/v1",
             estimated_runway_units=1000,
             max_total_units=10000,
+            caller_public_key=CALLER_PUBLIC_KEY,
+            sign_caller_proof=sign_caller_proof,
         )
-        print(f"session opened: {handle.session_id} (mode={handle.mode})")
+        print(f"session opened: {handle.session_id} (protocol={handle.protocol})")
 
         async with SessionRunner(
             client=client,
@@ -57,7 +76,17 @@ async def main() -> None:
         ) as runner:
             # Customer-driven refill. In production this fires when the
             # media plane observes balance-low on the runner channel.
-            await runner._on_balance_low({"observed_consumed_units": 500})  # noqa: SLF001
+            await runner.on_balance(
+                {
+                    "status": "low",
+                    "claimed_units": 500,
+                    "debited_units": 500,
+                    "unit": "session_second",
+                    "runway_units": 100,
+                    "runway_seconds_estimate": 100,
+                    "will_refuse_next_refill": False,
+                }
+            )
 
             settle = await runner.close(actual_units=750, outcome="complete")
             print("==== final settlement ====")

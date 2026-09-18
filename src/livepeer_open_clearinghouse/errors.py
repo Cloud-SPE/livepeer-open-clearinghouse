@@ -92,6 +92,21 @@ class NoRouteAvailable(OpenClearinghouseError):
         )
 
 
+class NoSettlementDelegation(OpenClearinghouseError):
+    """The route advertises no delegated settlement keys, so it can never settle."""
+
+    def __init__(self, *, capability: str, offering: str) -> None:
+        super().__init__(
+            status_code=400,
+            code="no_settlement_delegation",
+            message=(
+                f"route for capability={capability!r}, offering={offering!r} publishes no "
+                "settlement_keys; refusing to fund work that could never settle"
+            ),
+            details={"capability": capability, "offering": offering},
+        )
+
+
 class DaemonUnavailable(OpenClearinghouseError):
     def __init__(self, *, daemon: str, reason: str) -> None:
         super().__init__(
@@ -108,6 +123,36 @@ class DuplicateRequest(OpenClearinghouseError):
             status_code=409,
             code="DUPLICATE_REQUEST",
             message="A request with this Idempotency-Key is already in flight",
+        )
+
+
+class IdempotencyKeyReuse(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_KEY_REUSE",
+            message="This Idempotency-Key was already used with different content",
+        )
+
+
+class IdempotencyInProgress(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_IN_PROGRESS",
+            message="The request associated with this Idempotency-Key is still in flight",
+        )
+
+
+class IdempotencyOutcomeUnknown(OpenClearinghouseError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="IDEMPOTENCY_OUTCOME_UNKNOWN",
+            message=(
+                "The payer reserved this mint request but has no completed result to replay; "
+                "retry with a new Idempotency-Key"
+            ),
         )
 
 

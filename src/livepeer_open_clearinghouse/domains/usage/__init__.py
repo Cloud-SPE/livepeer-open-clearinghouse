@@ -1,1 +1,1 @@
-"""usage — per-key usage tally; app-dev-reported reconciliation for variable-cost jobs."""
+"""usage — what ran, on which key, what it cost; read from settled payment sessions."""

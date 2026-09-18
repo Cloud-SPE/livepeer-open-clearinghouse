@@ -44,7 +44,42 @@ message Capability {
   string             work_unit  = 2;
   repeated Offering  offerings  = 3;
   bytes              extra_json = 4;  // arbitrary JSON, opaque
+
+  // How a CLIENT computes a funding ceiling for this capability. Absent
+  // for most capabilities; see Estimator. Typed rather than carried in
+  // extra_json because a consumer acts on it, and an operator-declared
+  // key of the same name could otherwise shadow it.
+  Estimator work_unit_estimator = 5;
+  string settlement_domain_id = 6;
 }
+// Estimator mirrors the manifest schema's #/$defs/estimator, projected
+// from the signed manifest onto the route.
+//
+// This is the one measurement detail the protocol advertises. How a
+// seller counts is otherwise its own business and never leaves the host
+// config; the exception exists because a buyer reserving funds against a
+// measurement it cannot reproduce is not reserving, it is guessing.
+message Estimator {
+  // Versioned estimator name, e.g. "multipart-audio-duration/v1". A
+  // consumer MUST refuse an id it does not implement rather than guess a
+  // ceiling — an unknown id means the two sides would compute different
+  // numbers, and the one that matters is the seller's.
+  string id        = 1;
+  // How a fractional measurement becomes billable units. Ceiling,
+  // always: a rule that could round down funds less work than the
+  // exchange delivers.
+  string rounding  = 2;
+  // What an implementation does when it cannot measure exactly.
+  // "exact-or-reject" means refuse rather than estimate.
+  string exactness = 3;
+  // Canonical client implementation, e.g. an npm package name.
+  string package   = 4;
+  // Shared conformance fixtures both sides run, so a disagreement
+  // between implementations is a test failure rather than a settlement
+  // that exceeds a ceiling.
+  string fixtures  = 5;
+}
+
 
 // Offering is a priced tier under a capability. The id is opaque to the
 // registry — for AI workloads it's typically the model name (e.g.
