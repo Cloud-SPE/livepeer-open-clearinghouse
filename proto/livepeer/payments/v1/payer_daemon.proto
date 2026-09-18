@@ -99,7 +99,8 @@ message CreatePaymentRequest {
   // Accepted route/quote basis chosen by the gateway.
   AcceptedPrice accepted_price = 3;
 
-  // Funding scope the gateway is authorizing for this minted payment batch.
+  // Upper bound and audit metadata for this funding batch. This is not a
+  // workload authorization; account_funding below is also REQUIRED.
   FundingIntent funding = 4;
 
   // Caller-supplied idempotency key for this mint intent. REQUIRED.
@@ -131,8 +132,9 @@ message CreatePaymentRequest {
   // costs ~80 bytes per mint forever.
   string mint_request_id = 5;
 
-  // When present, funding.funded_value_wei is treated as a legacy ceiling and
-  // the daemon mints only max(0, target_available-observed_available).
+  // REQUIRED. The daemon mints only
+  // max(0, target_available-observed_available), bounded by funding above.
+  // Omitting this field is rejected; request-ceiling ticket minting is gone.
   AccountFundingIntent account_funding = 6;
 }
 
@@ -145,11 +147,14 @@ message CreatePaymentResponse {
   // Number of tickets this payment carries (for metrics / audit).
   uint32 tickets_created = 2;
 
-  // Aggregate expected value (EV = face_value × win_prob) committed by
-  // this payment.
+  // Aggregate expected value actually committed by the signed tickets,
+  // after authoritative payee parameters and integer EV rounding. A
+  // conforming sender re-quotes ticket sizing and refuses before signing
+  // when this cannot equal `funded_value_wei` exactly.
   BigUInt expected_value = 3;
 
-  // Effective funded value used for the minted payment batch.
+  // Effective account shortfall funded by this payment. This is not a
+  // workload maximum or a winning ticket's face value.
   BigUInt funded_value_wei = 4;
 
   // Quote identity serialized into the payment context.

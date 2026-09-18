@@ -4,9 +4,12 @@ Vendored protobuf definitions for the daemons Livepeer Open Clearinghouse integr
 
 Source: `/livepeer-cloud-spe/livepeer-network-modules/livepeer-network-protocol`.
 
-Payments baseline: Modules commit
-`913cf7de10e5c090fd60ccc36234943210670f0d`, including the
-`wholesale-account` `1.0.0-draft` contract. Re-vendoring requires recording a
+Vendored verbatim from Modules commit
+`d8d369de4aba36c397c4f758f668239b6c09a206` (Network Protocol `4.0.0`, `wholesale-account` `2.0.0-draft`).
+The wire schema is unchanged from the settlement-domain integration baseline
+`80800f8be422b5ed08c6fe65a65611f67131cbfd`; later upstream edits were
+comment-only on the payer and registry surfaces. Registry protos come from
+`proto-contracts/livepeer/registry/v1/`. Re-vendoring requires recording a
 new exact Modules revision; daemon image tags alone are not a schema identity.
 
 ## Layout

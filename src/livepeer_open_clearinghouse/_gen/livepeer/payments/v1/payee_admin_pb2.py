@@ -24,13 +24,14 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n&livepeer/payments/v1/payee_admin.proto\x12\x14livepeer.payments.v1\"^\n\x13ResetSessionRequest\x12\x0e\n\x06sender\x18\x01 \x01(\x0c\x12\x11\n\trecipient\x18\x02 \x01(\x0c\x12\x12\n\ncapability\x18\x03 \x01(\t\x12\x10\n\x08offering\x18\x04 \x01(\t\":\n\x14ResetSessionResponse\x12\r\n\x05reset\x18\x01 \x01(\x08\x12\x13\n\x0bold_work_id\x18\x02 \x01(\t2s\n\nPayeeAdmin\x12\x65\n\x0cResetSession\x12).livepeer.payments.v1.ResetSessionRequest\x1a*.livepeer.payments.v1.ResetSessionResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n&livepeer/payments/v1/payee_admin.proto\x12\x14livepeer.payments.v1\"^\n\x13ResetSessionRequest\x12\x0e\n\x06sender\x18\x01 \x01(\x0c\x12\x11\n\trecipient\x18\x02 \x01(\x0c\x12\x12\n\ncapability\x18\x03 \x01(\t\x12\x10\n\x08offering\x18\x04 \x01(\t\":\n\x14ResetSessionResponse\x12\r\n\x05reset\x18\x01 \x01(\x08\x12\x13\n\x0bold_work_id\x18\x02 \x01(\t2s\n\nPayeeAdmin\x12\x65\n\x0cResetSession\x12).livepeer.payments.v1.ResetSessionRequest\x1a*.livepeer.payments.v1.ResetSessionResponseBrZpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'livepeer.payments.v1.payee_admin_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'Zpgithub.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1'
   _globals['_RESETSESSIONREQUEST']._serialized_start=64
   _globals['_RESETSESSIONREQUEST']._serialized_end=158
   _globals['_RESETSESSIONRESPONSE']._serialized_start=160

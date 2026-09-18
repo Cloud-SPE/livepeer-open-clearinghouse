@@ -7,6 +7,8 @@ syntax = "proto3";
 
 package livepeer.payments.v1;
 
+option go_package = "github.com/Cloud-SPE/livepeer-network-modules/livepeer-network-protocol/proto-go/livepeer/payments/v1;paymentsv1";
+
 service PayeeAdmin {
   // Reset the active GetTicketParams session keyed by the stable
   // sender/recipient/capability/offering identity. The current open
