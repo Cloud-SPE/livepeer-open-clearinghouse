@@ -3,12 +3,17 @@
  *
  *     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \
  *     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \
+ *     OPEN_CLEARINGHOUSE_OFFERING=gpt-oss-20b \
+ *     OPEN_CLEARINGHOUSE_MODEL=gpt-oss-20b \
  *     pnpm --filter @livepeer/example-one-shot-job start
  *
  * The SDK handles the full handoff dance: opens a job via POST /v1/jobs
  * for a route-locked spend authorization, calls the broker directly with the
  * authorization and caller proof, reads the broker's Livepeer-Work-Units
  * header from the response, and posts settle back to LOC.
+ * OPEN_CLEARINGHOUSE_OFFERING is optional (default gpt-oss-20b).
+ * OPEN_CLEARINGHOUSE_MODEL is the OpenAI model name the offering advertises
+ * (its extra.openai.model); it defaults to the offering id.
  */
 
 import {
@@ -18,6 +23,34 @@ import {
   OpenClearinghouseError,
   RateLimited,
 } from "@livepeer/open-clearinghouse-sdk";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+
+/**
+ * Caller key + Livepeer-Caller-Proof signer. The SDK never holds the caller's
+ * private key, so signing lives here. This example uses a fresh ephemeral key
+ * per run; production callers keep and reuse their own key.
+ *
+ * proof = base64(R || S || V) of an EIP-191 personal-sign over
+ * keccak256("livepeer-invocation-proof/v1\0" || authorization).
+ */
+function callerSigner(privateKey = secp256k1.utils.randomSecretKey()) {
+  const callerPublicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true));
+  const signCallerProof = (authorization: Uint8Array): string => {
+    const digest = keccak_256(
+      concatBytes(utf8ToBytes("livepeer-invocation-proof/v1\x00"), authorization),
+    );
+    const msgHash = keccak_256(
+      concatBytes(utf8ToBytes("\x19Ethereum Signed Message:\n32"), digest),
+    );
+    // noble's "recovered" format is recovery(1) || R(32) || S(32).
+    const sig = secp256k1.sign(msgHash, privateKey, { prehash: false, format: "recovered" });
+    const rsv = concatBytes(sig.subarray(1), Uint8Array.of(27 + sig[0]!));
+    return Buffer.from(rsv).toString("base64");
+  };
+  return { callerPublicKey, signCallerProof };
+}
 
 async function chat(prompt: string): Promise<void> {
   const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
@@ -29,16 +62,22 @@ async function chat(prompt: string): Promise<void> {
   }
 
   const client = new OpenClearinghouseClient({ baseUrl, apiKey });
+  const { callerPublicKey, signCallerProof } = callerSigner();
+  const offering = process.env.OPEN_CLEARINGHOUSE_OFFERING ?? "gpt-oss-20b";
+  const model = process.env.OPEN_CLEARINGHOUSE_MODEL ?? offering;
 
   try {
     const result = await client.submitJob({
       capability: "openai:chat-completions",
-      offering: "gpt-oss-20b",
+      offering,
       // Best-guess input tokens; broker reports actual via Livepeer-Work-Units.
       estimatedUnits: 200,
       // Worst-case ceiling — LOC encumbers this much up front.
       maxTotalUnits: 2000,
+      callerPublicKey,
+      signCallerProof,
       body: {
+        model,
         messages: [{ role: "user", content: prompt }],
         max_tokens: 500,
       },

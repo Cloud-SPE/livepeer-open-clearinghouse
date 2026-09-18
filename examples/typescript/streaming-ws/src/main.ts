@@ -16,6 +16,34 @@ import {
   OpenClearinghouseError,
   SessionRunner,
 } from "@livepeer/open-clearinghouse-sdk";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+
+/**
+ * Caller key + Livepeer-Caller-Proof signer. The SDK never holds the caller's
+ * private key, so signing lives here. This example uses a fresh ephemeral key
+ * per run; production callers keep and reuse their own key.
+ *
+ * proof = base64(R || S || V) of an EIP-191 personal-sign over
+ * keccak256("livepeer-invocation-proof/v1\0" || authorization).
+ */
+function callerSigner(privateKey = secp256k1.utils.randomSecretKey()) {
+  const callerPublicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true));
+  const signCallerProof = (authorization: Uint8Array): string => {
+    const digest = keccak_256(
+      concatBytes(utf8ToBytes("livepeer-invocation-proof/v1\x00"), authorization),
+    );
+    const msgHash = keccak_256(
+      concatBytes(utf8ToBytes("\x19Ethereum Signed Message:\n32"), digest),
+    );
+    // noble's "recovered" format is recovery(1) || R(32) || S(32).
+    const sig = secp256k1.sign(msgHash, privateKey, { prehash: false, format: "recovered" });
+    const rsv = concatBytes(sig.subarray(1), Uint8Array.of(27 + sig[0]!));
+    return Buffer.from(rsv).toString("base64");
+  };
+  return { callerPublicKey, signCallerProof };
+}
 
 async function main(): Promise<void> {
   const baseUrl = process.env.OPEN_CLEARINGHOUSE_URL;
@@ -27,6 +55,7 @@ async function main(): Promise<void> {
   }
 
   const client = new OpenClearinghouseClient({ baseUrl, apiKey });
+  const { callerPublicKey, signCallerProof } = callerSigner();
 
   const handle = await client.openSession({
     capability: "livepeer:live-video-control",
@@ -34,6 +63,8 @@ async function main(): Promise<void> {
     descriptorSchema: "livepeer.session.video-control/v1",
     estimatedRunwayUnits: 1000,
     maxTotalUnits: 10000,
+    callerPublicKey,
+    signCallerProof,
   });
   console.log(
     `session opened: ${handle.sessionId} (protocol=${handle.protocol})`,

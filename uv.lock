@@ -1324,33 +1324,51 @@ name = "loc-example-one-shot-job"
 version = "0.0.0"
 source = { virtual = "examples/python/one-shot-job" }
 dependencies = [
+    { name = "eth-hash", extra = ["pycryptodome"] },
+    { name = "eth-keys" },
     { name = "livepeer-open-clearinghouse-sdk" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" }]
+requires-dist = [
+    { name = "eth-hash", extras = ["pycryptodome"], specifier = ">=0.7" },
+    { name = "eth-keys", specifier = ">=0.7" },
+    { name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" },
+]
 
 [[package]]
 name = "loc-example-streaming-http"
 version = "0.0.0"
 source = { virtual = "examples/python/streaming-http" }
 dependencies = [
+    { name = "eth-hash", extra = ["pycryptodome"] },
+    { name = "eth-keys" },
     { name = "livepeer-open-clearinghouse-sdk" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" }]
+requires-dist = [
+    { name = "eth-hash", extras = ["pycryptodome"], specifier = ">=0.7" },
+    { name = "eth-keys", specifier = ">=0.7" },
+    { name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" },
+]
 
 [[package]]
 name = "loc-example-streaming-ws"
 version = "0.0.0"
 source = { virtual = "examples/python/streaming-ws" }
 dependencies = [
+    { name = "eth-hash", extra = ["pycryptodome"] },
+    { name = "eth-keys" },
     { name = "livepeer-open-clearinghouse-sdk" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" }]
+requires-dist = [
+    { name = "eth-hash", extras = ["pycryptodome"], specifier = ">=0.7" },
+    { name = "eth-keys", specifier = ">=0.7" },
+    { name = "livepeer-open-clearinghouse-sdk", editable = "sdks/python" },
+]
 
 [[package]]
 name = "mako"

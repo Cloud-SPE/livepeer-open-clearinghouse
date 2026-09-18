@@ -8,7 +8,9 @@
     "start": "tsx src/main.ts"
   },
   "dependencies": {
-    "@livepeer/open-clearinghouse-sdk": "workspace:*"
+    "@livepeer/open-clearinghouse-sdk": "workspace:*",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

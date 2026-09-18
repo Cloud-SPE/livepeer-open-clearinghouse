@@ -8,17 +8,25 @@
 // the broker pushes a Livepeer-Balance-Low frame, the runner asks LOC
 // for a refill and delivers it back as a session.topup frame — the
 // OnRefillSucceeded callback fires on each successful top-up.
+//
+// The caller proof is signed by an ephemeral secp256k1 key generated for
+// this run (see callerKey below).
 package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	loc "github.com/livepeer/livepeer-open-clearinghouse-sdk-go/livepeer_open_clearinghouse"
+	"golang.org/x/crypto/sha3"
 )
 
 func main() {
@@ -39,6 +47,11 @@ func run() error {
 		return err
 	}
 
+	caller, err := newCallerKey()
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -49,6 +62,8 @@ func run() error {
 		SessionParams:        map[string]any{},
 		EstimatedRunwayUnits: 1000,
 		MaxTotalUnits:        10000,
+		CallerPublicKey:      caller.PublicKeyHex(),
+		SignCallerProof:      caller.Sign,
 	})
 	if err != nil {
 		var apiErr *loc.Error
@@ -103,4 +118,42 @@ func run() error {
 	fmt.Printf("billed:  %v wei\n", settle["billed_value_wei"])
 	fmt.Printf("refund:  %v wei\n", settle["refund_wei"])
 	return nil
+}
+
+// callerKey is the caller identity behind the Livepeer-Caller-Proof. The
+// SDK never takes custody of it: it only hands the opaque authorization
+// bytes to SignCallerProof. This example generates an ephemeral key per
+// run; production callers keep (and protect) their own long-lived key.
+type callerKey struct{ priv *secp256k1.PrivateKey }
+
+func newCallerKey() (*callerKey, error) {
+	priv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate caller key: %w", err)
+	}
+	return &callerKey{priv: priv}, nil
+}
+
+// PublicKeyHex is the compressed secp256k1 public key, lowercase hex, no 0x.
+func (k *callerKey) PublicKeyHex() string {
+	return hex.EncodeToString(k.priv.PubKey().SerializeCompressed())
+}
+
+// Sign produces the caller proof: an EIP-191 personal-sign over
+// keccak256("livepeer-invocation-proof/v1\x00" || authorization),
+// returned as base64(R || S || V) with V = 27 + recovery id.
+func (k *callerKey) Sign(authorization []byte) (string, error) {
+	digest := keccak256([]byte("livepeer-invocation-proof/v1\x00"), authorization)
+	msgHash := keccak256([]byte("\x19Ethereum Signed Message:\n32"), digest)
+	compact := ecdsa.SignCompact(k.priv, msgHash, false) // [V, R, S]
+	sig := append(compact[1:65:65], compact[0])          // [R, S, V]
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+func keccak256(parts ...[]byte) []byte {
+	h := sha3.NewLegacyKeccak256()
+	for _, p := range parts {
+		h.Write(p)
+	}
+	return h.Sum(nil)
 }

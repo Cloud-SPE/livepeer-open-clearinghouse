@@ -3,7 +3,11 @@ name = "loc-example-streaming-ws"
 version = "0.0.0"
 description = "Example: paid-session/v1 with an optional events WebSocket."
 requires-python = ">=3.10"
-dependencies = ["livepeer-open-clearinghouse-sdk"]
+dependencies = [
+  "livepeer-open-clearinghouse-sdk",
+  "eth-keys>=0.7",
+  "eth-hash[pycryptodome]>=0.7",
+]
 
 [tool.uv]
 package = false

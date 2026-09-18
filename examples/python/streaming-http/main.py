@@ -19,13 +19,32 @@ The media plane passes the broker's normative balance object into the public
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 
+from eth_hash.auto import keccak
+from eth_keys.datatypes import PrivateKey
 from livepeer_open_clearinghouse_sdk import (
     OpenClearinghouseClient,
     OpenClearinghouseError,
     SessionRunner,
 )
+
+# The caller key proves to the broker that this process is the one LOC
+# authorized. It never leaves this process: the SDK only receives the public
+# key and a signing callback. A fresh key per run is fine for an example;
+# production callers keep their own.
+CALLER_KEY = PrivateKey(os.urandom(32))
+CALLER_PUBLIC_KEY = CALLER_KEY.public_key.to_compressed_bytes().hex()
+
+
+def sign_caller_proof(authorization: bytes) -> str:
+    """Livepeer-Caller-Proof: EIP-191 signature over the invocation digest."""
+    digest = keccak(b"livepeer-invocation-proof/v1\x00" + authorization)
+    signed = keccak(b"\x19Ethereum Signed Message:\n32" + digest)
+    signature = bytearray(CALLER_KEY.sign_msg_hash(signed).to_bytes())
+    signature[64] += 27  # R || S || V with V in {27, 28}
+    return base64.b64encode(signature).decode()
 
 
 async def main() -> None:
@@ -39,6 +58,8 @@ async def main() -> None:
             descriptor_schema="livepeer.session.remote-runner/v1",
             estimated_runway_units=1000,
             max_total_units=10000,
+            caller_public_key=CALLER_PUBLIC_KEY,
+            sign_caller_proof=sign_caller_proof,
         )
         print(f"session opened: {handle.session_id} (protocol={handle.protocol})")
 

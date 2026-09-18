@@ -5,6 +5,8 @@ Run with:
     uv sync
     OPEN_CLEARINGHOUSE_URL=http://localhost:8000 \\
     OPEN_CLEARINGHOUSE_API_KEY=pymth_live_... \\
+    OPEN_CLEARINGHOUSE_OFFERING=gpt-oss-20b \\
+    OPEN_CLEARINGHOUSE_MODEL=gpt-oss-20b \\
     uv run --package loc-example-one-shot-job python examples/python/one-shot-job/main.py
 
 The SDK handles the full handoff dance for you: obtains a route-locked
@@ -17,9 +19,12 @@ record back to LOC via POST /v1/jobs/{id}/settle.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import uuid
 
+from eth_hash.auto import keccak
+from eth_keys.datatypes import PrivateKey
 from livepeer_open_clearinghouse_sdk import (
     InsufficientCredit,
     NoRouteAvailable,
@@ -29,16 +34,36 @@ from livepeer_open_clearinghouse_sdk import (
     wei_to_eth,
 )
 
+# The caller key proves to the broker that this process is the one LOC
+# authorized. It never leaves this process: the SDK only receives the public
+# key and a signing callback. A fresh key per run is fine for an example;
+# production callers keep their own.
+CALLER_KEY = PrivateKey(os.urandom(32))
+CALLER_PUBLIC_KEY = CALLER_KEY.public_key.to_compressed_bytes().hex()
+
+
+def sign_caller_proof(authorization: bytes) -> str:
+    """Livepeer-Caller-Proof: EIP-191 signature over the invocation digest."""
+    digest = keccak(b"livepeer-invocation-proof/v1\x00" + authorization)
+    signed = keccak(b"\x19Ethereum Signed Message:\n32" + digest)
+    signature = bytearray(CALLER_KEY.sign_msg_hash(signed).to_bytes())
+    signature[64] += 27  # R || S || V with V in {27, 28}
+    return base64.b64encode(signature).decode()
+
 
 async def chat(prompt: str) -> None:
     base_url = os.environ["OPEN_CLEARINGHOUSE_URL"]
     api_key = os.environ["OPEN_CLEARINGHOUSE_API_KEY"]
+    offering = os.environ.get("OPEN_CLEARINGHOUSE_OFFERING", "gpt-oss-20b")
+    # The OpenAI model name the offering advertises (its extra.openai.model);
+    # brokers reject a chat request without one.
+    model = os.environ.get("OPEN_CLEARINGHOUSE_MODEL", offering)
 
     async with OpenClearinghouseClient(base_url=base_url, api_key=api_key) as client:
         try:
             result = await client.submit_job(
                 capability="openai:chat-completions",
-                offering="gpt-oss-20b",
+                offering=offering,
                 # Best-guess for input tokens; broker reports actual
                 # consumption back via Livepeer-Work-Units.
                 estimated_units=200,
@@ -46,10 +71,13 @@ async def chat(prompt: str) -> None:
                 # front. Refund happens at settle.
                 max_total_units=2000,
                 body={
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 500,
                 },
                 request_id=str(uuid.uuid4()),
+                caller_public_key=CALLER_PUBLIC_KEY,
+                sign_caller_proof=sign_caller_proof,
             )
         except InsufficientCredit as exc:
             print(f"not enough credit: {exc.details}")

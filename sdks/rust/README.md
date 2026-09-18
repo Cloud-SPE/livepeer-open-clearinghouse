@@ -133,11 +133,25 @@ every call, and telemetry events (`request.mint_started`,
 `request.settle_completed`, `session.opened`, …) fire fire-and-forget
 through `/v1/telemetry`. There is no telemetry opt-out.
 
-For wholesale-capable routes, configure `ClientOptions::with_caller_proof`
-with the compressed caller public key and an `Arc<CallerProofSigner>`. The
-callback receives opaque decoded authorization bytes and returns the base64
-caller proof. The SDK retains the exact committed body and never takes
-custody of the caller's private key.
+`ClientOptions::with_caller_proof` is **required** for every paid call
+(`submit_job`, `open_session`); wholesale is the only payment path, and a
+client built without it fails its first paid call. Pass the caller public
+key (compressed secp256k1, lowercase hex, no `0x` prefix) and a
+`CallerProofSigner` (`Arc<dyn Fn(&[u8]) -> Result<String, _>>`). The
+callback receives the opaque decoded authorization bytes and returns the
+`Livepeer-Caller-Proof` value:
+
+- `digest = keccak256("livepeer-invocation-proof/v1\0" || authorization)`
+  (legacy Keccak-256, not SHA3-256);
+- sign the 32-byte digest with Ethereum personal-sign (EIP-191):
+  `keccak256("\x19Ethereum Signed Message:\n32" || digest)`;
+- return base64 (standard, padded) of `R(32) || S(32) || V(1)`, with
+  `V = 27 + recovery id`.
+
+The SDK retains the exact committed body and never takes custody of the
+caller's private key, so signing lives in your code. See
+[`examples/rust/one-shot-job`](../../examples/rust/one-shot-job/src/main.rs)
+for a working signer built on `k256` and `sha3`.
 
 `OpenClearinghouseError` is a `thiserror` enum with `Transport`, `Api`,
 and `Config` variants. Call `.kind()` for the high-level `ErrorKind`

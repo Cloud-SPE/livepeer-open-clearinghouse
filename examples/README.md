@@ -18,6 +18,17 @@ a SDK and re-running an example here works without a publish step.
 ## Run an example
 
 All examples expect `OPEN_CLEARINGHOUSE_URL` and `OPEN_CLEARINGHOUSE_API_KEY`.
+`one-shot-job` also reads an optional `OPEN_CLEARINGHOUSE_OFFERING` (default
+`gpt-oss-20b`); list live offerings with `GET /v1/capabilities`. The
+streaming scenarios target illustrative session capabilities, so they need a
+broker that advertises them.
+
+Every paid call needs a caller key. Each example generates an ephemeral
+secp256k1 key and passes the SDK its compressed public key plus a callback
+that signs the `Livepeer-Caller-Proof` (EIP-191 over
+`keccak256("livepeer-invocation-proof/v1\x00" || authorization)`, returned
+as base64 `R || S || V`). The SDK never holds the private key; production
+callers keep their own.
 
 ```bash
 # TypeScript (from repo root)

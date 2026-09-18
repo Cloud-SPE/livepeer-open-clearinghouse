@@ -14,16 +14,24 @@
 use std::env;
 use std::sync::Arc;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+use k256::ecdsa::SigningKey;
 use livepeer_open_clearinghouse_sdk::{
-    Client, ClientOptions, OpenClearinghouseError, OpenSessionInput, RefillEvent, SessionBalance,
-    SessionRunner, SessionRunnerOptions, WinddownEvent,
+    CallerProofSigner, Client, ClientOptions, OpenClearinghouseError, OpenSessionInput,
+    RefillEvent, SessionBalance, SessionRunner, SessionRunnerOptions, WinddownEvent,
 };
+use rand_core::OsRng;
+use sha3::{Digest, Keccak256};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_url = env::var("OPEN_CLEARINGHOUSE_URL")?;
     let api_key = env::var("OPEN_CLEARINGHOUSE_API_KEY")?;
-    let client = Client::new(ClientOptions::new(base_url, api_key))?;
+    let (caller_public_key, caller_signer) = caller_proof();
+    let client = Client::new(
+        ClientOptions::new(base_url, api_key).with_caller_proof(caller_public_key, caller_signer),
+    )?;
 
     let handle = client
         .open_session(OpenSessionInput {
@@ -92,4 +100,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("billed:  {} wei", outcome.billed_value_wei);
     println!("refund:  {} wei", outcome.refund_wei);
     Ok(())
+}
+
+/// Generate a caller key and a `Livepeer-Caller-Proof` signer for it.
+///
+/// The key is ephemeral (fresh per process run) to keep the example
+/// self-contained. Production callers keep and protect their own
+/// secp256k1 key; the SDK never takes custody of it.
+///
+/// Scheme (Modules `headers/livepeer-headers.md`):
+/// `digest = keccak256("livepeer-invocation-proof/v1\0" || authorization)`,
+/// signed with EIP-191 personal-sign over the 32-byte digest, encoded as
+/// base64(R || S || V) with V = 27 + recovery id. The public key is the
+/// compressed SEC1 point as lowercase hex without a `0x` prefix.
+fn caller_proof() -> (String, CallerProofSigner) {
+    let key = SigningKey::random(&mut OsRng);
+    let public_key = key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let signer: CallerProofSigner = Arc::new(move |authorization: &[u8]| {
+        let digest = Keccak256::new()
+            .chain_update(b"livepeer-invocation-proof/v1\x00")
+            .chain_update(authorization)
+            .finalize();
+        let message_hash = Keccak256::new()
+            .chain_update(b"\x19Ethereum Signed Message:\n32")
+            .chain_update(digest)
+            .finalize();
+        let (signature, recovery_id) = key
+            .sign_prehash_recoverable(&message_hash)
+            .map_err(|e| OpenClearinghouseError::Config(format!("caller proof: {e}")))?;
+        let mut proof = signature.to_bytes().to_vec();
+        proof.push(27 + recovery_id.to_byte());
+        Ok(STANDARD.encode(proof))
+    });
+    (public_key, signer)
 }
