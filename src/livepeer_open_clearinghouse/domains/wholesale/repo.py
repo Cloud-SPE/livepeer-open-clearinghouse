@@ -22,7 +22,7 @@ class WholesaleAccount(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixi
 
     This table deliberately has no customer or API-key foreign key. Its identity
     is the protocol-owned ``(chain, payer, payee, settlement domain,
-    denomination)`` tuple.
+    wholesale_account_id, denomination)`` tuple.
     """
 
     __table_args__ = (
@@ -31,6 +31,7 @@ class WholesaleAccount(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixi
             "payer_eth_address",
             "payee_eth_address",
             "settlement_domain_id",
+            "wholesale_account_id",
             "denomination",
             name="uq_wholesale_account_identity",
         ),
@@ -39,6 +40,7 @@ class WholesaleAccount(Base, UuidPkMixin, TimestampMixin, TableNameFromClassMixi
     chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payer_eth_address: Mapped[str] = mapped_column(String(42), nullable=False)
     payee_eth_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    wholesale_account_id: Mapped[str] = mapped_column(String(128), nullable=False)
     settlement_domain_id: Mapped[str] = mapped_column(nullable=False)
     denomination: Mapped[str] = mapped_column(String(16), nullable=False)
     protocol_version: Mapped[str] = mapped_column(String(64), nullable=False)

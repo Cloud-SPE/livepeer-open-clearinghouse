@@ -14,7 +14,9 @@ LOC adopts the fair wholesale funding contract implemented by Livepeer
 Network Modules. The integration baseline is Modules commit
 `80800f8be422b5ed08c6fe65a65611f67131cbfd`: Network Protocol `4.0.0`,
 `wholesale-account` `2.0.0-draft`, and spend-authorization signing domain
-`livepeer-spend-authorization/v2`. LOC persists the account contract version
+`livepeer-spend-authorization/v2`. The shared-wallet extension in
+[design 003](003-shared-wallet-account-isolation.md) supersedes that account
+contract with `3.0.0-draft` and signing domain `v3`. LOC persists the account contract version
 and requires the versioned paid protocols rather than inferring support from
 daemon image tags or offering metadata.
 
@@ -323,3 +325,5 @@ regenerated vendored bindings before LOC changes behavior.
   semantics, not merely a discovery hint.
 - LOC gains flexibility to offer pass-through, cost-plus, retail, or multiple
   plans without changing the Livepeer wholesale protocol.
+
+Shared-wallet deployment extends the account coordinate with `wholesale_account_id`; see [account isolation](003-shared-wallet-account-isolation.md) for receipt semantics and migration requirements.

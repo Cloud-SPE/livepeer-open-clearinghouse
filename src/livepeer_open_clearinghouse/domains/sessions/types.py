@@ -246,5 +246,6 @@ class ActiveWholesaleAccountRoute(BaseModel):
     route_snapshot: RouteSnapshot
     payer_eth_address: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     chain_id: int = Field(gt=0)
+    wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     denomination: Literal["wei"] = "wei"

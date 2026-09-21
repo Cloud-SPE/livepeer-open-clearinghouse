@@ -60,3 +60,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the domain layout and
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+For shared-wallet production and development, configure an explicit
+`WHOLESALE_ACCOUNT_ID` and preserve each payer daemon’s database. See the
+[account isolation and migration contract](docs/design-docs/003-shared-wallet-account-isolation.md).

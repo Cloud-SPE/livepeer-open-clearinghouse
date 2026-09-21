@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 
@@ -37,7 +38,7 @@ from livepeer_open_clearinghouse.providers.payment_daemon import (
 from livepeer_open_clearinghouse.providers.registry_daemon import SelectedRoute
 
 _ETH_ADDRESS_BYTES = 20
-WHOLESALE_ACCOUNT_PROTOCOL_VERSION = "wholesale-account/2.0.0-draft"
+WHOLESALE_ACCOUNT_PROTOCOL_VERSION = "wholesale-account/3.0.0-draft"
 
 
 class WholesaleFundingPolicyError(ValueError):
@@ -110,6 +111,7 @@ async def claim_account_funding(
             candidate
             for candidate in payee_accounts
             if candidate.settlement_domain_id == settlement_domain_id
+            and candidate.wholesale_account_id == observation.wholesale_account_id
         ),
         None,
     )
@@ -134,6 +136,7 @@ async def claim_account_funding(
             payer_eth_address=observation.payer,
             payee_eth_address=observation.payee,
             settlement_domain_id=settlement_domain_id,
+            wholesale_account_id=observation.wholesale_account_id,
             denomination=observation.denomination,
             protocol_version=protocol_version,
             broker_url=route.worker_url,
@@ -234,6 +237,7 @@ async def complete_account_funding(
         payer_eth_address=payer_eth_address,
         payee_eth_address=route.eth_address,
         settlement_domain_id=str(settlement_domain_id),
+        wholesale_account_id=account.wholesale_account_id,
     )
     after = await broker.get_wholesale_account(
         broker_url=route.worker_url,
@@ -241,6 +245,7 @@ async def complete_account_funding(
         payee_eth_address=route.eth_address,
         chain_id=chain_id,
         settlement_domain_id=str(settlement_domain_id),
+        wholesale_account_id=account.wholesale_account_id,
     )
     await acknowledge_account_funding(
         db,
@@ -278,6 +283,7 @@ async def plan_observed_account_shortfall(
             candidate
             for candidate in payee_accounts
             if candidate.settlement_domain_id == settlement_domain_id
+            and candidate.wholesale_account_id == observation.wholesale_account_id
         ),
         None,
     )
@@ -359,6 +365,7 @@ async def acknowledge_account_funding(
         result.payer != account.payer_eth_address
         or result.payee != account.payee_eth_address
         or result.settlement_domain_id != settlement_domain_id
+        or result.wholesale_account_id != account.wholesale_account_id
         or not _account_matches(
             account,
             observation=observation,
@@ -366,9 +373,12 @@ async def acknowledge_account_funding(
         )
     ):
         raise WholesaleFundingPolicyError("broker acknowledgement changed account identity")
-    if result.account_version != observation.version:
+    if result.account_version > observation.version:
         raise WholesaleFundingPolicyError("broker acknowledgement and observation disagree")
-    if result.available_value_wei != observation.available_value_wei:
+    if (
+        result.account_version == observation.version
+        and result.available_value_wei != observation.available_value_wei
+    ):
         raise WholesaleFundingPolicyError("broker acknowledgement and observation disagree")
     if observation.version < account.remote_version:
         raise WholesaleFundingPolicyError("broker account observation moved backwards")
@@ -406,26 +416,24 @@ def _acknowledged_credit(
     account: WholesaleAccount,
     funding: WholesaleFunding,
 ) -> Decimal:
-    """Prove a first transfer or recover it from the monotonic account total."""
+    """Attribute only the exact envelope's durable receipt, including retries."""
 
-    credited_delta = observation.credited_value_wei - account.credited_value_wei
-    if result.replayed:
-        if result.credited_value_wei != 0:
-            raise WholesaleFundingPolicyError("broker funding replay transferred new credit")
-        if (
-            observation.version <= account.remote_version
-            or credited_delta < funding.requested_shortfall_wei
-        ):
-            raise WholesaleFundingPolicyError(
-                "broker funding replay is not proven by durable account credit"
-            )
-        return credited_delta
+    if (
+        funding.payment_bytes is None
+        or result.funding_id != hashlib.sha256(funding.payment_bytes).hexdigest()
+    ):
+        raise WholesaleFundingPolicyError("broker funding receipt identifies another payment")
+    if result.credited_value_wei != funding.minted_expected_value_wei:
+        raise WholesaleFundingPolicyError("broker funding credit differs from minted value")
     if result.credited_value_wei < funding.requested_shortfall_wei:
         raise WholesaleFundingPolicyError("broker under-credited account funding")
-    if credited_delta < result.credited_value_wei:
-        raise WholesaleFundingPolicyError(
-            "broker funding credit is not reflected in the durable account"
-        )
+    if observation.credited_value_wei < result.credited_value_wei:
+        raise WholesaleFundingPolicyError("broker funding credit exceeds durable account credit")
+    if funding.status == "acknowledged" and (
+        funding.credited_value_wei != result.credited_value_wei
+        or funding.account_version != result.account_version
+    ):
+        raise WholesaleFundingPolicyError("broker changed an acknowledged funding receipt")
     return result.credited_value_wei
 
 
@@ -514,6 +522,7 @@ def _account_matches(
         and account.payee_eth_address == observation.payee
         and observation.settlement_domain_id == settlement_domain_id
         and account.settlement_domain_id == settlement_domain_id
+        and account.wholesale_account_id == observation.wholesale_account_id
         and account.denomination == observation.denomination
     )
 
@@ -625,5 +634,6 @@ def create_account_funding_request(
             target_available_wei=plan.target_available_wei,
             observed_available_wei=plan.observed_available_wei,
             settlement_domain_id=route.settlement_domain_id,
+            wholesale_account_id=observation.wholesale_account_id,
         ),
     )

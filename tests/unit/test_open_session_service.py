@@ -8,6 +8,7 @@ payment_session + Payment rows.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -104,6 +105,7 @@ def _settings() -> Settings:
         admin_bootstrap_token="x",
         session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
+        wholesale_account_id="loc-test",
     )
 
 
@@ -194,6 +196,8 @@ class _WholesaleBroker:
             available_value_wei=self.available_value_wei,
             version=self.version,
             observed_at=_clock().now(),
+            wholesale_account_id="loc-test",
+            isolation_version=1,
         )
 
     async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
@@ -205,6 +209,7 @@ class _WholesaleBroker:
         self.available_value_wei = Decimal(100)
         self.version += 1
         return WholesaleFundingResult(
+            funding_id=hashlib.sha256(_["payment_bytes"]).hexdigest(),
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
             settlement_domain_id="0x" + "aa" * 32,
@@ -212,6 +217,8 @@ class _WholesaleBroker:
             available_value_wei=100,
             account_version=self.version,
             replayed=False,
+            wholesale_account_id="loc-test",
+            isolation_version=1,
         )
 
     async def get_settlement(self, **_: object) -> dict[str, object] | None:
@@ -221,6 +228,8 @@ class _WholesaleBroker:
         self, *, payer_eth_address: str, authorization_id: str, **_: object
     ) -> SpendAuthorizationObservation:
         return SpendAuthorizationObservation(
+            payee="0x" + "11" * 20,
+            settlement_domain_id="0x" + "aa" * 32,
             payer=payer_eth_address,
             authorization_id=authorization_id,
             state=self.authorization_states.get(authorization_id, SpendAuthorizationState.ISSUED),
@@ -230,6 +239,8 @@ class _WholesaleBroker:
             actual_units=0,
             settlement_seq=0,
             observed_at=_clock().now(),
+            wholesale_account_id="loc-test",
+            isolation_version=1,
         )
 
 

@@ -203,6 +203,7 @@ def _settings() -> Settings:
         database_url="sqlite+aiosqlite:///:memory:",
         idempotency_inflight_timeout_seconds=5,
         idempotency_retention_seconds=60,
+        wholesale_account_id="loc-test",
     )
 
 

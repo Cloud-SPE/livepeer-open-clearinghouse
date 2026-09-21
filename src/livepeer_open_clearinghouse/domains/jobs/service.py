@@ -266,6 +266,7 @@ async def _open_wholesale_job(
         not_before=now,
         expires_at=now + timedelta(minutes=5),
         chain_id=settings.wholesale_chain_id,
+        wholesale_account_id=settings.wholesale_account_id,
     )
     await sessions_service.record_spend_authorization_grant(
         db,
@@ -284,6 +285,7 @@ async def _open_wholesale_job(
             payer_eth_address=payer,
             payee_eth_address=route.eth_address,
             chain_id=settings.wholesale_chain_id,
+            wholesale_account_id=settings.wholesale_account_id,
             settlement_domain_id=route.settlement_domain_id,
         )
         limits = WholesaleFundingLimits(
@@ -513,6 +515,7 @@ async def settle_job(  # noqa: PLR0912, PLR0915 — explicit settlement state ma
             settlement_keys=settlement_keys,
             expected=JobSettlementExpectation(
                 settlement_domain_id=grant.settlement_domain_id,
+                wholesale_account_id=grant.wholesale_account_id,
                 request_id=request_id,
                 job_id=broker_job_id,
                 work_id=job_row.work_id,
@@ -834,9 +837,10 @@ async def _request_non_admission(
     payer_scope = await _job_payer_scope(db, job_row)
     if payer_scope is None:
         raise BrokerSettlementQueryError("job lacks persisted payer sender scope")
-    sender_eth_address, recipient_eth_address = payer_scope
+    sender_eth_address, recipient_eth_address, wholesale_account_id = payer_scope
     try:
         query = NonAdmissionQuery(
+            wholesale_account_id=wholesale_account_id,
             protocol=PAID_JOB_PROTOCOL,
             work_id=job_row.work_id,
             sender=sender_eth_address,
@@ -860,7 +864,9 @@ async def _request_non_admission(
     )
 
 
-async def _job_payer_scope(db: AsyncSession, job_row: PaymentSession) -> tuple[str, str] | None:
+async def _job_payer_scope(
+    db: AsyncSession, job_row: PaymentSession
+) -> tuple[str, str, str] | None:
     """Return the immutable wholesale payer/payee scope."""
 
     grant = await db.scalar(
@@ -873,7 +879,7 @@ async def _job_payer_scope(db: AsyncSession, job_row: PaymentSession) -> tuple[s
     recipient = snapshot.get("eth_address")
     if grant is None or not isinstance(recipient, str):
         return None
-    return grant.payer_eth_address.lower(), recipient.lower()
+    return grant.payer_eth_address.lower(), recipient.lower(), grant.wholesale_account_id
 
 
 async def _retain_verified_non_admission(
@@ -904,7 +910,7 @@ async def _retain_verified_non_admission(
         payer_scope = await _job_payer_scope(db, job_row)
         if payer_scope is None:
             raise SettlementVerificationError("missing_sender", "payer sender was not persisted")
-        sender_eth_address, recipient_eth_address = payer_scope
+        sender_eth_address, recipient_eth_address, wholesale_account_id = payer_scope
         settlement_keys = snapshot["settlement_keys"]
         if not isinstance(settlement_keys, list) or not settlement_keys:
             raise SettlementVerificationError(
@@ -914,6 +920,7 @@ async def _retain_verified_non_admission(
             envelope,
             settlement_keys=settlement_keys,
             expected=NonAdmissionExpectation(
+                wholesale_account_id=wholesale_account_id,
                 settlement_domain_id=str(snapshot["settlement_domain_id"]),
                 protocol=PAID_JOB_PROTOCOL,
                 request_id=request_id,

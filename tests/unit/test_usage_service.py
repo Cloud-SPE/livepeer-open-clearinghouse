@@ -55,6 +55,7 @@ def _settings(cap_wei: int = 0) -> Settings:
         database_url="sqlite+aiosqlite:///:memory:",
         default_spend_period_seconds=86400,
         default_spend_period_cap_wei=cap_wei,
+        wholesale_account_id="loc-test",
     )
 
 

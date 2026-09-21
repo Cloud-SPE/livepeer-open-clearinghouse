@@ -321,6 +321,7 @@ class WholesaleAccountView(BaseModel):
     payer_eth_address: str
     payee_eth_address: str
     settlement_domain_id: str
+    wholesale_account_id: str
     denomination: str
     protocol_version: str
     broker_url: str

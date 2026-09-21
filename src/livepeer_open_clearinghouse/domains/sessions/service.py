@@ -316,6 +316,7 @@ async def record_spend_authorization_grant(
             response.payer.hex(),
             request.chain_id,
             settlement_domain_id,
+            request.wholesale_account_id,
             request.denomination,
             request.max_debit_wei,
             request.max_total_units,
@@ -333,6 +334,7 @@ async def record_spend_authorization_grant(
             existing.payer_eth_address.removeprefix("0x"),
             existing.chain_id,
             existing.settlement_domain_id,
+            existing.wholesale_account_id,
             existing.denomination,
             existing.max_debit_wei,
             existing.max_total_units,
@@ -350,6 +352,11 @@ async def record_spend_authorization_grant(
                 SpendAuthorizationGrant.authorization_id == request.predecessor_authorization_id,
             )
         )
+        if (
+            predecessor is not None
+            and predecessor.wholesale_account_id != request.wholesale_account_id
+        ):
+            raise InvalidSessionRequest(message="authorization revision changed wholesale account")
         if predecessor is None:
             raise InvalidSessionRequest(message="authorization predecessor is not retained")
 
@@ -367,6 +374,7 @@ async def record_spend_authorization_grant(
         payer_eth_address="0x" + response.payer.hex(),
         chain_id=request.chain_id,
         settlement_domain_id=settlement_domain_id,
+        wholesale_account_id=request.wholesale_account_id,
         denomination=request.denomination,
         max_debit_wei=request.max_debit_wei,
         max_total_units=request.max_total_units,
@@ -885,6 +893,7 @@ async def _replenish_wholesale_account(
         payer_eth_address=payer_eth_address,
         payee_eth_address=route.eth_address,
         chain_id=settings.wholesale_chain_id,
+        wholesale_account_id=settings.wholesale_account_id,
         settlement_domain_id=route.settlement_domain_id,
     )
     if mint_request_id is None:
@@ -894,6 +903,7 @@ async def _replenish_wholesale_account(
                 observation.payer,
                 observation.payee,
                 str(observation.settlement_domain_id),
+                observation.wholesale_account_id,
                 observation.denomination,
             )
         )
@@ -968,7 +978,7 @@ async def list_active_wholesale_account_routes(
             )
         ).all()
     )
-    candidates: dict[tuple[int, str, str, str, str], ActiveWholesaleAccountRoute] = {}
+    candidates: dict[tuple[int, str, str, str, str, str], ActiveWholesaleAccountRoute] = {}
     for session_row, grant in rows:
         snapshot = RouteSnapshot.model_validate(grant.route_snapshot)
         if session_row.route_snapshot is None:
@@ -985,6 +995,7 @@ async def list_active_wholesale_account_routes(
             grant.payer_eth_address,
             snapshot.eth_address.lower(),
             grant.settlement_domain_id,
+            grant.wholesale_account_id,
             grant.denomination,
         )
         candidates.setdefault(
@@ -994,6 +1005,7 @@ async def list_active_wholesale_account_routes(
                 payer_eth_address=grant.payer_eth_address,
                 chain_id=grant.chain_id,
                 settlement_domain_id=grant.settlement_domain_id,
+                wholesale_account_id=grant.wholesale_account_id,
                 denomination=grant.denomination,
             ),
         )
@@ -1123,6 +1135,8 @@ async def replenish_active_wholesale_account(
 ) -> WholesaleFundingPlan:
     """Restore one active account from authoritative receiver state."""
 
+    if candidate.wholesale_account_id != settings.wholesale_account_id:
+        raise InvalidSessionRequest(message="active wholesale route changed wholesale account")
     if candidate.chain_id != settings.wholesale_chain_id:
         raise InvalidSessionRequest(message="active wholesale route changed chain")
     route = _selected_route_from_snapshot(candidate.route_snapshot)
@@ -1199,6 +1213,7 @@ async def _open_wholesale_session(
         not_before=now,
         expires_at=now + timedelta(seconds=settings.session_authorization_ttl_seconds),
         chain_id=settings.wholesale_chain_id,
+        wholesale_account_id=settings.wholesale_account_id,
     )
     await record_spend_authorization_grant(
         db,
@@ -1481,6 +1496,11 @@ async def _refill_wholesale_session(
                 SpendAuthorizationGrant.authorization_id == session_row.authorization_id,
             )
         )
+        if (
+            predecessor is not None
+            and predecessor.wholesale_account_id != settings.wholesale_account_id
+        ):
+            raise InvalidSessionRequest(message="authorization revision changed wholesale account")
         if predecessor is None:
             raise InvalidSessionRequest(message="authorization predecessor is unavailable")
         new_wholesale_cap = _bill_value_wei(
@@ -1524,6 +1544,7 @@ async def _refill_wholesale_session(
             not_before=now,
             expires_at=now + timedelta(seconds=settings.session_authorization_ttl_seconds),
             chain_id=settings.wholesale_chain_id,
+            wholesale_account_id=settings.wholesale_account_id,
             revision=next_revision,
             predecessor_authorization_id=predecessor.authorization_id,
         )
@@ -1788,6 +1809,7 @@ async def _verify_close_settlement(
             settlement_keys=settlement_keys,
             expected=SessionSettlementExpectation(
                 settlement_domain_id=grant.settlement_domain_id,
+                wholesale_account_id=grant.wholesale_account_id,
                 gateway_session_id=str(session_row.id),
                 broker_session_id=session_row.broker_session_id,
                 work_id=expected_work_id,
@@ -2035,6 +2057,9 @@ async def reconcile_spend_authorization_states(
                 broker_url=broker_url,
                 payer_eth_address=grant.payer_eth_address,
                 authorization_id=grant.authorization_id,
+                wholesale_account_id=grant.wholesale_account_id,
+                payee_eth_address=str(snapshot["eth_address"]),
+                settlement_domain_id=grant.settlement_domain_id,
             )
         except BrokerWholesaleAccountError:
             continue

@@ -4,13 +4,17 @@ Vendored protobuf definitions for the daemons Livepeer Open Clearinghouse integr
 
 Source: `/livepeer-cloud-spe/livepeer-network-modules/livepeer-network-protocol`.
 
-Vendored verbatim from Modules commit
-`d8d369de4aba36c397c4f758f668239b6c09a206` (Network Protocol `4.0.0`, `wholesale-account` `2.0.0-draft`).
-The wire schema is unchanged from the settlement-domain integration baseline
-`80800f8be422b5ed08c6fe65a65611f67131cbfd`; later upstream edits were
-comment-only on the payer and registry surfaces. Registry protos come from
-`proto-contracts/livepeer/registry/v1/`. Re-vendoring requires recording a
-new exact Modules revision; daemon image tags alone are not a schema identity.
+The payments `types.proto` and `payer_daemon.proto` are a coordinated candidate
+from Modules branch `feat/shared-wallet-isolation`, commit `50df55314aa84646fc4ccdc094a85ee1424a181e`.
+They introduce wholesale-account `3.0.0-draft` and authorization signing domain
+`v3`. The vendored content is also pinned by SHA256:
+
+- `types.proto`: `d97b96526830b2b87bacf1eeb9a5b5e665e5584fb5b846161827f42cd1aadf66`
+- `payer_daemon.proto`: `2c66f61c40ed38261433a4cd67500f02f01deb46738eead4e5976e10c87a1445`
+
+Registry protos remain from `proto-contracts/livepeer/registry/v1/` at the
+previous Modules revision `d8d369de4aba36c397c4f758f668239b6c09a206`.
+Daemon image tags alone are not a schema identity.
 
 ## Layout
 

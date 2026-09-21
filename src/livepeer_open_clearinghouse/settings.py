@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     session_authorization_ttl_seconds: int = Field(default=86_400, ge=300)
 
     # ---- mandatory wholesale-account policy ----
+    wholesale_account_id: str = Field(default="", max_length=128, pattern=r"^[A-Za-z0-9._:-]*$")
     wholesale_chain_id: int = Field(default=0, ge=0)
     wholesale_target_available_wei: int = Field(default=0, ge=0)
     wholesale_replenish_below_wei: int = Field(default=0, ge=0)
@@ -155,6 +156,8 @@ class Settings(BaseSettings):
     def reject_unsafe_production_defaults(self) -> Settings:
         """Fail startup instead of silently running production with dev trust."""
 
+        if self.payment_daemon_mode == "grpc" and not self.wholesale_account_id:
+            raise ValueError("WHOLESALE_ACCOUNT_ID is required for a real payer daemon")
         if self.app_env == "prod":
             wholesale_values = (
                 self.wholesale_chain_id,

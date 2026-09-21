@@ -30,6 +30,7 @@ def _settings() -> Settings:
         resend_api_key="re_test_fake_key",
         email_from_address="no-reply@example.com",
         email_from_name="Test",
+        wholesale_account_id="loc-test",
     )
 
 

@@ -54,6 +54,7 @@ def _sample_authorization_request() -> CreateSpendAuthorizationRequest:
         broker_uri="https://broker.example",
         chain_id=42161,
         settlement_domain_id="0x" + "aa" * 32,
+        wholesale_account_id="loc-test",
     )
 
 
@@ -153,13 +154,21 @@ async def test_grpc_create_spend_authorization_rejects_changed_identity() -> Non
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_grpc_create_spend_authorization_rejects_scope_drift() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("broker_uri", "https://different.example"),
+        ("wholesale_account_id", "blueclaw-prod"),
+        ("domain", "livepeer-spend-authorization/v2"),
+    ],
+)
+async def test_grpc_create_spend_authorization_rejects_scope_drift(field: str, value: str) -> None:
     from livepeer.payments.v1 import payer_daemon_pb2, types_pb2
 
     request = _sample_authorization_request()
     signed_response = await MockPaymentDaemonClient().create_spend_authorization(request)
     signed = types_pb2.SpendAuthorization.FromString(signed_response.authorization_bytes)
-    signed.payload.broker_uri = "https://different.example"
+    setattr(signed.payload, field, value)
 
     class Stub:
         async def CreateSpendAuthorization(self, _request: object) -> object:
@@ -234,6 +243,7 @@ def _sample_request(funded_wei: int = 200_000) -> CreatePaymentRequest:
             target_available_wei=Decimal(funded_wei),
             observed_available_wei=Decimal(0),
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         ),
     )
 
@@ -274,6 +284,7 @@ def test_request_to_proto_carries_shared_account_snapshot() -> None:
             target_available_wei=Decimal(75_000),
             observed_available_wei=Decimal(25_000),
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         ),
     )
     proto = dataclass_request_to_proto(req)
@@ -296,6 +307,7 @@ def test_zero_shortfall_response_is_valid_without_payment_envelope() -> None:
             target_available_wei=Decimal(50_000),
             observed_available_wei=Decimal(50_000),
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         ),
     )
     proto = payer_daemon_pb2.CreatePaymentResponse(
@@ -320,6 +332,7 @@ def test_account_funding_rejects_daemon_shortfall_drift() -> None:
             target_available_wei=Decimal(75_000),
             observed_available_wei=Decimal(25_000),
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         ),
     )
     proto = payer_daemon_pb2.CreatePaymentResponse(

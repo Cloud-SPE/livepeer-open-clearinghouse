@@ -37,7 +37,7 @@ async def test_schema_guard_rejects_old_or_new_revision() -> None:
     session = AsyncMock()
     session.execute.return_value = result
 
-    with pytest.raises(RuntimeError, match="expected 0028, found 0013"):
+    with pytest.raises(RuntimeError, match="expected 0029, found 0013"):
         await require_compatible_schema(session)
 
 

@@ -10622,6 +10622,10 @@
             "type": "string",
             "title": "Settlement Domain Id"
           },
+          "wholesale_account_id": {
+            "type": "string",
+            "title": "Wholesale Account Id"
+          },
           "denomination": {
             "type": "string",
             "title": "Denomination"
@@ -10679,6 +10683,7 @@
           "payer_eth_address",
           "payee_eth_address",
           "settlement_domain_id",
+          "wholesale_account_id",
           "denomination",
           "protocol_version",
           "broker_url",

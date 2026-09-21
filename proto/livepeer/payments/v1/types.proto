@@ -224,8 +224,11 @@ message FundingIntent {
 // Signature input is the deterministic protobuf encoding of this message,
 // hashed with keccak256 and signed with Ethereum personal_sign (EIP-191).
 message SpendAuthorizationPayload {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 23;
+
   // Domain/version tag. Producers MUST set
-  // "livepeer-spend-authorization/v2".
+  // "livepeer-spend-authorization/v3".
   string domain = 1;
   bytes payer = 2;
   bytes payee = 3;
@@ -270,6 +273,9 @@ enum SpendAuthorizationState {
 // The caller is the payer application on the sender daemon's trusted socket;
 // untrusted end callers never supply these values directly.
 message AccountFundingIntent {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 4;
+
   BigUInt target_available_wei = 1;
   BigUInt observed_available_wei = 2;
   // Must match the cold-signed route and the observed account.
@@ -277,6 +283,9 @@ message AccountFundingIntent {
 }
 
 message WholesaleAccountView {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 12;
+
   bytes payer = 1;
   bytes payee = 2;
   BigUInt credited_value_wei = 3;
@@ -292,6 +301,9 @@ message WholesaleAccountView {
 
 // SettlementRecord is the broker-authoritative accounting result for a request/session.
 message SettlementRecord {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 35;
+
   QuoteRef accepted_quote_ref = 1;
   string work_unit_name = 2;
   uint64 estimated_units = 3;
@@ -425,6 +437,9 @@ message SettlementRecord {
 // request has produced two contradictory statements under one delegated
 // key, which is why both MUST be retained.
 message NonAdmissionRecord {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 12;
+
   // Always "paid-job/v1" or "paid-session/v1". Present so a record
   // cannot be replayed across protocols.
   string protocol = 1;

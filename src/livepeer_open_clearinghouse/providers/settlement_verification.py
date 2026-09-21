@@ -31,6 +31,7 @@ class SettlementVerificationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class JobSettlementExpectation:
+    wholesale_account_id: str
     settlement_domain_id: str
     request_id: str
     job_id: str
@@ -60,6 +61,7 @@ class VerifiedJobSettlement:
 
 @dataclass(frozen=True, slots=True)
 class NonAdmissionExpectation:
+    wholesale_account_id: str
     settlement_domain_id: str
     protocol: str
     request_id: str
@@ -83,6 +85,7 @@ class VerifiedNonAdmission:
 
 @dataclass(frozen=True, slots=True)
 class SessionSettlementExpectation:
+    wholesale_account_id: str
     settlement_domain_id: str
     gateway_session_id: str
     broker_session_id: str | None
@@ -133,6 +136,13 @@ def verify_job_settlement(
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
     _reject_failed_debit(record)
+    if (
+        not expected.wholesale_account_id
+        or record.wholesale_account_id != expected.wholesale_account_id
+    ):
+        raise SettlementVerificationError(
+            "wholesale_account_mismatch", "signed wholesale account does not match"
+        )
     _verify_settlement_domain(record, expected.settlement_domain_id)
     if record.request_id != expected.request_id:
         raise SettlementVerificationError(
@@ -235,6 +245,13 @@ def verify_non_admission(  # noqa: PLR0912 — every signed scope field fails cl
     coverage_started_at = _parse_timestamp(record.coverage_started_at, field="coverage_started_at")
     _authorize_key(public_key, observed_at, settlement_keys)
     _verify_settlement_domain(record, expected.settlement_domain_id)
+    if (
+        not expected.wholesale_account_id
+        or record.wholesale_account_id != expected.wholesale_account_id
+    ):
+        raise SettlementVerificationError(
+            "wholesale_account_mismatch", "signed wholesale account does not match"
+        )
 
     if record.outcome != record.NOT_ADMITTED:
         raise SettlementVerificationError(
@@ -297,6 +314,13 @@ def verify_session_settlement(
 
     record, issued_at, public_key = _verify_envelope(envelope, settlement_keys)
     _reject_failed_debit(record)
+    if (
+        not expected.wholesale_account_id
+        or record.wholesale_account_id != expected.wholesale_account_id
+    ):
+        raise SettlementVerificationError(
+            "wholesale_account_mismatch", "signed wholesale account does not match"
+        )
     _verify_settlement_domain(record, expected.settlement_domain_id)
     _verify_session_identity(record, expected)
     billed_value = _verify_session_accounting(record, expected)

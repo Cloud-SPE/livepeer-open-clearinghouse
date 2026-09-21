@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import uuid
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -29,6 +30,8 @@ class WholesaleAccountObservation(BaseModel):
 
     payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    isolation_version: Literal[1]
     settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     chain_id: int = Field(gt=0)
     denomination: str
@@ -47,11 +50,14 @@ class WholesaleFundingResult(BaseModel):
 
     payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    isolation_version: Literal[1]
     settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     credited_value_wei: Decimal = Field(ge=0)
     available_value_wei: Decimal = Field(ge=0)
     account_version: int = Field(ge=0)
     replayed: bool
+    funding_id: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class SpendAuthorizationState(StrEnum):
@@ -68,7 +74,11 @@ class SpendAuthorizationObservation(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    payee: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    settlement_domain_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
     payer: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    isolation_version: Literal[1]
     authorization_id: str = Field(min_length=1)
     state: SpendAuthorizationState
     reserved_value_wei: Decimal = Field(ge=0)
@@ -146,6 +156,7 @@ class NonAdmissionQuery(BaseModel):
     quote_version: int = Field(ge=1)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     job_issued_at: str = Field(min_length=1)
 
 
@@ -199,6 +210,7 @@ class BrokerWholesaleAccountClient(Protocol):
         payee_eth_address: str,
         chain_id: int,
         settlement_domain_id: str,
+        wholesale_account_id: str,
     ) -> WholesaleAccountObservation: ...
 
     async def fund_wholesale_account(
@@ -211,6 +223,7 @@ class BrokerWholesaleAccountClient(Protocol):
         payer_eth_address: str,
         payee_eth_address: str,
         settlement_domain_id: str,
+        wholesale_account_id: str,
     ) -> WholesaleFundingResult: ...
 
     async def get_spend_authorization(
@@ -219,6 +232,9 @@ class BrokerWholesaleAccountClient(Protocol):
         broker_url: str,
         payer_eth_address: str,
         authorization_id: str,
+        wholesale_account_id: str,
+        payee_eth_address: str,
+        settlement_domain_id: str,
     ) -> SpendAuthorizationObservation: ...
 
 
@@ -236,12 +252,19 @@ class HttpBrokerSettlementClient:
         payee_eth_address: str,
         chain_id: int,
         settlement_domain_id: str,
+        wholesale_account_id: str,
     ) -> WholesaleAccountObservation:
         """Read one TLS-bound account snapshot for shortfall calculation."""
 
         url = f"{broker_url.rstrip('/')}/v1/payment/account"
         try:
-            response = await self._client.post(url, json={"payer_eth_address": payer_eth_address})
+            response = await self._client.post(
+                url,
+                json={
+                    "payer_eth_address": payer_eth_address,
+                    "wholesale_account_id": wholesale_account_id,
+                },
+            )
         except httpx.HTTPError as exc:
             raise BrokerWholesaleAccountError("broker account query failed") from exc
         if response.status_code != httpx.codes.OK:
@@ -264,6 +287,8 @@ class HttpBrokerSettlementClient:
             raise BrokerWholesaleAccountError("broker returned a non-wei account")
         if account.settlement_domain_id != settlement_domain_id:
             raise BrokerWholesaleAccountError("broker returned a different settlement domain")
+        if account.wholesale_account_id != wholesale_account_id:
+            raise BrokerWholesaleAccountError("broker returned a different wholesale account")
         return account
 
     async def get_spend_authorization(
@@ -272,6 +297,9 @@ class HttpBrokerSettlementClient:
         broker_url: str,
         payer_eth_address: str,
         authorization_id: str,
+        wholesale_account_id: str,
+        payee_eth_address: str,
+        settlement_domain_id: str,
     ) -> SpendAuthorizationObservation:
         """Read irrevocable authorization state from its locked broker."""
 
@@ -279,6 +307,7 @@ class HttpBrokerSettlementClient:
         body = {
             "payer_eth_address": payer_eth_address,
             "authorization_id": authorization_id,
+            "wholesale_account_id": wholesale_account_id,
         }
         try:
             response = await self._client.post(url, json=body)
@@ -298,6 +327,12 @@ class HttpBrokerSettlementClient:
             raise BrokerWholesaleAccountError("broker returned a different authorization payer")
         if observation.authorization_id != authorization_id:
             raise BrokerWholesaleAccountError("broker returned a different authorization")
+        if observation.wholesale_account_id != wholesale_account_id:
+            raise BrokerWholesaleAccountError("broker returned a different wholesale account")
+        if observation.payee != payee_eth_address.lower():
+            raise BrokerWholesaleAccountError("broker returned a different authorization payee")
+        if observation.settlement_domain_id != settlement_domain_id:
+            raise BrokerWholesaleAccountError("broker returned a different authorization domain")
         return observation
 
     async def fund_wholesale_account(
@@ -310,6 +345,7 @@ class HttpBrokerSettlementClient:
         payer_eth_address: str,
         payee_eth_address: str,
         settlement_domain_id: str,
+        wholesale_account_id: str,
     ) -> WholesaleFundingResult:
         """Deposit an envelope without delegating it to an end caller."""
 
@@ -320,6 +356,7 @@ class HttpBrokerSettlementClient:
             "Livepeer-Payment": base64.b64encode(payment_bytes).decode("ascii"),
             "Livepeer-Capability": capability,
             "Livepeer-Offering": offering,
+            "Livepeer-Wholesale-Account-Id": wholesale_account_id,
         }
         try:
             response = await self._client.post(url, headers=headers, content=b"")
@@ -341,6 +378,10 @@ class HttpBrokerSettlementClient:
             raise BrokerWholesaleAccountError("broker funded a different payee")
         if result.settlement_domain_id != settlement_domain_id:
             raise BrokerWholesaleAccountError("broker funded a different settlement domain")
+        if result.wholesale_account_id != wholesale_account_id:
+            raise BrokerWholesaleAccountError("broker funded a different wholesale account")
+        if result.funding_id != hashlib.sha256(payment_bytes).hexdigest():
+            raise BrokerWholesaleAccountError("broker returned a different funding receipt")
         return result
 
     async def get_settlement(

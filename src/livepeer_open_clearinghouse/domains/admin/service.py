@@ -121,6 +121,7 @@ async def wholesale_overview(
                 payer_eth_address=account.payer_eth_address,
                 payee_eth_address=account.payee_eth_address,
                 settlement_domain_id=account.settlement_domain_id,
+                wholesale_account_id=account.wholesale_account_id,
                 denomination=account.denomination,
                 protocol_version=account.protocol_version,
                 broker_url=account.broker_url,

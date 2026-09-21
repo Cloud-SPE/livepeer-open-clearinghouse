@@ -47,6 +47,7 @@ def _settings() -> Settings:
         wholesale_max_available_per_payee_wei=2000,
         wholesale_max_aggregate_available_wei=5000,
         wholesale_max_single_funding_wei=1000,
+        wholesale_account_id="loc-test",
     )
 
 
@@ -68,6 +69,7 @@ async def test_wholesale_overview_flags_stale_account_and_stalled_funding(
         available_value_wei=Decimal(500),
         remote_version=7,
         observed_at=NOW - timedelta(minutes=10),
+        wholesale_account_id="loc-test",
     )
     db_session.add_all(
         [account, WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(800))]
@@ -111,6 +113,7 @@ async def test_wholesale_overview_flags_stale_account_and_stalled_funding(
     assert payload["projected_available_wei"] == "800"
     assert "payment_bytes" not in payload["fundings"][0]
     assert "user_id" not in payload["accounts"][0]
+    assert payload["accounts"][0]["wholesale_account_id"] == "loc-test"
 
 
 def test_wholesale_admin_endpoint_requires_operator(client: TestClient) -> None:

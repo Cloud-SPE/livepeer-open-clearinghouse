@@ -53,6 +53,7 @@ def signed_job_settlement(
     account_funding_value_wei: int = 0,
     account_version: int = 0,
     settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
+    wholesale_account_id: str = "loc-test",
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     debited = actual_units if debited_units is None else debited_units
@@ -86,6 +87,7 @@ def signed_job_settlement(
         "job_id": job_id,
         "request_id": request_id,
         "settlement_domain_id": settlement_domain_id,
+        "wholesale_account_id": wholesale_account_id,
     }
     if authorization_id is not None:
         payload.update(
@@ -135,6 +137,7 @@ def signed_non_admission(
     observed_at: str = TEST_ISSUED_AT,
     coverage_started_at: str = "2026-05-01T00:00:00Z",
     settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
+    wholesale_account_id: str = "loc-test",
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one broker-signed, audit-only NOT_ADMITTED record."""
@@ -156,6 +159,7 @@ def signed_non_admission(
         "coverage_started_at": coverage_started_at,
         "outcome": "NOT_ADMITTED",
         "settlement_domain_id": settlement_domain_id,
+        "wholesale_account_id": wholesale_account_id,
     }
     canonical = rfc8785.dumps(payload)
     prefix = f"\x19Ethereum Signed Message:\n{len(canonical)}".encode()
@@ -203,6 +207,7 @@ def signed_session_settlement(
     released_value_wei: int = 0,
     breakdown: dict[str, str] | None = None,
     settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
+    wholesale_account_id: str = "loc-test",
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
     """Build one signed paid-session/v1 settlement envelope."""
@@ -248,6 +253,7 @@ def signed_session_settlement(
         "issued_at": issued_at,
         "state": state,
         "settlement_domain_id": settlement_domain_id,
+        "wholesale_account_id": wholesale_account_id,
     }
     if breakdown is not None:
         payload["breakdown"] = breakdown
