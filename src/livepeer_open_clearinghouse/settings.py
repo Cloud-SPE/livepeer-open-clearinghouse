@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     payment_daemon_socket: str = "/var/run/livepeer/payer-daemon.sock"
     registry_daemon_mode: Literal["mock", "grpc"] = "mock"
     registry_daemon_socket: str = "/var/run/livepeer/service-registry.sock"
-    registry_selection_timeout_seconds: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    registry_selection_timeout_seconds: float = Field(default=45.0, gt=0, allow_inf_nan=False)
     registry_cache_ttl_seconds: int = Field(default=60, ge=0)
 
     # ---- billing defaults ----

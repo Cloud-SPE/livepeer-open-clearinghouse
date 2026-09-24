@@ -362,4 +362,4 @@ async def test_selection_transport_errors_are_sanitized(method, rpc_name, code) 
     assert caught.value.status_code == 503
     assert caught.value.details == {"daemon": "registry", "reason": code}
     assert "private" not in str(caught.value)
-    assert call.call_args.kwargs == {"timeout": 10.0}
+    assert call.call_args.kwargs == {"timeout": 45.0}

@@ -372,12 +372,15 @@ funding. Unexpected exceptions retain the existing timeout recovery behavior.
 No rows or identities are deleted, and no migration is required.
 
 Both registry selection RPCs have a configurable
-`REGISTRY_SELECTION_TIMEOUT_SECONDS` deadline (default 10 seconds). `NOT_FOUND`
+`REGISTRY_SELECTION_TIMEOUT_SECONDS` deadline (default 45 seconds). `NOT_FOUND`
 means no candidate; other gRPC statuses become sanitized `503
 DAEMON_UNAVAILABLE` responses. Empty selections are not cached, so registry
 recovery is visible on the next preparation attempt. A bound missing route
 continues to return `409 route_binding_mismatch`, while an unbound missing route
-returns `404 NO_ROUTE_AVAILABLE`.
+returns `404 NO_ROUTE_AVAILABLE`. Keep caller and ingress/proxy HTTP timeouts
+above the selection deadline with response-processing headroom, and keep the
+claim timeout longer than selection. Increasing the registry budget alone
+cannot extend a caller that still gives up after 30 seconds.
 
 See [live preparation recovery](references/live-session-preparation-recovery.md)
 for the incident review, RPC availability evidence, and coordinated deployment

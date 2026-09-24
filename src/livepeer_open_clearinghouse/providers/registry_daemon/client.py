@@ -507,7 +507,7 @@ class GrpcRegistryClient:
     flagged in tech-debt for caching.
     """
 
-    def __init__(self, socket_path: str, *, selection_timeout_seconds: float = 10.0) -> None:
+    def __init__(self, socket_path: str, *, selection_timeout_seconds: float = 45.0) -> None:
         self._socket_path = socket_path
         self._selection_timeout_seconds = selection_timeout_seconds
         self._channel: Any | None = None

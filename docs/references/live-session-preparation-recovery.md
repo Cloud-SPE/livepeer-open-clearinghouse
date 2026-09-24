@@ -5,7 +5,7 @@
 The transcode team's `docs/proposals/loc-live-recovery/TEAM-HANDOFF.md` identified
 an unhandled `SelectMany NOT_FOUND` and a committed preparation claim that
 remained in flight until its 300-second timeout. The reviewed LOC change adds
-consistent selection error mapping and a configurable 10-second RPC deadline,
+consistent selection error mapping and a configurable 45-second RPC deadline,
 then releases known failed preparations for immediate identical retry.
 
 Changes beyond the proposal are necessary for reliable recovery:
@@ -65,10 +65,15 @@ verification are recorded in `loc-0do`; the LOC code review is `loc-67t`.
    healthy endpoint first in `CHAIN_RPC_URLS` and test fallback against a failed
    primary in staging. Check the Modules revision for the timeout defect above.
 2. Build and publish the reviewed LOC revision as an immutable image. Set
-   `REGISTRY_SELECTION_TIMEOUT_SECONDS=10` in the gateway environment. Measure
+   `REGISTRY_SELECTION_TIMEOUT_SECONDS=45` in the gateway environment. Measure
    cold and warm selection for `video:transcode.live / gateway-ingest`; adjust
    the deadline from evidence while keeping it below the caller HTTP timeout
-   and preparation claim timeout. The reported caller budget was about 30s.
+   and preparation claim timeout. The reported caller budget was about 30s,
+   so it must be raised above 45 seconds (with response-processing headroom)
+   to use the new default. Include every ingress/proxy timeout in that review.
+   The initial patch used 10 seconds; on September 24 the operator selected
+   45 seconds to allow more time for cold, geographically distributed lookups.
+   This is a configurable operational budget, not a measured latency guarantee.
 3. Apply the RPC configuration to the daemons and replace the gateway using the
    deployment's existing Compose project and env file. Preserve database,
    payer wallet, payer DB, volumes, secrets, and existing session/accounting
