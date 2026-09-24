@@ -216,7 +216,7 @@ def verify_non_admission(  # noqa: PLR0912 — every signed scope field fails cl
     settlement_keys: Sequence[Mapping[str, Any]],
     expected: NonAdmissionExpectation,
 ) -> VerifiedNonAdmission:
-    """Verify one signed audit claim without granting it billing authority."""
+    """Verify signed non-admission scope; callers enforce authorization expiry."""
 
     payload = envelope.get("payload")
     signature = envelope.get("signature")

@@ -134,29 +134,42 @@ parses workload media to determine usage.
 
 ### Jobs that never reach broker admission
 
-Once LOC returns a signed payment envelope, it cannot revoke it. The broker or
+For historical ticket accounting, once LOC returns a signed payment envelope,
+it cannot revoke it. The broker or
 another holder may submit a winning ticket at any point in its chain validity
 window, and neither a caller assertion, a broker refusal, nor a payee non-use
 attestation proves otherwise. Ticket validity is governance mutable and the
 contract evaluates the current value at redemption, so a mint-time
 `expires_after_round` is telemetry rather than permanent retirement proof.
 Governance can extend or revive an issued envelope. LOC therefore never
-automatically refunds, releases on expiry, or attempts re-encumbrance.
+releases credit merely on ticket expiry or attempts automatic re-encumbrance.
+Wholesale customer holds are independent from those tickets and follow the
+authorization recovery rules below.
 
 Before applying a conservative full charge, LOC polls the snapshotted broker's
 `GET /v1/exchange/{request_id}` using the request ID LOC created. `IN_FLIGHT`
-and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence;
-after that silence LOC directly requests an attributable record from
-`POST /v1/non-admission/{request_id}` using scope from its immutable route and
-payment records. LOC verifies the signature, delegated key, request/work/payment
-identities, full quote reference, broker identity, observation time, and record
-coverage before retaining `NOT_ADMITTED` as append-only audit evidence. Invalid
-or unverifiable evidence remains unresolved. `ADMITTED_OUTCOME_UNKNOWN` and
+and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence and
+`ADMISSION_REJECTED` is an unsigned admission-refusal diagnostic, not zero-usage
+evidence. After the persisted authorization expires, either outcome triggers
+`POST /v1/non-admission/{request_id}` using the original immutable grant scope.
+LOC verifies the signature, delegated key, request ID, authorization ID (the
+wholesale work ID), payer/payee, full quote reference, broker identity,
+settlement domain, observation time, and record coverage. The grant must match
+the job and must not already be known admitted or settled.
+
+Verified `NOT_ADMITTED` evidence observed at or after authorization expiry can
+close the wholesale job with zero usage/charge, retire its grant as
+`expired_unused`, and release the customer hold exactly once. This relies on
+the broker contract to irrevocably fence the exact unused authorization before
+signing. Proof is retained in append-only audit and close records; it does not
+refund wholesale funding. Earlier proof remains audit-only. Missing, invalid,
+or temporarily unavailable proof leaves the hold intact and recovery retryable.
+Expiry alone and HTTP 402 never authorize a release. `ADMITTED_OUTCOME_UNKNOWN` and
 `ADMITTED_EVIDENCE_EXPIRED` both prove admission without usable settlement
 evidence. None authorizes a refund or an accounting mutation.
 
-Only `SETTLED` carrying an original signed settlement can close the job
-accurately. LOC ignores unsigned response hints and verifies the signed request
+For admitted work, `SETTLED` carrying an original signed settlement can close
+the job accurately. LOC ignores unsigned response hints and verifies the signed request
 ID, broker job ID, work ID, work unit, unit totals, quote identity, billing
 curve, signature, and snapshotted delegation before changing financial state.
 A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
@@ -164,8 +177,11 @@ A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
 If no valid signed settlement is recoverable by the configured operational
 deadline, LOC may finalize a distinct `conservative_full_charge`. That outcome
 must never be represented as broker-settled usage, a successful network debit,
-or fabricated work units. Signed non-admission remains attributable audit and
-dispute evidence, not refund authority. The deadline is configured with
+or fabricated work units. Historical ticket non-admission remains audit-only;
+expired wholesale authorization recovery follows the verified-proof rule above.
+The [September 24 ABR incident review](references/abr-admission-rejection-recovery.md)
+records the rejection contract, production funding findings, and rollout checks.
+The deadline is configured with
 `JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS`; its safe default is `0` (disabled), so
 operators must select and document a nonzero billing policy deliberately.
 An unreachable broker, timeout, or malformed lookup response is retained as a

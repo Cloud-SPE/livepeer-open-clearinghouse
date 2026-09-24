@@ -6,6 +6,9 @@ per-engagement tickets to Modules Network Protocol `4.0.0` and the mandatory
 [the governing design](../design-docs/002-fair-wholesale-credit-accounts.md).
 There is no runtime feature toggle or legacy fallback.
 
+Use the [pricing and capability tuning guide](../PRICING_AND_CAPABILITY_TUNING.md)
+to derive customer budgets, account float, and daemon limits before rollout.
+
 ## Non-negotiable boundaries
 
 - Closed historical rows remain `accounting_mode = legacy_ticket`. Never

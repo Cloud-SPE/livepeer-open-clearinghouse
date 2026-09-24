@@ -137,7 +137,7 @@ def signed_non_admission(
     settlement_domain_id: str = TEST_SETTLEMENT_DOMAIN_ID,
     private_key: PrivateKey = TEST_PRIVATE_KEY,
 ) -> dict[str, Any]:
-    """Build one broker-signed, audit-only NOT_ADMITTED record."""
+    """Build one broker-signed NOT_ADMITTED record for scope verification."""
 
     payload: dict[str, Any] = {
         "protocol": protocol,
