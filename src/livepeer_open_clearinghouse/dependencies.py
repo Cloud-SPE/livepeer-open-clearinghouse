@@ -70,7 +70,10 @@ def _default_registry() -> RegistryClient:
     cfg = get_settings()
     inner: RegistryClient
     if cfg.registry_daemon_mode == "grpc":
-        inner = GrpcRegistryClient(cfg.registry_daemon_socket)
+        inner = GrpcRegistryClient(
+            cfg.registry_daemon_socket,
+            selection_timeout_seconds=cfg.registry_selection_timeout_seconds,
+        )
     else:
         inner = MockRegistryClient()
     if cfg.registry_cache_ttl_seconds > 0:

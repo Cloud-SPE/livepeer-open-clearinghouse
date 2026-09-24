@@ -349,3 +349,36 @@ Prometheus metrics:
 - `livepeer_open_clearinghouse_daemon_errors_total{daemon, kind}` counter
 
 These are MVP-minimum. Full Victoria-stack integration is v2.
+
+### Pre-payment session preparation recovery
+
+`POST /v1/sessions/prepare` selects a route and signs a preparation token; it
+never holds customer credit, authorizes spending, or funds a broker. A known
+`OpenClearinghouseError` during this step releases only that attempt for an
+immediate identical retry. The claim's request fingerprint and broker request
+ID remain durable, so changed content still returns `IDEMPOTENCY_KEY_REUSE`.
+
+Release matches account, operation `sessions.prepare`, idempotency key, broker
+request ID, `in_flight` status, the original lease expiry, and no payment ID.
+It sets `expired` without changing the expiry. Preparation reclaim accepts that
+explicit release immediately and advances the expiry beyond both the previous
+lease and the new timeout. Keeping the old expiry as a lower bound prevents a
+late failure from releasing a newer attempt even when retries share a clock
+tick or the clock moves backwards. Reclaim also compares the observed expiry
+atomically, so concurrent retries cannot both win.
+
+This early-release rule does not apply to paid opens, refills, or uncertain
+funding. Unexpected exceptions retain the existing timeout recovery behavior.
+No rows or identities are deleted, and no migration is required.
+
+Both registry selection RPCs have a configurable
+`REGISTRY_SELECTION_TIMEOUT_SECONDS` deadline (default 10 seconds). `NOT_FOUND`
+means no candidate; other gRPC statuses become sanitized `503
+DAEMON_UNAVAILABLE` responses. Empty selections are not cached, so registry
+recovery is visible on the next preparation attempt. A bound missing route
+continues to return `409 route_binding_mismatch`, while an unbound missing route
+returns `404 NO_ROUTE_AVAILABLE`.
+
+See [live preparation recovery](references/live-session-preparation-recovery.md)
+for the incident review, RPC availability evidence, and coordinated deployment
+procedure.

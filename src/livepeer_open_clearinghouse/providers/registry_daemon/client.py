@@ -507,8 +507,9 @@ class GrpcRegistryClient:
     flagged in tech-debt for caching.
     """
 
-    def __init__(self, socket_path: str) -> None:
+    def __init__(self, socket_path: str, *, selection_timeout_seconds: float = 10.0) -> None:
         self._socket_path = socket_path
+        self._selection_timeout_seconds = selection_timeout_seconds
         self._channel: Any | None = None
         self._stub: Any | None = None
         self._lock: Any | None = None
@@ -548,14 +549,16 @@ class GrpcRegistryClient:
         import grpc  # noqa: PLC0415
         from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
 
+        from livepeer_open_clearinghouse.errors import DaemonUnavailable  # noqa: PLC0415
+
         stub = await self._ensure_stub()
         req = resolver_pb2.SelectRequest(capability=capability, offering=offering)
         try:
-            resp = await stub.Select(req)
+            resp = await stub.Select(req, timeout=self._selection_timeout_seconds)
         except grpc.aio.AioRpcError as exc:
             if exc.code() == grpc.StatusCode.NOT_FOUND:
                 return None
-            raise
+            raise DaemonUnavailable(daemon="registry", reason=exc.code().name) from exc
         # A response with no .route set means no candidate (the proto leaves
         # the field unset). HasField is the safe check.
         if not resp.HasField("route"):
@@ -563,11 +566,19 @@ class GrpcRegistryClient:
         return _selected_route_proto_to_dataclass(resp.route)
 
     async def select_many(self, capability: str, offering: str) -> list[SelectedRoute]:
+        import grpc  # noqa: PLC0415
         from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+        from livepeer_open_clearinghouse.errors import DaemonUnavailable  # noqa: PLC0415
 
         stub = await self._ensure_stub()
         req = resolver_pb2.SelectRequest(capability=capability, offering=offering)
-        resp = await stub.SelectMany(req)
+        try:
+            resp = await stub.SelectMany(req, timeout=self._selection_timeout_seconds)
+        except grpc.aio.AioRpcError as exc:
+            if exc.code() == grpc.StatusCode.NOT_FOUND:
+                return []
+            raise DaemonUnavailable(daemon="registry", reason=exc.code().name) from exc
         return [_selected_route_proto_to_dataclass(r) for r in resp.routes]
 
     async def _resolve(self, eth_address: str):  # type: ignore[no-untyped-def]
@@ -733,7 +744,9 @@ class CachingRegistryClient:
         if cached is not None:
             return cached  # type: ignore[return-value]
         result = await self._inner.select_many(capability, offering)
-        self._set(key, result)
+        # A registry outage can appear as NOT_FOUND; retry empty selections promptly.
+        if result:
+            self._set(key, result)
         return result
 
     async def list_capabilities(self) -> list[CapabilityInfo]:

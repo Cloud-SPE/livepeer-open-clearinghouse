@@ -116,3 +116,15 @@ async def test_health_bypasses_cache() -> None:
     assert await cache.health() is True
     assert await cache.health() is True
     assert inner.health.await_count == 2
+
+
+@pytest.mark.unit
+async def test_select_many_missing_then_recovered_is_not_negative_cached() -> None:
+    inner = MockRegistryClient()
+    routes = await inner.select_many("openai:chat-completions", "gpt-oss-20b")
+    inner.select_many = AsyncMock(side_effect=[[], routes])
+    cache = CachingRegistryClient(inner, ttl_seconds=60)
+    assert await cache.select_many("a", "b") == []
+    assert await cache.select_many("a", "b") == routes
+    assert await cache.select_many("a", "b") == routes
+    assert inner.select_many.await_count == 2

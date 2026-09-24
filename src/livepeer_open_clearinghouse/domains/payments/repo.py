@@ -12,7 +12,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, PrimaryKeyConstraint, String
+from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, PrimaryKeyConstraint, String, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from livepeer_open_clearinghouse.providers.db import (
@@ -118,3 +119,32 @@ class PaymentDaemonDepositSnapshot(Base, UuidPkMixin, TimestampMixin, TableNameF
     current_round: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ticket_validity_period: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ticket_validity_period_observed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+async def release_session_preparation_claim(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    idempotency_key: str,
+    broker_request_id: str,
+    lease_expires_at: datetime,
+) -> None:
+    """Fence release against the original unpaid preparation attempt.
+
+    Keep its expiry as the next claimant's lower bound, so clock precision or
+    regression cannot reuse an old fence. Paid operations never match.
+    """
+    await session.execute(
+        update(PaymentIdempotencyKey)
+        .where(
+            PaymentIdempotencyKey.user_id == user_id,
+            PaymentIdempotencyKey.operation == "sessions.prepare",
+            PaymentIdempotencyKey.idempotency_key == idempotency_key,
+            PaymentIdempotencyKey.broker_request_id == broker_request_id,
+            PaymentIdempotencyKey.status == "in_flight",
+            PaymentIdempotencyKey.expires_at == lease_expires_at,
+            PaymentIdempotencyKey.payment_id.is_(None),
+        )
+        .values(status="expired")
+        .execution_options(synchronize_session=False)
+    )
