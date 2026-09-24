@@ -76,6 +76,19 @@ surface serializes them as canonical decimal strings so JavaScript gateways
 cannot truncate a quote or pricing denominator. Route snapshots identify their
 wire shape with `schema_version: "route-snapshot/v1"`.
 
+### `ListOfferings() → ListOfferingsResult`
+
+LOC uses this network-free snapshot RPC for all public/admin catalogs. Requires
+Modules revision `e9f08e4fdc934567fa0d2c4979f07773a4180aa8` or later. Entries carry
+provider identity, informational prices, estimator/constraints/protocol axes,
+selectability and validity bounds. Response metadata includes completeness,
+unfiltered address coverage, snapshot/evaluation times and discovery scope.
+
+LOC keeps populated partial snapshots visible, rejects inconclusive empty ones
+with 503, and preserves authoritative empty complete results. It never falls back
+to per-address resolution when this RPC is unavailable. See
+[`RELIABILITY.md`](../RELIABILITY.md#registry-catalog-discovery) for cache rules.
+
 ### `ResolveByAddress(eth_address, allow_legacy_fallback, allow_unsigned, force_refresh) → ResolveResult`
 
 Returns the full parsed manifest + overlay-merged nodes for a single
@@ -191,9 +204,9 @@ schema_version: string
 
 ## Gotchas
 
-- **`Select()` per call for MVP, no caching in Livepeer Open Clearinghouse.** The daemon
-  caches manifests; we don't cache routes on top. See
-  `tech-debt-tracker.md`.
+- **Catalogs are informational.** LOC caches registry reads; stale fallback is
+  restricted to catalog display. Payment selection retains its existing cache
+  TTL and authoritative route checks.
 - **The `quote_ref` triplet from `Select` flows straight into
   `CreatePayment`.** Don't synthesize it; pass it through.
 - **`signature_status: SigVerified` is what we want.** A `SigInvalid`

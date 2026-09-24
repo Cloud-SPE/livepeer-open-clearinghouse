@@ -7,8 +7,10 @@ dataclasses and the domain Pydantic views in `types.py`.
 from __future__ import annotations
 
 from livepeer_open_clearinghouse.domains.discovery.types import (
+    CapabilityList,
     CapabilityView,
     OfferingView,
+    OrchestratorList,
     OrchestratorView,
     RouteView,
 )
@@ -32,6 +34,8 @@ def _offering(info: object) -> OfferingView:
         job=info.job,  # type: ignore[attr-defined]
         session=info.session,  # type: ignore[attr-defined]
         extra=getattr(info, "extra", {}) or {},
+        provider=getattr(info, "provider", None),
+        constraints=getattr(info, "constraints", {}),
     )
 
 
@@ -95,3 +99,28 @@ async def select_route(
 ) -> RouteView | None:
     raw = await client.select(capability, offering)
     return _route(raw) if raw is not None else None
+
+
+async def capability_catalog(client: RegistryClient) -> CapabilityList:
+    raw = await client.list_catalog()
+    if not raw.capabilities and raw.metadata.completeness != "COMPLETE":
+        from livepeer_open_clearinghouse.errors import DaemonUnavailable  # noqa: PLC0415
+
+        raise DaemonUnavailable(daemon="registry", reason="CATALOG_INCONCLUSIVE")
+    return CapabilityList(items=[_capability(c) for c in raw.capabilities], catalog=raw.metadata)
+
+
+async def orchestrator_catalog(
+    client: RegistryClient, *, capability: str | None
+) -> OrchestratorList:
+    raw = await client.list_catalog()
+    items = [_orchestrator(o) for o in raw.orchestrators]
+    if capability is not None:
+        for item in items:
+            item.capabilities = [c for c in item.capabilities if c.name == capability]
+        items = [item for item in items if item.capabilities]
+    if not items and raw.metadata.completeness != "COMPLETE":
+        from livepeer_open_clearinghouse.errors import DaemonUnavailable  # noqa: PLC0415
+
+        raise DaemonUnavailable(daemon="registry", reason="CATALOG_INCONCLUSIVE")
+    return OrchestratorList(items=items, catalog=raw.metadata)

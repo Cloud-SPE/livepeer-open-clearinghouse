@@ -6217,6 +6217,16 @@
             },
             "type": "array",
             "title": "Items"
+          },
+          "catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -6248,9 +6258,13 @@
                 "$ref": "#/components/schemas/WorkUnitEstimator"
               },
               {
+                "$ref": "#/components/schemas/CatalogEstimator"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Work Unit Estimator"
           },
           "offerings": {
             "items": {
@@ -6268,6 +6282,270 @@
           "offerings"
         ],
         "title": "CapabilityView"
+      },
+      "CatalogCoverage": {
+        "properties": {
+          "known_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Known Addresses",
+            "default": 0
+          },
+          "verified_compatible_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Verified Compatible Addresses",
+            "default": 0
+          },
+          "confirmed_incompatible_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Confirmed Incompatible Addresses",
+            "default": 0
+          },
+          "unknown_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unknown Addresses",
+            "default": 0
+          },
+          "expired_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expired Addresses",
+            "default": 0
+          },
+          "deferred_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Deferred Addresses",
+            "default": 0
+          },
+          "unavailable_addresses": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unavailable Addresses",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "CatalogCoverage"
+      },
+      "CatalogEstimator": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "rounding": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Rounding"
+          },
+          "exactness": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Exactness"
+          },
+          "package": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package"
+          },
+          "fixtures": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixtures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "rounding",
+          "exactness"
+        ],
+        "title": "CatalogEstimator",
+        "description": "Informational estimator metadata; executable fixture references may be absent."
+      },
+      "CatalogMetadata": {
+        "properties": {
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "UNINITIALIZED",
+              "PARTIAL",
+              "COMPLETE"
+            ],
+            "title": "Completeness"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/CatalogCoverage"
+          },
+          "snapshot_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot At"
+          },
+          "evaluated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Evaluated At"
+          },
+          "discovery_scope": {
+            "type": "string",
+            "title": "Discovery Scope"
+          },
+          "discovery_scope_authoritative": {
+            "type": "boolean",
+            "title": "Discovery Scope Authoritative"
+          },
+          "discovery_observed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Observed At"
+          },
+          "discovery_valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Valid Until"
+          },
+          "coverage_valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Valid Until"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "completeness",
+          "coverage",
+          "evaluated_at",
+          "discovery_scope",
+          "discovery_scope_authoritative"
+        ],
+        "title": "CatalogMetadata"
+      },
+      "CatalogProvider": {
+        "properties": {
+          "eth_address": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Eth Address"
+          },
+          "worker_url": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Worker Url"
+          },
+          "worker_id": {
+            "type": "string",
+            "title": "Worker Id"
+          },
+          "selectable": {
+            "type": "boolean",
+            "title": "Selectable"
+          },
+          "exclusion_reason": {
+            "type": "string",
+            "title": "Exclusion Reason"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "health_valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health Valid Until"
+          },
+          "expired": {
+            "type": "boolean",
+            "title": "Expired"
+          }
+        },
+        "type": "object",
+        "required": [
+          "eth_address",
+          "worker_url",
+          "worker_id",
+          "selectable",
+          "exclusion_reason",
+          "expired"
+        ],
+        "title": "CatalogProvider"
       },
       "CloseSessionRequest": {
         "properties": {
@@ -7682,9 +7960,13 @@
                 "$ref": "#/components/schemas/WorkUnitEstimator"
               },
               {
+                "$ref": "#/components/schemas/CatalogEstimator"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Work Unit Estimator"
           },
           "job": {
             "anyOf": [
@@ -7710,6 +7992,21 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Extra"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogProvider"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "constraints": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Constraints"
           }
         },
         "type": "object",
@@ -7829,6 +8126,16 @@
             },
             "type": "array",
             "title": "Items"
+          },
+          "catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

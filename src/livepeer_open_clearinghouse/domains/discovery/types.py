@@ -8,6 +8,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from livepeer_open_clearinghouse.providers.registry_daemon import (
+    CatalogEstimator,
+    CatalogMetadata,
+    CatalogProvider,
     JobAxes,
     RouteBinding,
     RouteSnapshot,
@@ -24,7 +27,7 @@ class OfferingView(BaseModel):
     work_unit: str | None
     units_per_price: UInt64Decimal
     protocol: str
-    work_unit_estimator: WorkUnitEstimator | None
+    work_unit_estimator: WorkUnitEstimator | CatalogEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
     # Merged node+capability extra_json metadata from the upstream
@@ -32,17 +35,20 @@ class OfferingView(BaseModel):
     # extra["openai"]["model"] (the runner-facing serving name) and
     # workload metadata to route and rewrite request bodies.
     extra: dict[str, Any] = Field(default_factory=dict)
+    provider: CatalogProvider | None = None
+    constraints: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilityView(BaseModel):
     name: str
     work_unit: str | None
-    work_unit_estimator: WorkUnitEstimator | None
+    work_unit_estimator: WorkUnitEstimator | CatalogEstimator | None
     offerings: list[OfferingView]
 
 
 class CapabilityList(BaseModel):
     items: list[CapabilityView]
+    catalog: CatalogMetadata | None = None
 
 
 class OrchestratorView(BaseModel):
@@ -55,6 +61,7 @@ class OrchestratorView(BaseModel):
 
 class OrchestratorList(BaseModel):
     items: list[OrchestratorView]
+    catalog: CatalogMetadata | None = None
 
 
 class RouteView(BaseModel):

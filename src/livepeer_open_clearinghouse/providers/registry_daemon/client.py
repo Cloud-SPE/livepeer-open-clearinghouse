@@ -10,9 +10,13 @@ surface this Protocol mirrors.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Protocol
 
@@ -33,6 +37,7 @@ from pydantic import (
 # this at module level (rather than lazily in each gRPC call site) means
 # anywhere in this file can do the absolute `livepeer.*` import safely.
 from livepeer_open_clearinghouse import _gen  # noqa: F401
+from livepeer_open_clearinghouse.errors import DaemonUnavailable
 
 _logger = logging.getLogger(__name__)
 
@@ -286,6 +291,55 @@ class SelectedRoute(BaseModel):
         return self.snapshot_view().model_dump(mode="json")
 
 
+class CatalogEstimator(BaseModel):
+    """Informational estimator metadata; executable fixture references may be absent."""
+
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    rounding: str = Field(min_length=1)
+    exactness: str = Field(min_length=1)
+    package: str | None = None
+    fixtures: str | None = None
+
+
+class CatalogCoverage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    known_addresses: int = Field(default=0, ge=0)
+    verified_compatible_addresses: int = Field(default=0, ge=0)
+    confirmed_incompatible_addresses: int = Field(default=0, ge=0)
+    unknown_addresses: int = Field(default=0, ge=0)
+    expired_addresses: int = Field(default=0, ge=0)
+    deferred_addresses: int = Field(default=0, ge=0)
+    unavailable_addresses: int = Field(default=0, ge=0)
+
+
+class CatalogMetadata(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    completeness: Literal["UNINITIALIZED", "PARTIAL", "COMPLETE"]
+    coverage: CatalogCoverage
+    snapshot_at: AwareDatetime | None = None
+    evaluated_at: AwareDatetime
+    discovery_scope: str
+    discovery_scope_authoritative: bool
+    discovery_observed_at: AwareDatetime | None = None
+    discovery_valid_until: AwareDatetime | None = None
+    coverage_valid_until: AwareDatetime | None = None
+    stale: bool = False
+
+
+class CatalogProvider(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    eth_address: str = Field(min_length=1)
+    worker_url: str = Field(min_length=1)
+    worker_id: str
+    selectable: bool
+    exclusion_reason: str
+    verified_at: AwareDatetime | None = None
+    valid_until: AwareDatetime | None = None
+    health_valid_until: AwareDatetime | None = None
+    expired: bool
+
+
 @dataclass(frozen=True, slots=True)
 class OfferingInfo:
     """An advertised offering on an orchestrator.
@@ -300,10 +354,12 @@ class OfferingInfo:
     work_unit: str | None
     units_per_price: int
     protocol: Literal["paid-job/v1", "paid-session/v1"]
-    work_unit_estimator: WorkUnitEstimator | None
+    work_unit_estimator: WorkUnitEstimator | CatalogEstimator | None
     job: JobAxes | None
     session: SessionAxes | None
     extra: dict[str, Any] = field(default_factory=dict)
+    provider: CatalogProvider | None = None
+    constraints: dict[str, Any] = field(default_factory=dict)
 
 
 def _offering_from_route(route: SelectedRoute) -> OfferingInfo:
@@ -326,7 +382,7 @@ class CapabilityInfo:
 
     name: str
     work_unit: str | None
-    work_unit_estimator: WorkUnitEstimator | None
+    work_unit_estimator: WorkUnitEstimator | CatalogEstimator | None
     offerings: list[OfferingInfo]
 
 
@@ -341,6 +397,127 @@ class OrchestratorInfo:
     freshness_status: str
 
 
+@dataclass(frozen=True, slots=True)
+class RegistryCatalog:
+    capabilities: list[CapabilityInfo]
+    orchestrators: list[OrchestratorInfo]
+    metadata: CatalogMetadata
+
+
+def _catalog_timestamp(proto: Any, field_name: str) -> datetime | None:
+    if not proto.HasField(field_name):
+        return None
+    return getattr(proto, field_name).ToDatetime(tzinfo=UTC)  # type: ignore[no-any-return]
+
+
+def _parse_catalog(proto: Any) -> RegistryCatalog:
+    from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
+
+    metadata = CatalogMetadata.model_validate(
+        {
+            "completeness": resolver_pb2.CatalogCompleteness.Name(proto.completeness).removeprefix(
+                "CATALOG_COMPLETENESS_"
+            ),
+            "coverage": {
+                name: getattr(proto.coverage, name) for name in CatalogCoverage.model_fields
+            },
+            "discovery_scope": proto.discovery_scope,
+            "discovery_scope_authoritative": proto.discovery_scope_authoritative,
+            **{
+                name: _catalog_timestamp(proto, name)
+                for name in (
+                    "snapshot_at",
+                    "evaluated_at",
+                    "discovery_observed_at",
+                    "discovery_valid_until",
+                    "coverage_valid_until",
+                )
+            },
+        }
+    )
+    caps: dict[str, CapabilityInfo] = {}
+    orchs: dict[tuple[str, str, str], OrchestratorInfo] = {}
+    for entry in proto.entries:
+        # Public discovery lists only eligible entries at the daemon's evaluated_at.
+        # Pricing here is informational: never construct an authorization snapshot.
+        if not entry.selectable or entry.expired:
+            continue
+        route = entry.offering
+        if route.protocol not in ("paid-job/v1", "paid-session/v1"):
+            continue
+        extra = json.loads(route.extra_json or b"{}")
+        if not isinstance(extra, dict):
+            raise ValueError("catalog extra must be an object")
+        constraints = json.loads(route.constraints_json or b"{}")
+        if not isinstance(constraints, dict):
+            raise ValueError("catalog constraints must be an object")
+        provider = CatalogProvider(
+            eth_address=route.eth_address,
+            worker_url=route.worker_url,
+            worker_id=entry.worker_id,
+            selectable=entry.selectable,
+            exclusion_reason=entry.exclusion_reason,
+            expired=entry.expired,
+            **{
+                name: _catalog_timestamp(entry, name)
+                for name in ("verified_at", "valid_until", "health_valid_until")
+            },
+        )
+        # Reuse the public axes parsers, without imposing payment quote requirements
+        # on an informational catalog entry (whose quote fields may be absent).
+        job = JobAxes.model_validate(extra["job"]) if route.protocol == "paid-job/v1" else None
+        session = (
+            SessionAxes.model_validate(extra["session"])
+            if route.protocol == "paid-session/v1"
+            else None
+        )
+        if (job is not None and "session" in extra) or (session is not None and "job" in extra):
+            raise ValueError("catalog entry has conflicting protocol axes")
+        price = Decimal(route.price_per_work_unit_wei)
+        if not price.is_finite() or price < 0 or route.units_per_price < 1:
+            raise ValueError("invalid catalog pricing")
+        info = OfferingInfo(
+            id=route.offering,
+            price_per_work_unit_wei=price,
+            work_unit=route.work_unit,
+            units_per_price=route.units_per_price,
+            protocol=route.protocol,
+            work_unit_estimator=(
+                CatalogEstimator(
+                    id=route.work_unit_estimator.id,
+                    rounding=route.work_unit_estimator.rounding,
+                    exactness=route.work_unit_estimator.exactness,
+                    package=route.work_unit_estimator.package or None,
+                    fixtures=route.work_unit_estimator.fixtures or None,
+                )
+                if route.work_unit_estimator.id
+                else None
+            ),
+            job=job,
+            session=session,
+            extra=extra,
+            provider=provider,
+            constraints=constraints,
+        )
+        cap = CapabilityInfo(route.capability, route.work_unit, info.work_unit_estimator, [info])
+        if route.capability not in caps:
+            caps[route.capability] = replace(cap, offerings=[])
+        caps[route.capability].offerings.append(info)
+        key = (route.eth_address, route.worker_url, entry.worker_id)
+        if key not in orchs:
+            orchs[key] = OrchestratorInfo(
+                route.eth_address, route.worker_url, [], "SigVerified", "fresh"
+            )
+        existing = next((c for c in orchs[key].capabilities if c.name == route.capability), None)
+        if existing is None:
+            orchs[key].capabilities.append(cap)
+        else:
+            existing.offerings.append(info)
+    if not caps and metadata.completeness != "COMPLETE":
+        raise DaemonUnavailable(daemon="registry", reason="CATALOG_INCONCLUSIVE")
+    return RegistryCatalog(list(caps.values()), list(orchs.values()), metadata)
+
+
 class RegistryClient(Protocol):
     """Subset of service-registry-daemon's resolver API used by Livepeer Open Clearinghouse."""
 
@@ -353,6 +530,8 @@ class RegistryClient(Protocol):
     async def list_orchestrators(
         self, *, capability: str | None = None
     ) -> list[OrchestratorInfo]: ...
+
+    async def list_catalog(self) -> RegistryCatalog: ...
 
     async def health(self) -> bool: ...
 
@@ -501,15 +680,20 @@ class GrpcRegistryClient:
     an asyncio.Lock, single channel reused for the process lifetime.
 
     ``select`` / ``select_many`` map 1:1 onto the daemon's RPCs.
-    ``list_capabilities`` and ``list_orchestrators`` are aggregations on
-    top of ``ListKnown`` + ``ResolveByAddress`` (no flat "list all" RPC
-    exists). For large registries this is O(N) RPCs — fine for MVP scale,
-    flagged in tech-debt for caching.
+    Catalog reads use the daemon's network-free ListOfferings snapshot.
+    The cache wrapper imposes an additional overall catalog deadline.
     """
 
-    def __init__(self, socket_path: str, *, selection_timeout_seconds: float = 45.0) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        selection_timeout_seconds: float = 45.0,
+        discovery_rpc_timeout_seconds: float = 2.0,
+    ) -> None:
         self._socket_path = socket_path
         self._selection_timeout_seconds = selection_timeout_seconds
+        self._discovery_rpc_timeout_seconds = discovery_rpc_timeout_seconds
         self._channel: Any | None = None
         self._stub: Any | None = None
         self._lock: Any | None = None
@@ -581,126 +765,69 @@ class GrpcRegistryClient:
             raise DaemonUnavailable(daemon="registry", reason=exc.code().name) from exc
         return [_selected_route_proto_to_dataclass(r) for r in resp.routes]
 
-    async def _resolve(self, eth_address: str):  # type: ignore[no-untyped-def]
+    async def list_catalog(self) -> RegistryCatalog:
+        import grpc  # noqa: PLC0415
         from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
 
         stub = await self._ensure_stub()
-        return await stub.ResolveByAddress(
-            resolver_pb2.ResolveByAddressRequest(
-                eth_address=eth_address,
-                allow_legacy_fallback=False,
-                allow_unsigned=False,
-                force_refresh=False,
+        try:
+            proto = await stub.ListOfferings(
+                resolver_pb2.ListOfferingsRequest(), timeout=self._discovery_rpc_timeout_seconds
             )
-        )
-
-    async def _list_known_addresses(self) -> list[str]:
-        from livepeer.registry.v1 import resolver_pb2  # noqa: PLC0415
-
-        stub = await self._ensure_stub()
-        resp = await stub.ListKnown(resolver_pb2.ListKnownRequest())
-        return [e.eth_address for e in resp.entries]
+            return _parse_catalog(proto)
+        except grpc.aio.AioRpcError as exc:
+            # Older daemons must be upgraded; never fall back to network crawling.
+            raise DaemonUnavailable(daemon="registry", reason=exc.code().name) from exc
+        except DaemonUnavailable:
+            raise
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            raise DaemonUnavailable(daemon="registry", reason="CATALOG_MALFORMED") from exc
 
     async def list_capabilities(self) -> list[CapabilityInfo]:
-        # Aggregate across every known address. O(N) RPCs.
-        addresses = await self._list_known_addresses()
-        merged: dict[str, set[str]] = {}
-        work_units: dict[str, str | None] = {}
-        estimators: dict[str, WorkUnitEstimator | None] = {}
-        for addr in addresses:
-            try:
-                resolved = await self._resolve(addr)
-            except Exception as exc:
-                _logger.debug(
-                    "registry.list_capabilities.resolve_skip",
-                    extra={"addr": addr, "error": str(exc)},
-                )
-                continue
-            for node in resolved.nodes:
-                for cap in node.capabilities:
-                    offerings = merged.setdefault(cap.name, set())
-                    work_units[cap.name] = cap.work_unit or None
-                    estimators[cap.name] = _estimator_from_proto(cap.work_unit_estimator)
-                    for off in cap.offerings:
-                        offerings.add(off.id)
-        result: list[CapabilityInfo] = []
-        for name, offerings in merged.items():
-            enriched: list[OfferingInfo] = []
-            for offering_id in sorted(offerings):
-                route = await self.select(name, offering_id)
-                if route is not None:
-                    enriched.append(_offering_from_route(route))
-            if enriched:
-                result.append(
-                    CapabilityInfo(
-                        name=name,
-                        work_unit=work_units.get(name),
-                        work_unit_estimator=estimators.get(name),
-                        offerings=enriched,
-                    )
-                )
-        return result
+        return (await self.list_catalog()).capabilities
 
     async def list_orchestrators(self, *, capability: str | None = None) -> list[OrchestratorInfo]:
-        addresses = await self._list_known_addresses()
-        out: list[OrchestratorInfo] = []
-        for addr in addresses:
-            try:
-                resolved = await self._resolve(addr)
-            except Exception as exc:
-                _logger.debug(
-                    "registry.list_orchestrators.resolve_skip",
-                    extra={"addr": addr, "error": str(exc)},
-                )
-                continue
-            for node in resolved.nodes:
-                cap_views: list[CapabilityInfo] = []
-                for cap in node.capabilities:
-                    if capability is not None and cap.name != capability:
-                        continue
-                    offering_views: list[OfferingInfo] = []
-                    for off in cap.offerings:
-                        routes = await self.select_many(cap.name, off.id)
-                        route = next((r for r in routes if r.eth_address == addr), None)
-                        if route is not None:
-                            offering_views.append(_offering_from_route(route))
-                    if not offering_views:
-                        continue
-                    cap_views.append(
-                        CapabilityInfo(
-                            name=cap.name,
-                            work_unit=cap.work_unit or None,
-                            work_unit_estimator=_estimator_from_proto(cap.work_unit_estimator),
-                            offerings=offering_views,
-                        )
-                    )
-                if not cap_views:
-                    continue
-                out.append(
-                    OrchestratorInfo(
-                        eth_address=node.worker_eth_address or addr,
-                        worker_url=node.url,
-                        capabilities=cap_views,
-                        signature_status="SigVerified",  # daemon already filtered
-                        freshness_status=str(resolved.freshness_status),
-                    )
-                )
-        return out
+        return _filter_orchestrators((await self.list_catalog()).orchestrators, capability)
+
+
+def _filter_orchestrators(
+    items: list[OrchestratorInfo], capability: str | None
+) -> list[OrchestratorInfo]:
+    if capability is None:
+        return items
+    return [
+        replace(item, capabilities=[c for c in item.capabilities if c.name == capability])
+        for item in items
+        if any(c.name == capability for c in item.capabilities)
+    ]
 
 
 class CachingRegistryClient:
     """TTL-cache wrapper around any RegistryClient.
 
     All four read-only methods are cached for `ttl_seconds`. ``ttl_seconds=0``
-    disables caching (passes everything through). Cache keys are scoped
-    by method+args.
+    disables stored results but retains catalog deadlines and shared refreshes.
+    Only catalog methods may fall back to bounded stale results on refresh failure.
+    Cache keys are scoped by method+args.
 
     Single-loop asyncio safe (all access is via ``await``); not thread-safe.
     """
 
-    def __init__(self, inner: RegistryClient, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        inner: RegistryClient,
+        ttl_seconds: int,
+        *,
+        catalog_timeout_seconds: float = 20.0,
+        catalog_stale_seconds: float = 300.0,
+    ) -> None:
         self._inner = inner
         self._ttl = ttl_seconds
+        self._catalog_timeout = catalog_timeout_seconds
+        self._catalog_stale = catalog_stale_seconds
+        self._catalog_tasks: dict[tuple[Any, ...], asyncio.Task[Any]] = {}
+        self._catalog_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._generation = 0
         # Each entry: (expires_at_monotonic, value)
         self._cache: dict[tuple[Any, ...], tuple[float, object]] = {}
 
@@ -749,27 +876,86 @@ class CachingRegistryClient:
             self._set(key, result)
         return result
 
-    async def list_capabilities(self) -> list[CapabilityInfo]:
-        key = ("list_capabilities",)
-        cached = self._get(key)
-        if cached is not None:
-            return cached  # type: ignore[return-value]
-        result = await self._inner.list_capabilities()
-        self._set(key, result)
+    async def _catalog(self, key: tuple[Any, ...], fetch: Callable[[], Awaitable[Any]]) -> Any:
+        entry = self._catalog_cache.get(key)
+        if entry is not None and time.monotonic() < entry[0]:
+            return entry[1]
+        task = self._catalog_tasks.get(key)
+        if task is None:
+            generation = self._generation
+
+            async def refresh() -> Any:
+                try:
+                    async with asyncio.timeout(self._catalog_timeout):
+                        result = await fetch()
+                    if self._ttl > 0 and generation == self._generation:
+                        ttl = float(self._ttl)
+                        if isinstance(result, RegistryCatalog):
+                            bounds = [
+                                t
+                                for t in (
+                                    result.metadata.coverage_valid_until,
+                                    result.metadata.discovery_valid_until,
+                                )
+                                if t is not None
+                            ]
+                            if bounds:
+                                ttl = min(
+                                    ttl, max(0.0, (min(bounds) - datetime.now(UTC)).total_seconds())
+                                )
+                        self._catalog_cache[key] = (time.monotonic() + ttl, result)
+                    return result
+                except Exception as exc:
+                    previous = self._catalog_cache.get(key)
+                    if (
+                        previous is not None
+                        and time.monotonic() < previous[0] + self._catalog_stale
+                    ):
+                        _logger.warning("registry.catalog.stale_fallback")
+                        if isinstance(previous[1], RegistryCatalog):
+                            old = previous[1]
+                            return replace(
+                                old,
+                                metadata=old.metadata.model_copy(
+                                    update={"stale": True, "completeness": "PARTIAL"}
+                                ),
+                            )
+                        return previous[1]
+                    if isinstance(exc, DaemonUnavailable):
+                        raise
+                    raise DaemonUnavailable(
+                        daemon="registry", reason="CATALOG_UNAVAILABLE"
+                    ) from exc
+
+            task = asyncio.create_task(refresh())
+            self._catalog_tasks[key] = task
+
+            def finished(done: asyncio.Task[Any]) -> None:
+                if self._catalog_tasks.get(key) is done:
+                    del self._catalog_tasks[key]
+                # Retrieve failures even if every HTTP caller disconnected.
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    async def list_catalog(self) -> RegistryCatalog:
+        result: RegistryCatalog = await self._catalog(("catalog",), self._inner.list_catalog)
         return result
 
+    async def list_capabilities(self) -> list[CapabilityInfo]:
+        return (await self.list_catalog()).capabilities
+
     async def list_orchestrators(self, *, capability: str | None = None) -> list[OrchestratorInfo]:
-        key = ("list_orchestrators", capability)
-        cached = self._get(key)
-        if cached is not None:
-            return cached  # type: ignore[return-value]
-        result = await self._inner.list_orchestrators(capability=capability)
-        self._set(key, result)
-        return result
+        return _filter_orchestrators((await self.list_catalog()).orchestrators, capability)
 
     def invalidate(self) -> None:
         """Drop all cache entries."""
         self._cache.clear()
+        self._catalog_cache.clear()
+        self._generation += 1
+        self._catalog_tasks.clear()
 
     async def health(self) -> bool:
         return await self._inner.health()
@@ -780,6 +966,19 @@ class MockRegistryClient:
 
     def __init__(self, routes: list[SelectedRoute] | None = None) -> None:
         self._routes = list(routes) if routes is not None else list(_SAMPLE_ROUTES)
+
+    async def list_catalog(self) -> RegistryCatalog:
+        return RegistryCatalog(
+            await self.list_capabilities(),
+            await self.list_orchestrators(),
+            CatalogMetadata(
+                completeness="COMPLETE",
+                coverage=CatalogCoverage(),
+                evaluated_at=datetime.now(UTC),
+                discovery_scope="mock",
+                discovery_scope_authoritative=True,
+            ),
+        )
 
     async def health(self) -> bool:
         return True

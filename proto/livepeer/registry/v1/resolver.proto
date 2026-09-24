@@ -13,6 +13,8 @@ service Resolver {
   rpc Select(SelectRequest) returns (SelectResult);
   rpc SelectMany(SelectRequest) returns (SelectManyResult);
   rpc ListKnown(ListKnownRequest) returns (ListKnownResult);
+  // Snapshot-only discovery. Never resolves addresses or waits for refresh.
+  rpc ListOfferings(ListOfferingsRequest) returns (ListOfferingsResult);
   rpc Refresh(RefreshRequest) returns (google.protobuf.Empty);
   rpc GetAuditLog(GetAuditLogRequest) returns (AuditLogResult);
   rpc Health(google.protobuf.Empty) returns (HealthResult);
@@ -34,6 +36,7 @@ message ResolveResult {
   google.protobuf.Timestamp cached_at        = 6;
   google.protobuf.Timestamp fetched_at       = 7;
   string                    schema_version   = 8;
+  DiscoveryStatus           discovery_status = 9;
 }
 
 message SelectRequest {
@@ -127,6 +130,128 @@ message KnownEntry {
   ResolveMode               mode             = 2;
   FreshnessStatus           freshness_status = 3;
   google.protobuf.Timestamp cached_at        = 4;
+  DiscoveryStatus           discovery_status = 5;
+}
+
+enum ManifestCompatibility {
+  MANIFEST_COMPATIBILITY_UNSPECIFIED = 0;
+  MANIFEST_COMPATIBILITY_UNKNOWN = 1;
+  MANIFEST_COMPATIBILITY_VERIFIED_COMPATIBLE = 2;
+  MANIFEST_COMPATIBILITY_CONFIRMED_INCOMPATIBLE = 3;
+}
+
+// Availability of manifest retrieval/verification at the last attempt, not
+// worker readiness or a grant to route work.
+enum ManifestAvailability {
+  MANIFEST_AVAILABILITY_UNSPECIFIED = 0;
+  MANIFEST_AVAILABILITY_UNKNOWN = 1;
+  MANIFEST_AVAILABILITY_AVAILABLE = 2;
+  MANIFEST_AVAILABILITY_UNAVAILABLE = 3;
+}
+
+enum DiscoveryFailureReason {
+  DISCOVERY_FAILURE_REASON_UNSPECIFIED = 0;
+  DISCOVERY_FAILURE_REASON_NONE = 1;
+  DISCOVERY_FAILURE_REASON_TRANSPORT = 2;
+  DISCOVERY_FAILURE_REASON_HTTP = 3;
+  DISCOVERY_FAILURE_REASON_MANIFEST_MISSING = 4;
+  DISCOVERY_FAILURE_REASON_MANIFEST_UNSUPPORTED = 5;
+  DISCOVERY_FAILURE_REASON_MANIFEST_INVALID = 6;
+  DISCOVERY_FAILURE_REASON_SIGNATURE_INVALID = 7;
+  DISCOVERY_FAILURE_REASON_MANIFEST_EXPIRED = 8;
+  DISCOVERY_FAILURE_REASON_PUBLICATION_REPLAY = 9;
+  DISCOVERY_FAILURE_REASON_CHAIN_UNAVAILABLE = 10;
+  DISCOVERY_FAILURE_REASON_SOURCE_MISSING = 11;
+  DISCOVERY_FAILURE_REASON_INTERNAL = 12;
+}
+
+message DiscoveryStatus {
+  string source_uri = 1;
+  ManifestCompatibility compatibility = 2;
+  ManifestAvailability availability = 3;
+  DiscoveryFailureReason failure_reason = 4;
+  uint32 consecutive_failures = 5;
+  google.protobuf.Timestamp last_verified_at = 6;
+  google.protobuf.Timestamp next_retry_at = 7;
+  google.protobuf.Timestamp last_attempt_at = 8;
+  google.protobuf.Timestamp compatibility_checked_at = 9;
+  google.protobuf.Timestamp compatibility_valid_until = 10;
+  google.protobuf.Timestamp source_checked_at = 11;
+  string retry_class = 12;
+  uint32 policy_step = 13;
+}
+
+// Attached to google.rpc.Status.details on resolution_deferred and attempted
+// resolution failures. The existing Struct registry_error_code is retained.
+// Deferred status is UNAVAILABLE and also carries google.rpc.RetryInfo.
+message RegistryResolutionDetail {
+  string eth_address = 1;
+  DiscoveryStatus discovery_status = 2;
+  google.protobuf.Timestamp evaluated_at = 3;
+}
+
+enum CatalogCompleteness {
+  CATALOG_COMPLETENESS_UNSPECIFIED = 0;
+  CATALOG_COMPLETENESS_UNINITIALIZED = 1;
+  CATALOG_COMPLETENESS_PARTIAL = 2;
+  CATALOG_COMPLETENESS_COMPLETE = 3;
+}
+
+message ListOfferingsRequest {
+  // Optional exact, case-insensitive filters, as in SelectMany.
+  string capability = 1;
+  string offering = 2;
+  string tier = 3;
+  int32 min_weight = 4;
+  // Diagnostic inventory only. Expired entries are always nonselectable.
+  bool include_expired = 5;
+}
+
+message CatalogOffering {
+  // Informational snapshot, including price denominator, estimator, opaque
+  // protocol axes in extra_json, constraints and settlement metadata. Always
+  // select again to authorize paid work. eth_address is orchestrator/payee;
+  // worker_url identifies the advertised broker, never an internal runner.
+  SelectedRoute offering = 1;
+  // Resolver node identity, scoped by offering.eth_address.
+  string worker_id = 2;
+  // Same eligibility predicate as SelectMany at evaluated_at, including request
+  // tier/min_weight. It is not a guarantee of future admission.
+  bool selectable = 3;
+  string exclusion_reason = 4;
+  google.protobuf.Timestamp verified_at = 5;
+  // Earliest source, publication and cache deadline. Health has its own bound.
+  google.protobuf.Timestamp valid_until = 6;
+  bool expired = 7;
+  google.protobuf.Timestamp health_valid_until = 8;
+}
+
+message CatalogCoverage {
+  // All counts describe the UNFILTERED discovery scope. Compatibility counts
+  // partition known_addresses; expired/deferred/unavailable may overlap them.
+  uint32 known_addresses = 1;
+  uint32 verified_compatible_addresses = 2;
+  uint32 confirmed_incompatible_addresses = 3;
+  uint32 unknown_addresses = 4;
+  uint32 expired_addresses = 5;
+  uint32 deferred_addresses = 6;
+  uint32 unavailable_addresses = 7;
+}
+
+message ListOfferingsResult {
+  repeated CatalogOffering entries = 1;
+  CatalogCompleteness completeness = 2;
+  CatalogCoverage coverage = 3;
+  google.protobuf.Timestamp snapshot_at = 4;
+  google.protobuf.Timestamp evaluated_at = 5;
+  // "chain_active_pool_and_overlay" or "overlay_only".
+  string discovery_scope = 6;
+  bool discovery_scope_authoritative = 7;
+  google.protobuf.Timestamp discovery_observed_at = 8;
+  // Absent for immutable overlay-only configuration, valid until replacement.
+  google.protobuf.Timestamp discovery_valid_until = 9;
+  // Earliest address evidence/health bound; absent for an empty scope.
+  google.protobuf.Timestamp coverage_valid_until = 10;
 }
 
 message RefreshRequest {

@@ -1,0 +1,45 @@
+{
+  "entries": [
+    {
+      "offering": {
+        "workerUrl": "https://broker.example.invalid",
+        "ethAddress": "0x1111111111111111111111111111111111111111",
+        "capability": "example:work",
+        "offering": "standard",
+        "pricePerWorkUnitWei": "7",
+        "workUnit": "seconds",
+        "unitsPerPrice": "60",
+        "protocol": "paid-job/v1",
+        "extraJson": "eyJwcm90b2NvbCI6InBhaWQtam9iL3YxIiwiam9iIjp7InRyYW5zcG9ydHMiOlsibXVsdGlwYXJ0Il19fQ==",
+        "constraintsJson": "eyJtYXhfZHVyYXRpb25fc2Vjb25kcyI6MTIwfQ==",
+        "workUnitEstimator": {
+          "id": "media-duration/v1",
+          "rounding": "ceil",
+          "exactness": "upper-bound"
+        },
+        "settlementDomainId": "example-domain",
+        "quoteVersion": "42"
+      },
+      "workerId": "broker-1",
+      "selectable": true,
+      "verifiedAt": "2026-09-24T16:00:00Z",
+      "validUntil": "2026-09-24T16:10:00Z",
+      "healthValidUntil": "2026-09-24T16:00:05Z"
+    }
+  ],
+  "completeness": "CATALOG_COMPLETENESS_PARTIAL",
+  "coverage": {
+    "knownAddresses": 2,
+    "verifiedCompatibleAddresses": 1,
+    "unknownAddresses": 1,
+    "deferredAddresses": 1,
+    "unavailableAddresses": 1
+  },
+  "snapshotAt": "2026-09-24T16:00:00Z",
+  "evaluatedAt": "2026-09-24T16:00:00Z",
+  "discoveryScope": "chain_active_pool_and_overlay",
+  "discoveryScopeAuthoritative": true,
+  "discoveryObservedAt": "2026-09-24T16:00:00Z",
+  "discoveryValidUntil": "2026-09-25T16:00:00Z",
+  "coverageValidUntil": "2026-09-24T16:00:05Z"
+}

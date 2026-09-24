@@ -1,0 +1,17 @@
+{
+  "entries": [],
+  "completeness": "CATALOG_COMPLETENESS_COMPLETE",
+  "coverage": {
+    "knownAddresses": 1,
+    "confirmedIncompatibleAddresses": 1,
+    "deferredAddresses": 1,
+    "unavailableAddresses": 1
+  },
+  "snapshotAt": "2026-09-24T16:00:00Z",
+  "evaluatedAt": "2026-09-24T16:00:00Z",
+  "discoveryScope": "chain_active_pool_and_overlay",
+  "discoveryScopeAuthoritative": true,
+  "discoveryObservedAt": "2026-09-24T16:00:00Z",
+  "discoveryValidUntil": "2026-09-25T16:00:00Z",
+  "coverageValidUntil": "2026-09-24T16:10:00Z"
+}

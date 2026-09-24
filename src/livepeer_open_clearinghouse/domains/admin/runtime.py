@@ -327,8 +327,8 @@ async def admin_list_capabilities_endpoint(
     endpoint uses; the only difference is the auth model (bearer token
     instead of API-key/session). No business logic duplication.
     """
-    items = await discovery_service.list_capabilities(registry)
-    return {"items": [c.model_dump() for c in items]}
+    result = await discovery_service.capability_catalog(registry)
+    return result.model_dump(mode="json")
 
 
 @router.get("/discovery/orchestrators")
@@ -337,8 +337,8 @@ async def admin_list_orchestrators_endpoint(
     registry: RegistryDep,
     capability: str | None = None,
 ) -> dict[str, Any]:
-    items = await discovery_service.list_orchestrators(registry, capability=capability)
-    return {"items": [o.model_dump() for o in items]}
+    result = await discovery_service.orchestrator_catalog(registry, capability=capability)
+    return result.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

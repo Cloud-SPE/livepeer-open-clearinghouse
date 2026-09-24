@@ -401,3 +401,45 @@ cannot extend a caller that still gives up after 30 seconds.
 See [live preparation recovery](references/live-session-preparation-recovery.md)
 for the incident review, RPC availability evidence, and coordinated deployment
 procedure.
+
+## Registry catalog discovery
+
+LOC requires Modules `ListOfferings` (introduced at `e9f08e4`). Capabilities and
+orchestrators, including admin views, use one shared catalog snapshot. No
+`ListKnown`, `ResolveByAddress`, `Select` or `SelectMany` calls occur during catalog
+refresh. An older daemon returning `UNIMPLEMENTED` yields 503; upgrade the daemon
+before deploying this LOC version. Route selection for paid work remains separate.
+
+`REGISTRY_DISCOVERY_RPC_TIMEOUT_SECONDS` bounds the snapshot RPC (default two
+seconds). `REGISTRY_CATALOG_TIMEOUT_SECONDS` bounds each shared refresh (default
+20 seconds, required below 30). Caller cancellation does not cancel work shared
+with other requests. Cache invalidation prevents old refreshes repopulating it.
+The cache TTL is capped by the snapshot's coverage and discovery validity bounds.
+
+Both HTTP list responses retain `items` and add `catalog`: completeness, coverage,
+snapshot/evaluation/source timestamps, discovery scope and `stale`. Coverage is
+for the unfiltered daemon discovery scope. Lists show LOC-supported paid-job and
+paid-session offerings selectable at the snapshot's `evaluated_at`; provider
+identity, eligibility timestamps and constraints accompany each offering. Multiple
+providers may advertise the same offering ID. Orchestrators are grouped by payee,
+worker URL and worker ID, so separate brokers are not collapsed into one address.
+Informational estimator metadata may omit executable fixture references; paid
+route validation is unchanged.
+
+Populated partial catalogs return 200 with completeness `PARTIAL`. Empty partial
+or uninitialized results return `503 DAEMON_UNAVAILABLE`; an empty complete
+catalog is a successful empty response. Filtering orchestrators does not change
+the coverage scope or make partial negative evidence authoritative.
+
+On refresh failure, a previous catalog may be returned for at most
+`REGISTRY_CATALOG_STALE_SECONDS` beyond its original cache expiry (default 300
+seconds). The fallback is labeled `stale=true`, `completeness=PARTIAL`, retains
+original evidence timestamps, and emits `registry.catalog.stale_fallback`.
+Fallback waits for the bounded refresh attempt; it does not renew snapshot age.
+An empty fallback is inconclusive and returns 503. Set the stale allowance to zero
+to disable fallback. A zero cache TTL disables stored snapshots but retains
+refresh deadlines and concurrent request coalescing.
+
+Catalog selectability and prices are informational observations, never payment
+authority. Stale fallback does not apply to `Select` or `SelectMany`; their existing
+route cache TTL and authoritative payment checks remain unchanged.

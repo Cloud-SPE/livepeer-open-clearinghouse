@@ -55,6 +55,11 @@ class ResolverStub(object):
                 request_serializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownRequest.SerializeToString,
                 response_deserializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownResult.FromString,
                 _registered_method=True)
+        self.ListOfferings = channel.unary_unary(
+                '/livepeer.registry.v1.Resolver/ListOfferings',
+                request_serializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsRequest.SerializeToString,
+                response_deserializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsResult.FromString,
+                _registered_method=True)
         self.Refresh = channel.unary_unary(
                 '/livepeer.registry.v1.Resolver/Refresh',
                 request_serializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.RefreshRequest.SerializeToString,
@@ -99,6 +104,13 @@ class ResolverServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListOfferings(self, request, context):
+        """Snapshot-only discovery. Never resolves addresses or waits for refresh.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Refresh(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -139,6 +151,11 @@ def add_ResolverServicer_to_server(servicer, server):
                     servicer.ListKnown,
                     request_deserializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownRequest.FromString,
                     response_serializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownResult.SerializeToString,
+            ),
+            'ListOfferings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOfferings,
+                    request_deserializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsRequest.FromString,
+                    response_serializer=livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsResult.SerializeToString,
             ),
             'Refresh': grpc.unary_unary_rpc_method_handler(
                     servicer.Refresh,
@@ -264,6 +281,33 @@ class Resolver(object):
             '/livepeer.registry.v1.Resolver/ListKnown',
             livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownRequest.SerializeToString,
             livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListKnownResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListOfferings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/livepeer.registry.v1.Resolver/ListOfferings',
+            livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsRequest.SerializeToString,
+            livepeer_dot_registry_dot_v1_dot_resolver__pb2.ListOfferingsResult.FromString,
             options,
             channel_credentials,
             insecure,

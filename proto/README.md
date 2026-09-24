@@ -12,6 +12,12 @@ comment-only on the payer and registry surfaces. Registry protos come from
 `proto-contracts/livepeer/registry/v1/`. Re-vendoring requires recording a
 new exact Modules revision; daemon image tags alone are not a schema identity.
 
+Registry definitions and catalog fixtures were subsequently updated verbatim from
+Modules commit `e9f08e4fdc934567fa0d2c4979f07773a4180aa8` (`proto-contracts`).
+LOC now requires the additive `Resolver.ListOfferings` RPC from that revision or
+later; `UNIMPLEMENTED` fails closed and does not trigger address crawling.
+Payment definitions retain the baseline above.
+
 ## Layout
 
 ```

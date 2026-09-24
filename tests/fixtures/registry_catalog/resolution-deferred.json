@@ -1,0 +1,32 @@
+{
+  "code": 14,
+  "message": "resolution_deferred",
+  "details": [
+    {
+      "@type": "type.googleapis.com/google.protobuf.Struct",
+      "value": {
+        "registry_error_code": "resolution_deferred"
+      }
+    },
+    {
+      "@type": "type.googleapis.com/livepeer.registry.v1.RegistryResolutionDetail",
+      "ethAddress": "0x1111111111111111111111111111111111111111",
+      "evaluatedAt": "2026-09-24T16:00:00Z",
+      "discoveryStatus": {
+        "sourceUri": "https://orch.example.invalid/manifest.json",
+        "compatibility": "MANIFEST_COMPATIBILITY_UNKNOWN",
+        "availability": "MANIFEST_AVAILABILITY_UNAVAILABLE",
+        "failureReason": "DISCOVERY_FAILURE_REASON_TRANSPORT",
+        "consecutiveFailures": 2,
+        "policyStep": 2,
+        "retryClass": "unknown",
+        "lastAttemptAt": "2026-09-24T15:59:45Z",
+        "nextRetryAt": "2026-09-24T16:00:45Z"
+      }
+    },
+    {
+      "@type": "type.googleapis.com/google.rpc.RetryInfo",
+      "retryDelay": "45s"
+    }
+  ]
+}
