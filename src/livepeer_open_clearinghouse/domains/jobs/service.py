@@ -293,6 +293,9 @@ async def _open_wholesale_job(
             max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
             max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
         )
+        limits = wholesale_service.admission_funding_limits(
+            limits, required_reservation_wei=max_debit_wei
+        )
         plan = await wholesale_service.plan_observed_account_shortfall(
             db,
             observation=observation,
@@ -323,6 +326,13 @@ async def _open_wholesale_job(
             broker=broker,
             daemon=daemon,
             acknowledged_at=clock.now(),
+        )
+        await wholesale_service.verify_job_funding_readiness(
+            broker=broker,
+            route=route,
+            payer_eth_address=payer,
+            chain_id=settings.wholesale_chain_id,
+            required_reservation_wei=max_debit_wei,
         )
     except wholesale_service.WholesaleFundingPolicyError as exc:
         raise WholesaleFundingUnverified(reason=str(exc)) from exc

@@ -443,3 +443,22 @@ refresh deadlines and concurrent request coalescing.
 Catalog selectability and prices are informational observations, never payment
 authority. Stale fallback does not apply to `Select` or `SelectMany`; their existing
 route cache TTL and authoritative payment checks remain unchanged.
+
+## Paid-job funding readiness
+
+A paid-job broker reserves the authorization's entire maximum debit at admission.
+Before returning that authorization, LOC plans account funding with an admission
+floor equal to the maximum debit, even when available credit is above the routine
+low-water threshold. The effective target is the greater of the normal float
+and that reservation; the existing single-funding, per-payee and aggregate caps
+remain binding. Existing durable claims, locked exposure checks and verified
+receipt replay govern any mint. After completion, LOC rereads the exact receiver
+account and requires sufficient available credit; otherwise it returns
+`WHOLESALE_FUNDING_UNVERIFIED` without disclosing the grant.
+
+Signing an internal grant is not funding proof. If a grant already exists when
+readiness fails, retain its identity and hold for retry or authoritative
+non-admission recovery. A balance observation cannot reserve credit atomically
+against other clients; broker admission and signed recovery remain authoritative.
+Do not silently reduce a caller's workload maximum to its estimate. See the
+[ABR incident and cap guidance](references/abr-funding-readiness-2026-09-24.md).

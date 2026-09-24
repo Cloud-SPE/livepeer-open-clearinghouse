@@ -44,6 +44,65 @@ class WholesaleFundingPolicyError(ValueError):
     """Funding would exceed an operator-controlled exposure boundary."""
 
 
+def admission_funding_limits(
+    limits: WholesaleFundingLimits, *, required_reservation_wei: Decimal
+) -> WholesaleFundingLimits:
+    """Raise the refill floor for one admission without raising exposure limits.
+
+    A healthy routine float can still be too small for an individual reservation.
+    The maximum signed debit, not the workload estimate, is reserved by paid jobs.
+    """
+
+    if not required_reservation_wei.is_finite() or required_reservation_wei < 0:
+        raise WholesaleFundingPolicyError("invalid required reservation")
+    target = max(limits.target_available_wei, required_reservation_wei)
+    if target > limits.max_available_per_payee_wei:
+        raise WholesaleFundingPolicyError("job reservation exceeds the per-payee funding limit")
+    if target > limits.max_aggregate_available_wei:
+        raise WholesaleFundingPolicyError("job reservation exceeds the aggregate funding limit")
+    return limits.model_copy(
+        update={
+            "target_available_wei": target,
+            "replenish_below_wei": max(limits.replenish_below_wei, required_reservation_wei),
+        }
+    )
+
+
+async def verify_job_funding_readiness(
+    *,
+    broker: BrokerWholesaleAccountClient,
+    route: SelectedRoute,
+    payer_eth_address: str,
+    chain_id: int,
+    required_reservation_wei: Decimal,
+) -> None:
+    """Check receiver-acknowledged free credit before disclosing a job grant.
+
+    This is a readiness check, not an admission reservation. Only the receiver can
+    atomically reserve funds; another client may still consume credit afterwards.
+    """
+
+    observed = await broker.get_wholesale_account(
+        broker_url=route.worker_url,
+        payer_eth_address=payer_eth_address,
+        payee_eth_address=route.eth_address,
+        chain_id=chain_id,
+        settlement_domain_id=route.settlement_domain_id,
+    )
+    if (
+        observed.payer != payer_eth_address
+        or observed.payee != route.eth_address
+        or observed.chain_id != chain_id
+        or observed.denomination != "wei"
+        or observed.settlement_domain_id != route.settlement_domain_id
+    ):
+        raise WholesaleFundingPolicyError("admission readiness changed account identity")
+    if observed.available_value_wei < required_reservation_wei:
+        raise WholesaleFundingPolicyError(
+            "receiver available credit is below the job reservation after funding"
+        )
+
+
 async def claim_account_funding(
     db: AsyncSession,
     *,

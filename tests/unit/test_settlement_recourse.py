@@ -81,9 +81,9 @@ async def _open(db: AsyncSession, *, balance: int = 10**12):
                 "wholesale_chain_id": 42161,
                 "wholesale_target_available_wei": 100,
                 "wholesale_replenish_below_wei": 50,
-                "wholesale_max_available_per_payee_wei": 200,
-                "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
+                "wholesale_max_available_per_payee_wei": 2000,
+                "wholesale_max_aggregate_available_wei": 5000,
+                "wholesale_max_single_funding_wei": 1000,
             }
         ),
         request_id=f"recourse-{key_id}",
@@ -91,7 +91,7 @@ async def _open(db: AsyncSession, *, balance: int = 10**12):
         caller_public_key=bytes.fromhex(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         ),
-        broker_wholesale=_WholesaleBroker(),
+        broker_wholesale=_WholesaleBroker(credit=1000),
     )
     return user_id, key_id, response
 
@@ -641,8 +641,8 @@ async def test_concurrent_resolutions_have_one_durable_winner(tmp_path: Path) ->
 async def test_job_open_response_serializes_wei_as_strings(db_session: AsyncSession) -> None:
     _user_id, _key, response = await _open(db_session)
     dumped = response.model_dump(mode="json")
-    assert dumped["funded_value_wei"] == "100"
-    assert dumped["expected_value_wei"] == "100"
+    assert dumped["funded_value_wei"] == "1000"
+    assert dumped["expected_value_wei"] == "1000"
     assert isinstance(dumped["funded_value_wei"], str)
 
 

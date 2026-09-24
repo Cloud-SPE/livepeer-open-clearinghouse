@@ -265,8 +265,9 @@ class _FailingExchangeClient:
 
 
 class _WholesaleBroker:
-    def __init__(self) -> None:
+    def __init__(self, credit: int = 200) -> None:
         self.funded = False
+        self.credit = credit
 
     async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
         return WholesaleAccountObservation(
@@ -275,10 +276,10 @@ class _WholesaleBroker:
             settlement_domain_id="0x" + "aa" * 32,
             chain_id=42161,
             denomination="wei",
-            credited_value_wei=100 if self.funded else 0,
+            credited_value_wei=self.credit if self.funded else 0,
             reserved_value_wei=0,
             debited_value_wei=0,
-            available_value_wei=100 if self.funded else 0,
+            available_value_wei=self.credit if self.funded else 0,
             version=1 if self.funded else 0,
             observed_at=_clock().now(),
         )
@@ -289,8 +290,8 @@ class _WholesaleBroker:
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
             settlement_domain_id="0x" + "aa" * 32,
-            credited_value_wei=100,
-            available_value_wei=100,
+            credited_value_wei=self.credit,
+            available_value_wei=self.credit,
             account_version=1,
             replayed=False,
         )
@@ -324,7 +325,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
                 "wholesale_replenish_below_wei": 50,
                 "wholesale_max_available_per_payee_wei": 200,
                 "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
+                "wholesale_max_single_funding_wei": 200,
             }
         ),
         request_id="request-wholesale-1",
@@ -1186,16 +1187,16 @@ async def _open_recoverable_job(
                 "wholesale_chain_id": 42161,
                 "wholesale_target_available_wei": 100,
                 "wholesale_replenish_below_wei": 50,
-                "wholesale_max_available_per_payee_wei": 200,
-                "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
+                "wholesale_max_available_per_payee_wei": 2000,
+                "wholesale_max_aggregate_available_wei": 5000,
+                "wholesale_max_single_funding_wei": 2000,
             }
         ),
         workload_request_digest=b"\x44" * 32,
         caller_public_key=bytes.fromhex(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         ),
-        broker_wholesale=_WholesaleBroker(),
+        broker_wholesale=_WholesaleBroker(credit=2000),
     )
     return user_id, response
 
@@ -2037,3 +2038,150 @@ async def test_settle_job_rejects_unsigned_settlement_with_typed_reason(
         )
         is None
     )
+
+
+class _AdmissionBroker(_WholesaleBroker):
+    def __init__(
+        self, *, available: int = 150, delayed: bool = False, deplete: bool = False
+    ) -> None:
+        super().__init__(credit=200)
+        self.initial = available
+        self.delayed = delayed
+        self.deplete = deplete
+        self.fund_calls = 0
+        self.read_calls = 0
+
+    async def get_wholesale_account(self, **kwargs: object) -> WholesaleAccountObservation:
+        self.read_calls += 1
+        visible = self.funded and not self.delayed
+        credited = 200 if visible else self.initial
+        # Simulate another admission consuming free credit after receipt verification.
+        reserved = 75 if self.deplete and self.read_calls >= 3 else 0
+        return (await super().get_wholesale_account(**kwargs)).model_copy(
+            update={
+                "credited_value_wei": Decimal(credited),
+                "available_value_wei": Decimal(credited - reserved),
+                "reserved_value_wei": Decimal(reserved),
+                "version": 1 if visible else 0,
+            }
+        )
+
+    async def fund_wholesale_account(self, **kwargs: object) -> WholesaleFundingResult:
+        replayed = self.funded
+        self.funded = True
+        self.fund_calls += 1
+        return (await super().fund_wholesale_account(**kwargs)).model_copy(
+            update={
+                "credited_value_wei": Decimal(0 if replayed else 200 - self.initial),
+                "replayed": replayed,
+            }
+        )
+
+
+async def _wholesale_admission_args(
+    db: AsyncSession, broker: _AdmissionBroker, *, limit: int = 100
+):
+    user_id, key_id = await _seed(db)
+    db.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db.commit()
+    route = _route()
+    return dict(
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_units=1,
+        max_total_units=2,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings().model_copy(
+            update={
+                "wholesale_chain_id": 42161,
+                "wholesale_target_available_wei": 100,
+                "wholesale_replenish_below_wei": 50,
+                "wholesale_max_available_per_payee_wei": 500,
+                "wholesale_max_aggregate_available_wei": 1000,
+                "wholesale_max_single_funding_wei": limit,
+            }
+        ),
+        request_id="admission-readiness",
+        workload_request_digest=b"\x44" * 32,
+        caller_public_key=bytes.fromhex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        broker_wholesale=broker,
+    )
+
+
+@pytest.mark.unit
+async def test_wholesale_job_funds_reservation_above_routine_low_water(db_session):
+    broker = _AdmissionBroker()
+    args = await _wholesale_admission_args(db_session, broker)
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.funded_value_wei == 50
+    assert broker.fund_calls == 1
+    funding = (await db_session.scalars(select(WholesaleFunding))).one()
+    assert funding.target_available_wei == 200
+    assert funding.status == "acknowledged"
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.max_debit_wei == 200  # The workload ceiling is never silently reduced.
+
+
+@pytest.mark.unit
+async def test_wholesale_job_rejects_shortfall_above_funding_limit(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker()
+    args = await _wholesale_admission_args(db_session, broker, limit=40)
+    with pytest.raises(WholesaleFundingUnverified, match="single-funding limit"):
+        await jobs_service.open_job(db_session, **args)
+    assert broker.fund_calls == 0
+    assert (await db_session.scalars(select(WholesaleFunding))).all() == []
+    # Signed but undisclosed authority remains held for authoritative recovery.
+    assert (await db_session.scalars(select(SpendAuthorizationGrant))).one().max_debit_wei == 200
+
+
+@pytest.mark.unit
+async def test_wholesale_job_waits_for_durable_receipt_and_replays_same_funding(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker(delayed=True)
+    args = await _wholesale_admission_args(db_session, broker)
+    with pytest.raises(WholesaleFundingUnverified):
+        await jobs_service.open_job(db_session, **args)
+    funding = (await db_session.scalars(select(WholesaleFunding))).one()
+    assert funding.status == "minted"
+    payment = funding.payment_bytes
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    old_id = grant.authorization_id
+    broker.delayed = False
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.work_id == old_id
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
+    assert funding.payment_bytes == payment
+    assert funding.status == "acknowledged"
+    assert len(args["daemon"]._mint_replays) == 1
+
+
+@pytest.mark.unit
+async def test_wholesale_job_detects_concurrent_credit_consumption_after_funding(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker(deplete=True)
+    args = await _wholesale_admission_args(db_session, broker)
+    with pytest.raises(WholesaleFundingUnverified, match="below the job reservation"):
+        await jobs_service.open_job(db_session, **args)
+    assert broker.fund_calls == 1
+    assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+
+
+@pytest.mark.unit
+async def test_wholesale_job_with_enough_free_credit_mints_nothing(db_session):
+    broker = _AdmissionBroker(available=200)
+    args = await _wholesale_admission_args(db_session, broker)
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.funded_value_wei == 0
+    assert broker.fund_calls == 0
