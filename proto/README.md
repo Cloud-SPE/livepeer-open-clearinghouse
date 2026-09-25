@@ -16,6 +16,12 @@ Registry protos remain from `proto-contracts/livepeer/registry/v1/` at the
 previous Modules revision `d8d369de4aba36c397c4f758f668239b6c09a206`.
 Daemon image tags alone are not a schema identity.
 
+Registry definitions and catalog fixtures were subsequently updated verbatim from
+Modules commit `e9f08e4fdc934567fa0d2c4979f07773a4180aa8` (`proto-contracts`).
+LOC now requires the additive `Resolver.ListOfferings` RPC from that revision or
+later; `UNIMPLEMENTED` fails closed and does not trigger address crawling.
+Payment definitions retain the baseline above.
+
 ## Layout
 
 ```

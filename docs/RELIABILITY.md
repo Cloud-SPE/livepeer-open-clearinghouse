@@ -134,29 +134,42 @@ parses workload media to determine usage.
 
 ### Jobs that never reach broker admission
 
-Once LOC returns a signed payment envelope, it cannot revoke it. The broker or
+For historical ticket accounting, once LOC returns a signed payment envelope,
+it cannot revoke it. The broker or
 another holder may submit a winning ticket at any point in its chain validity
 window, and neither a caller assertion, a broker refusal, nor a payee non-use
 attestation proves otherwise. Ticket validity is governance mutable and the
 contract evaluates the current value at redemption, so a mint-time
 `expires_after_round` is telemetry rather than permanent retirement proof.
 Governance can extend or revive an issued envelope. LOC therefore never
-automatically refunds, releases on expiry, or attempts re-encumbrance.
+releases credit merely on ticket expiry or attempts automatic re-encumbrance.
+Wholesale customer holds are independent from those tickets and follow the
+authorization recovery rules below.
 
 Before applying a conservative full charge, LOC polls the snapshotted broker's
 `GET /v1/exchange/{request_id}` using the request ID LOC created. `IN_FLIGHT`
-and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence;
-after that silence LOC directly requests an attributable record from
-`POST /v1/non-admission/{request_id}` using scope from its immutable route and
-payment records. LOC verifies the signature, delegated key, request/work/payment
-identities, full quote reference, broker identity, observation time, and record
-coverage before retaining `NOT_ADMITTED` as append-only audit evidence. Invalid
-or unverifiable evidence remains unresolved. `ADMITTED_OUTCOME_UNKNOWN` and
+and `ACCOUNTING_PENDING` remain pollable. `NO_RECORD` is silence and
+`ADMISSION_REJECTED` is an unsigned admission-refusal diagnostic, not zero-usage
+evidence. After the persisted authorization expires, either outcome triggers
+`POST /v1/non-admission/{request_id}` using the original immutable grant scope.
+LOC verifies the signature, delegated key, request ID, authorization ID (the
+wholesale work ID), payer/payee, full quote reference, broker identity,
+settlement domain, observation time, and record coverage. The grant must match
+the job and must not already be known admitted or settled.
+
+Verified `NOT_ADMITTED` evidence observed at or after authorization expiry can
+close the wholesale job with zero usage/charge, retire its grant as
+`expired_unused`, and release the customer hold exactly once. This relies on
+the broker contract to irrevocably fence the exact unused authorization before
+signing. Proof is retained in append-only audit and close records; it does not
+refund wholesale funding. Earlier proof remains audit-only. Missing, invalid,
+or temporarily unavailable proof leaves the hold intact and recovery retryable.
+Expiry alone and HTTP 402 never authorize a release. `ADMITTED_OUTCOME_UNKNOWN` and
 `ADMITTED_EVIDENCE_EXPIRED` both prove admission without usable settlement
 evidence. None authorizes a refund or an accounting mutation.
 
-Only `SETTLED` carrying an original signed settlement can close the job
-accurately. LOC ignores unsigned response hints and verifies the signed request
+For admitted work, `SETTLED` carrying an original signed settlement can close
+the job accurately. LOC ignores unsigned response hints and verifies the signed request
 ID, broker job ID, work ID, work unit, unit totals, quote identity, billing
 curve, signature, and snapshotted delegation before changing financial state.
 A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
@@ -164,8 +177,11 @@ A mismatched or `DEBIT_FAILED` claim leaves the job encumbered.
 If no valid signed settlement is recoverable by the configured operational
 deadline, LOC may finalize a distinct `conservative_full_charge`. That outcome
 must never be represented as broker-settled usage, a successful network debit,
-or fabricated work units. Signed non-admission remains attributable audit and
-dispute evidence, not refund authority. The deadline is configured with
+or fabricated work units. Historical ticket non-admission remains audit-only;
+expired wholesale authorization recovery follows the verified-proof rule above.
+The [September 24 ABR incident review](references/abr-admission-rejection-recovery.md)
+records the rejection contract, production funding findings, and rollout checks.
+The deadline is configured with
 `JOB_CONSERVATIVE_CHARGE_AFTER_SECONDS`; its safe default is `0` (disabled), so
 operators must select and document a nonzero billing policy deliberately.
 An unreachable broker, timeout, or malformed lookup response is retained as a
@@ -349,3 +365,154 @@ Prometheus metrics:
 - `livepeer_open_clearinghouse_daemon_errors_total{daemon, kind}` counter
 
 These are MVP-minimum. Full Victoria-stack integration is v2.
+
+### Pre-payment session preparation recovery
+
+`POST /v1/sessions/prepare` selects a route and signs a preparation token; it
+never holds customer credit, authorizes spending, or funds a broker. A known
+`OpenClearinghouseError` during this step releases only that attempt for an
+immediate identical retry. The claim's request fingerprint and broker request
+ID remain durable, so changed content still returns `IDEMPOTENCY_KEY_REUSE`.
+
+Release matches account, operation `sessions.prepare`, idempotency key, broker
+request ID, `in_flight` status, the original lease expiry, and no payment ID.
+It sets `expired` without changing the expiry. Preparation reclaim accepts that
+explicit release immediately and advances the expiry beyond both the previous
+lease and the new timeout. Keeping the old expiry as a lower bound prevents a
+late failure from releasing a newer attempt even when retries share a clock
+tick or the clock moves backwards. Reclaim also compares the observed expiry
+atomically, so concurrent retries cannot both win.
+
+This early-release rule does not apply to paid opens, refills, or uncertain
+funding. Unexpected exceptions retain the existing timeout recovery behavior.
+No rows or identities are deleted, and no migration is required.
+
+Both registry selection RPCs have a configurable
+`REGISTRY_SELECTION_TIMEOUT_SECONDS` deadline (default 45 seconds). `NOT_FOUND`
+means no candidate; other gRPC statuses become sanitized `503
+DAEMON_UNAVAILABLE` responses. Empty selections are not cached, so registry
+recovery is visible on the next preparation attempt. A bound missing route
+continues to return `409 route_binding_mismatch`, while an unbound missing route
+returns `404 NO_ROUTE_AVAILABLE`. Keep caller and ingress/proxy HTTP timeouts
+above the selection deadline with response-processing headroom, and keep the
+claim timeout longer than selection. Increasing the registry budget alone
+cannot extend a caller that still gives up after 30 seconds.
+
+See [live preparation recovery](references/live-session-preparation-recovery.md)
+for the incident review, RPC availability evidence, and coordinated deployment
+procedure.
+
+## Registry catalog discovery
+
+LOC requires Modules `ListOfferings` (introduced at `e9f08e4`). Capabilities and
+orchestrators, including admin views, use one shared catalog snapshot. No
+`ListKnown`, `ResolveByAddress`, `Select` or `SelectMany` calls occur during catalog
+refresh. An older daemon returning `UNIMPLEMENTED` yields 503; upgrade the daemon
+before deploying this LOC version. Route selection for paid work remains separate.
+
+`REGISTRY_DISCOVERY_RPC_TIMEOUT_SECONDS` bounds the snapshot RPC (default two
+seconds). `REGISTRY_CATALOG_TIMEOUT_SECONDS` bounds each shared refresh (default
+20 seconds, required below 30). Caller cancellation does not cancel work shared
+with other requests. Cache invalidation prevents old refreshes repopulating it.
+The cache TTL is capped by the snapshot's coverage and discovery validity bounds.
+
+Both HTTP list responses retain `items` and add `catalog`: completeness, coverage,
+snapshot/evaluation/source timestamps, discovery scope and `stale`. Coverage is
+for the unfiltered daemon discovery scope. Lists show LOC-supported paid-job and
+paid-session offerings selectable at the snapshot's `evaluated_at`; provider
+identity, eligibility timestamps and constraints accompany each offering. Multiple
+providers may advertise the same offering ID. Orchestrators are grouped by payee,
+worker URL and worker ID, so separate brokers are not collapsed into one address.
+Informational estimator metadata may omit executable fixture references; paid
+route validation is unchanged.
+
+Populated partial catalogs return 200 with completeness `PARTIAL`. Empty partial
+or uninitialized results return `503 DAEMON_UNAVAILABLE`; an empty complete
+catalog is a successful empty response. Filtering orchestrators does not change
+the coverage scope or make partial negative evidence authoritative.
+
+On refresh failure, a previous catalog may be returned for at most
+`REGISTRY_CATALOG_STALE_SECONDS` beyond its original cache expiry (default 300
+seconds). The fallback is labeled `stale=true`, `completeness=PARTIAL`, retains
+original evidence timestamps, and emits `registry.catalog.stale_fallback`.
+Fallback waits for the bounded refresh attempt; it does not renew snapshot age.
+An empty fallback is inconclusive and returns 503. Set the stale allowance to zero
+to disable fallback. A zero cache TTL disables stored snapshots but retains
+refresh deadlines and concurrent request coalescing.
+
+Catalog selectability and prices are informational observations, never payment
+authority. Stale fallback does not apply to `Select` or `SelectMany`; their existing
+route cache TTL and authoritative payment checks remain unchanged.
+
+## Paid-job funding readiness
+
+A paid-job broker reserves the authorization's entire maximum debit at admission.
+Before returning that authorization, LOC plans account funding with an admission
+floor equal to the maximum debit, even when available credit is above the routine
+low-water threshold. The effective target is the greater of the normal float
+and that reservation; the existing single-funding, per-payee and aggregate caps
+remain binding. Existing durable claims, locked exposure checks and verified
+receipt replay govern any mint. After completion, LOC rereads the exact receiver
+account and requires sufficient available credit; otherwise it returns
+`WHOLESALE_FUNDING_UNVERIFIED` without disclosing the grant.
+
+Signing an internal grant is not funding proof. If a grant already exists when
+readiness fails, retain its identity and hold for retry or authoritative
+non-admission recovery. A balance observation cannot reserve credit atomically
+against other clients; broker admission and signed recovery remain authoritative.
+Do not silently reduce a caller's workload maximum to its estimate. See the
+[ABR incident and cap guidance](references/abr-funding-readiness-2026-09-24.md).
+
+### Live close after a refused revision
+
+A signed terminal `authorization_exhausted` session record may report claimed
+units above debited units. LOC accepts that gap only for wholesale authorization
+accounting: actual and billed units must equal the debit, the charge must equal
+`bill(debited_units)`, the remaining reservation must be zero, and all signature,
+identity, quote, domain, ceiling, and sequence checks still apply. Claimed units
+never determine the customer charge. Missing/zero settlement sequences remain
+invalid for an initial close.
+
+Before closing against a historical grant, LOC requires every newer grant to
+be retired as `canceled_unused` or `expired_unused`. The authorization reconciler
+reads the pinned broker's durable status, checks zero usage/debit/reservation,
+and verifies its wholesale account domain, payer, payee, chain, and denomination.
+Expiry evidence must be observed at or after the grant expiry. An already
+admitted grant cannot become unused. `canceled_unused` relies on Modules'
+persistent cancellation fence rejecting subsequent admission for that payer and
+authorization. This is a TLS-bound receiver status contract, not a new signed
+non-admission envelope. Account/status errors or inconclusive states preserve
+holds and return retryable `503 successor_authorization_unresolved` from close.
+The periodic authorization reconciler must run before close can succeed.
+
+Close takes the engagement row lock shared with refill issuance. An exact retry
+of the stored signed envelope, units, and compatible outcome returns the original
+accounting result without a second ledger mutation or settlement event. Different
+close evidence for an already-closed session returns 409. Older cached verifier
+failures are reevaluated under the new exhaustion policy; transient successor
+status failures are never cached as permanently invalid settlement evidence.
+
+### Live admission funding readiness
+
+Live open uses the immutable authorization's maximum debit as the receiver
+available-credit floor, independently of the routine low-water threshold. LOC
+raises the request's funding target to cover that floor without increasing
+single-funding, per-payee, or aggregate exposure limits. Customer workload caps
+are never silently reduced.
+
+For a revision, the receiver atomically inherits the admitted predecessor's
+billed amount and replaces its reservation. The additional available-credit
+requirement is therefore `new_max_debit - predecessor_billed - predecessor_reserved`.
+LOC queries that exact predecessor on the pinned broker, verifies its identity,
+state and accounting bounds, and checks its persisted route/domain scope. It
+rechecks predecessor state and receiver available credit after funding. Missing,
+non-admitted, contradictory or unavailable predecessor evidence cannot justify
+reusing any reservation.
+
+Funding-policy failures, unavailable receiver observations and insufficient
+post-funding credit return retryable `503 WHOLESALE_FUNDING_UNVERIFIED`. The
+original grant, customer hold and mint identity remain durable. A retry recovers
+the existing funding receipt rather than issuing a replacement payment. Routine
+background replenishment continues using its configured target and threshold.
+These readiness checks do not atomically reserve credit: another request can
+consume it before broker admission; atomic admission remains tracked in `loc-8v4`.

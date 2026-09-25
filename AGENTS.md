@@ -52,6 +52,7 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the load-bearing design decisions.
 | [`docs/FRONTEND.md`](docs/FRONTEND.md) | Frontend conventions (Lit, esm.sh, vanilla CSS, light DOM) |
 | [`docs/PLANS.md`](docs/PLANS.md) | Beads planning, dependency, and handoff workflow |
 | [`docs/PRODUCT_SENSE.md`](docs/PRODUCT_SENSE.md) | Product mission, target users, scope guardrails |
+| [`docs/PRICING_AND_CAPABILITY_TUNING.md`](docs/PRICING_AND_CAPABILITY_TUNING.md) | Operator pricing, workload budgets, wholesale float, and daemon limits |
 | [`docs/QUALITY_SCORE.md`](docs/QUALITY_SCORE.md) | Per-domain quality grading |
 | [`docs/RELIABILITY.md`](docs/RELIABILITY.md) | Fail-closed billing, idempotency, state machines |
 | [`docs/TESTING.md`](docs/TESTING.md) | Clean release, SDK, conformance, and fuzz commands |

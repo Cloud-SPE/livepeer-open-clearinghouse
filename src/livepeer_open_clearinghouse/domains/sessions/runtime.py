@@ -74,14 +74,15 @@ async def prepare_session_endpoint(
     """Issue LOC's route-locked session ID before exact-body hashing."""
 
     api_key, user = pair
+    user_id, api_key_id = user.id, api_key.id
     operation = "sessions.prepare"
     fingerprint = payments_service.create_request_fingerprint(
         operation=operation, payload=body.model_dump(mode="json")
     )
     claim = await payments_service.claim_create_request(
         db,
-        user_id=user.id,
-        api_key_id=api_key.id,
+        user_id=user_id,
+        api_key_id=api_key_id,
         operation=operation,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
@@ -90,20 +91,27 @@ async def prepare_session_endpoint(
     )
     if claim.is_replay:
         return PrepareSessionResponse.model_validate(claim.replay_payload or {})
-    response = await service.prepare_session(
-        user_id=user.id,
-        api_key_id=api_key.id,
-        capability=body.capability,
-        offering=body.offering,
-        descriptor_schema=body.descriptor_schema,
-        route_binding=body.route_binding,
-        registry=registry,
-        clock=clock,
-        settings=settings,
-    )
+    try:
+        response = await service.prepare_session(
+            user_id=user_id,
+            api_key_id=api_key_id,
+            capability=body.capability,
+            offering=body.offering,
+            descriptor_schema=body.descriptor_schema,
+            route_binding=body.route_binding,
+            registry=registry,
+            clock=clock,
+            settings=settings,
+        )
+    except OpenClearinghouseError:
+        await db.rollback()
+        await payments_service.release_failed_session_preparation(
+            db, user_id=user_id, idempotency_key=idempotency_key, claim=claim
+        )
+        raise
     await payments_service.complete_create_request(
         db,
-        user_id=user.id,
+        user_id=user_id,
         operation=operation,
         idempotency_key=idempotency_key,
         http_status=status.HTTP_201_CREATED,
@@ -391,9 +399,8 @@ async def close_session_endpoint(
 
     Verifies the broker-signed settlement before finalizing accounting.
 
-    Returns 409 ``session_not_open`` for an already-closed session
-    (idempotency note: a second close is rejected, not a no-op —
-    the SDK should treat the first 200 as authoritative).
+    An exact retry returns the recorded close result. Conflicting evidence
+    on an already-closed session returns 409 ``session_not_open``.
     """
     _api_key, user = pair
     return await service.close_session(

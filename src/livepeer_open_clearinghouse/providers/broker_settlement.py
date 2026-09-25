@@ -65,6 +65,7 @@ class SpendAuthorizationState(StrEnum):
     ADMITTED = "admitted"
     SETTLED = "settled"
     EXPIRED_UNUSED = "expired_unused"
+    CANCELED_UNUSED = "canceled_unused"
     OUTCOME_UNKNOWN = "outcome_unknown"
     SUPERSEDED = "superseded"
 
@@ -97,6 +98,7 @@ class BrokerExchangeOutcome(StrEnum):
     IN_FLIGHT = "IN_FLIGHT"
     ADMITTED_OUTCOME_UNKNOWN = "ADMITTED_OUTCOME_UNKNOWN"
     ADMITTED_EVIDENCE_EXPIRED = "ADMITTED_EVIDENCE_EXPIRED"
+    ADMISSION_REJECTED = "ADMISSION_REJECTED"
     NOT_ADMITTED = "NOT_ADMITTED"
     NO_RECORD = "NO_RECORD"
 
@@ -153,7 +155,7 @@ class NonAdmissionQuery(BaseModel):
     sender: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     recipient: str = Field(pattern=r"^0x[0-9a-f]{40}$")
     quote_id: str = Field(min_length=1)
-    quote_version: int = Field(ge=1)
+    quote_version: int = Field(ge=0)
     constraint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     route_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     wholesale_account_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")

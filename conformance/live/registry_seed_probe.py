@@ -8,6 +8,7 @@ registry's ``--chain-seed`` dev provider.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
 import json
 import shutil
@@ -265,8 +266,28 @@ def run(modules_repo: Path, artifacts: Path) -> dict[str, Any]:
                 assert job.settlement_domain_id == SETTLEMENT_DOMAIN_ID
                 assert session.settlement_domain_id == SETTLEMENT_DOMAIN_ID
 
+                from livepeer_open_clearinghouse.providers.registry_daemon import (
+                    GrpcRegistryClient,
+                )
+
+                async def check_catalog() -> int:
+                    client = GrpcRegistryClient(str(socket_path))
+                    try:
+                        catalog = await client.list_catalog()
+                        assert {c.name for c in catalog.capabilities} == {
+                            "test:job",
+                            "test:session",
+                        }
+                        assert catalog.metadata.coverage.known_addresses == 1
+                        return len(catalog.capabilities)
+                    finally:
+                        if client._channel is not None:
+                            await client._channel.close()
+
+                catalog_count = asyncio.run(check_catalog())
                 result = {
                     "status": "ok",
+                    "catalog_capabilities": catalog_count,
                     "modules_revision": revision,
                     "registry_mode": "signed-chain-seed",
                     "operator_address": COLD_KEY.public_key.to_address(),

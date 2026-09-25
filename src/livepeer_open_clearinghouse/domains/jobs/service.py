@@ -295,6 +295,9 @@ async def _open_wholesale_job(
             max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
             max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
         )
+        limits = wholesale_service.admission_funding_limits(
+            limits, required_reservation_wei=max_debit_wei
+        )
         plan = await wholesale_service.plan_observed_account_shortfall(
             db,
             observation=observation,
@@ -325,6 +328,14 @@ async def _open_wholesale_job(
             broker=broker,
             daemon=daemon,
             acknowledged_at=clock.now(),
+        )
+        await wholesale_service.verify_admission_funding_readiness(
+            broker=broker,
+            route=route,
+            payer_eth_address=payer,
+            chain_id=settings.wholesale_chain_id,
+            wholesale_account_id=settings.wholesale_account_id,
+            required_reservation_wei=max_debit_wei,
         )
     except wholesale_service.WholesaleFundingPolicyError as exc:
         raise WholesaleFundingUnverified(reason=str(exc)) from exc
@@ -661,9 +672,8 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
 ) -> int:
     """Recover paid-job outcomes using only LOC's durable request ID.
 
-    Broker outcome fields are hints. Only the embedded settlement, after
-    normal signature/delegation/identity verification by ``settle_job``, may
-    close a job or release encumbrance.
+    Broker outcome fields are hints. Financial transitions require verified
+    settlement or scoped, signed non-admission observed after grant expiry.
     """
 
     cutoff = clock.now() - timedelta(seconds=interval_seconds)
@@ -728,7 +738,10 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
                 finalized += 1
             continue
 
-        if exchange.outcome is BrokerExchangeOutcome.NO_RECORD:
+        if exchange.outcome in (
+            BrokerExchangeOutcome.NO_RECORD,
+            BrokerExchangeOutcome.ADMISSION_REJECTED,
+        ):
             try:
                 exchange = await _request_non_admission(
                     db,
@@ -736,6 +749,7 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
                     job_row=job_row,
                     broker_url=broker_url,
                     request_id=request_id,
+                    clock=clock,
                 )
             except BrokerSettlementQueryError as exc:
                 exchange = exchange.model_copy(
@@ -750,12 +764,17 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
         }
         await db.flush()
         if exchange.outcome is BrokerExchangeOutcome.NOT_ADMITTED:
-            await _retain_verified_non_admission(
+            released = await _retain_verified_non_admission(
                 db,
                 job_row=job_row,
                 exchange=exchange,
                 clock=clock,
             )
+            if released:
+                job_terminal_accounting_total.labels(terminal_kind="not_admitted").inc()
+                finalized += 1
+            # Missing, early, or unverifiable proof must remain retryable.
+            continue
         settled = False
         if exchange.outcome is BrokerExchangeOutcome.SETTLED:
             claims = _recovered_settlement_claims(exchange)
@@ -807,6 +826,7 @@ async def reconcile_open_jobs(  # noqa: PLR0912, PLR0915 — explicit outcome st
         if exchange.outcome in (
             BrokerExchangeOutcome.ACCOUNTING_PENDING,
             BrokerExchangeOutcome.IN_FLIGHT,
+            BrokerExchangeOutcome.ADMISSION_REJECTED,
         ):
             continue
         if settings.job_conservative_charge_after_seconds <= 0:
@@ -832,11 +852,18 @@ async def _request_non_admission(
     job_row: PaymentSession,
     broker_url: str,
     request_id: str,
+    clock: Clock,
 ) -> BrokerExchangeResult:
     snapshot = job_row.route_snapshot or {}
     payer_scope = await _job_payer_scope(db, job_row)
     if payer_scope is None:
         raise BrokerSettlementQueryError("job lacks persisted payer sender scope")
+    grant = await _non_admission_grant(db, job_row)
+    expires_at = grant.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if clock.now() < expires_at:
+        raise BrokerSettlementQueryError("job authorization has not expired")
     sender_eth_address, recipient_eth_address, wholesale_account_id = payer_scope
     try:
         query = NonAdmissionQuery(
@@ -882,14 +909,43 @@ async def _job_payer_scope(
     return grant.payer_eth_address.lower(), recipient.lower(), grant.wholesale_account_id
 
 
+async def _non_admission_grant(
+    db: AsyncSession, job_row: PaymentSession, *, lock: bool = False
+) -> SpendAuthorizationGrant:
+    """Bind refund evidence to the original, unrevised wholesale job grant."""
+    query = (
+        select(SpendAuthorizationGrant)
+        .where(
+            SpendAuthorizationGrant.session_id == job_row.id,
+            SpendAuthorizationGrant.authorization_id == job_row.authorization_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+    grant = await db.scalar(query.with_for_update() if lock else query)
+    if (
+        grant is None
+        or job_row.accounting_mode != "wholesale_account"
+        or grant.protocol != PAID_JOB_PROTOCOL
+        or grant.request_id != job_row.broker_request_id
+        or grant.authorization_id != job_row.work_id
+        or grant.revision != 0
+        or grant.predecessor_authorization_id is not None
+        or grant.route_snapshot != job_row.route_snapshot
+        or grant.settlement_domain_id != (job_row.route_snapshot or {}).get("settlement_domain_id")
+        or grant.state not in {"issued", "outcome_unknown", "expired_unused"}
+    ):
+        raise BrokerSettlementQueryError("job lacks a consistent unused authorization scope")
+    return grant
+
+
 async def _retain_verified_non_admission(
     db: AsyncSession,
     *,
     job_row: PaymentSession,
     exchange: BrokerExchangeResult,
     clock: Clock,
-) -> None:
-    """Verify and append one audit claim without changing accounting state."""
+) -> bool:
+    """Retain scoped proof; release once only when it postdates grant expiry."""
 
     locked_job = await db.scalar(
         select(PaymentSession)
@@ -897,16 +953,19 @@ async def _retain_verified_non_admission(
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if locked_job is None:
-        return
+    if locked_job is None or locked_job.state != sessions_service.SESSION_STATE_OPEN:
+        return False
     job_row = locked_job
     envelope = exchange.non_admission
     request_id = job_row.broker_request_id
     if envelope is None or request_id is None:
-        return
+        return False
     snapshot = job_row.route_snapshot or {}
     audit = _exchange_audit_record(exchange)
     try:
+        grant = await _non_admission_grant(db, job_row, lock=True)
+        if exchange.request_id != request_id:
+            raise SettlementVerificationError("request_id_mismatch", "exchange request changed")
         payer_scope = await _job_payer_scope(db, job_row)
         if payer_scope is None:
             raise SettlementVerificationError("missing_sender", "payer sender was not persisted")
@@ -921,7 +980,7 @@ async def _retain_verified_non_admission(
             settlement_keys=settlement_keys,
             expected=NonAdmissionExpectation(
                 wholesale_account_id=wholesale_account_id,
-                settlement_domain_id=str(snapshot["settlement_domain_id"]),
+                settlement_domain_id=grant.settlement_domain_id,
                 protocol=PAID_JOB_PROTOCOL,
                 request_id=request_id,
                 work_id=job_row.work_id,
@@ -939,7 +998,13 @@ async def _retain_verified_non_admission(
                 ),
             ),
         )
-    except (KeyError, TypeError, ValueError, SettlementVerificationError) as exc:
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        SettlementVerificationError,
+        BrokerSettlementQueryError,
+    ) as exc:
         audit["verification"] = {
             "status": "rejected",
             "reason": exc.code
@@ -948,7 +1013,7 @@ async def _retain_verified_non_admission(
         }
         job_row.breakdown = {**(job_row.breakdown or {}), "broker_exchange": audit}
         await db.flush()
-        return
+        return False
 
     evidence_digest = hashlib.sha256(rfc8785.dumps(envelope)).hexdigest()
     audit["verification"] = {
@@ -983,6 +1048,46 @@ async def _retain_verified_non_admission(
             raw_record={"evidence_digest": evidence_digest, **audit},
         )
     await db.flush()
+    expires_at = grant.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if clock.now() < expires_at or verified.observed_at < expires_at:
+        return False
+    if job_row.customer_max_debit_wei is None:
+        return False
+
+    # The broker signs this only after irrevocably fencing the scoped unused
+    # authorization. Ticket expiry or an unsigned admission refusal cannot do so.
+    await sessions_service.transition_state(
+        db,
+        job_row.id,
+        from_state=sessions_service.SESSION_STATE_OPEN,
+        to_state=sessions_service.SESSION_STATE_CLOSED,
+        clock=clock,
+    )
+    await billing_service.release_customer_engagement(
+        db,
+        user_id=job_row.user_id,
+        engagement_id=job_row.id,
+        amount_wei=job_row.customer_max_debit_wei,
+    )
+    job_row.actual_units = 0
+    job_row.billed_value_wei = Decimal(0)
+    job_row.outcome = "NOT_ADMITTED"
+    grant.state = "expired_unused"
+    grant.retired_at = grant.retired_at or clock.now()
+    await sessions_service.record_settlement(
+        db,
+        job_row.id,
+        event_type="close",
+        clock=clock,
+        actual_units=0,
+        billed_value_wei=Decimal(0),
+        outcome="NOT_ADMITTED",
+        raw_record={"evidence_digest": evidence_digest, **audit},
+    )
+    await db.flush()
+    return True
 
 
 def _settlement_signature(settlement: dict[str, Any]) -> str | None:

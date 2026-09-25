@@ -116,3 +116,109 @@ async def test_health_bypasses_cache() -> None:
     assert await cache.health() is True
     assert await cache.health() is True
     assert inner.health.await_count == 2
+
+
+@pytest.mark.unit
+async def test_select_many_missing_then_recovered_is_not_negative_cached() -> None:
+    inner = MockRegistryClient()
+    routes = await inner.select_many("openai:chat-completions", "gpt-oss-20b")
+    inner.select_many = AsyncMock(side_effect=[[], routes])
+    cache = CachingRegistryClient(inner, ttl_seconds=60)
+    assert await cache.select_many("a", "b") == []
+    assert await cache.select_many("a", "b") == routes
+    assert await cache.select_many("a", "b") == routes
+    assert inner.select_many.await_count == 2
+
+
+@pytest.mark.unit
+async def test_concurrent_catalog_requests_share_refresh_and_survive_cancellation() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    inner = MockRegistryClient()
+    expected = await inner.list_capabilities()
+
+    async def blocked():
+        entered.set()
+        await release.wait()
+        return expected
+
+    inner.list_capabilities = AsyncMock(side_effect=blocked)
+    cache = CachingRegistryClient(inner, ttl_seconds=60)
+    first = asyncio.create_task(cache.list_capabilities())
+    await entered.wait()
+    second = asyncio.create_task(cache.list_capabilities())
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    assert await second == expected
+    assert await cache.list_capabilities() == expected
+    assert inner.list_capabilities.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["list_capabilities", "list_orchestrators"])
+async def test_catalog_timeout_is_unavailable_and_retries(method) -> None:
+    from livepeer_open_clearinghouse.errors import DaemonUnavailable
+
+    async def blocked():
+        await asyncio.Event().wait()
+
+    inner = MockRegistryClient()
+    fetch = AsyncMock(side_effect=blocked)
+    setattr(inner, method, fetch)
+    cache = CachingRegistryClient(inner, ttl_seconds=0, catalog_timeout_seconds=0.01)
+    with pytest.raises(DaemonUnavailable) as caught:
+        await getattr(cache, method)()
+    assert caught.value.status_code == 503
+    fetch.side_effect = None
+    fetch.return_value = []
+    assert await getattr(cache, method)() == []
+    assert fetch.await_count == 2
+
+
+@pytest.mark.unit
+async def test_stale_catalog_fallback_has_fixed_expiry_and_does_not_affect_selection() -> None:
+    import time
+
+    from livepeer_open_clearinghouse.errors import DaemonUnavailable
+
+    inner = MockRegistryClient()
+    cache = CachingRegistryClient(inner, ttl_seconds=60, catalog_stale_seconds=30)
+    expected = await cache.list_capabilities()
+    key = ("catalog",)
+    snapshot = cache._catalog_cache[key][1]
+    expiry = time.monotonic() - 1
+    cache._catalog_cache[key] = (expiry, snapshot)
+    inner.list_capabilities = AsyncMock(
+        side_effect=DaemonUnavailable(daemon="registry", reason="UNAVAILABLE")
+    )
+    inner.select_many = AsyncMock(
+        side_effect=DaemonUnavailable(daemon="registry", reason="UNAVAILABLE")
+    )
+    assert await cache.list_capabilities() == expected
+    assert cache._catalog_cache[key][0] == expiry
+    with pytest.raises(DaemonUnavailable):
+        await cache.select_many("video:transcode.abr", "abr-default")
+    cache._catalog_cache[key] = (time.monotonic() - 31, snapshot)
+    with pytest.raises(DaemonUnavailable):
+        await cache.list_capabilities()
+
+
+@pytest.mark.unit
+async def test_invalidation_during_refresh_does_not_repopulate_cache() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    inner = MockRegistryClient()
+
+    async def blocked():
+        entered.set()
+        await release.wait()
+        return []
+
+    inner.list_capabilities = AsyncMock(side_effect=blocked)
+    cache = CachingRegistryClient(inner, ttl_seconds=60)
+    request = asyncio.create_task(cache.list_capabilities())
+    await entered.wait()
+    cache.invalidate()
+    release.set()
+    assert await request == []
+    assert cache._catalog_cache == {}

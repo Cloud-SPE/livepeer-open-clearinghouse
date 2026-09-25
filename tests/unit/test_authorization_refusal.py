@@ -122,7 +122,14 @@ async def _open_session(
 ) -> sessions_service.CreateSessionResponse:
     route = _route_for_protocol("paid-session/v1")
     clock = clock or _clock()
-    settings = _wholesale_settings()
+    settings = _wholesale_settings().model_copy(
+        update={
+            "wholesale_target_available_wei": 10_000,
+            "wholesale_max_available_per_payee_wei": 20_000,
+            "wholesale_max_aggregate_available_wei": 50_000,
+            "wholesale_max_single_funding_wei": 10_000,
+        }
+    )
     prepared = await sessions_service.prepare_session(
         user_id=user_id,
         api_key_id=key_id,

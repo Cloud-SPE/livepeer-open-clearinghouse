@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from livepeer_open_clearinghouse.domains.payments.repo import (
     Payment,
     PaymentDaemonDepositSnapshot,
     PaymentIdempotencyKey,
+    release_session_preparation_claim,
 )
 from livepeer_open_clearinghouse.providers.clock import Clock
 from livepeer_open_clearinghouse.providers.payment_daemon import (
@@ -60,6 +61,7 @@ class CreateRequestClaim:
     broker_request_id: str
     replay_status: int | None = None
     replay_payload: dict[str, Any] | None = None
+    lease_expires_at: datetime | None = None
 
     @property
     def is_replay(self) -> bool:
@@ -162,6 +164,7 @@ async def claim_create_request(
     the primary key, then observes the winner after its save attempt loses.
     """
 
+    claim_expires_at = clock.now() + timedelta(seconds=inflight_timeout_seconds)
     row = await _get_create_request(
         session,
         user_id=user_id,
@@ -172,6 +175,13 @@ async def claim_create_request(
         if row.request_fingerprint != request_fingerprint:
             return _claim_from_existing(row, request_fingerprint=request_fingerprint)
         if row.status in {"in_flight", "expired"}:
+            if operation == "sessions.prepare":
+                # Retain a strictly increasing attempt fence even for immediate
+                # retries with an unchanged (or regressed) wall clock.
+                previous_expiry = row.expires_at.replace(tzinfo=UTC)
+                claim_expires_at = max(
+                    claim_expires_at, previous_expiry + timedelta(microseconds=1)
+                )
             reclaimed = await session.execute(
                 update(PaymentIdempotencyKey)
                 .where(
@@ -179,18 +189,27 @@ async def claim_create_request(
                     PaymentIdempotencyKey.operation == operation,
                     PaymentIdempotencyKey.idempotency_key == idempotency_key,
                     PaymentIdempotencyKey.status.in_(("in_flight", "expired")),
-                    PaymentIdempotencyKey.expires_at <= clock.now(),
+                    PaymentIdempotencyKey.expires_at == row.expires_at,
+                    or_(
+                        PaymentIdempotencyKey.expires_at <= clock.now(),
+                        and_(
+                            PaymentIdempotencyKey.operation == "sessions.prepare",
+                            PaymentIdempotencyKey.status == "expired",
+                        ),
+                    ),
                 )
                 .values(
                     status="in_flight",
-                    expires_at=clock.now() + timedelta(seconds=inflight_timeout_seconds),
+                    expires_at=claim_expires_at,
                 )
                 .execution_options(synchronize_session=False)
             )
             if int(reclaimed.rowcount or 0) == 1:  # type: ignore[attr-defined]
                 broker_request_id = row.broker_request_id
                 await session.commit()
-                return CreateRequestClaim(broker_request_id=broker_request_id)
+                return CreateRequestClaim(
+                    broker_request_id=broker_request_id, lease_expires_at=claim_expires_at
+                )
             await session.rollback()
             winner = await _get_create_request(
                 session,
@@ -214,7 +233,7 @@ async def claim_create_request(
         http_status=None,
         response_payload=None,
         payment_id=None,
-        expires_at=clock.now() + timedelta(seconds=inflight_timeout_seconds),
+        expires_at=claim_expires_at,
     )
     session.add(row)
     try:
@@ -230,7 +249,9 @@ async def claim_create_request(
         if winner is None:  # pragma: no cover - defensive DB anomaly
             raise
         return _claim_from_existing(winner, request_fingerprint=request_fingerprint)
-    return CreateRequestClaim(broker_request_id=row.broker_request_id)
+    return CreateRequestClaim(
+        broker_request_id=row.broker_request_id, lease_expires_at=claim_expires_at
+    )
 
 
 async def complete_create_request(
@@ -259,6 +280,26 @@ async def complete_create_request(
     row.response_payload = response_payload
     row.payment_id = payment_id
     row.expires_at = clock.now() + timedelta(seconds=retention_seconds)
+    await session.commit()
+
+
+async def release_failed_session_preparation(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    idempotency_key: str,
+    claim: CreateRequestClaim,
+) -> None:
+    """Make only this failed, pre-payment preparation attempt retryable."""
+    if claim.lease_expires_at is None:
+        return
+    await release_session_preparation_claim(
+        session,
+        user_id=user_id,
+        idempotency_key=idempotency_key,
+        broker_request_id=claim.broker_request_id,
+        lease_expires_at=claim.lease_expires_at,
+    )
     await session.commit()
 
 

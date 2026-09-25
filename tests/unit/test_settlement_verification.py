@@ -555,3 +555,58 @@ def test_signed_evidence_cannot_cross_wholesale_accounts(account_id: str) -> Non
             settlement_keys=[delegated_key()],
             expected=_non_admission_expected(),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "code"),
+    [
+        ({}, None),
+        ({"settlement_seq": 0}, "settlement_replay"),
+        ({"claimed_units": 119}, "claim_debit_gap"),
+        ({"breakdown": {"termination_reason": "other"}}, "claim_debit_gap"),
+        ({"state": "open"}, "session_not_terminal"),
+        ({"billed_value_wei": 119}, "authorization_accounting_invalid"),
+        ({"reserved_value_wei": 1}, "authorization_accounting_invalid"),
+        ({"actual_units": 124}, "work_units_mismatch"),
+        ({"outcome": "DEBIT_FAILED"}, "debit_failed"),
+        ({"settlement_domain_id": "0x" + "bb" * 32}, "settlement_domain_mismatch"),
+    ],
+)
+def test_exhausted_authorization_bills_only_verified_debit(changes, code):
+    args = dict(
+        gateway_session_id="11111111-1111-1111-1111-111111111111",
+        work_id="work-1",
+        authorization_id="work-1",
+        authorized_value_wei=120,
+        claimed_units=124,
+        debited_units=120,
+        billed_value_wei=120,
+        funded_value_wei=180,
+        generation_funded_value_wei=180,
+        amount_wei=1,
+        per_units=1,
+        breakdown={"termination_reason": "authorization_exhausted"},
+    )
+    args.update(changes)
+    envelope = signed_session_settlement(**args)
+    expected = _session_expected(
+        authorization_id="work-1",
+        authorized_value_wei=120,
+        amount_wei=1,
+        per_units=1,
+        funded_value_wei=180,
+    )
+    if code:
+        with pytest.raises(SettlementVerificationError) as exc:
+            verify_session_settlement(
+                envelope, settlement_keys=[delegated_key()], expected=expected
+            )
+        assert exc.value.code == code
+    else:
+        result = verify_session_settlement(
+            envelope, settlement_keys=[delegated_key()], expected=expected
+        )
+        assert result.claimed_units == 124
+        assert result.debited_units == 120
+        assert result.billed_value_wei == 120

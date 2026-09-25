@@ -140,7 +140,8 @@ async def test_wholesale_account_query_rejects_cross_domain_response() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
+@pytest.mark.parametrize("state", ["expired_unused", "canceled_unused"])
+async def test_spend_authorization_query_is_strict_and_identity_bound(state: str) -> None:
     payer = "0x" + "aa" * 20
     authorization_id = "loc-auth:request-1"
 
@@ -158,7 +159,7 @@ async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
                 "authorization_id": authorization_id,
                 "payee": "0x" + "11" * 20,
                 "settlement_domain_id": "0x" + "aa" * 32,
-                "state": "expired_unused",
+                "state": state,
                 "reserved_value_wei": "0",
                 "billed_value_wei": "0",
                 "released_value_wei": "0",
@@ -179,7 +180,7 @@ async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
             settlement_domain_id="0x" + "aa" * 32,
             wholesale_account_id="loc-test",
         )
-    assert result.state.value == "expired_unused"
+    assert result.state.value == state
     assert result.authorization_id == authorization_id
 
 
@@ -339,6 +340,17 @@ def _encoded_job_settlement(*, request_id: str) -> tuple[str, dict[str, object]]
             "ADMITTED_EVIDENCE_EXPIRED",
         ),
         (404, {"outcome": "NO_RECORD"}, "NO_RECORD"),
+        (
+            200,
+            {
+                "job_id": "j-rejected",
+                "outcome": "ADMISSION_REJECTED",
+                "state": "payment_rejected",
+                "status": 402,
+                "detail": "payment admission was refused; request signed non-admission after authorization expiry",
+            },
+            "ADMISSION_REJECTED",
+        ),
     ],
 )
 async def test_job_exchange_parses_normative_outcomes(
@@ -424,13 +436,17 @@ def _non_admission_query() -> NonAdmissionQuery:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_non_admission_post_sends_scope_and_decodes_signed_record() -> None:
-    envelope = signed_non_admission()
+@pytest.mark.parametrize("quote_version", [0, 1])
+async def test_non_admission_post_sends_scope_and_decodes_signed_record(quote_version: int) -> None:
+    query = NonAdmissionQuery.model_validate(
+        {**_non_admission_query().model_dump(), "quote_version": quote_version}
+    )
+    envelope = signed_non_admission(quote_version=quote_version)
     encoded = base64.b64encode(json.dumps(envelope).encode()).decode()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/non-admission/request-1"
-        assert json.loads(request.content) == _non_admission_query().model_dump(mode="json")
+        assert json.loads(request.content) == query.model_dump(mode="json")
         return httpx.Response(
             200,
             headers={"Livepeer-Non-Admission": encoded},
@@ -446,7 +462,7 @@ async def test_non_admission_post_sends_scope_and_decodes_signed_record() -> Non
         result = await HttpBrokerSettlementClient(http_client).request_non_admission(
             broker_url="https://broker.example",
             request_id="request-1",
-            query=_non_admission_query(),
+            query=query,
         )
     assert result.outcome is BrokerExchangeOutcome.NOT_ADMITTED
     assert result.non_admission == envelope
@@ -508,6 +524,7 @@ async def test_non_admission_post_rejects_header_body_mismatch() -> None:
         (200, {"request_id": "request-1", "outcome": "SETTLED"}),
         (200, {"request_id": "request-1", "outcome": "NO_RECORD"}),
         (404, {"request_id": "request-1", "outcome": "NOT_ADMITTED"}),
+        (402, {"request_id": "request-1", "outcome": "ADMISSION_REJECTED", "job_id": "j-1"}),
         (202, {"request_id": "request-1", "outcome": "IN_FLIGHT", "surprise": True}),
     ],
 )

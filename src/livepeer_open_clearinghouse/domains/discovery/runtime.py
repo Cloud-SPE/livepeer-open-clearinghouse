@@ -26,8 +26,7 @@ async def list_capabilities_endpoint(
     _user: AuthedUserDep,
     registry: RegistryDep,
 ) -> CapabilityList:
-    items = await service.list_capabilities(registry)
-    return CapabilityList(items=items)
+    return await service.capability_catalog(registry)
 
 
 @router.get("/orchestrators", response_model=OrchestratorList)
@@ -36,8 +35,7 @@ async def list_orchestrators_endpoint(
     registry: RegistryDep,
     capability: str | None = None,
 ) -> OrchestratorList:
-    items = await service.list_orchestrators(registry, capability=capability)
-    return OrchestratorList(items=items)
+    return await service.orchestrator_catalog(registry, capability=capability)
 
 
 @router.get("/routes", response_model=RouteView)

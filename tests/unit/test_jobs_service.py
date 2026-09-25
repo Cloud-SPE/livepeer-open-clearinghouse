@@ -7,7 +7,9 @@ SDK-reported settlement, refund-unused on close.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -15,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import event as sa_event
@@ -28,11 +31,13 @@ from sqlalchemy.ext.asyncio import (
 from livepeer_open_clearinghouse.domains.accounts import repo as _accounts  # noqa: F401
 from livepeer_open_clearinghouse.domains.accounts.repo import User
 from livepeer_open_clearinghouse.domains.admin import repo as _admin  # noqa: F401
+from livepeer_open_clearinghouse.domains.admin import service as admin_service
+from livepeer_open_clearinghouse.domains.admin.repo import Operator
 from livepeer_open_clearinghouse.domains.api_keys import repo as _api_keys  # noqa: F401
 from livepeer_open_clearinghouse.domains.api_keys.repo import ApiKey
 from livepeer_open_clearinghouse.domains.billing import repo as _billing  # noqa: F401
 from livepeer_open_clearinghouse.domains.billing import service as billing_service
-from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance
+from livepeer_open_clearinghouse.domains.billing.repo import CreditBalance, CreditLedger
 from livepeer_open_clearinghouse.domains.jobs import service as jobs_service
 from livepeer_open_clearinghouse.domains.jobs.service import (
     JobAlreadySettled,
@@ -68,6 +73,7 @@ from livepeer_open_clearinghouse.providers.broker_settlement import (
     BrokerExchangeOutcome,
     BrokerExchangeResult,
     BrokerSettlementQueryError,
+    HttpBrokerSettlementClient,
     NonAdmissionQuery,
     WholesaleAccountObservation,
     WholesaleFundingResult,
@@ -173,7 +179,7 @@ def _route(protocol: str = "paid-job/v1") -> SelectedRoute:
         route_fingerprint=b"\x11" * 32,
         settlement_domain_id="0x" + "aa" * 32,
         protocol=protocol,
-        settlement_keys=(delegated_key(),),
+        settlement_keys=(delegated_key(not_before="2026-05-01T00:00:00Z"),),
         extra=extra,
     )
 
@@ -261,8 +267,9 @@ class _FailingExchangeClient:
 
 
 class _WholesaleBroker:
-    def __init__(self) -> None:
+    def __init__(self, credit: int = 200) -> None:
         self.funded = False
+        self.credit = credit
 
     async def get_wholesale_account(self, **_: object) -> WholesaleAccountObservation:
         return WholesaleAccountObservation(
@@ -271,10 +278,10 @@ class _WholesaleBroker:
             settlement_domain_id="0x" + "aa" * 32,
             chain_id=42161,
             denomination="wei",
-            credited_value_wei=100 if self.funded else 0,
+            credited_value_wei=self.credit if self.funded else 0,
             reserved_value_wei=0,
             debited_value_wei=0,
-            available_value_wei=100 if self.funded else 0,
+            available_value_wei=self.credit if self.funded else 0,
             version=1 if self.funded else 0,
             observed_at=_clock().now(),
             wholesale_account_id="loc-test",
@@ -288,8 +295,8 @@ class _WholesaleBroker:
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
             settlement_domain_id="0x" + "aa" * 32,
-            credited_value_wei=100,
-            available_value_wei=100,
+            credited_value_wei=self.credit,
+            available_value_wei=self.credit,
             account_version=1,
             replayed=False,
             wholesale_account_id="loc-test",
@@ -325,7 +332,7 @@ async def test_open_job_wholesale_returns_authorization_not_pool_ticket(
                 "wholesale_replenish_below_wei": 50,
                 "wholesale_max_available_per_payee_wei": 200,
                 "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
+                "wholesale_max_single_funding_wei": 200,
             }
         ),
         request_id="request-wholesale-1",
@@ -1187,16 +1194,16 @@ async def _open_recoverable_job(
                 "wholesale_chain_id": 42161,
                 "wholesale_target_available_wei": 100,
                 "wholesale_replenish_below_wei": 50,
-                "wholesale_max_available_per_payee_wei": 200,
-                "wholesale_max_aggregate_available_wei": 500,
-                "wholesale_max_single_funding_wei": 100,
+                "wholesale_max_available_per_payee_wei": 2000,
+                "wholesale_max_aggregate_available_wei": 5000,
+                "wholesale_max_single_funding_wei": 2000,
             }
         ),
         workload_request_digest=b"\x44" * 32,
         caller_public_key=bytes.fromhex(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         ),
-        broker_wholesale=_WholesaleBroker(),
+        broker_wholesale=_WholesaleBroker(credit=2000),
     )
     return user_id, response
 
@@ -1240,6 +1247,235 @@ async def test_reconcile_open_job_settles_only_embedded_signed_claim(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lookup_outcome", ["ADMISSION_REJECTED", "NO_RECORD"])
+async def test_reconcile_open_job_non_admission_recovery(  # noqa: PLR0915 — complete recovery lifecycle
+    db_session: AsyncSession, lookup_outcome: str
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    quote_version = 1
+    clock = _clock()
+    held_balance = (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    original_authorization = grant.authorization_bytes
+    proof_calls: list[dict[str, Any]] = []
+    lookups: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            lookups.append(str(request.url))
+            assert request.url.path.endswith(f"/v1/exchange/{response.request_id}")
+            return httpx.Response(
+                404 if lookup_outcome == "NO_RECORD" else 200,
+                json={
+                    "request_id": response.request_id,
+                    "job_id": "broker-rejected",
+                    "outcome": lookup_outcome,
+                    "state": "payment_rejected",
+                    "status": 402,
+                },
+            )
+        assert request.url.path.endswith(f"/v1/non-admission/{response.request_id}")
+        query = json.loads(request.content)
+        proof_calls.append(query)
+        assert query["work_id"] == grant.authorization_id == response.work_id
+        assert query["quote_version"] == quote_version
+        assert query["sender"] == grant.payer_eth_address
+        assert query["recipient"] == grant.route_snapshot["eth_address"]
+        if len(proof_calls) == 1:
+            return httpx.Response(503, text="failed to fence rejected authorization")
+        envelope = signed_non_admission(
+            request_id=response.request_id,
+            work_id=response.work_id,
+            quote_version=quote_version,
+            observed_at=clock.now().isoformat(),
+        )
+        encoded = base64.b64encode(json.dumps(envelope).encode()).decode()
+        return httpx.Response(
+            200,
+            headers={"Livepeer-Non-Admission": encoded},
+            json={
+                "request_id": response.request_id,
+                "outcome": "NOT_ADMITTED",
+                "non_admission": encoded,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = HttpBrokerSettlementClient(http)
+        settings = _settings().model_copy(update={"job_conservative_charge_after_seconds": 1})
+        # Unsigned refusal cannot release the hold or request fencing before expiry.
+        assert (
+            await jobs_service.reconcile_open_jobs(
+                db_session, settlement_client=client, clock=clock, settings=settings
+            )
+            == 0
+        )
+        assert proof_calls == []
+        assert (
+            await billing_service.get_balance(db_session, user_id=user_id)
+        ).amount_wei == held_balance
+        await db_session.commit()
+
+        clock.advance(timedelta(minutes=5))
+        # Receiver temporarily cannot fence: keep the original grant and retry.
+        assert (
+            await jobs_service.reconcile_open_jobs(
+                db_session, settlement_client=client, clock=clock, settings=settings
+            )
+            == 0
+        )
+        status = await jobs_service.get_job_status(
+            db_session, job_id=response.job_id, user_id=user_id
+        )
+        assert status.state == SESSION_STATE_OPEN
+        assert status.billed_value_wei is None
+        assert (
+            await billing_service.get_balance(db_session, user_id=user_id)
+        ).amount_wei == held_balance
+        await db_session.commit()
+
+        clock.advance(timedelta(seconds=61))
+        finalized = await jobs_service.reconcile_open_jobs(
+            db_session, settlement_client=client, clock=clock, settings=settings
+        )
+        job = await db_session.get(PaymentSession, response.job_id)
+        assert job is not None
+        assert finalized == 1, job.breakdown
+        await db_session.commit()
+        status = await jobs_service.get_job_status(
+            db_session, job_id=response.job_id, user_id=user_id
+        )
+        assert status.state == SESSION_STATE_CLOSED
+        assert status.accounting_outcome == "broker_settled"
+        assert status.broker_exchange_outcome == "NOT_ADMITTED"
+        assert status.actual_units == status.billed_value_wei == 0
+        assert status.closed_at is not None
+        assert status.closed_at.replace(tzinfo=UTC) == clock.now()
+        assert grant.state == "expired_unused"
+        assert grant.authorization_bytes == original_authorization
+        assert (await billing_service.get_balance(db_session, user_id=user_id)).amount_wei == 10**12
+
+        # A later scheduler pass cannot mint, execute, or release again.
+        clock.advance(timedelta(seconds=61))
+        assert (
+            await jobs_service.reconcile_open_jobs(
+                db_session, settlement_client=client, clock=clock, settings=settings
+            )
+            == 0
+        )
+        assert len(lookups) == 3
+        assert len(proof_calls) == 2
+        assert proof_calls[0] == proof_calls[1]
+
+    releases = (
+        await db_session.scalars(
+            select(CreditLedger).where(
+                CreditLedger.related_engagement_id == response.job_id,
+                CreditLedger.reason == "engagement_release",
+            )
+        )
+    ).all()
+    assert len(releases) == 1
+    assert releases[0].delta_wei == 2000
+    closes = (
+        await db_session.scalars(
+            select(PaymentSettlement).where(
+                PaymentSettlement.session_id == response.job_id,
+                PaymentSettlement.event_type == "close",
+            )
+        )
+    ).all()
+    assert len(closes) == 1
+    assert closes[0].outcome == "NOT_ADMITTED"
+    assert closes[0].raw_record["verification"]["status"] == "verified"
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "request",
+        "authorization",
+        "domain",
+        "quote",
+        "sender",
+        "recipient",
+        "coverage",
+        "signature",
+        "early_observation",
+        "unexpired",
+        "admitted",
+        "grant_scope",
+    ],
+)
+async def test_reconcile_open_job_non_admission_requires_authoritative_proof(
+    db_session: AsyncSession, invalid: str
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(minutes=6))
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    envelope = signed_non_admission(
+        request_id="other" if invalid == "request" else response.request_id,
+        work_id="other" if invalid == "authorization" else response.work_id,
+        settlement_domain_id="0x" + ("bb" if invalid == "domain" else "aa") * 32,
+        quote_id="other" if invalid == "quote" else "q-1",
+        sender=b"\xbb" * 20 if invalid == "sender" else b"\xaa" * 20,
+        recipient=b"\xbb" * 20 if invalid == "recipient" else b"\x11" * 20,
+        coverage_started_at=clock.now().isoformat()
+        if invalid == "coverage"
+        else "2026-05-01T00:00:00Z",
+        observed_at=_clock().now().isoformat()
+        if invalid == "early_observation"
+        else clock.now().isoformat(),
+    )
+    if invalid == "signature":
+        envelope["payload"]["work_id"] = "tampered"
+    if invalid == "unexpired":
+        clock = _clock()
+    if invalid == "admitted":
+        grant.state = "admitted"
+    if invalid == "grant_scope":
+        grant.request_id = "other"
+    await db_session.flush()
+    client = _StaticExchangeClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission=envelope,
+        )
+    )
+    # Proof from GET is verified too; bypassing the POST must never bypass expiry/scope.
+    for _ in range(2):
+        assert (
+            await jobs_service.reconcile_open_jobs(
+                db_session, settlement_client=client, clock=clock, settings=_settings()
+            )
+            == 0
+        )
+        await db_session.commit()
+        clock.advance(timedelta(seconds=61))
+    status = await jobs_service.get_job_status(db_session, job_id=response.job_id, user_id=user_id)
+    assert status.state == SESSION_STATE_OPEN
+    assert status.billed_value_wei is None
+    assert (
+        await billing_service.get_balance(db_session, user_id=user_id)
+    ).amount_wei == 10**12 - 2000
+    assert (
+        await db_session.scalars(
+            select(CreditLedger).where(
+                CreditLedger.related_engagement_id == response.job_id,
+                CreditLedger.reason == "engagement_release",
+            )
+        )
+    ).all() == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
     [
@@ -1249,6 +1485,7 @@ async def test_reconcile_open_job_settles_only_embedded_signed_claim(
         BrokerExchangeOutcome.ADMITTED_EVIDENCE_EXPIRED,
         BrokerExchangeOutcome.NOT_ADMITTED,
         BrokerExchangeOutcome.NO_RECORD,
+        BrokerExchangeOutcome.ADMISSION_REJECTED,
     ],
 )
 async def test_reconcile_open_job_keeps_nonsettlement_outcomes_encumbered(
@@ -1273,6 +1510,76 @@ async def test_reconcile_open_job_keeps_nonsettlement_outcomes_encumbered(
     assert row.billed_value_wei is None
     assert row.breakdown is not None
     assert row.breakdown["broker_exchange"]["outcome"] == outcome.value
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["refund_hold", "charge_full"])
+async def test_reconcile_open_job_non_admission_preserves_operator_resolution(
+    db_session: AsyncSession, action: str
+) -> None:
+    user_id, response = await _open_recoverable_job(db_session)
+    clock = _clock()
+    clock.advance(timedelta(minutes=6))
+    operator = Operator(email="operator@example.com", name="Operator", token_hash="test")
+    db_session.add(operator)
+    await db_session.flush()
+
+    class ResolvingClient(_StaticExchangeClient):
+        async def get_job_exchange(
+            self, *, broker_url: str, request_id: str
+        ) -> BrokerExchangeResult:
+            # The scheduler selected an open row before the operator resolved it.
+            await admin_service.resolve_stuck_work(
+                db_session,
+                job_id=response.job_id,
+                operator=operator,
+                action=action,
+                note="operator resolution during lookup",
+                clock=clock,
+            )
+            return self.result
+
+    client = ResolvingClient(
+        BrokerExchangeResult(
+            request_id=response.request_id,
+            outcome=BrokerExchangeOutcome.NOT_ADMITTED,
+            non_admission=signed_non_admission(
+                request_id=response.request_id,
+                work_id=response.work_id,
+                observed_at=clock.now().isoformat(),
+            ),
+        )
+    )
+    assert (
+        await jobs_service.reconcile_open_jobs(
+            db_session, settlement_client=client, clock=clock, settings=_settings()
+        )
+        == 0
+    )
+    job = await db_session.get(PaymentSession, response.job_id)
+    assert job is not None
+    assert job.outcome == f"operator_{action}"
+    assert job.actual_units is None
+    expected_charge = 0 if action == "refund_hold" else 2000
+    assert job.billed_value_wei == expected_charge
+    assert (
+        await billing_service.get_balance(db_session, user_id=user_id)
+    ).amount_wei == 10**12 - expected_charge
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.state == "operator_resolved"
+    assert (
+        len(
+            (
+                await db_session.scalars(
+                    select(PaymentSettlement).where(
+                        PaymentSettlement.session_id == response.job_id,
+                    )
+                )
+            ).all()
+        )
+        == 1
+    )
 
 
 @pytest.mark.unit
@@ -1738,3 +2045,150 @@ async def test_settle_job_rejects_unsigned_settlement_with_typed_reason(
         )
         is None
     )
+
+
+class _AdmissionBroker(_WholesaleBroker):
+    def __init__(
+        self, *, available: int = 150, delayed: bool = False, deplete: bool = False
+    ) -> None:
+        super().__init__(credit=200)
+        self.initial = available
+        self.delayed = delayed
+        self.deplete = deplete
+        self.fund_calls = 0
+        self.read_calls = 0
+
+    async def get_wholesale_account(self, **kwargs: object) -> WholesaleAccountObservation:
+        self.read_calls += 1
+        visible = self.funded and not self.delayed
+        credited = 200 if visible else self.initial
+        # Simulate another admission consuming free credit after receipt verification.
+        reserved = 75 if self.deplete and self.read_calls >= 3 else 0
+        return (await super().get_wholesale_account(**kwargs)).model_copy(
+            update={
+                "credited_value_wei": Decimal(credited),
+                "available_value_wei": Decimal(credited - reserved),
+                "reserved_value_wei": Decimal(reserved),
+                "version": 1 if visible else 0,
+            }
+        )
+
+    async def fund_wholesale_account(self, **kwargs: object) -> WholesaleFundingResult:
+        replayed = self.funded
+        self.funded = True
+        self.fund_calls += 1
+        return (await super().fund_wholesale_account(**kwargs)).model_copy(
+            update={
+                "credited_value_wei": Decimal(200 - self.initial),
+                "replayed": replayed,
+            }
+        )
+
+
+async def _wholesale_admission_args(
+    db: AsyncSession, broker: _AdmissionBroker, *, limit: int = 100
+):
+    user_id, key_id = await _seed(db)
+    db.add(WholesaleExposureBudget(scope="global", projected_available_wei=Decimal(0)))
+    await db.commit()
+    route = _route()
+    return dict(
+        user_id=user_id,
+        api_key_id=key_id,
+        capability=route.capability,
+        offering=route.offering,
+        estimated_units=1,
+        max_total_units=2,
+        sdk_identity=None,
+        registry=MockRegistryClient(routes=[route]),
+        daemon=MockPaymentDaemonClient(),
+        clock=_clock(),
+        settings=_settings().model_copy(
+            update={
+                "wholesale_chain_id": 42161,
+                "wholesale_target_available_wei": 100,
+                "wholesale_replenish_below_wei": 50,
+                "wholesale_max_available_per_payee_wei": 500,
+                "wholesale_max_aggregate_available_wei": 1000,
+                "wholesale_max_single_funding_wei": limit,
+            }
+        ),
+        request_id="admission-readiness",
+        workload_request_digest=b"\x44" * 32,
+        caller_public_key=bytes.fromhex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        broker_wholesale=broker,
+    )
+
+
+@pytest.mark.unit
+async def test_wholesale_job_funds_reservation_above_routine_low_water(db_session):
+    broker = _AdmissionBroker()
+    args = await _wholesale_admission_args(db_session, broker)
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.funded_value_wei == 50
+    assert broker.fund_calls == 1
+    funding = (await db_session.scalars(select(WholesaleFunding))).one()
+    assert funding.target_available_wei == 200
+    assert funding.status == "acknowledged"
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    assert grant.max_debit_wei == 200  # The workload ceiling is never silently reduced.
+
+
+@pytest.mark.unit
+async def test_wholesale_job_rejects_shortfall_above_funding_limit(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker()
+    args = await _wholesale_admission_args(db_session, broker, limit=40)
+    with pytest.raises(WholesaleFundingUnverified, match="single-funding limit"):
+        await jobs_service.open_job(db_session, **args)
+    assert broker.fund_calls == 0
+    assert (await db_session.scalars(select(WholesaleFunding))).all() == []
+    # Signed but undisclosed authority remains held for authoritative recovery.
+    assert (await db_session.scalars(select(SpendAuthorizationGrant))).one().max_debit_wei == 200
+
+
+@pytest.mark.unit
+async def test_wholesale_job_waits_for_durable_receipt_and_replays_same_funding(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker(delayed=True)
+    args = await _wholesale_admission_args(db_session, broker)
+    with pytest.raises(WholesaleFundingUnverified):
+        await jobs_service.open_job(db_session, **args)
+    funding = (await db_session.scalars(select(WholesaleFunding))).one()
+    assert funding.status == "minted"
+    payment = funding.payment_bytes
+    grant = (await db_session.scalars(select(SpendAuthorizationGrant))).one()
+    old_id = grant.authorization_id
+    broker.delayed = False
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.work_id == old_id
+    assert len((await db_session.scalars(select(SpendAuthorizationGrant))).all()) == 1
+    assert len((await db_session.scalars(select(WholesaleFunding))).all()) == 1
+    assert funding.payment_bytes == payment
+    assert funding.status == "acknowledged"
+    assert len(args["daemon"]._mint_replays) == 1
+
+
+@pytest.mark.unit
+async def test_wholesale_job_detects_concurrent_credit_consumption_after_funding(db_session):
+    from livepeer_open_clearinghouse.errors import WholesaleFundingUnverified
+
+    broker = _AdmissionBroker(deplete=True)
+    args = await _wholesale_admission_args(db_session, broker)
+    with pytest.raises(WholesaleFundingUnverified, match="below the admission reservation"):
+        await jobs_service.open_job(db_session, **args)
+    assert broker.fund_calls == 1
+    assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"
+
+
+@pytest.mark.unit
+async def test_wholesale_job_with_enough_free_credit_mints_nothing(db_session):
+    broker = _AdmissionBroker(available=200)
+    args = await _wholesale_admission_args(db_session, broker)
+    response = await jobs_service.open_job(db_session, **args)
+    assert response.funded_value_wei == 0
+    assert broker.fund_calls == 0

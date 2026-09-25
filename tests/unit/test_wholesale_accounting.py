@@ -699,3 +699,66 @@ async def test_funding_replay_cannot_change_product_account(wholesale_db: AsyncS
             observation=observation.model_copy(update={"wholesale_account_id": "blueclaw-prod"}),
             **args,
         )
+
+
+def test_admission_shortfall_matches_production_rejection_without_raising_caps():
+    from livepeer_open_clearinghouse.domains.wholesale.service import admission_funding_limits
+
+    limits = WholesaleFundingLimits(
+        target_available_wei=10**14,
+        replenish_below_wei=25 * 10**12,
+        max_available_per_payee_wei=2 * 10**15,
+        max_aggregate_available_wei=3 * 10**15,
+        max_single_funding_wei=10**14,
+    )
+    effective = admission_funding_limits(limits, required_reservation_wei=Decimal(1629000000000000))
+    observation = _account(available=565108281000000)
+    assert effective.max_single_funding_wei == limits.max_single_funding_wei
+    with pytest.raises(WholesaleFundingPolicyError, match="single-funding limit"):
+        plan_account_shortfall(
+            observation=observation,
+            aggregate_available_wei=observation.available_value_wei,
+            limits=effective,
+        )
+    # This calculation shows the required policy change; it does not change production limits.
+    approved = effective.model_copy(update={"max_single_funding_wei": Decimal(2 * 10**15)})
+    plan = plan_account_shortfall(
+        observation=observation,
+        aggregate_available_wei=observation.available_value_wei,
+        limits=approved,
+    )
+    assert plan.shortfall_wei == 1063891719000000
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("payer", "0x" + "bb" * 20),
+        ("payee", "0x" + "cc" * 20),
+        ("chain_id", 1),
+        ("settlement_domain_id", str(_DOMAIN_B)),
+        ("denomination", "other"),
+        ("wholesale_account_id", "other-app"),
+    ],
+)
+async def test_job_admission_readiness_rejects_changed_account_identity(field, value):
+    from unittest.mock import AsyncMock
+
+    from livepeer_open_clearinghouse.domains.wholesale.service import (
+        verify_admission_funding_readiness,
+    )
+
+    broker = _ReplayBroker(_account())
+    broker.get_wholesale_account = AsyncMock(
+        return_value=_account().model_copy(update={field: value})
+    )
+    with pytest.raises(WholesaleFundingPolicyError, match="changed account identity"):
+        await verify_admission_funding_readiness(
+            broker=broker,
+            route=_route(),
+            payer_eth_address="0x" + "aa" * 20,
+            chain_id=42161,
+            wholesale_account_id="loc-test",
+            required_reservation_wei=Decimal(1),
+        )

@@ -70,12 +70,19 @@ def _default_registry() -> RegistryClient:
     cfg = get_settings()
     inner: RegistryClient
     if cfg.registry_daemon_mode == "grpc":
-        inner = GrpcRegistryClient(cfg.registry_daemon_socket)
+        inner = GrpcRegistryClient(
+            cfg.registry_daemon_socket,
+            selection_timeout_seconds=cfg.registry_selection_timeout_seconds,
+            discovery_rpc_timeout_seconds=cfg.registry_discovery_rpc_timeout_seconds,
+        )
     else:
         inner = MockRegistryClient()
-    if cfg.registry_cache_ttl_seconds > 0:
-        return CachingRegistryClient(inner, ttl_seconds=cfg.registry_cache_ttl_seconds)
-    return inner
+    return CachingRegistryClient(
+        inner,
+        ttl_seconds=cfg.registry_cache_ttl_seconds,
+        catalog_timeout_seconds=cfg.registry_catalog_timeout_seconds,
+        catalog_stale_seconds=cfg.registry_catalog_stale_seconds,
+    )
 
 
 @lru_cache(maxsize=1)

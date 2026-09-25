@@ -319,3 +319,47 @@ def test_large_price_string_decoded_intact() -> None:
     )
     dc = _selected_route_proto_to_dataclass(proto)
     assert int(dc.price_per_work_unit_wei) == 2**200 - 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "rpc_name", "missing"),
+    [("select", "Select", None), ("select_many", "SelectMany", [])],
+)
+async def test_selection_not_found_has_a_deadline(method, rpc_name, missing) -> None:
+    import grpc
+
+    call = AsyncMock(
+        side_effect=grpc.aio.AioRpcError(grpc.StatusCode.NOT_FOUND, (), (), "no route")
+    )
+    client = GrpcRegistryClient("/unused", selection_timeout_seconds=3.5)
+    client._ensure_stub = AsyncMock(return_value=SimpleNamespace(**{rpc_name: call}))
+    assert await getattr(client, method)("video:transcode.live", "gateway-ingest") == missing
+    assert call.call_args.kwargs == {"timeout": 3.5}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "rpc_name"), [("select", "Select"), ("select_many", "SelectMany")]
+)
+@pytest.mark.parametrize(
+    "code", ["DEADLINE_EXCEEDED", "UNAVAILABLE", "INTERNAL", "UNKNOWN", "CANCELLED"]
+)
+async def test_selection_transport_errors_are_sanitized(method, rpc_name, code) -> None:
+    import grpc
+
+    from livepeer_open_clearinghouse.errors import DaemonUnavailable
+
+    call = AsyncMock(
+        side_effect=grpc.aio.AioRpcError(
+            getattr(grpc.StatusCode, code), (), (), "private upstream URL and credentials"
+        )
+    )
+    client = GrpcRegistryClient("/unused")
+    client._ensure_stub = AsyncMock(return_value=SimpleNamespace(**{rpc_name: call}))
+    with pytest.raises(DaemonUnavailable) as caught:
+        await getattr(client, method)("video:transcode.live", "gateway-ingest")
+    assert caught.value.status_code == 503
+    assert caught.value.details == {"daemon": "registry", "reason": code}
+    assert "private" not in str(caught.value)
+    assert call.call_args.kwargs == {"timeout": 45.0}
