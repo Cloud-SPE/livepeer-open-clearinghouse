@@ -1812,6 +1812,72 @@ async def _verify_close_settlement(
         raise SessionSettlementVerificationFailed(reason=reason) from exc
 
 
+async def _replay_closed_session(
+    db: AsyncSession,
+    *,
+    row: PaymentSession,
+    settlement: dict[str, Any] | None,
+    actual_units: int,
+    outcome: str | None,
+) -> CloseSessionResponse:
+    previous = await db.scalar(
+        select(PaymentSettlement).where(
+            PaymentSettlement.session_id == row.id,
+            PaymentSettlement.event_type == "close",
+        )
+    )
+    if (
+        previous is None
+        or settlement is None
+        or previous.raw_record != settlement
+        or actual_units != row.actual_units
+        or outcome not in (None, row.outcome)
+    ):
+        raise SessionNotOpen(current_state=row.state)
+    assert row.closed_at is not None
+    assert row.actual_units is not None
+    assert row.billed_value_wei is not None
+    assert row.customer_max_debit_wei is not None
+    assert row.outcome is not None
+    return CloseSessionResponse(
+        session_id=row.id,
+        work_id=row.work_id,
+        actual_units=row.actual_units,
+        billed_value_wei=int(row.billed_value_wei),
+        refund_wei=int(max(row.customer_max_debit_wei - row.billed_value_wei, Decimal(0))),
+        outcome=row.outcome,
+        closed_at=row.closed_at,
+    )
+
+
+async def _require_retired_successors(
+    db: AsyncSession,
+    *,
+    row: PaymentSession,
+    authorization_id: str,
+) -> None:
+    grants = list(
+        (
+            await db.scalars(
+                select(SpendAuthorizationGrant).where(
+                    SpendAuthorizationGrant.session_id == row.id,
+                )
+            )
+        ).all()
+    )
+    settled = next(grant for grant in grants if grant.authorization_id == authorization_id)
+    for grant in grants:
+        if grant.revision <= settled.revision:
+            continue
+        if grant.state not in {"canceled_unused", "expired_unused"} or grant.retired_at is None:
+            raise OpenClearinghouseError(
+                code="successor_authorization_unresolved",
+                status_code=503,
+                message="successor authorization retirement is not yet verified",
+                details={"session_id": str(row.id), "authorization_id": grant.authorization_id},
+            )
+
+
 async def close_session(  # noqa: PLR0915 — explicit settlement state machine
     db: AsyncSession,
     *,
@@ -1826,8 +1892,7 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
 
     Pre-conditions:
       1. Session exists, belongs to caller's user.
-      2. Session is in ``open`` or ``draining`` state. A second close
-         on an already-closed session raises :class:`SessionNotOpen`.
+      2. Session is open or draining, or this is an exact replay of its close.
 
     Performs (in order):
       1. transition_state to ``closed``.
@@ -1847,13 +1912,25 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
     The signed broker record is authoritative. SDK-reported units and outcome
     are accepted only when they agree with that record.
     """
-    # 1. Lookup + ownership
-    session_row = await db.get(PaymentSession, session_id)
+    # Serialize close/refill races before inspecting evidence or releasing credit.
+    session_row = await db.scalar(
+        select(PaymentSession)
+        .where(
+            PaymentSession.id == session_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if session_row is None or session_row.user_id != user_id:
         raise SessionNotFound
-
     if session_row.state == SESSION_STATE_CLOSED:
-        raise SessionNotOpen(current_state=session_row.state)
+        return await _replay_closed_session(
+            db,
+            row=session_row,
+            settlement=settlement,
+            actual_units=actual_units,
+            outcome=outcome,
+        )
     if session_row.accounting_mode != "wholesale_account":
         raise SessionSettlementVerificationFailed(reason="legacy_accounting_disabled")
 
@@ -1877,6 +1954,12 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
             clock=clock,
         )
         raise
+    assert settlement is not None
+    await _require_retired_successors(
+        db,
+        row=session_row,
+        authorization_id=verified.work_id,
+    )
     wholesale_billed_value_wei = Decimal(verified.billed_value_wei)
     if session_row.customer_pricing is None or session_row.customer_max_debit_wei is None:
         raise SessionSettlementVerificationFailed(reason="missing_customer_pricing")
@@ -1889,6 +1972,15 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
     if billed_value_wei > session_row.customer_max_debit_wei:
         raise SessionSettlementVerificationFailed(reason="customer_cap_exceeded")
     refund_wei = session_row.customer_max_debit_wei - billed_value_wei
+
+    signed_outcome = verified.outcome
+    if signed_outcome == "SETTLEMENT_OUTCOME_UNSPECIFIED":
+        signed_outcome = _infer_close_outcome(
+            funded=session_row.funded_value_wei, billed=billed_value_wei
+        )
+    if outcome is not None and outcome != signed_outcome:
+        raise SessionSettlementVerificationFailed(reason="outcome_mismatch")
+    final_outcome = signed_outcome
 
     # 3. Transition state (open or draining → closed)
     await transition_state(
@@ -1910,14 +2002,6 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
         )
 
     # 5. Finalize payment_session fields
-    signed_outcome = verified.outcome
-    if signed_outcome == "SETTLEMENT_OUTCOME_UNSPECIFIED":
-        signed_outcome = _infer_close_outcome(
-            funded=session_row.funded_value_wei, billed=billed_value_wei
-        )
-    if outcome is not None and outcome != signed_outcome:
-        raise SessionSettlementVerificationFailed(reason="outcome_mismatch")
-    final_outcome = signed_outcome
     session_row.actual_units = verified.debited_units
     session_row.billed_value_wei = billed_value_wei
     session_row.outcome = final_outcome
@@ -1991,7 +2075,7 @@ async def close_session(  # noqa: PLR0915 — explicit settlement state machine
 DEFAULT_JANITOR_INTERVAL_SECONDS = 60
 
 
-async def reconcile_spend_authorization_states(
+async def reconcile_spend_authorization_states(  # noqa: PLR0912 — fail-closed receiver transitions
     db: AsyncSession,
     *,
     broker: BrokerWholesaleAccountClient,
@@ -2023,9 +2107,20 @@ async def reconcile_spend_authorization_states(
     terminal = {
         SpendAuthorizationState.SETTLED,
         SpendAuthorizationState.EXPIRED_UNUSED,
+        SpendAuthorizationState.CANCELED_UNUSED,
         SpendAuthorizationState.SUPERSEDED,
     }
     for grant in grants:
+        await db.scalar(
+            select(PaymentSession)
+            .where(
+                PaymentSession.id == grant.session_id,
+            )
+            .with_for_update()
+        )
+        await db.refresh(grant)
+        if grant.state not in {"issued", "admitted", "outcome_unknown"}:
+            continue
         snapshot = grant.route_snapshot or {}
         broker_url = snapshot.get("broker_url")
         if not isinstance(broker_url, str) or not broker_url:
@@ -2038,6 +2133,52 @@ async def reconcile_spend_authorization_states(
             )
         except BrokerWholesaleAccountError:
             continue
+        if (
+            observed.payer != grant.payer_eth_address.lower()
+            or observed.authorization_id != grant.authorization_id
+        ):
+            continue
+        if observed.state in {
+            SpendAuthorizationState.CANCELED_UNUSED,
+            SpendAuthorizationState.EXPIRED_UNUSED,
+        }:
+            # A zero-use terminal status is only meaningful in the pinned ledger.
+            # A timeout, missing record, or cross-domain response never retires a hold.
+            if (
+                observed.payer != grant.payer_eth_address.lower()
+                or observed.authorization_id != grant.authorization_id
+                or observed.actual_units != 0
+                or observed.billed_value_wei != 0
+                or observed.reserved_value_wei != 0
+                or grant.state == "admitted"
+            ):
+                continue
+            expiry = grant.expires_at
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=UTC)
+            if (
+                observed.state == SpendAuthorizationState.EXPIRED_UNUSED
+                and observed.observed_at < expiry
+            ):
+                continue
+            try:
+                account = await broker.get_wholesale_account(
+                    broker_url=broker_url,
+                    payer_eth_address=grant.payer_eth_address,
+                    payee_eth_address=str(snapshot["eth_address"]),
+                    chain_id=grant.chain_id,
+                    settlement_domain_id=grant.settlement_domain_id,
+                )
+            except (BrokerWholesaleAccountError, KeyError):
+                continue
+            if (
+                account.settlement_domain_id != grant.settlement_domain_id
+                or account.payer != grant.payer_eth_address.lower()
+                or account.payee != str(snapshot["eth_address"]).lower()
+                or account.chain_id != grant.chain_id
+                or account.denomination != grant.denomination
+            ):
+                continue
         next_state = observed.state.value
         if next_state == grant.state:
             continue
@@ -2115,7 +2256,11 @@ async def reconcile_open_sessions(
         block = (session_row.breakdown or {}).get("settlement_block")
         signature = settlement.get("signature") if isinstance(settlement, dict) else None
         signature_value = signature.get("value") if isinstance(signature, dict) else None
-        if isinstance(block, dict) and block.get("signature") == signature_value:
+        if (
+            isinstance(block, dict)
+            and block.get("signature") == signature_value
+            and block.get("policy") == "authorization-exhaustion-v1"
+        ):
             # Same broker record that already failed against this snapshot;
             # nothing changed, so do not re-verify or re-report it.
             continue
@@ -2136,6 +2281,7 @@ async def reconcile_open_sessions(
             session_row.breakdown = {
                 **(session_row.breakdown or {}),
                 "settlement_block": {
+                    "policy": "authorization-exhaustion-v1",
                     "reason": reason,
                     "signature": signature_value,
                     "first_seen": clock.now().isoformat(),
@@ -2167,7 +2313,12 @@ async def reconcile_open_sessions(
                 settlement=settlement,
                 clock=clock,
             )
-        except SessionNotOpen:
+        except OpenClearinghouseError as exc:
+            if exc.code not in {
+                "session_not_open",
+                "successor_authorization_unresolved",
+            }:
+                raise
             continue
         finalized += 1
         opened_at = session_row.opened_at

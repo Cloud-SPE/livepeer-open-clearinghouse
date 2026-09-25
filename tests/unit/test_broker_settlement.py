@@ -127,7 +127,8 @@ async def test_wholesale_account_query_rejects_cross_domain_response() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
+@pytest.mark.parametrize("state", ["expired_unused", "canceled_unused"])
+async def test_spend_authorization_query_is_strict_and_identity_bound(state: str) -> None:
     payer = "0x" + "aa" * 20
     authorization_id = "loc-auth:request-1"
 
@@ -142,7 +143,7 @@ async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
             json={
                 "payer": payer,
                 "authorization_id": authorization_id,
-                "state": "expired_unused",
+                "state": state,
                 "reserved_value_wei": "0",
                 "billed_value_wei": "0",
                 "released_value_wei": "0",
@@ -158,7 +159,7 @@ async def test_spend_authorization_query_is_strict_and_identity_bound() -> None:
             payer_eth_address=payer,
             authorization_id=authorization_id,
         )
-    assert result.state.value == "expired_unused"
+    assert result.state.value == state
     assert result.authorization_id == authorization_id
 
 

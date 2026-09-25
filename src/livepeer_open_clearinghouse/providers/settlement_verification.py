@@ -421,7 +421,13 @@ def _verify_session_accounting(record: Any, expected: SessionSettlementExpectati
         raise SettlementVerificationError(
             "session_not_terminal", "signed settlement is not terminal"
         )
-    if record.claimed_units != record.debited_units:
+    exhausted = (
+        expected.authorization_id is not None
+        and record.state == "closed"
+        and record.breakdown.get("termination_reason") == "authorization_exhausted"
+        and record.claimed_units > record.debited_units
+    )
+    if record.claimed_units != record.debited_units and not exhausted:
         raise SettlementVerificationError(
             "claim_debit_gap", "signed claimed and debited units diverge"
         )
@@ -435,6 +441,13 @@ def _verify_session_accounting(record: Any, expected: SessionSettlementExpectati
         )
 
     billed_value = int.from_bytes(record.billed_value_wei.value, "big")
+    if exhausted and (
+        billed_value != _bill(record.debited_units, expected.amount_wei, expected.per_units)
+        or int.from_bytes(record.reserved_value_wei.value, "big") != 0
+    ):
+        raise SettlementVerificationError(
+            "authorization_accounting_invalid", "exhausted settlement has inconsistent accounting"
+        )
     signed_funded = int.from_bytes(record.funded_value_wei.value, "big")
     generation_billed = int.from_bytes(record.generation_billed_value_wei.value, "big")
     if billed_value > expected.funded_value_wei or signed_funded > expected.funded_value_wei:

@@ -462,3 +462,32 @@ non-admission recovery. A balance observation cannot reserve credit atomically
 against other clients; broker admission and signed recovery remain authoritative.
 Do not silently reduce a caller's workload maximum to its estimate. See the
 [ABR incident and cap guidance](references/abr-funding-readiness-2026-09-24.md).
+
+### Live close after a refused revision
+
+A signed terminal `authorization_exhausted` session record may report claimed
+units above debited units. LOC accepts that gap only for wholesale authorization
+accounting: actual and billed units must equal the debit, the charge must equal
+`bill(debited_units)`, the remaining reservation must be zero, and all signature,
+identity, quote, domain, ceiling, and sequence checks still apply. Claimed units
+never determine the customer charge. Missing/zero settlement sequences remain
+invalid for an initial close.
+
+Before closing against a historical grant, LOC requires every newer grant to
+be retired as `canceled_unused` or `expired_unused`. The authorization reconciler
+reads the pinned broker's durable status, checks zero usage/debit/reservation,
+and verifies its wholesale account domain, payer, payee, chain, and denomination.
+Expiry evidence must be observed at or after the grant expiry. An already
+admitted grant cannot become unused. `canceled_unused` relies on Modules'
+persistent cancellation fence rejecting subsequent admission for that payer and
+authorization. This is a TLS-bound receiver status contract, not a new signed
+non-admission envelope. Account/status errors or inconclusive states preserve
+holds and return retryable `503 successor_authorization_unresolved` from close.
+The periodic authorization reconciler must run before close can succeed.
+
+Close takes the engagement row lock shared with refill issuance. An exact retry
+of the stored signed envelope, units, and compatible outcome returns the original
+accounting result without a second ledger mutation or settlement event. Different
+close evidence for an already-closed session returns 409. Older cached verifier
+failures are reevaluated under the new exhaustion policy; transient successor
+status failures are never cached as permanently invalid settlement evidence.

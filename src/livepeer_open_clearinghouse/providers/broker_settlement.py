@@ -59,6 +59,7 @@ class SpendAuthorizationState(StrEnum):
     ADMITTED = "admitted"
     SETTLED = "settled"
     EXPIRED_UNUSED = "expired_unused"
+    CANCELED_UNUSED = "canceled_unused"
     OUTCOME_UNKNOWN = "outcome_unknown"
     SUPERSEDED = "superseded"
 

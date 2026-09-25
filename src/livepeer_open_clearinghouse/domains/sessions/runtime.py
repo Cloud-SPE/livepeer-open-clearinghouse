@@ -399,9 +399,8 @@ async def close_session_endpoint(
 
     Verifies the broker-signed settlement before finalizing accounting.
 
-    Returns 409 ``session_not_open`` for an already-closed session
-    (idempotency note: a second close is rejected, not a no-op —
-    the SDK should treat the first 200 as authoritative).
+    An exact retry returns the recorded close result. Conflicting evidence
+    on an already-closed session returns 409 ``session_not_open``.
     """
     _api_key, user = pair
     return await service.close_session(
