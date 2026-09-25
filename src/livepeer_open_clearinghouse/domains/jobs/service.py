@@ -327,7 +327,7 @@ async def _open_wholesale_job(
             daemon=daemon,
             acknowledged_at=clock.now(),
         )
-        await wholesale_service.verify_job_funding_readiness(
+        await wholesale_service.verify_admission_funding_readiness(
             broker=broker,
             route=route,
             payer_eth_address=payer,

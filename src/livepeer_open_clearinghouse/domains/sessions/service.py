@@ -877,8 +877,9 @@ async def _replenish_wholesale_account(
     daemon: PaymentDaemonClient,
     clock: Clock,
     settings: Settings,
+    required_reservation_wei: Decimal | None = None,
 ) -> WholesaleFundingPlan:
-    """Bring one shared account to target only after its low-water threshold."""
+    """Replenish shared float, raising the floor for an explicit admission."""
 
     observation = await broker.get_wholesale_account(
         broker_url=route.worker_url,
@@ -907,6 +908,11 @@ async def _replenish_wholesale_account(
         max_aggregate_available_wei=Decimal(settings.wholesale_max_aggregate_available_wei),
         max_single_funding_wei=Decimal(settings.wholesale_max_single_funding_wei),
     )
+    if required_reservation_wei is not None:
+        limits = wholesale_service.admission_funding_limits(
+            limits,
+            required_reservation_wei=required_reservation_wei,
+        )
     plan = await wholesale_service.plan_observed_account_shortfall(
         db,
         observation=observation,
@@ -1103,12 +1109,70 @@ async def _issue_revision_authorization(
         raise AuthorizationRefused(reason=str(exc)) from exc
 
 
-async def _replenish_for_request(db: AsyncSession, **kwargs: Any) -> WholesaleFundingPlan:
-    """Replenish on a customer request path, surfacing unproven funding as 503."""
+async def _session_reservation_requirement(
+    db: AsyncSession,
+    *,
+    grant: SpendAuthorizationGrant,
+    broker: BrokerWholesaleAccountClient,
+) -> Decimal:
+    if grant.predecessor_authorization_id is None:
+        return grant.max_debit_wei
+    predecessor = await db.scalar(
+        select(SpendAuthorizationGrant).where(
+            SpendAuthorizationGrant.session_id == grant.session_id,
+            SpendAuthorizationGrant.authorization_id == grant.predecessor_authorization_id,
+        )
+    )
+    if (
+        predecessor is None
+        or predecessor.settlement_domain_id != grant.settlement_domain_id
+        or predecessor.payer_eth_address != grant.payer_eth_address
+        or predecessor.route_snapshot != grant.route_snapshot
+    ):
+        raise wholesale_service.WholesaleFundingPolicyError(
+            "revision predecessor scope is unavailable"
+        )
+    observed = await broker.get_spend_authorization(
+        broker_url=str(grant.route_snapshot["broker_url"]),
+        payer_eth_address=grant.payer_eth_address,
+        authorization_id=predecessor.authorization_id,
+    )
+    reusable = observed.billed_value_wei + observed.reserved_value_wei
+    if (
+        observed.payer != grant.payer_eth_address
+        or observed.authorization_id != predecessor.authorization_id
+        or observed.state != SpendAuthorizationState.ADMITTED
+        or reusable > predecessor.max_debit_wei
+        or observed.actual_units > predecessor.max_total_units
+    ):
+        raise wholesale_service.WholesaleFundingPolicyError(
+            "revision predecessor admission is unverified"
+        )
+    # Receiver atomically inherits the debit and replaces the old reservation.
+    # Only these exact predecessor funds are reusable, never aggregate reservations.
+    return max(grant.max_debit_wei - reusable, Decimal(0))
 
+
+async def _replenish_for_request(
+    db: AsyncSession,
+    *,
+    grant: SpendAuthorizationGrant,
+    **kwargs: Any,
+) -> WholesaleFundingPlan:
+    """Fund admission within policy and recheck before returning the authorization."""
     try:
-        return await _replenish_wholesale_account(db, **kwargs)
-    except wholesale_service.WholesaleFundingPolicyError as exc:
+        required = await _session_reservation_requirement(db, grant=grant, broker=kwargs["broker"])
+        plan = await _replenish_wholesale_account(db, required_reservation_wei=required, **kwargs)
+        required = await _session_reservation_requirement(db, grant=grant, broker=kwargs["broker"])
+        await wholesale_service.verify_admission_funding_readiness(
+            broker=kwargs["broker"],
+            route=kwargs["route"],
+            payer_eth_address=grant.payer_eth_address,
+            chain_id=grant.chain_id,
+            required_reservation_wei=required,
+        )
+        return plan
+    except (wholesale_service.WholesaleFundingPolicyError, BrokerWholesaleAccountError) as exc:
         raise WholesaleFundingUnverified(reason=str(exc)) from exc
 
 
@@ -1200,7 +1264,7 @@ async def _open_wholesale_session(
         expires_at=now + timedelta(seconds=settings.session_authorization_ttl_seconds),
         chain_id=settings.wholesale_chain_id,
     )
-    await record_spend_authorization_grant(
+    grant = await record_spend_authorization_grant(
         db,
         engagement_id=session_row.id,
         user_id=user_id,
@@ -1214,6 +1278,7 @@ async def _open_wholesale_session(
     payer = "0x" + auth_response.payer.hex()
     plan = await _replenish_for_request(
         db,
+        grant=grant,
         route=route,
         payer_eth_address=payer,
         mint_request_id=f"loc-account:{request_id}",
@@ -1550,6 +1615,7 @@ async def _refill_wholesale_session(
 
     plan = await _replenish_for_request(
         db,
+        grant=revision_grant,
         route=route,
         payer_eth_address=revision_grant.payer_eth_address,
         mint_request_id=f"loc-account:{request_id}",

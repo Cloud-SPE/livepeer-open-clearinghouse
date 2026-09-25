@@ -684,14 +684,16 @@ def test_admission_shortfall_matches_production_rejection_without_raising_caps()
 async def test_job_admission_readiness_rejects_changed_account_identity(field, value):
     from unittest.mock import AsyncMock
 
-    from livepeer_open_clearinghouse.domains.wholesale.service import verify_job_funding_readiness
+    from livepeer_open_clearinghouse.domains.wholesale.service import (
+        verify_admission_funding_readiness,
+    )
 
     broker = _ReplayBroker(_account())
     broker.get_wholesale_account = AsyncMock(
         return_value=_account().model_copy(update={field: value})
     )
     with pytest.raises(WholesaleFundingPolicyError, match="changed account identity"):
-        await verify_job_funding_readiness(
+        await verify_admission_funding_readiness(
             broker=broker,
             route=_route(),
             payer_eth_address="0x" + "aa" * 20,

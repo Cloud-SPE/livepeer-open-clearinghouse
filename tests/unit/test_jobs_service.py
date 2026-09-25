@@ -2172,7 +2172,7 @@ async def test_wholesale_job_detects_concurrent_credit_consumption_after_funding
 
     broker = _AdmissionBroker(deplete=True)
     args = await _wholesale_admission_args(db_session, broker)
-    with pytest.raises(WholesaleFundingUnverified, match="below the job reservation"):
+    with pytest.raises(WholesaleFundingUnverified, match="below the admission reservation"):
         await jobs_service.open_job(db_session, **args)
     assert broker.fund_calls == 1
     assert (await db_session.scalars(select(WholesaleFunding))).one().status == "acknowledged"

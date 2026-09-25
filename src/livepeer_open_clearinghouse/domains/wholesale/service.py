@@ -57,9 +57,13 @@ def admission_funding_limits(
         raise WholesaleFundingPolicyError("invalid required reservation")
     target = max(limits.target_available_wei, required_reservation_wei)
     if target > limits.max_available_per_payee_wei:
-        raise WholesaleFundingPolicyError("job reservation exceeds the per-payee funding limit")
+        raise WholesaleFundingPolicyError(
+            "admission reservation exceeds the per-payee funding limit"
+        )
     if target > limits.max_aggregate_available_wei:
-        raise WholesaleFundingPolicyError("job reservation exceeds the aggregate funding limit")
+        raise WholesaleFundingPolicyError(
+            "admission reservation exceeds the aggregate funding limit"
+        )
     return limits.model_copy(
         update={
             "target_available_wei": target,
@@ -68,7 +72,7 @@ def admission_funding_limits(
     )
 
 
-async def verify_job_funding_readiness(
+async def verify_admission_funding_readiness(
     *,
     broker: BrokerWholesaleAccountClient,
     route: SelectedRoute,
@@ -76,7 +80,7 @@ async def verify_job_funding_readiness(
     chain_id: int,
     required_reservation_wei: Decimal,
 ) -> None:
-    """Check receiver-acknowledged free credit before disclosing a job grant.
+    """Check receiver-acknowledged free credit before disclosing a grant.
 
     This is a readiness check, not an admission reservation. Only the receiver can
     atomically reserve funds; another client may still consume credit afterwards.
@@ -99,7 +103,7 @@ async def verify_job_funding_readiness(
         raise WholesaleFundingPolicyError("admission readiness changed account identity")
     if observed.available_value_wei < required_reservation_wei:
         raise WholesaleFundingPolicyError(
-            "receiver available credit is below the job reservation after funding"
+            "receiver available credit is below the admission reservation after funding"
         )
 
 

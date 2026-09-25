@@ -491,3 +491,28 @@ accounting result without a second ledger mutation or settlement event. Differen
 close evidence for an already-closed session returns 409. Older cached verifier
 failures are reevaluated under the new exhaustion policy; transient successor
 status failures are never cached as permanently invalid settlement evidence.
+
+### Live admission funding readiness
+
+Live open uses the immutable authorization's maximum debit as the receiver
+available-credit floor, independently of the routine low-water threshold. LOC
+raises the request's funding target to cover that floor without increasing
+single-funding, per-payee, or aggregate exposure limits. Customer workload caps
+are never silently reduced.
+
+For a revision, the receiver atomically inherits the admitted predecessor's
+billed amount and replaces its reservation. The additional available-credit
+requirement is therefore `new_max_debit - predecessor_billed - predecessor_reserved`.
+LOC queries that exact predecessor on the pinned broker, verifies its identity,
+state and accounting bounds, and checks its persisted route/domain scope. It
+rechecks predecessor state and receiver available credit after funding. Missing,
+non-admitted, contradictory or unavailable predecessor evidence cannot justify
+reusing any reservation.
+
+Funding-policy failures, unavailable receiver observations and insufficient
+post-funding credit return retryable `503 WHOLESALE_FUNDING_UNVERIFIED`. The
+original grant, customer hold and mint identity remain durable. A retry recovers
+the existing funding receipt rather than issuing a replacement payment. Routine
+background replenishment continues using its configured target and threshold.
+These readiness checks do not atomically reserve credit: another request can
+consume it before broker admission; atomic admission remains tracked in `loc-8v4`.
