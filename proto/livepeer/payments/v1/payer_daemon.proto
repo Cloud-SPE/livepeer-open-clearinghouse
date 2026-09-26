@@ -236,6 +236,9 @@ message CreatePaymentResponse {
 }
 
 message CreateSpendAuthorizationRequest {
+  // Required shared-wallet isolation identity.
+  string wholesale_account_id = 19;
+
   bytes payee = 1;
   string authorization_id = 2;
   string request_id = 3;

@@ -40,7 +40,10 @@ def _non_admission_expected(**overrides: object) -> NonAdmissionExpectation:
         "job_issued_at": datetime(2026, 5, 24, 12, tzinfo=UTC),
     }
     values.update(overrides)
-    return NonAdmissionExpectation(**values)  # type: ignore[arg-type]
+    return NonAdmissionExpectation(
+        **values,
+        wholesale_account_id="loc-test",
+    )  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
@@ -114,7 +117,10 @@ def _expected(**overrides: object) -> JobSettlementExpectation:
         "route_fingerprint": b"\x11" * 32,
     }
     values.update(overrides)
-    return JobSettlementExpectation(**values)  # type: ignore[arg-type]
+    return JobSettlementExpectation(
+        **values,
+        wholesale_account_id="loc-test",
+    )  # type: ignore[arg-type]
 
 
 def _envelope(**overrides: object) -> dict[str, object]:
@@ -386,7 +392,10 @@ def _session_expected(**overrides: object) -> SessionSettlementExpectation:
         "last_settlement_seq": 0,
     }
     values.update(overrides)
-    return SessionSettlementExpectation(**values)  # type: ignore[arg-type]
+    return SessionSettlementExpectation(
+        **values,
+        wholesale_account_id="loc-test",
+    )  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
@@ -530,6 +539,22 @@ def test_rotated_session_requires_exact_generation_chain_tip() -> None:
     )
     assert verified.predecessor_work_id == "work-1"
     assert verified.rotation_generation == 1
+
+
+@pytest.mark.parametrize("account_id", ["", "blueclaw-prod", "loc-dev-alice"])
+def test_signed_evidence_cannot_cross_wholesale_accounts(account_id: str) -> None:
+    with pytest.raises(SettlementVerificationError, match="wholesale account"):
+        verify_job_settlement(
+            _envelope(wholesale_account_id=account_id),
+            settlement_keys=[delegated_key()],
+            expected=_expected(),
+        )
+    with pytest.raises(SettlementVerificationError, match="wholesale account"):
+        verify_non_admission(
+            signed_non_admission(wholesale_account_id=account_id),
+            settlement_keys=[delegated_key()],
+            expected=_non_admission_expected(),
+        )
 
 
 @pytest.mark.unit

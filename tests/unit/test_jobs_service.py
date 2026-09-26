@@ -8,6 +8,7 @@ SDK-reported settlement, refund-unused on close.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -121,6 +122,7 @@ def _settings() -> Settings:
         admin_bootstrap_token="x",
         session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
+        wholesale_account_id="loc-test",
     )
 
 
@@ -282,11 +284,14 @@ class _WholesaleBroker:
             available_value_wei=self.credit if self.funded else 0,
             version=1 if self.funded else 0,
             observed_at=_clock().now(),
+            wholesale_account_id="loc-test",
+            isolation_version=1,
         )
 
     async def fund_wholesale_account(self, **_: object) -> WholesaleFundingResult:
         self.funded = True
         return WholesaleFundingResult(
+            funding_id=hashlib.sha256(_["payment_bytes"]).hexdigest(),
             payer="0x" + "aa" * 20,
             payee="0x" + "11" * 20,
             settlement_domain_id="0x" + "aa" * 32,
@@ -294,6 +299,8 @@ class _WholesaleBroker:
             available_value_wei=self.credit,
             account_version=1,
             replayed=False,
+            wholesale_account_id="loc-test",
+            isolation_version=1,
         )
 
 
@@ -2072,7 +2079,7 @@ class _AdmissionBroker(_WholesaleBroker):
         self.fund_calls += 1
         return (await super().fund_wholesale_account(**kwargs)).model_copy(
             update={
-                "credited_value_wei": Decimal(0 if replayed else 200 - self.initial),
+                "credited_value_wei": Decimal(200 - self.initial),
                 "replayed": replayed,
             }
         )

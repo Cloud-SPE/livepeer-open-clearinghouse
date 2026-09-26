@@ -103,3 +103,8 @@ printed after a push, not the mutable tag.
 The shell entrypoint builds for the current platform. Tagged releases continue
 through `.github/workflows/publish-image.yml`, which publishes amd64 and arm64
 images with provenance and an SBOM.
+
+The isolated PostgreSQL account-isolation migration rehearsal runs with
+`uv run python scripts/test_account_isolation_migration.py`. It creates and
+removes its own PostgreSQL container, accepts no external database URL, and
+checks transactional refusal, legacy balance preservation, and namespace uniqueness.

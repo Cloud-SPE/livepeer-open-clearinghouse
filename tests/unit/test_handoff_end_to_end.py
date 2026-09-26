@@ -82,6 +82,7 @@ def _settings() -> Settings:
         admin_bootstrap_token="x",
         session_signing_secret="x",
         database_url="sqlite+aiosqlite:///:memory:",
+        wholesale_account_id="loc-test",
     )
 
 

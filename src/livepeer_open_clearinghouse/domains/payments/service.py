@@ -82,6 +82,7 @@ async def issue_route_locked_authorization(
     not_before: datetime,
     expires_at: datetime,
     chain_id: int,
+    wholesale_account_id: str,
     revision: int = 0,
     predecessor_authorization_id: str = "",
 ) -> tuple[CreateSpendAuthorizationRequest, CreateSpendAuthorizationResponse]:
@@ -119,6 +120,7 @@ async def issue_route_locked_authorization(
         broker_uri=route.worker_url,
         chain_id=chain_id,
         settlement_domain_id=route.settlement_domain_id,
+        wholesale_account_id=wholesale_account_id,
     )
     return request, await daemon.create_spend_authorization(request)
 

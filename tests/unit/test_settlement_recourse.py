@@ -537,6 +537,7 @@ async def test_resolve_retires_every_active_authorization_revision(
         expires_at=first.expires_at,
         state="issued",
         retired_at=None,
+        wholesale_account_id="loc-test",
     )
     db_session.add(second)
     row.authorization_id = second_id

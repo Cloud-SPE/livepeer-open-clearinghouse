@@ -3710,6 +3710,8 @@ export interface components {
             payee_eth_address: string;
             /** Settlement Domain Id */
             settlement_domain_id: string;
+            /** Wholesale Account Id */
+            wholesale_account_id: string;
             /** Denomination */
             denomination: string;
             /** Protocol Version */

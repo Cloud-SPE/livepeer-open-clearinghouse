@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 
@@ -30,7 +31,10 @@ async def test_wholesale_account_query_is_strict_and_route_scoped() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/livepeer/v1/payment/account"
-        assert json.loads(request.content) == {"payer_eth_address": payer}
+        assert json.loads(request.content) == {
+            "payer_eth_address": payer,
+            "wholesale_account_id": "loc-test",
+        }
         return httpx.Response(
             200,
             json={
@@ -45,6 +49,8 @@ async def test_wholesale_account_query_is_strict_and_route_scoped() -> None:
                 "available_value_wei": "500",
                 "version": 7,
                 "observed_at": "2026-09-09T12:00:00Z",
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
             },
         )
 
@@ -55,6 +61,7 @@ async def test_wholesale_account_query_is_strict_and_route_scoped() -> None:
             payee_eth_address="0x" + "11" * 20,
             chain_id=42161,
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         )
     assert str(result.available_value_wei) == "500"
     assert result.payee == "0x" + "11" * 20
@@ -79,6 +86,8 @@ async def test_wholesale_account_query_rejects_changed_payer() -> None:
                 "available_value_wei": "0",
                 "version": 0,
                 "observed_at": "2026-09-09T12:00:00Z",
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
             },
         )
     )
@@ -90,6 +99,7 @@ async def test_wholesale_account_query_rejects_changed_payer() -> None:
                 payee_eth_address="0x" + "11" * 20,
                 chain_id=42161,
                 settlement_domain_id="0x" + "aa" * 32,
+                wholesale_account_id="loc-test",
             )
 
 
@@ -111,6 +121,8 @@ async def test_wholesale_account_query_rejects_cross_domain_response() -> None:
                 "available_value_wei": "0",
                 "version": 0,
                 "observed_at": "2026-09-09T12:00:00Z",
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
             },
         )
     )
@@ -122,6 +134,7 @@ async def test_wholesale_account_query_rejects_cross_domain_response() -> None:
                 payee_eth_address="0x" + "11" * 20,
                 chain_id=42161,
                 settlement_domain_id="0x" + "aa" * 32,
+                wholesale_account_id="loc-test",
             )
 
 
@@ -137,12 +150,15 @@ async def test_spend_authorization_query_is_strict_and_identity_bound(state: str
         assert json.loads(request.content) == {
             "payer_eth_address": payer,
             "authorization_id": authorization_id,
+            "wholesale_account_id": "loc-test",
         }
         return httpx.Response(
             200,
             json={
                 "payer": payer,
                 "authorization_id": authorization_id,
+                "payee": "0x" + "11" * 20,
+                "settlement_domain_id": "0x" + "aa" * 32,
                 "state": state,
                 "reserved_value_wei": "0",
                 "billed_value_wei": "0",
@@ -150,6 +166,8 @@ async def test_spend_authorization_query_is_strict_and_identity_bound(state: str
                 "actual_units": 0,
                 "settlement_seq": 0,
                 "observed_at": "2026-09-09T12:00:00Z",
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
             },
         )
 
@@ -158,6 +176,9 @@ async def test_spend_authorization_query_is_strict_and_identity_bound(state: str
             broker_url="https://broker.example",
             payer_eth_address=payer,
             authorization_id=authorization_id,
+            payee_eth_address="0x" + "11" * 20,
+            settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         )
     assert result.state.value == state
     assert result.authorization_id == authorization_id
@@ -183,6 +204,9 @@ async def test_wholesale_account_funding_keeps_ticket_inside_loc() -> None:
                 "available_value_wei": "125",
                 "account_version": 4,
                 "replayed": False,
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
+                "funding_id": hashlib.sha256(b"signed-ticket").hexdigest(),
             },
         )
 
@@ -195,6 +219,7 @@ async def test_wholesale_account_funding_keeps_ticket_inside_loc() -> None:
             payer_eth_address="0x" + "aa" * 20,
             payee_eth_address="0x" + "11" * 20,
             settlement_domain_id="0x" + "aa" * 32,
+            wholesale_account_id="loc-test",
         )
     assert str(result.credited_value_wei) == "25"
     assert result.account_version == 4
@@ -214,6 +239,9 @@ async def test_wholesale_account_funding_rejects_cross_domain_acknowledgement() 
                 "available_value_wei": "125",
                 "account_version": 4,
                 "replayed": False,
+                "wholesale_account_id": "loc-test",
+                "isolation_version": 1,
+                "funding_id": hashlib.sha256(b"signed-ticket").hexdigest(),
             },
         )
     )
@@ -227,6 +255,7 @@ async def test_wholesale_account_funding_rejects_cross_domain_acknowledgement() 
                 payer_eth_address="0x" + "aa" * 20,
                 payee_eth_address="0x" + "11" * 20,
                 settlement_domain_id="0x" + "aa" * 32,
+                wholesale_account_id="loc-test",
             )
 
 
@@ -401,6 +430,7 @@ def _non_admission_query() -> NonAdmissionQuery:
         constraint_fingerprint="00" * 32,
         route_fingerprint="11" * 32,
         job_issued_at="2026-05-24T12:00:00+00:00",
+        wholesale_account_id="loc-test",
     )
 
 
@@ -506,4 +536,82 @@ async def test_job_exchange_rejects_inconsistent_protocol_responses(
         with pytest.raises(BrokerSettlementQueryError):
             await HttpBrokerSettlementClient(http_client).get_job_exchange(
                 broker_url="https://broker.example", request_id="request-1"
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["other_account", "missing_account", "old_receiver", "other_payment"]
+)
+async def test_funding_receipt_fails_closed_without_exact_isolation(change: str) -> None:
+    body = {
+        "payer": "0x" + "aa" * 20,
+        "payee": "0x" + "11" * 20,
+        "settlement_domain_id": "0x" + "aa" * 32,
+        "wholesale_account_id": "loc-test",
+        "isolation_version": 1,
+        "funding_id": hashlib.sha256(b"signed-ticket").hexdigest(),
+        "credited_value_wei": "25",
+        "available_value_wei": "125",
+        "account_version": 4,
+        "replayed": True,
+    }
+    if change == "other_account":
+        body["wholesale_account_id"] = "blueclaw-prod"
+    elif change == "missing_account":
+        del body["wholesale_account_id"]
+    elif change == "old_receiver":
+        del body["isolation_version"]
+    else:
+        body["funding_id"] = hashlib.sha256(b"another-payment").hexdigest()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
+    ) as client:
+        with pytest.raises(BrokerWholesaleAccountError):
+            await HttpBrokerSettlementClient(client).fund_wholesale_account(
+                broker_url="https://broker.example",
+                capability="cap",
+                offering="offer",
+                payment_bytes=b"signed-ticket",
+                payer_eth_address="0x" + "aa" * 20,
+                payee_eth_address="0x" + "11" * 20,
+                settlement_domain_id="0x" + "aa" * 32,
+                wholesale_account_id="loc-test",
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["wholesale_account_id", "payee", "settlement_domain_id"])
+async def test_authorization_status_rejects_cross_account_scope(field: str) -> None:
+    body = {
+        "payer": "0x" + "aa" * 20,
+        "payee": "0x" + "11" * 20,
+        "settlement_domain_id": "0x" + "aa" * 32,
+        "wholesale_account_id": "loc-test",
+        "isolation_version": 1,
+        "authorization_id": "auth-1",
+        "state": "expired_unused",
+        "reserved_value_wei": "0",
+        "billed_value_wei": "0",
+        "released_value_wei": "0",
+        "actual_units": 0,
+        "settlement_seq": 0,
+        "observed_at": "2026-09-09T12:00:00Z",
+    }
+    body[field] = {
+        "wholesale_account_id": "blueclaw-prod",
+        "payee": "0x" + "22" * 20,
+        "settlement_domain_id": "0x" + "bb" * 32,
+    }[field]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
+    ) as client:
+        with pytest.raises(BrokerWholesaleAccountError):
+            await HttpBrokerSettlementClient(client).get_spend_authorization(
+                broker_url="https://broker.example",
+                authorization_id="auth-1",
+                payer_eth_address="0x" + "aa" * 20,
+                payee_eth_address="0x" + "11" * 20,
+                settlement_domain_id="0x" + "aa" * 32,
+                wholesale_account_id="loc-test",
             )

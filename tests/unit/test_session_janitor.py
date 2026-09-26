@@ -64,7 +64,10 @@ def _clock() -> FrozenClock:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="sqlite+aiosqlite:///:memory:")
+    return Settings(
+        database_url="sqlite+aiosqlite:///:memory:",
+        wholesale_account_id="loc-test",
+    )
 
 
 def _route() -> SelectedRoute:

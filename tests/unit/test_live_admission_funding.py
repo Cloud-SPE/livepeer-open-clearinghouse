@@ -39,6 +39,7 @@ class AdmissionBroker(_WholesaleBroker):
         self.credited_value_wei = Decimal(AVAILABLE)
         self.funding_target = Decimal(REQUIRED)
         self.calls = []
+        self.receipts = {}
         self.reads = 0
         self.lost_receipt = lost_receipt
         self.deplete = deplete
@@ -55,7 +56,10 @@ class AdmissionBroker(_WholesaleBroker):
     async def fund_wholesale_account(self, **kwargs):
         replayed = kwargs["payment_bytes"] in self.calls
         self.calls.append(kwargs["payment_bytes"])
+        if replayed:
+            return self.receipts[kwargs["payment_bytes"]].model_copy(update={"replayed": True})
         result = await super().fund_wholesale_account(**kwargs)
+        self.receipts[kwargs["payment_bytes"]] = result
         if self.lost_receipt:
             self.lost_receipt = False
             raise BrokerWholesaleAccountError("receipt lost")
@@ -168,7 +172,7 @@ async def test_live_admission_failure_preserves_hold_and_scope(db_session, deple
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("state", ["admitted", "issued", "canceled_unused"])
+@pytest.mark.parametrize("state", ["admitted", "issued", "canceled_unused", "cross_account"])
 async def test_refill_reuses_only_verified_predecessor_reservation(db_session, monkeypatch, state):
     from livepeer_open_clearinghouse.providers.broker_settlement import SpendAuthorizationState
 
@@ -183,7 +187,10 @@ async def test_refill_reuses_only_verified_predecessor_reservation(db_session, m
         )
     ).model_copy(
         update={
-            "state": SpendAuthorizationState(state),
+            "state": SpendAuthorizationState.ADMITTED
+            if state == "cross_account"
+            else SpendAuthorizationState(state),
+            "wholesale_account_id": "other-app" if state == "cross_account" else "loc-test",
             "billed_value_wei": Decimal(40_000_000_000_000),
             "reserved_value_wei": Decimal(80_000_000_000_000),
             "actual_units": 40,

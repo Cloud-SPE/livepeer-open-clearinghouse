@@ -30,6 +30,8 @@ to reconstruct your reasoning.
 | 001 | [Production topology and security baseline](001-production-topology.md) | accepted | LOC operator | Single-process v2 launch unit, private dependencies, durable payer state |
 | 002 | [Fair wholesale credit accounts](002-fair-wholesale-credit-accounts.md) | accepted | LOC + Modules | Protocol 4 settlement domains at Modules `80800f8`; LOC integration tracked by `loc-aqt` |
 
+| 003 | [Shared-wallet account isolation](003-shared-wallet-account-isolation.md) | accepted | LOC + Modules | Explicit environment accounts, daemon-owned streams, exact funding receipts; `loc-ddc` |
+
 The operator procedure for design 002 is
 [`wholesale-rollout.md`](../references/wholesale-rollout.md).
 

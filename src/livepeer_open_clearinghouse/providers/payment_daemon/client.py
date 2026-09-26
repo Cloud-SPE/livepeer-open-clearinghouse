@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -28,6 +29,11 @@ from livepeer_open_clearinghouse import _gen  # noqa: F401
 _ETH_ADDRESS_BYTES = 20
 _ETH_SIGNATURE_BYTES = 65
 _SETTLEMENT_DOMAIN_HEX_LENGTH = 64
+
+
+def _validate_wholesale_account_id(value: str) -> None:
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) is None:
+        raise ValueError("wholesale_account_id must be 1..128 ASCII account-label characters")
 
 
 def _validate_settlement_domain_id(value: str) -> None:
@@ -120,6 +126,7 @@ class AccountFundingIntent:
     target_available_wei: Decimal
     observed_available_wei: Decimal
     settlement_domain_id: str
+    wholesale_account_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +198,7 @@ class CreateSpendAuthorizationRequest:
     broker_uri: str
     chain_id: int
     settlement_domain_id: str
+    wholesale_account_id: str
     denomination: str = "wei"
 
 
@@ -486,6 +494,7 @@ def spend_authorization_request_to_proto(
         raise ValueError("authorization broker_uri is required")
     if request.chain_id <= 0 or request.denomination != "wei":
         raise ValueError("authorization requires a positive chain_id and wei denomination")
+    _validate_wholesale_account_id(request.wholesale_account_id)
     _validate_settlement_domain_id(request.settlement_domain_id)
     return payer_daemon_pb2.CreateSpendAuthorizationRequest(
         payee=request.payee,
@@ -520,6 +529,7 @@ def spend_authorization_request_to_proto(
         chain_id=request.chain_id,
         denomination=request.denomination,
         settlement_domain_id=request.settlement_domain_id,
+        wholesale_account_id=request.wholesale_account_id,
     )
 
 
@@ -544,7 +554,7 @@ def _expected_authorization_payload(proto: Any, *, payer: bytes) -> Any:
     from livepeer.payments.v1 import types_pb2  # noqa: PLC0415
 
     return types_pb2.SpendAuthorizationPayload(
-        domain="livepeer-spend-authorization/v2",
+        domain="livepeer-spend-authorization/v3",
         payer=payer,
         payee=proto.payee,
         authorization_id=proto.authorization_id,
@@ -566,6 +576,7 @@ def _expected_authorization_payload(proto: Any, *, payer: bytes) -> Any:
         chain_id=proto.chain_id,
         denomination=proto.denomination,
         settlement_domain_id=proto.settlement_domain_id,
+        wholesale_account_id=proto.wholesale_account_id,
     )
 
 
@@ -631,6 +642,7 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
             top_up_allowed=False,
         ),
     )
+    _validate_wholesale_account_id(request.account_funding.wholesale_account_id)
     _validate_settlement_domain_id(request.account_funding.settlement_domain_id)
     proto.account_funding.CopyFrom(
         types_pb2.AccountFundingIntent(
@@ -641,6 +653,7 @@ def dataclass_request_to_proto(request: CreatePaymentRequest):  # type: ignore[n
                 value=int_to_biguint_bytes(request.account_funding.observed_available_wei)
             ),
             settlement_domain_id=request.account_funding.settlement_domain_id,
+            wholesale_account_id=request.account_funding.wholesale_account_id,
         )
     )
     return proto

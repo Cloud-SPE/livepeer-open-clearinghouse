@@ -1234,6 +1234,7 @@ def run(repo: Path, modules_repo: Path, artifacts: Path) -> dict[str, Any]:
             {
                 "DATABASE_URL": database_url,
                 "PAYMENT_DAEMON_MODE": "grpc",
+                "WHOLESALE_ACCOUNT_ID": "loc-conformance",
                 "PAYMENT_DAEMON_SOCKET": str(payer_socket),
                 "REGISTRY_DAEMON_MODE": "grpc",
                 "REGISTRY_DAEMON_SOCKET": str(registry_socket),

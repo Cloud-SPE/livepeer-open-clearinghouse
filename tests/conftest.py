@@ -23,6 +23,7 @@ def test_settings() -> Settings:
         app_env="dev",
         database_url="postgresql+asyncpg://test:test@localhost:5432/test",
         admin_bootstrap_token=None,
+        wholesale_account_id="loc-test",
     )
 
 

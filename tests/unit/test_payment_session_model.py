@@ -278,6 +278,7 @@ async def test_authorization_revisions_preserve_original_grant(
         not_before=now,
         expires_at=now + timedelta(minutes=5),
         chain_id=42161,
+        wholesale_account_id="loc-test",
     )
     first = await sessions_service.record_spend_authorization_grant(
         session,
@@ -324,6 +325,7 @@ async def test_authorization_revisions_preserve_original_grant(
         not_before=now,
         expires_at=now + timedelta(minutes=5),
         chain_id=42161,
+        wholesale_account_id="loc-test",
         revision=1,
         predecessor_authorization_id=first.authorization_id,
     )
@@ -371,6 +373,7 @@ async def test_authorization_issuance_requires_caller_proof_without_feature_nego
         "not_before": now,
         "expires_at": now + timedelta(minutes=5),
         "chain_id": 42161,
+        "wholesale_account_id": "loc-test",
     }
     with pytest.raises(ValueError, match="caller proof"):
         await payments_service.issue_route_locked_authorization(

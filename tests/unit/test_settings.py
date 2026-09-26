@@ -28,6 +28,7 @@ def _production_settings(**overrides: object) -> dict[str, object]:
         "sdk_manifest_signing_key": "c2lnbmluZy1rZXktZm9yLXByb2R1Y3Rpb24=",
         "admin_bootstrap_token": None,
         "wholesale_chain_id": 42161,
+        "wholesale_account_id": "loc-prod",
         "wholesale_target_available_wei": 100,
         "wholesale_replenish_below_wei": 50,
         "wholesale_max_available_per_payee_wei": 200,
@@ -114,3 +115,9 @@ def test_production_requires_complete_wholesale_limits() -> None:
 def test_session_authorization_ttl_cannot_be_shorter_than_five_minutes() -> None:
     with pytest.raises(ValidationError, match="greater than or equal to 300"):
         _settings(session_authorization_ttl_seconds=299)
+
+
+@pytest.mark.parametrize("account_id", ["", "loc prod", "loc/dev", "é", "a" * 129])
+def test_real_payer_requires_valid_explicit_account(account_id: str) -> None:
+    with pytest.raises(ValidationError):
+        _settings(payment_daemon_mode="grpc", wholesale_account_id=account_id)
